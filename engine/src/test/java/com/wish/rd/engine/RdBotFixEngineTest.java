@@ -76,6 +76,8 @@ class RdBotFixEngineTest {
         assertEquals("P0", queueRequest.get().priority());
         assertNotNull(executionRequest.get());
         assertTrue(executionRequest.get().prompt().contains("研发修复任务"));
+        assertTrue(executionRequest.get().prompt().contains("## 执行边界"));
+        assertTrue(executionRequest.get().prompt().contains("\"pullRequestUrl\""));
         assertTrue(executionRequest.get().prompt().contains("OrderService.create"));
         assertEquals(RdTaskStatus.COMMITTED, result.status());
         assertEquals(RdTaskStatus.COMMITTED, task.status());
