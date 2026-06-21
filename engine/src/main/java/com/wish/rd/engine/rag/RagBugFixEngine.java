@@ -1,15 +1,12 @@
 package com.wish.rd.engine.rag;
 
 import com.wish.rd.adapter.TicketSnapshot;
-import com.wish.rd.framework.convention.ChatMessage;
 import com.wish.rd.framework.convention.RetrievedChunk;
 import com.wish.rd.rag.core.chunk.ChunkingMode;
 import com.wish.rd.rag.ingestion.DocumentIngestionCommand;
 import com.wish.rd.rag.ingestion.DocumentIngestionService;
 import com.wish.rd.rag.intent.IntentTreeRegistry;
 import com.wish.rd.rag.knowledge.KnowledgeWorkspace;
-import com.wish.rd.rag.memory.ConversationMemoryService;
-import com.wish.rd.rag.memory.DefaultConversationMemoryService;
 import com.wish.rd.rag.pipeline.RepairContextPackage;
 import com.wish.rd.rag.pipeline.RepairRagPipeline;
 import com.wish.rd.rag.pipeline.RepairRagRequest;
@@ -27,84 +24,75 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
 
 /**
  * Bug 修复 RAG 编排引擎。
  *
- * <p>入口方法 {@link #findBugFixMessgaesForAgent(TicketSnapshot, List, String, boolean)}
+ * <p>入口方法 {@link #findBugFixMessgaesForAgent(TicketSnapshot, List, boolean)}
  * 以工单字段为核心输入，完成意图分类、歧义引导、多通道检索与 Agent 消息打包。
  */
+@Service
 public final class RagBugFixEngine {
 
-    private static final String DEFAULT_USER_ID = "test-user";
-
-    private final ConversationMemoryService memoryService;
     private final QueryTermMappingRegistry queryTermMappingRegistry;
     private final IntentTreeRegistry intentTreeRegistry;
     private final KnowledgeWorkspace knowledgeWorkspace;
     private final RagStreamTaskRegistry streamTaskRegistry;
-    private final BugFixAgentEngine agentEngine;
     private final ChatQueueLimiter chatQueueLimiter;
 
-    public RagBugFixEngine(ConversationMemoryService memoryService, BugFixAgentEngine agentEngine) {
-        this(memoryService, agentEngine, ChatQueueLimiter.passThrough());
-    }
-
+    @Autowired
     public RagBugFixEngine(
-            ConversationMemoryService memoryService,
-            BugFixAgentEngine agentEngine,
-            ChatQueueLimiter chatQueueLimiter
-    ) {
-        this(
-                memoryService,
-                QueryTermMappingRegistry.withDefaults(),
-                IntentTreeRegistry.withDefaults(),
-                null,
-                RagStreamTaskRegistry.inMemory(),
-                agentEngine,
-                chatQueueLimiter
-        );
-    }
-
-    public RagBugFixEngine(
-            ConversationMemoryService memoryService,
             QueryTermMappingRegistry queryTermMappingRegistry,
             IntentTreeRegistry intentTreeRegistry,
             KnowledgeWorkspace knowledgeWorkspace,
             RagStreamTaskRegistry streamTaskRegistry,
-            BugFixAgentEngine agentEngine,
+            ObjectProvider<ChatQueueLimiter> chatQueueLimiterProvider
+    ) {
+        this(
+                queryTermMappingRegistry,
+                intentTreeRegistry,
+                knowledgeWorkspace,
+                streamTaskRegistry,
+                chatQueueLimiterProvider.getIfAvailable(ChatQueueLimiter::passThrough)
+        );
+    }
+
+    public RagBugFixEngine(
+            QueryTermMappingRegistry queryTermMappingRegistry,
+            IntentTreeRegistry intentTreeRegistry,
+            KnowledgeWorkspace knowledgeWorkspace,
+            RagStreamTaskRegistry streamTaskRegistry,
             ChatQueueLimiter chatQueueLimiter
     ) {
-        this.memoryService = memoryService == null ? DefaultConversationMemoryService.inMemory() : memoryService;
         this.queryTermMappingRegistry = queryTermMappingRegistry == null
                 ? QueryTermMappingRegistry.withDefaults()
                 : queryTermMappingRegistry;
         this.intentTreeRegistry = intentTreeRegistry == null ? IntentTreeRegistry.withDefaults() : intentTreeRegistry;
         this.knowledgeWorkspace = knowledgeWorkspace;
         this.streamTaskRegistry = streamTaskRegistry == null ? RagStreamTaskRegistry.inMemory() : streamTaskRegistry;
-        this.agentEngine = agentEngine;
         this.chatQueueLimiter = chatQueueLimiter == null ? ChatQueueLimiter.passThrough() : chatQueueLimiter;
     }
 
     public BugFixMessage findBugFixMessgaesForAgent(TicketSnapshot ticket, List<String> logs) {
-        return findBugFixMessgaesForAgent(ticket, logs, null, false);
+        return findBugFixMessgaesForAgent(ticket, logs, false);
     }
 
     public BugFixMessage findBugFixMessgaesForAgent(
             TicketSnapshot ticket,
             List<String> logs,
-            String conversationId,
             boolean deepThinking
     ) {
         TicketSnapshot safeTicket = normalizeTicket(ticket);
         List<String> safeLogs = logs == null ? List.of() : List.copyOf(logs);
-        String actualConversationId = blank(conversationId) ? "conversation-" + UUID.randomUUID() : conversationId;
         String taskId = "task-" + UUID.randomUUID();
         String userQuestion = userQuestion(safeTicket);
         return chatQueueLimiter.enqueue(
-                new ChatQueueLimiter.ChatQueueRequest(userQuestion, actualConversationId, taskId),
-                () -> runBugFixFlow(safeTicket, safeLogs, actualConversationId, taskId, deepThinking, userQuestion),
-                () -> reject(safeTicket, safeLogs, actualConversationId, taskId, deepThinking, userQuestion)
+                new ChatQueueLimiter.ChatQueueRequest(userQuestion, taskId),
+                () -> runBugFixFlow(safeTicket, safeLogs, taskId, deepThinking, userQuestion),
+                () -> reject(safeTicket, safeLogs, taskId, deepThinking, userQuestion)
         );
     }
 
@@ -120,32 +108,20 @@ public final class RagBugFixEngine {
     private BugFixMessage runBugFixFlow(
             TicketSnapshot ticket,
             List<String> logs,
-            String conversationId,
             String taskId,
             boolean deepThinking,
             String userQuestion
     ) {
-        streamTaskRegistry.registerRunning(taskId, conversationId);
+        streamTaskRegistry.registerRunning(taskId, "");
         RepairRagRequest request = new RepairRagRequest(ticket.ticketId(), ticketFieldsText(ticket), logs);
         RepairContextPackage context = repairPipeline().prepareContext(request);
-        List<ChatMessage> history = memoryService.loadAndAppend(
-                conversationId,
-                DEFAULT_USER_ID,
-                ChatMessage.user(userQuestion)
-        );
         RepairPromptPlan promptPlan = RepairPromptService
                 .defaultService(queryTermMappingRegistry.rewriteService())
-                .build(request, context, history);
+                .build(request, context);
         String answer = deterministicAnswer(promptPlan);
-        String assistantMessageId = memoryService.append(
-                conversationId,
-                DEFAULT_USER_ID,
-                ChatMessage.assistant(answer)
-        );
-        streamTaskRegistry.complete(taskId, assistantMessageId, titleFrom(userQuestion));
-        BugFixMessage message = toMessage(
+        streamTaskRegistry.complete(taskId, "", titleFrom(userQuestion));
+        return toMessage(
                 ticket,
-                conversationId,
                 taskId,
                 deepThinking,
                 context,
@@ -153,8 +129,6 @@ public final class RagBugFixEngine {
                 answer,
                 false
         );
-        submitToAgent(message);
-        return message;
     }
 
     private RepairRagPipeline repairPipeline() {
@@ -201,7 +175,6 @@ public final class RagBugFixEngine {
 
     private BugFixMessage toMessage(
             TicketSnapshot ticket,
-            String conversationId,
             String taskId,
             boolean deepThinking,
             RepairContextPackage context,
@@ -214,7 +187,6 @@ public final class RagBugFixEngine {
                 ticket.title(),
                 ticket.description(),
                 ticket.labels(),
-                conversationId,
                 taskId,
                 deepThinking,
                 context.primaryIntent().map(score -> score.node().systemId()).orElse(""),
@@ -255,15 +227,12 @@ public final class RagBugFixEngine {
     private BugFixMessage reject(
             TicketSnapshot ticket,
             List<String> logs,
-            String conversationId,
             String taskId,
             boolean deepThinking,
             String userQuestion
     ) {
         String message = "系统繁忙，请稍后再试";
-        memoryService.append(conversationId, DEFAULT_USER_ID, ChatMessage.user(userQuestion));
-        String assistantMessageId = memoryService.append(conversationId, DEFAULT_USER_ID, ChatMessage.assistant(message));
-        streamTaskRegistry.reject(taskId, conversationId, assistantMessageId, message);
+        streamTaskRegistry.reject(taskId, "", "", message);
         RepairRagRequest request = new RepairRagRequest(ticket.ticketId(), ticketFieldsText(ticket), logs);
         RepairContextPackage context = new RepairContextPackage(
                 ticket.ticketId(),
@@ -275,14 +244,8 @@ public final class RagBugFixEngine {
         );
         RepairPromptPlan promptPlan = RepairPromptService
                 .defaultService(queryTermMappingRegistry.rewriteService())
-                .build(request, context, List.of(ChatMessage.user(userQuestion)));
-        return toMessage(ticket, conversationId, taskId, deepThinking, context, promptPlan, message, true);
-    }
-
-    private void submitToAgent(BugFixMessage message) {
-        if (agentEngine != null) {
-            agentEngine.submit(message);
-        }
+                .build(request, context);
+        return toMessage(ticket, taskId, deepThinking, context, promptPlan, message, true);
     }
 
     private String deterministicAnswer(RepairPromptPlan promptPlan) {

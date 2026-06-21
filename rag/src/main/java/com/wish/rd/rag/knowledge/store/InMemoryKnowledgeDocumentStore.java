@@ -6,10 +6,14 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.stereotype.Component;
 
 /**
  * 内存知识文档 Store：持有文档元数据与原文内容。
  */
+@Component
+@ConditionalOnProperty(name = "rd.knowledge.store", havingValue = "memory", matchIfMissing = true)
 public final class InMemoryKnowledgeDocumentStore implements KnowledgeDocumentStore {
 
     private final LinkedHashMap<String, KnowledgeDocument> documents = new LinkedHashMap<>();

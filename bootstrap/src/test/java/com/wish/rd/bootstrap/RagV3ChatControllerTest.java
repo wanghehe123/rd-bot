@@ -25,12 +25,11 @@ class RagV3ChatControllerTest {
     void exposesRagentStyleSseChatEndpoint() throws Exception {
         mockMvc.perform(get("/rag/v3/chat")
                         .param("question", "支付系统下单接口 500。金额为空怎么修复？")
-                        .param("conversationId", "conversation-v3-test")
                         .param("deepThinking", "false"))
                 .andExpect(status().isOk())
                 .andExpect(content().contentTypeCompatibleWith("text/event-stream"))
                 .andExpect(content().string(containsString("event: meta")))
-                .andExpect(content().string(containsString("conversation-v3-test")))
+                .andExpect(content().string(containsString("\"taskId\":\"task-")))
                 .andExpect(content().string(containsString("event: delta")))
                 .andExpect(content().string(containsString("OrderService.create")))
                 .andExpect(content().string(containsString("event: done")));

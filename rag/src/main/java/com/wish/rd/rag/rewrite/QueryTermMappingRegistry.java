@@ -5,6 +5,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.concurrent.atomic.AtomicLong;
+import org.springframework.stereotype.Component;
 
 /**
  * 查询术语映射注册表：内存中管理"源术语→目标术语"的映射 CRUD。
@@ -12,6 +13,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * <p>这是 /mappings 系列接口的后端存储，也是 /rag/v3/chat 改写逻辑的数据源。
  * 所有写操作加 synchronized 保证并发安全；{@link #rewriteService()} 每次返回基于当前快照的新实例。
  */
+@Component
 public final class QueryTermMappingRegistry {
 
     /** 自增 ID 序列，作为映射主键。 */
@@ -19,9 +21,19 @@ public final class QueryTermMappingRegistry {
     /** 映射存储，LinkedHashMap 保持插入顺序以便稳定分页。 */
     private final LinkedHashMap<String, ManagedQueryTermMapping> mappings = new LinkedHashMap<>();
 
+    public QueryTermMappingRegistry() {
+        this(true);
+    }
+
+    private QueryTermMappingRegistry(boolean seedDefaults) {
+        if (seedDefaults) {
+            seedDefaults();
+        }
+    }
+
     /** 空注册表工厂方法。 */
     public static QueryTermMappingRegistry inMemory() {
-        return new QueryTermMappingRegistry();
+        return new QueryTermMappingRegistry(false);
     }
 
     /**
@@ -29,10 +41,7 @@ public final class QueryTermMappingRegistry {
      * 让 /rag/v3/chat 在零配置下也能演示改写效果。
      */
     public static QueryTermMappingRegistry withDefaults() {
-        QueryTermMappingRegistry registry = new QueryTermMappingRegistry();
-        registry.create(new QueryTermMappingCommand("下单", "POST /api/orders", 10, true, "default payment api"));
-        registry.create(new QueryTermMappingCommand("金额", "orders.amount", 9, true, "default payment amount field"));
-        return registry;
+        return new QueryTermMappingRegistry(true);
     }
 
     /**
@@ -123,5 +132,10 @@ public final class QueryTermMappingRegistry {
         if (command.targetTerm().isBlank()) {
             throw new IllegalArgumentException("targetTerm must not be blank");
         }
+    }
+
+    private void seedDefaults() {
+        create(new QueryTermMappingCommand("下单", "POST /api/orders", 10, true, "default payment api"));
+        create(new QueryTermMappingCommand("金额", "orders.amount", 9, true, "default payment amount field"));
     }
 }

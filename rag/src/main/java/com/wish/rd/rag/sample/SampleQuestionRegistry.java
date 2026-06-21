@@ -6,7 +6,9 @@ import java.util.List;
 import java.util.Locale;
 import java.util.NoSuchElementException;
 import java.util.concurrent.atomic.AtomicLong;
+import org.springframework.stereotype.Component;
 
+@Component
 public final class SampleQuestionRegistry {
 
     private static final int DEFAULT_WELCOME_LIMIT = 3;

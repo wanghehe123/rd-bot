@@ -20,10 +20,14 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.stereotype.Component;
 
 /**
  * PostgreSQL 修复记录仓储。
  */
+@Component
+@ConditionalOnProperty(name = "rd.knowledge.store", havingValue = "postgres")
 public final class PostgresRepairRecordRepository implements RepairRecordRepository {
 
     private static final TypeReference<Map<String, String>> STRING_MAP_TYPE = new TypeReference<>() {

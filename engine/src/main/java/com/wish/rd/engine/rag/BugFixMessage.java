@@ -12,7 +12,6 @@ public record BugFixMessage(
         String ticketTitle,
         String ticketDescription,
         List<String> ticketLabels,
-        String conversationId,
         String taskId,
         boolean deepThinking,
         String primaryIntentSystemId,
@@ -35,7 +34,6 @@ public record BugFixMessage(
         ticketTitle = safe(ticketTitle);
         ticketDescription = safe(ticketDescription);
         ticketLabels = ticketLabels == null ? List.of() : List.copyOf(ticketLabels);
-        conversationId = safe(conversationId);
         taskId = safe(taskId);
         primaryIntentSystemId = safe(primaryIntentSystemId);
         primaryIntentName = safe(primaryIntentName);

@@ -25,6 +25,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import org.springframework.stereotype.Component;
 
 /**
  * 知识库工作区 facade：统一管理知识库、文档、分块与向量索引的一致性。
@@ -33,6 +34,7 @@ import java.util.Map;
  * 内存或 PostgreSQL 持久化。跨实体级联操作仍收敛在此聚合根，避免外部绕过根直接
  * 修改子实体导致向量库、分块计数和文档状态不一致。
  */
+@Component
 public final class KnowledgeWorkspace {
 
     private final VectorStore vectorStore;
@@ -41,7 +43,7 @@ public final class KnowledgeWorkspace {
     private final KnowledgeDocumentStore documentStore;
     private final KnowledgeChunkStore chunkStore;
 
-    private KnowledgeWorkspace(
+    public KnowledgeWorkspace(
             VectorStore vectorStore,
             SnowflakeIdGenerator idGenerator,
             KnowledgeBaseStore baseStore,

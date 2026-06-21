@@ -11,7 +11,9 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
+import org.springframework.stereotype.Component;
 
+@Component
 public final class IngestionAdminRegistry {
 
     private final KnowledgeWorkspace workspace;
@@ -20,7 +22,7 @@ public final class IngestionAdminRegistry {
     private final LinkedHashMap<String, ManagedIngestionPipeline> pipelines = new LinkedHashMap<>();
     private final AtomicLong pipelineSequence = new AtomicLong();
 
-    private IngestionAdminRegistry(
+    public IngestionAdminRegistry(
             KnowledgeWorkspace workspace,
             IngestionTaskStore taskStore,
             SnowflakeIdGenerator idGenerator

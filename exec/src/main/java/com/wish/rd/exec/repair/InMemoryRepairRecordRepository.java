@@ -6,10 +6,14 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Optional;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.stereotype.Component;
 
 /**
  * 内存修复记录仓储，用于单测和无数据库本地启动。
  */
+@Component
+@ConditionalOnProperty(name = "rd.knowledge.store", havingValue = "memory", matchIfMissing = true)
 public final class InMemoryRepairRecordRepository implements RepairRecordRepository {
 
     private final SnowflakeIdGenerator idGenerator;

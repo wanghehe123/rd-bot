@@ -27,13 +27,11 @@ public interface ChatQueueLimiter {
 
     record ChatQueueRequest(
             String question,
-            String conversationId,
             String taskId
     ) {
 
         public ChatQueueRequest {
             question = question == null ? "" : question;
-            conversationId = Objects.requireNonNull(conversationId, "conversationId must not be null");
             taskId = Objects.requireNonNull(taskId, "taskId must not be null");
         }
     }

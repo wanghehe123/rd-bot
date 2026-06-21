@@ -6,11 +6,19 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
 
+@Service
 public final class DefaultConversationMemoryService implements ConversationMemoryService {
 
     private final ConversationMemoryStore memoryStore;
     private final Executor memoryLoadExecutor;
+
+    @Autowired
+    public DefaultConversationMemoryService(ConversationMemoryStore memoryStore) {
+        this(memoryStore, null);
+    }
 
     public DefaultConversationMemoryService(ConversationMemoryStore memoryStore, Executor memoryLoadExecutor) {
         this.memoryStore = memoryStore == null ? new InMemoryConversationMemoryStore() : memoryStore;

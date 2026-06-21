@@ -3,6 +3,7 @@ package com.wish.rd.rag.knowledge;
 import com.wish.rd.rag.core.chunk.ChunkingMode;
 
 import java.nio.charset.StandardCharsets;
+import org.springframework.stereotype.Component;
 
 /**
  * Feishu 知识导入器：把 Feishu 文档快照写入知识库并触发分块索引。
@@ -10,6 +11,7 @@ import java.nio.charset.StandardCharsets;
  * <p>同一知识库、同一 Feishu 来源、同 revision/checksum 的重复导入会返回已有文档，
  * 避免重复写入文档、分块和向量。
  */
+@Component
 public final class FeishuDocKnowledgeImporter {
 
     private final KnowledgeWorkspace workspace;

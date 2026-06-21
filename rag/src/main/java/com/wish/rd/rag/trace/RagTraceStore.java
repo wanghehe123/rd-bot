@@ -5,6 +5,7 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.springframework.stereotype.Component;
 
 /**
  * RAG 链路追踪存储：记录 run（一次完整链路）与 node（链路中的步骤）两级轨迹。
@@ -15,6 +16,7 @@ import java.util.Map;
  * <p>典型用法：测试通道在跑 prompt-flow 等链路前 {@link #startRun}，每个关键方法
  * 调用 {@link #recordNode}，结束时 {@link #finishRun}。所有方法 synchronized 保证并发安全。
  */
+@Component
 public final class RagTraceStore {
 
     /** traceId → 可变 run（状态/耗时会在结束时更新）。 */

@@ -6,10 +6,14 @@ import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Optional;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.stereotype.Component;
 
 /**
  * 内存知识分块 Store：保持插入顺序，适配现有管理接口。
  */
+@Component
+@ConditionalOnProperty(name = "rd.knowledge.store", havingValue = "memory", matchIfMissing = true)
 public final class InMemoryKnowledgeChunkStore implements KnowledgeChunkStore {
 
     private final LinkedHashMap<String, KnowledgeChunk> chunks = new LinkedHashMap<>();

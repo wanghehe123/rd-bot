@@ -6,6 +6,7 @@ import com.wish.rd.rag.sample.SampleQuestionPage;
 import com.wish.rd.rag.sample.SampleQuestionRegistry;
 
 import java.util.List;
+import org.springframework.stereotype.Service;
 
 /**
  * 样例问题管理业务编排引擎。
@@ -13,6 +14,7 @@ import java.util.List;
  * <p>委托 {@link SampleQuestionRegistry} 完成样例问题的增删改查、分页与欢迎问题列表；
  * 当未注入 registry 时回退到内存实现。供 {@code SampleQuestionController} 调用。
  */
+@Service
 public final class SampleQuestionAdminEngine {
 
     private final SampleQuestionRegistry registry;

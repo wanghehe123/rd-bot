@@ -13,5 +13,14 @@
     <artifactId>rag</artifactId>
     <name>RD-Bot RAG</name>
 
-    <dependencies/>
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-context</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-autoconfigure</artifactId>
+        </dependency>
+    </dependencies>
 </project>

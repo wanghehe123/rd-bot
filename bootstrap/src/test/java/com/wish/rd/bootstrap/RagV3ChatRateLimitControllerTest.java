@@ -9,7 +9,6 @@ import org.springframework.test.web.servlet.MockMvc;
 import static org.hamcrest.Matchers.containsString;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @SpringBootTest(properties = {
@@ -23,24 +22,15 @@ class RagV3ChatRateLimitControllerTest {
     private MockMvc mockMvc;
 
     @Test
-    void returnsRejectEventAndRecordsConversationWhenGlobalLimitIsFull() throws Exception {
-        String conversationId = "conversation-rate-limit-test";
-
+    void returnsRejectEventWithoutWritingConversationWhenGlobalLimitIsFull() throws Exception {
         mockMvc.perform(get("/rag/v3/chat")
-                        .param("question", "系统繁忙时也要记录用户问题")
-                        .param("conversationId", conversationId))
+                        .param("question", "系统繁忙时也只返回任务级拒绝"))
                 .andExpect(status().isOk())
                 .andExpect(content().contentTypeCompatibleWith("text/event-stream"))
                 .andExpect(content().string(containsString("event: meta")))
+                .andExpect(content().string(containsString("\"taskId\":\"task-")))
                 .andExpect(content().string(containsString("event: reject")))
                 .andExpect(content().string(containsString("系统繁忙，请稍后再试")))
                 .andExpect(content().string(containsString("event: done")));
-
-        mockMvc.perform(get("/conversations/{conversationId}/messages", conversationId))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$[0].role").value("user"))
-                .andExpect(jsonPath("$[0].content").value("系统繁忙时也要记录用户问题"))
-                .andExpect(jsonPath("$[1].role").value("assistant"))
-                .andExpect(jsonPath("$[1].content").value("系统繁忙，请稍后再试"));
     }
 }

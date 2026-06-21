@@ -5,6 +5,7 @@ import com.wish.rd.rag.rewrite.QueryTermMappingCommand;
 import com.wish.rd.rag.rewrite.QueryTermMappingRegistry;
 
 import java.util.List;
+import org.springframework.stereotype.Service;
 
 /**
  * 查询术语映射管理业务编排引擎。
@@ -12,6 +13,7 @@ import java.util.List;
  * <p>委托 {@link QueryTermMappingRegistry} 完成映射的增删改查；当未注入 registry 时
  * 回退到内存实现。供 {@code QueryTermMappingController} 调用。
  */
+@Service
 public final class QueryTermMappingAdminEngine {
 
     private final QueryTermMappingRegistry registry;

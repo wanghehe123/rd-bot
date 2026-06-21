@@ -8,6 +8,8 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.stereotype.Component;
 
 /**
  * 内存向量库：MVP 阶段的检索后端，用 {@link CopyOnWriteArrayList} 存储全部分块。
@@ -19,6 +21,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * <p>写操作（index/replace/removeChunks）线程安全；读操作返回不可变快照。
  * 该实现仅适用于本地开发与单测，不适用于生产规模。
  */
+@Component
+@ConditionalOnProperty(name = "rd.knowledge.store", havingValue = "memory", matchIfMissing = true)
 public final class InMemoryVectorStore implements VectorStore {
 
     /** 全部分块，写时复制保证遍历安全。 */

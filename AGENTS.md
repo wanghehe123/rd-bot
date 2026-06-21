@@ -79,6 +79,14 @@ Build in this order unless the user explicitly changes scope:
 - Use records for immutable value objects and normalize null inputs in compact
   constructors.
 - Keep existing route shapes compatible unless a task explicitly changes them.
+- Bug-fix RAG is task-scoped, not conversation-scoped. `RagBugFixEngine` must
+  build and return a RAG result keyed by `taskId`; it must not load, append, or
+  persist conversation memory, and `BugFixMessage`/queue requests should not
+  carry `conversationId`.
+- `RagBugFixEngine` only performs RAG retrieval/context packaging. It must not
+  call `BugFixAgentEngine.submit` or otherwise trigger agent execution; upstream
+  orchestration is responsible for taking the returned RAG result and invoking
+  the agent.
 
 ## External Integrations
 
@@ -133,4 +141,3 @@ the focused tests that did run.
 - Do not commit, stage, push, or create PRs unless explicitly asked.
 - Update README/RULE/Feishu docs only when the task asks for docs or when an
   implementation changes documented behavior.
-

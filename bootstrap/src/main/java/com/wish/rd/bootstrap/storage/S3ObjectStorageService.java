@@ -16,6 +16,9 @@ import software.amazon.awssdk.services.s3.model.S3Exception;
 import java.io.InputStream;
 import java.net.URI;
 import java.util.UUID;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.stereotype.Component;
 
 /**
  * 基于 AWS SDK v2 S3Client 的对象存储实现。
@@ -24,11 +27,17 @@ import java.util.UUID;
  * 实现 {@link ObjectStorageService} 的上传（自动建桶、随机 key）与按
  * {@code s3://} URL 下载流的能力，供摄取文件上传/下载使用。
  */
+@Component
+@ConditionalOnProperty(name = "rd.storage.mode", havingValue = "s3", matchIfMissing = true)
 public final class S3ObjectStorageService implements ObjectStorageService {
 
     private final S3Client s3Client;
 
-    public S3ObjectStorageService(String endpoint, String accessKeyId, String secretAccessKey) {
+    public S3ObjectStorageService(
+            @Value("${rustfs.url:http://localhost:9000}") String endpoint,
+            @Value("${rustfs.access-key-id:rustfsadmin}") String accessKeyId,
+            @Value("${rustfs.secret-access-key:rustfsadmin}") String secretAccessKey
+    ) {
         this.s3Client = S3Client.builder()
                 .endpointOverride(URI.create(endpoint))
                 .region(Region.US_EAST_1)

@@ -5,6 +5,7 @@ import com.wish.rd.rag.intent.IntentTreeRegistry;
 import com.wish.rd.rag.intent.ManagedIntentNode;
 
 import java.util.List;
+import org.springframework.stereotype.Service;
 
 /**
  * 意图树管理业务编排引擎。
@@ -12,6 +13,7 @@ import java.util.List;
  * <p>委托 {@link IntentTreeRegistry} 完成意图树的查询、节点增删改与批量启停/删除；
  * 当未注入 registry 时回退到默认实现。供 {@code IntentTreeController} 调用。
  */
+@Service
 public final class IntentTreeAdminEngine {
 
     private final IntentTreeRegistry registry;

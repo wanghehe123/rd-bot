@@ -2,13 +2,15 @@ package com.wish.rd.engine;
 
 import com.wish.rd.adapter.TicketSnapshot;
 import com.wish.rd.engine.rag.BugFixMessage;
+import com.wish.rd.engine.rag.ChatQueueLimiter;
 import com.wish.rd.engine.rag.RagBugFixEngine;
-import com.wish.rd.rag.memory.DefaultConversationMemoryService;
+import com.wish.rd.rag.intent.IntentTreeRegistry;
+import com.wish.rd.rag.rewrite.QueryTermMappingRegistry;
+import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -18,8 +20,13 @@ class RagBugFixEngineTest {
 
     @Test
     void buildsBugFixMessageFromTicketFieldsForAgent() {
-        AtomicReference<BugFixMessage> submitted = new AtomicReference<>();
-        RagBugFixEngine engine = new RagBugFixEngine(DefaultConversationMemoryService.inMemory(), submitted::set);
+        RagBugFixEngine engine = new RagBugFixEngine(
+                QueryTermMappingRegistry.withDefaults(),
+                IntentTreeRegistry.withDefaults(),
+                null,
+                RagStreamTaskRegistry.inMemory(),
+                ChatQueueLimiter.passThrough()
+        );
         TicketSnapshot ticket = new TicketSnapshot(
                 "ticket-payment-1",
                 "支付系统下单接口 500",
@@ -31,15 +38,12 @@ class RagBugFixEngineTest {
         BugFixMessage message = engine.findBugFixMessgaesForAgent(
                 ticket,
                 List.of("ERROR orders.amount is null at OrderService.create"),
-                "conversation-bugfix-test",
                 false
         );
 
-        assertEquals(message, submitted.get());
         assertEquals("ticket-payment-1", message.ticketId());
         assertEquals("支付系统下单接口 500", message.ticketTitle());
         assertTrue(message.ticketDescription().contains("OrderService.create"));
-        assertEquals("conversation-bugfix-test", message.conversationId());
         assertTrue(message.taskId().startsWith("task-"));
         assertEquals("payment-system", message.primaryIntentSystemId());
         assertTrue(message.searchChannels().contains("IntentDirectedVectorSearch"));
@@ -50,5 +54,6 @@ class RagBugFixEngineTest {
         assertTrue(message.agentSystemMessage().contains("研发修复机器人"));
         assertTrue(message.agentUserMessage().contains("支付系统下单接口 500"));
         assertTrue(message.agentUserMessage().contains("ERROR orders.amount is null"));
+        assertFalse(message.promptSections().contains("对话记忆"));
     }
 }

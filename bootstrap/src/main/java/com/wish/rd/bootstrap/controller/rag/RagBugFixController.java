@@ -36,7 +36,6 @@ public class RagBugFixController {
         return bugFixEngine.findBugFixMessgaesForAgent(
                 request.toTicket(),
                 request.logs(),
-                request.conversationId(),
                 request.deepThinking()
         );
     }
@@ -44,13 +43,11 @@ public class RagBugFixController {
     @GetMapping(value = "/rag/v3/chat", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public ResponseEntity<String> chat(
             @RequestParam("question") String question,
-            @RequestParam(value = "conversationId", required = false) String conversationId,
             @RequestParam(value = "deepThinking", defaultValue = "false") boolean deepThinking
     ) {
         BugFixMessage message = bugFixEngine.findBugFixMessgaesForAgent(
-                ticketFrom(question, conversationId),
+                ticketFrom(question),
                 List.of(),
-                conversationId,
                 deepThinking
         );
         return ResponseEntity.ok()
@@ -68,8 +65,8 @@ public class RagBugFixController {
         return bugFixEngine.task(taskId);
     }
 
-    private TicketSnapshot ticketFrom(String question, String conversationId) {
-        String ticketId = blank(conversationId) ? "ticket-" + UUID.randomUUID() : conversationId;
+    private TicketSnapshot ticketFrom(String question) {
+        String ticketId = "ticket-" + UUID.randomUUID();
         String safeQuestion = question == null ? "" : question;
         return new TicketSnapshot(ticketId, safeQuestion, safeQuestion, List.of(), Instant.now());
     }
@@ -77,8 +74,8 @@ public class RagBugFixController {
     private String toSse(BugFixMessage message) {
         if (message.rejected()) {
             return event("meta", """
-                    {"conversationId":"%s","taskId":"%s"}
-                    """.formatted(json(message.conversationId()), json(message.taskId())).strip())
+                    {"taskId":"%s"}
+                    """.formatted(json(message.taskId())).strip())
                     + event("reject", message.answer())
                     + event("finish", """
                     {"title":"%s"}
@@ -86,9 +83,8 @@ public class RagBugFixController {
                     + event("done", "{\"status\":\"DONE\"}");
         }
         return event("meta", """
-                {"conversationId":"%s","taskId":"%s","intentSystemId":"%s","intentName":"%s","promptSections":"%s","agentUserMessage":"%s"}
+                {"taskId":"%s","intentSystemId":"%s","intentName":"%s","promptSections":"%s","agentUserMessage":"%s"}
                 """.formatted(
-                        json(message.conversationId()),
                         json(message.taskId()),
                         json(message.primaryIntentSystemId()),
                         json(message.primaryIntentName()),
@@ -120,17 +116,12 @@ public class RagBugFixController {
         return raw.length() <= 30 ? raw : raw.substring(0, 30);
     }
 
-    private boolean blank(String value) {
-        return value == null || value.isBlank();
-    }
-
     public record BugFixMessageRequest(
             String ticketId,
             String title,
             String description,
             List<String> labels,
             List<String> logs,
-            String conversationId,
             boolean deepThinking
     ) {
 

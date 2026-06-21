@@ -10,6 +10,7 @@ import com.wish.rd.rag.ingestion.ManagedIngestionTaskCommand;
 import com.wish.rd.rag.ingestion.ManagedIngestionTaskNode;
 
 import java.util.List;
+import org.springframework.stereotype.Service;
 
 /**
  * 摄取管理业务编排引擎。
@@ -17,6 +18,7 @@ import java.util.List;
  * <p>封装 {@link IngestionAdminRegistry} 的管线与任务管理能力
  * （增删改查、分页、执行任务、节点列表），供 {@code IngestionAdminController} 调用。
  */
+@Service
 public final class IngestionAdminEngine {
 
     private final IngestionAdminRegistry registry;

@@ -5,7 +5,11 @@ import java.io.InputStream;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.stereotype.Component;
 
+@Component
+@ConditionalOnProperty(name = "rd.storage.mode", havingValue = "memory")
 public final class InMemoryObjectStorageService implements ObjectStorageService {
 
     private final Map<String, byte[]> files = new LinkedHashMap<>();

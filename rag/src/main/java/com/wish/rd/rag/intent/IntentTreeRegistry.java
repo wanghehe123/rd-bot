@@ -6,31 +6,30 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.concurrent.atomic.AtomicLong;
+import org.springframework.stereotype.Component;
 
+@Component
 public final class IntentTreeRegistry {
 
     private final AtomicLong sequence = new AtomicLong(0);
     private final LinkedHashMap<String, ManagedIntentNode> nodes = new LinkedHashMap<>();
 
+    public IntentTreeRegistry() {
+        this(true);
+    }
+
+    private IntentTreeRegistry(boolean seedDefaults) {
+        if (seedDefaults) {
+            seedDefaults();
+        }
+    }
+
     public static IntentTreeRegistry inMemory() {
-        return new IntentTreeRegistry();
+        return new IntentTreeRegistry(false);
     }
 
     public static IntentTreeRegistry withDefaults() {
-        IntentTreeRegistry registry = new IntentTreeRegistry();
-        registry.create(new IntentNodeCommand(
-                "payment-system",
-                "支付系统",
-                0,
-                null,
-                "支付、下单、订单、金额、orders.amount",
-                "payment-system",
-                List.of("支付系统下单接口 500", "金额为空"),
-                List.of("payment-service"),
-                1,
-                0
-        ));
-        return registry;
+        return new IntentTreeRegistry(true);
     }
 
     public synchronized ManagedIntentNode create(IntentNodeCommand command) {
@@ -243,5 +242,20 @@ public final class IntentTreeRegistry {
             case 1 -> IntentLevel.DOMAIN;
             default -> IntentLevel.CAPABILITY;
         };
+    }
+
+    private void seedDefaults() {
+        create(new IntentNodeCommand(
+                "payment-system",
+                "支付系统",
+                0,
+                null,
+                "支付、下单、订单、金额、orders.amount",
+                "payment-system",
+                List.of("支付系统下单接口 500", "金额为空"),
+                List.of("payment-service"),
+                1,
+                0
+        ));
     }
 }

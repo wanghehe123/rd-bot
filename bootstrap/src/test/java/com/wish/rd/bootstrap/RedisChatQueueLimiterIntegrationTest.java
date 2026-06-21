@@ -45,7 +45,7 @@ class RedisChatQueueLimiterIntegrationTest {
 
         try {
             CompletableFuture<BugFixMessage> first = CompletableFuture.supplyAsync(() -> limiter.enqueue(
-                    request("conversation-redis-1", "task-redis-1"),
+                    request("task-redis-1"),
                     () -> {
                         firstEntered.countDown();
                         await(releaseFirst);
@@ -56,7 +56,7 @@ class RedisChatQueueLimiterIntegrationTest {
             assertTrue(firstEntered.await(2, TimeUnit.SECONDS));
 
             CompletableFuture<BugFixMessage> second = CompletableFuture.supplyAsync(() -> limiter.enqueue(
-                    request("conversation-redis-2", "task-redis-2"),
+                    request("task-redis-2"),
                     () -> message("ticket-second", false),
                     () -> message("ticket-second-timeout", true)
             ));
@@ -78,10 +78,9 @@ class RedisChatQueueLimiterIntegrationTest {
         }
     }
 
-    private static ChatQueueLimiter.ChatQueueRequest request(String conversationId, String taskId) {
+    private static ChatQueueLimiter.ChatQueueRequest request(String taskId) {
         return new ChatQueueLimiter.ChatQueueRequest(
                 "金额为空时 OrderService.create 写入订单失败",
-                conversationId,
                 taskId
         );
     }
@@ -92,7 +91,6 @@ class RedisChatQueueLimiterIntegrationTest {
                 "",
                 "",
                 List.of(),
-                "conversation",
                 "task",
                 false,
                 "",

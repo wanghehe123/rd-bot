@@ -76,8 +76,7 @@ public final class RedisChatQueueLimiter implements ChatQueueLimiter, AutoClosea
             cancel(cancelRef);
             return onTimeout.get();
         } catch (TimeoutException ex) {
-            LOG.warn("Redis chat queue wait timed out for conversation={}, task={}",
-                    request.conversationId(), request.taskId());
+            LOG.warn("Redis chat queue wait timed out for task={}", request.taskId());
             cancel(cancelRef);
             return onTimeout.get();
         } catch (ExecutionException ex) {

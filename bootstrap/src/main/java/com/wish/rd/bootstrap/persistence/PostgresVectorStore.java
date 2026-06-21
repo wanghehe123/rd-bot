@@ -14,6 +14,9 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.stereotype.Component;
 
 /**
  * PostgreSQL/pgvector 向量库实现。
@@ -21,6 +24,8 @@ import java.util.Set;
  * <p>P0 使用确定性词项哈希向量，保证无外部模型凭证也能完成写入、检索和联调。
  * 后续可在不改变 RAG 核心的前提下替换成真实 embedding 服务。
  */
+@Component
+@ConditionalOnProperty(name = "rd.knowledge.store", havingValue = "postgres")
 public final class PostgresVectorStore implements VectorStore {
 
     private static final TypeReference<Map<String, String>> STRING_MAP_TYPE = new TypeReference<>() {
@@ -30,7 +35,11 @@ public final class PostgresVectorStore implements VectorStore {
     private final ObjectMapper objectMapper;
     private final int dimension;
 
-    public PostgresVectorStore(KnowledgeVectorMapper mapper, ObjectMapper objectMapper, int dimension) {
+    public PostgresVectorStore(
+            KnowledgeVectorMapper mapper,
+            ObjectMapper objectMapper,
+            @Value("${rag.default.dimension:1536}") int dimension
+    ) {
         this.mapper = mapper;
         this.objectMapper = objectMapper;
         this.dimension = dimension <= 0 ? 1536 : dimension;

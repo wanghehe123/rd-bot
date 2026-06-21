@@ -7,13 +7,15 @@ import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import org.springframework.stereotype.Component;
 
+@Component
 public final class MessageFeedbackRegistry {
 
     private final ConversationRegistry conversationRegistry;
     private final LinkedHashMap<String, MessageFeedback> feedbackByUserAndMessage = new LinkedHashMap<>();
 
-    private MessageFeedbackRegistry(ConversationRegistry conversationRegistry) {
+    public MessageFeedbackRegistry(ConversationRegistry conversationRegistry) {
         this.conversationRegistry = conversationRegistry == null ? ConversationRegistry.inMemory() : conversationRegistry;
     }
 

@@ -8,6 +8,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.Optional;
+import org.springframework.stereotype.Component;
 
 /**
  * 会话注册表：内存中管理会话与消息，同时实现 {@link ConversationMemoryStore}。
@@ -22,6 +23,7 @@ import java.util.Optional;
  * <p>会话与消息按 {@code userId::conversationId} 复合键隔离；所有读写均 synchronized 保证并发安全。
  * 消息 ID 形如 {@code conversationId#N}（URL 中 # 需编码）。
  */
+@Component
 public final class ConversationRegistry implements ConversationMemoryStore {
 
     /** 自动生成会话标题的最大长度。 */

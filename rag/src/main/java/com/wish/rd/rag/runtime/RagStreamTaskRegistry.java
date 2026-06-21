@@ -2,6 +2,7 @@ package com.wish.rd.rag.runtime;
 
 import java.util.LinkedHashMap;
 import java.util.NoSuchElementException;
+import org.springframework.stereotype.Component;
 
 /**
  * 流式聊天任务注册表：跟踪 /rag/v3/chat 的任务生命周期状态。
@@ -12,6 +13,7 @@ import java.util.NoSuchElementException;
  *
  * <p>供 /rag/v3/stop、/rag/v3/tasks/{taskId} 以及引擎内部的限流拒绝分支共同使用。
  */
+@Component
 public final class RagStreamTaskRegistry {
 
     /** 任务集合，taskId → 任务快照。 */

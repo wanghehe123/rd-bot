@@ -16,10 +16,14 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.stereotype.Component;
 
 /**
  * PostgreSQL 摄取任务 Store。
  */
+@Component
+@ConditionalOnProperty(name = "rd.knowledge.store", havingValue = "postgres")
 public final class PostgresIngestionTaskStore implements IngestionTaskStore {
 
     private static final TypeReference<Map<String, Object>> OBJECT_MAP_TYPE = new TypeReference<>() {

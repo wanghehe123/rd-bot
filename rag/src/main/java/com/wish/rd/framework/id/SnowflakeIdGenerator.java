@@ -2,6 +2,7 @@ package com.wish.rd.framework.id;
 
 import java.time.Clock;
 import java.util.function.LongSupplier;
+import org.springframework.stereotype.Component;
 
 /**
  * Snowflake ID 生成器：为持久化实体生成可排序的 {@code bigint} 主键。
@@ -9,6 +10,7 @@ import java.util.function.LongSupplier;
  * <p>供知识库、摄取任务、修复记录等新增持久化实体使用。实现不依赖外部中间件，
  * 默认 workerId/datacenterId 均为 1，生产部署可在 Spring 配置中替换实例。
  */
+@Component
 public final class SnowflakeIdGenerator {
 
     private static final int WORKER_ID_BITS = 5;
@@ -26,6 +28,10 @@ public final class SnowflakeIdGenerator {
     private final LongSupplier currentTimeMillis;
     private long sequence;
     private long lastTimestamp = -1L;
+
+    public SnowflakeIdGenerator() {
+        this(1, 1, Clock.systemUTC()::millis);
+    }
 
     public SnowflakeIdGenerator(long workerId, long datacenterId, LongSupplier currentTimeMillis) {
         if (workerId < 0 || workerId > MAX_WORKER_ID) {

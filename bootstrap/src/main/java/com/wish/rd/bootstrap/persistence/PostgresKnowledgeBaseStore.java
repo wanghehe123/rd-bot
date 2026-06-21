@@ -8,10 +8,14 @@ import com.wish.rd.rag.knowledge.store.KnowledgeBaseStore;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Optional;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.stereotype.Component;
 
 /**
  * PostgreSQL 知识库 Store。
  */
+@Component
+@ConditionalOnProperty(name = "rd.knowledge.store", havingValue = "postgres")
 public final class PostgresKnowledgeBaseStore implements KnowledgeBaseStore {
 
     private final KnowledgeBaseMapper mapper;

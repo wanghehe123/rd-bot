@@ -14,10 +14,14 @@ import java.time.OffsetDateTime;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.stereotype.Component;
 
 /**
  * PostgreSQL 知识文档 Store。
  */
+@Component
+@ConditionalOnProperty(name = "rd.knowledge.store", havingValue = "postgres")
 public final class PostgresKnowledgeDocumentStore implements KnowledgeDocumentStore {
 
     private static final TypeReference<List<IngestionNodeLog>> NODE_LOGS_TYPE = new TypeReference<>() {

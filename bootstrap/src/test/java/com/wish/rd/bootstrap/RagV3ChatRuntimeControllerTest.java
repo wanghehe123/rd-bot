@@ -26,8 +26,7 @@ class RagV3ChatRuntimeControllerTest {
     @Test
     void recordsTaskStateForChatAndStopRequests() throws Exception {
         String body = mockMvc.perform(get("/rag/v3/chat")
-                        .param("question", "支付系统下单接口 500。金额为空怎么修复？")
-                        .param("conversationId", "conversation-runtime-test"))
+                        .param("question", "支付系统下单接口 500。金额为空怎么修复？"))
                 .andExpect(status().isOk())
                 .andExpect(content().string(containsString("event: done")))
                 .andReturn()
@@ -39,7 +38,7 @@ class RagV3ChatRuntimeControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.taskId").value(startsWith("task-")))
                 .andExpect(jsonPath("$.taskId").value(taskId))
-                .andExpect(jsonPath("$.conversationId").value("conversation-runtime-test"))
+                .andExpect(jsonPath("$.conversationId").value(""))
                 .andExpect(jsonPath("$.status").value("DONE"));
 
         mockMvc.perform(post("/rag/v3/stop")

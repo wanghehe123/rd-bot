@@ -38,16 +38,22 @@ exec（修复执行占位）、skill（修复技能占位）：预留模块，�
   - `rag` 是领域层，承载核心能力与内存聚合根（`KnowledgeWorkspace`、各 `*Registry`）。
 - **包命名【强制】**：`com.wish.rd.<模块>.<子域>`，子域按业务划分（如 `rag.retrieval`、`rag.ingestion`、`rag.prompt`）。控制器统一收敛到 `bootstrap.controller.*`。
 
-### 1.2 配置与 Bean 装配【强制】
+### 1.2 组件注册与配置【强制】
 
-- 所有 Spring Bean 在 `bootstrap/config/RdBotRuntimeConfiguration` **集中声明**，按"知识库 → 摄取 → 会话 → 反馈 → 改写 → 意图 → 样例 → 任务 → V3 Chat"的依赖顺序排列，并加注释说明装配链。
-- 【强制】Bean 方法必须注明依赖入参，禁止在 Bean 内部 `new` 已有 Bean。
+- 【强制】业务编排、领域服务、控制器、外部适配器必须优先使用注解式组件注册，严格对齐 ragent 风格：
+  - REST 入口使用 `@RestController`。
+  - 业务编排类（如 `*Engine`）使用 `@Service`。
+  - 外部适配器、限流器、存储适配等基础组件使用 `@Component` 或语义更明确的 stereotype。
+  - 依赖统一通过构造器注入；有 Lombok 时可用 `@RequiredArgsConstructor`，没有 Lombok 时手写构造器。
+- 【强制】禁止把 `*Engine`、`*Service`、`*Controller` 等业务组件集中写进 `@Configuration` 的 `@Bean` 方法里管理；这类组件必须由 Spring component scan 发现并进入 IOC。
+- 【强制】`@Configuration` 只用于装配无法直接注解化的基础设施或第三方客户端 Bean，例如 `DataSource`、`ExecutorService`、`RedissonClient` 包装配置、S3 客户端、条件化存储实现等。
+- 【强制】配置类中的 `@Bean` 方法必须注明依赖入参，禁止在 Bean 内部 `new` 已有 Bean；确需创建第三方客户端时必须放在 `bootstrap` 适配层，不能泄漏到 `engine`/`rag`。
 - 【强制】可通过 `@Value` 读取的配置项必须给出**合理默认值**，保证零配置可启动：
   ```java
   @Value("${rag.rate-limit.global.enabled:false}") boolean enabled
   @Value("${rag.rate-limit.global.max-concurrent:4}") int maxConcurrent
   ```
-- 【推荐】可切换实现的 Bean（如 `ObjectStorageService` 的 memory/S3）用配置开关选择实现，而非用 `@Conditional` 注解满天飞。
+- 【推荐】可切换实现的基础设施 Bean（如 `ObjectStorageService` 的 memory/S3）用配置开关选择实现，业务代码只依赖端口接口。
 
 ---
 
@@ -95,7 +101,7 @@ exec（修复执行占位）、skill（修复技能占位）：预留模块，�
   (left, right) -> left.score() >= right.score() ? left : right
   ```
 - 【强制】注释与代码同步更新；过时注释比没有注释更糟。
-- 【参考】参考已注释的核心文件（`RepairRagPipeline`、`RagV3ChatEngine`、`KnowledgeWorkspace`）的密度与风格。
+- 【参考】参考已注释的核心文件（`RepairRagPipeline`、`RagBugFixEngine`、`KnowledgeWorkspace`）的密度与风格。
 
 ---
 
@@ -254,7 +260,7 @@ MVP 阶段无数据库，所有内存仓储统一用 `*Registry` 模式：
 ### 6.1 覆盖要求【强制】
 
 - 【强制】每个公开能力必须有对应测试（本项目 README "Verification" 列出的覆盖范围须持续维护）。
-- 【强制】核心链路（V3 Chat、修复主流程、检索、改写、Prompt、摄取）必须有端到端冒烟测试（`/test/*` 通道 + JUnit 断言）。
+- 【强制】核心链路（BugFix Chat、兼容聊天入口、修复主流程、检索、改写、Prompt、摄取）必须有端到端冒烟测试（`/test/*` 通道 + JUnit 断言）。
 - 【推荐】单测覆盖边界：空入参、空集合、并发、限流命中、歧义引导。
 
 ### 6.2 测试编写【强制】
@@ -303,7 +309,7 @@ MVP 阶段无数据库，所有内存仓储统一用 `*Registry` 模式：
 | Builder | `IntentNode.builder()` |
 | 函数式端口 | `RepairTaskContextPort`（`@FunctionalInterface`） |
 | 虚拟线程并发 | `MultiChannelRetrievalEngine.retrieve`、`DefaultConversationMemoryService` |
-| CAS 限流 | `RagV3ChatEngine.tryAcquireChatSlot` |
+| Redis 队列限流 | `ChatQueueLimiter` + `RedisChatQueueLimiter` + `FairDistributedRateLimiter` |
 | 链路追踪 | `@RagTraceNode` + `RagTraceStore` |
 
 ---
@@ -311,6 +317,7 @@ MVP 阶段无数据库，所有内存仓储统一用 `*Registry` 模式：
 ## 十、落地检查清单（Code Review 用）
 
 - [ ] 分层依赖是否单向？控制器是否只做适配？
+- [ ] `*Engine`、`*Service`、Controller、外部适配器是否使用注解式组件注册，而不是集中 `@Bean` 管理？
 - [ ] 每个公开类/方法是否有 JavaDoc？关键步骤是否有行内注释？
 - [ ] 外部入参是否做了 null 归一与校验？
 - [ ] 集合返回值是否永不为 null？内部集合是否未泄露？

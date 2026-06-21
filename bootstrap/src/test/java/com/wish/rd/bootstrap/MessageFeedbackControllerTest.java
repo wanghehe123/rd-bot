@@ -1,5 +1,7 @@
 package com.wish.rd.bootstrap;
 
+import com.wish.rd.framework.convention.ChatMessage;
+import com.wish.rd.rag.memory.ConversationRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -7,11 +9,10 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
-import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.hasItem;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.hamcrest.Matchers.containsString;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -22,16 +23,22 @@ class MessageFeedbackControllerTest {
     @Autowired
     private MockMvc mockMvc;
 
+    @Autowired
+    private ConversationRegistry conversationRegistry;
+
     @Test
     void submitsAndUpsertsAssistantMessageFeedback() throws Exception {
         String conversationId = "conversation-feedback-test";
-        String assistantMessageId = conversationId + "#2";
-
-        mockMvc.perform(get("/rag/v3/chat")
-                        .param("question", "支付系统下单接口 500。金额为空怎么修复？")
-                        .param("conversationId", conversationId))
-                .andExpect(status().isOk())
-                .andExpect(content().string(containsString("event: done")));
+        conversationRegistry.append(
+                conversationId,
+                "test-user",
+                ChatMessage.user("支付系统下单接口 500。金额为空怎么修复？")
+        );
+        String assistantMessageId = conversationRegistry.append(
+                conversationId,
+                "test-user",
+                ChatMessage.assistant("已经定位到 OrderService.create 缺少 orders.amount 校验。")
+        );
 
         mockMvc.perform(post("/conversations/messages/{messageId}/feedback", assistantMessageId)
                         .contentType(MediaType.APPLICATION_JSON)

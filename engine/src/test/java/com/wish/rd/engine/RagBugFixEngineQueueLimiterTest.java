@@ -4,7 +4,9 @@ import com.wish.rd.adapter.TicketSnapshot;
 import com.wish.rd.engine.rag.BugFixMessage;
 import com.wish.rd.engine.rag.ChatQueueLimiter;
 import com.wish.rd.engine.rag.RagBugFixEngine;
-import com.wish.rd.rag.memory.DefaultConversationMemoryService;
+import com.wish.rd.rag.intent.IntentTreeRegistry;
+import com.wish.rd.rag.rewrite.QueryTermMappingRegistry;
+import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -26,8 +28,10 @@ class RagBugFixEngineQueueLimiterTest {
             return onAcquire.get();
         };
         RagBugFixEngine engine = new RagBugFixEngine(
-                DefaultConversationMemoryService.inMemory(),
-                message -> { },
+                QueryTermMappingRegistry.withDefaults(),
+                IntentTreeRegistry.withDefaults(),
+                null,
+                RagStreamTaskRegistry.inMemory(),
                 limiter
         );
         TicketSnapshot ticket = new TicketSnapshot(
@@ -41,12 +45,10 @@ class RagBugFixEngineQueueLimiterTest {
         BugFixMessage message = engine.findBugFixMessgaesForAgent(
                 ticket,
                 List.of("ERROR orders.amount is null at OrderService.create"),
-                "conversation-queue-test",
                 false
         );
 
         assertNotNull(queueRequest.get());
-        assertEquals("conversation-queue-test", queueRequest.get().conversationId());
         assertTrue(queueRequest.get().taskId().startsWith("task-"));
         assertTrue(queueRequest.get().question().contains("OrderService.create"));
         assertFalse(message.rejected());
