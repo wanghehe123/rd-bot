@@ -1,6 +1,6 @@
 import { FormEvent, useMemo, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { ChevronLeft, FileText, RefreshCw, Upload } from "lucide-react";
+import { ChevronLeft, FileText, Link2, RefreshCw, Upload } from "lucide-react";
 
 import { api } from "../api";
 import { Badge, Button, Card, Empty, Field, Input, PageHeader, Table, Textarea } from "../components/Ui";
@@ -137,6 +137,21 @@ export function KnowledgeDocumentsPage() {
     }, "文件已上传并执行流水线");
   };
 
+  const importFeishuDoc = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    await runAction(async () => {
+      await api.importFeishuDocument(kbId, {
+        source: String(form.get("source") || "").trim(),
+        knowledgeType: String(form.get("knowledgeType") || "feishu-doc").trim(),
+        chunkSize: Number(form.get("chunkSize") || 512),
+        overlapSize: Number(form.get("overlapSize") || 64)
+      });
+      event.currentTarget.reset();
+      await refresh();
+    }, "飞书文档已导入并切分");
+  };
+
   return (
     <div className="admin-page">
       <PageHeader
@@ -147,11 +162,12 @@ export function KnowledgeDocumentsPage() {
 
       <Card title="文档列表" description={`共 ${data.docs.length} 篇文档`}>
         {data.docs.length ? (
-          <Table headers={["文档", "类型", "状态", "Chunk", "创建时间", "操作"]}>
+          <Table headers={["文档", "类型", "来源", "状态", "Chunk", "创建时间", "操作"]}>
             {data.docs.map((doc) => (
               <tr key={doc.id}>
                 <td><button className="admin-link" onClick={() => navigate(`/admin/knowledge/${kbId}/docs/${doc.id}`)}>{doc.sourceName}</button></td>
                 <td><Badge>{doc.knowledgeType}</Badge></td>
+                <td><Badge>{doc.sourceType || "LOCAL"}</Badge></td>
                 <td><Badge tone={doc.enabled === false ? "warning" : "success"}>{enabledLabel(doc.enabled)}</Badge></td>
                 <td>{doc.chunkCount || 0}</td>
                 <td>{formatTime(doc.createdAtEpochMillis)}</td>
@@ -202,6 +218,17 @@ export function KnowledgeDocumentsPage() {
           <form className="form-grid one-col" onSubmit={(event) => void uploadDoc(event)}>
             <Field label="文件"><Input name="file" type="file" required /></Field>
             <Button variant="primary" type="submit"><Upload size={16} />上传并摄取</Button>
+          </form>
+        </Card>
+        <Card title="导入飞书文档" description="支持 docx/wiki URL 或 token">
+          <form className="form-grid one-col" onSubmit={(event) => void importFeishuDoc(event)}>
+            <Field label="URL / Token"><Input name="source" required placeholder="https://my.feishu.cn/wiki/..." /></Field>
+            <Field label="知识类型"><Input name="knowledgeType" defaultValue="feishu-doc" /></Field>
+            <div className="two-col-grid">
+              <Field label="Chunk Size"><Input name="chunkSize" type="number" defaultValue={512} min={64} /></Field>
+              <Field label="Overlap"><Input name="overlapSize" type="number" defaultValue={64} min={0} /></Field>
+            </div>
+            <Button variant="primary" type="submit"><Link2 size={16} />导入并切分</Button>
           </form>
         </Card>
       </div>

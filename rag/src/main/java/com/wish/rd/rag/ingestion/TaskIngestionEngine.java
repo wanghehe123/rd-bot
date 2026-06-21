@@ -10,7 +10,7 @@ import com.wish.rd.rag.core.parser.DocumentParserSelector;
 import com.wish.rd.rag.core.parser.MarkdownDocumentParser;
 import com.wish.rd.rag.core.parser.ParseResult;
 import com.wish.rd.rag.core.parser.PlainTextDocumentParser;
-import com.wish.rd.rag.vector.InMemoryVectorStore;
+import com.wish.rd.rag.vector.VectorStore;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -31,14 +31,14 @@ import java.util.Set;
  */
 public final class TaskIngestionEngine {
 
-    private final InMemoryVectorStore vectorStore;
+    private final VectorStore vectorStore;
     /** 解析器选择器：按 MIME 类型选 Markdown 或纯文本解析器。 */
     private final DocumentParserSelector parserSelector;
     /** 分块策略工厂：按 ChunkingMode 选固定长度或结构感知分块器。 */
     private final ChunkingStrategyFactory chunkingStrategyFactory;
 
     public TaskIngestionEngine(
-            InMemoryVectorStore vectorStore,
+            VectorStore vectorStore,
             DocumentParserSelector parserSelector,
             ChunkingStrategyFactory chunkingStrategyFactory
     ) {
@@ -52,7 +52,7 @@ public final class TaskIngestionEngine {
      *
      * @param vectorStore 共享的向量库（写入索引的目标）
      */
-    public static TaskIngestionEngine inMemory(InMemoryVectorStore vectorStore) {
+    public static TaskIngestionEngine inMemory(VectorStore vectorStore) {
         return new TaskIngestionEngine(
                 vectorStore,
                 new DocumentParserSelector(List.of(new MarkdownDocumentParser(), new PlainTextDocumentParser())),

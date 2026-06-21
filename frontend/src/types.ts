@@ -34,6 +34,13 @@ export type KnowledgeDocument = {
   enabled?: boolean;
   chunkCount?: number;
   createdAtEpochMillis?: number;
+  sourceType?: string;
+  sourceToken?: string;
+  sourceUrl?: string;
+  revisionId?: string;
+  checksum?: string;
+  lastSyncedAtEpochMillis?: number;
+  nextRefreshAtEpochMillis?: number;
 };
 
 export type KnowledgeChunk = {

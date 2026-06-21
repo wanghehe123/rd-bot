@@ -2,6 +2,7 @@ package com.wish.rd.bootstrap;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
 
 /**
  * RD-Bot 单体 Spring Boot 服务入口。
@@ -17,7 +18,10 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  * <p>本地启动：{@code ./mvnw install -DskipTests} 后执行
  * {@code ./mvnw -pl bootstrap spring-boot:run}，默认监听 8080 端口。
  */
-@SpringBootApplication(scanBasePackages = "com.wish.rd")
+@SpringBootApplication(
+        scanBasePackages = "com.wish.rd",
+        exclude = DataSourceAutoConfiguration.class
+)
 public class RdBotApplication {
 
     /**

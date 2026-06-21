@@ -1,7 +1,7 @@
 package com.wish.rd.rag.ingestion;
 
 import com.wish.rd.framework.convention.RetrievedChunk;
-import com.wish.rd.rag.vector.InMemoryVectorStore;
+import com.wish.rd.rag.vector.VectorStore;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -20,9 +20,9 @@ public final class SimpleIngestionPipeline implements IngestionPipeline {
     /** 单个分块的最大字符数，超过则继续截断。 */
     private static final int MAX_CHUNK_LENGTH = 800;
 
-    private final InMemoryVectorStore vectorStore;
+    private final VectorStore vectorStore;
 
-    public SimpleIngestionPipeline(InMemoryVectorStore vectorStore) {
+    public SimpleIngestionPipeline(VectorStore vectorStore) {
         this.vectorStore = vectorStore;
     }
 

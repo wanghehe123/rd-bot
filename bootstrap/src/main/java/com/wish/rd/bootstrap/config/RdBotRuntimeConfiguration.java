@@ -1,5 +1,20 @@
 package com.wish.rd.bootstrap.config;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.wish.rd.bootstrap.persistence.PostgresIngestionTaskStore;
+import com.wish.rd.bootstrap.persistence.PostgresKnowledgeBaseStore;
+import com.wish.rd.bootstrap.persistence.PostgresKnowledgeChunkStore;
+import com.wish.rd.bootstrap.persistence.PostgresKnowledgeDocumentStore;
+import com.wish.rd.bootstrap.persistence.PostgresRepairRecordRepository;
+import com.wish.rd.bootstrap.persistence.PostgresVectorStore;
+import com.wish.rd.bootstrap.persistence.mapper.IngestionTaskMapper;
+import com.wish.rd.bootstrap.persistence.mapper.IngestionTaskNodeMapper;
+import com.wish.rd.bootstrap.persistence.mapper.KnowledgeBaseMapper;
+import com.wish.rd.bootstrap.persistence.mapper.KnowledgeChunkMapper;
+import com.wish.rd.bootstrap.persistence.mapper.KnowledgeDocumentMapper;
+import com.wish.rd.bootstrap.persistence.mapper.KnowledgeVectorMapper;
+import com.wish.rd.bootstrap.persistence.mapper.RepairRecordArtifactMapper;
+import com.wish.rd.bootstrap.persistence.mapper.RepairRecordMapper;
 import com.wish.rd.engine.admin.conversation.ConversationAdminEngine;
 import com.wish.rd.engine.admin.ingestion.IngestionAdminEngine;
 import com.wish.rd.engine.admin.intent.IntentTreeAdminEngine;
@@ -8,11 +23,25 @@ import com.wish.rd.engine.admin.feedback.MessageFeedbackAdminEngine;
 import com.wish.rd.engine.admin.rewrite.QueryTermMappingAdminEngine;
 import com.wish.rd.engine.rag.RagV3ChatEngine;
 import com.wish.rd.engine.admin.sample.SampleQuestionAdminEngine;
+import com.wish.rd.exec.repair.InMemoryRepairRecordRepository;
+import com.wish.rd.exec.repair.RepairRecordRepository;
+import com.wish.rd.framework.id.SnowflakeIdGenerator;
+import com.wish.rd.rag.ingestion.InMemoryIngestionTaskStore;
 import com.wish.rd.rag.feedback.MessageFeedbackRegistry;
+import com.wish.rd.rag.ingestion.IngestionTaskStore;
 import com.wish.rd.rag.ingestion.IngestionAdminRegistry;
 import com.wish.rd.rag.ingestion.InMemoryObjectStorageService;
 import com.wish.rd.rag.ingestion.ObjectStorageService;
+import com.wish.rd.rag.knowledge.FeishuDocumentClient;
+import com.wish.rd.rag.knowledge.FeishuDocumentSnapshot;
+import com.wish.rd.rag.knowledge.FeishuDocKnowledgeImporter;
 import com.wish.rd.rag.knowledge.KnowledgeWorkspace;
+import com.wish.rd.rag.knowledge.store.InMemoryKnowledgeBaseStore;
+import com.wish.rd.rag.knowledge.store.InMemoryKnowledgeChunkStore;
+import com.wish.rd.rag.knowledge.store.InMemoryKnowledgeDocumentStore;
+import com.wish.rd.rag.knowledge.store.KnowledgeBaseStore;
+import com.wish.rd.rag.knowledge.store.KnowledgeChunkStore;
+import com.wish.rd.rag.knowledge.store.KnowledgeDocumentStore;
 import com.wish.rd.rag.intent.IntentTreeRegistry;
 import com.wish.rd.rag.memory.ConversationRegistry;
 import com.wish.rd.rag.memory.ConversationMemoryService;
@@ -21,8 +50,14 @@ import com.wish.rd.rag.rewrite.QueryTermMappingRegistry;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
 import com.wish.rd.rag.sample.SampleQuestionRegistry;
 import com.wish.rd.rag.trace.RagTraceStore;
+import com.wish.rd.rag.vector.InMemoryVectorStore;
+import com.wish.rd.rag.vector.VectorStore;
 import com.wish.rd.bootstrap.storage.S3ObjectStorageService;
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
+import javax.sql.DataSource;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -48,10 +83,152 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 public class RdBotRuntimeConfiguration {
 
-    /** 知识库工作区：内存中聚合知识库、文档、分块与向量存储，是知识域的单一事实来源。 */
+    /** PostgreSQL 数据源：仅在显式开启 {@code rd.knowledge.store=postgres} 时创建。 */
     @Bean
-    public KnowledgeWorkspace knowledgeWorkspace() {
-        return KnowledgeWorkspace.inMemory();
+    @ConditionalOnProperty(name = "rd.knowledge.store", havingValue = "postgres")
+    public DataSource rdBotDataSource(
+            @Value("${spring.datasource.url:jdbc:postgresql://127.0.0.1:5432/ragent?client_encoding=UTF8}") String url,
+            @Value("${spring.datasource.username:postgres}") String username,
+            @Value("${spring.datasource.password:postgres}") String password,
+            @Value("${spring.datasource.hikari.maximum-pool-size:10}") int maximumPoolSize,
+            @Value("${spring.datasource.hikari.minimum-idle:2}") int minimumIdle,
+            @Value("${spring.datasource.hikari.connection-timeout:5000}") long connectionTimeout
+    ) {
+        HikariConfig config = new HikariConfig();
+        config.setJdbcUrl(url);
+        config.setUsername(username);
+        config.setPassword(password);
+        config.setMaximumPoolSize(maximumPoolSize);
+        config.setMinimumIdle(minimumIdle);
+        config.setConnectionTimeout(connectionTimeout);
+        config.setPoolName("RdBotHikariPool");
+        return new HikariDataSource(config);
+    }
+
+    /** Snowflake ID 生成器：新增持久化实体统一使用 bigint 主键。 */
+    @Bean
+    public SnowflakeIdGenerator snowflakeIdGenerator() {
+        return SnowflakeIdGenerator.defaultGenerator();
+    }
+
+    /** 向量库端口：默认内存，PostgreSQL 模式使用 pgvector 表。 */
+    @Bean
+    public VectorStore vectorStore(
+            @Value("${rd.knowledge.store:memory}") String storeMode,
+            @Value("${rag.default.dimension:1536}") int dimension,
+            ObjectMapper objectMapper,
+            org.springframework.beans.factory.ObjectProvider<KnowledgeVectorMapper> mapperProvider
+    ) {
+        if ("postgres".equalsIgnoreCase(storeMode)) {
+            return new PostgresVectorStore(mapperProvider.getObject(), objectMapper, dimension);
+        }
+        return new InMemoryVectorStore();
+    }
+
+    /** 知识库 Store：默认内存，PostgreSQL 模式落库。 */
+    @Bean
+    public KnowledgeBaseStore knowledgeBaseStore(
+            @Value("${rd.knowledge.store:memory}") String storeMode,
+            org.springframework.beans.factory.ObjectProvider<KnowledgeBaseMapper> mapperProvider
+    ) {
+        if ("postgres".equalsIgnoreCase(storeMode)) {
+            return new PostgresKnowledgeBaseStore(mapperProvider.getObject());
+        }
+        return new InMemoryKnowledgeBaseStore();
+    }
+
+    /** 知识文档 Store：默认内存，PostgreSQL 模式落库。 */
+    @Bean
+    public KnowledgeDocumentStore knowledgeDocumentStore(
+            @Value("${rd.knowledge.store:memory}") String storeMode,
+            ObjectMapper objectMapper,
+            org.springframework.beans.factory.ObjectProvider<KnowledgeDocumentMapper> mapperProvider
+    ) {
+        if ("postgres".equalsIgnoreCase(storeMode)) {
+            return new PostgresKnowledgeDocumentStore(mapperProvider.getObject(), objectMapper);
+        }
+        return new InMemoryKnowledgeDocumentStore();
+    }
+
+    /** 知识分块 Store：默认内存，PostgreSQL 模式落库。 */
+    @Bean
+    public KnowledgeChunkStore knowledgeChunkStore(
+            @Value("${rd.knowledge.store:memory}") String storeMode,
+            ObjectMapper objectMapper,
+            org.springframework.beans.factory.ObjectProvider<KnowledgeChunkMapper> mapperProvider
+    ) {
+        if ("postgres".equalsIgnoreCase(storeMode)) {
+            return new PostgresKnowledgeChunkStore(mapperProvider.getObject(), objectMapper);
+        }
+        return new InMemoryKnowledgeChunkStore();
+    }
+
+    /** 摄取任务 Store：保存任务主记录与节点日志。 */
+    @Bean
+    public IngestionTaskStore ingestionTaskStore(
+            @Value("${rd.knowledge.store:memory}") String storeMode,
+            ObjectMapper objectMapper,
+            org.springframework.beans.factory.ObjectProvider<IngestionTaskMapper> taskMapperProvider,
+            org.springframework.beans.factory.ObjectProvider<IngestionTaskNodeMapper> nodeMapperProvider
+    ) {
+        if ("postgres".equalsIgnoreCase(storeMode)) {
+            return new PostgresIngestionTaskStore(taskMapperProvider.getObject(), nodeMapperProvider.getObject(), objectMapper);
+        }
+        return new InMemoryIngestionTaskStore();
+    }
+
+    /** 修复记录仓储：P0 提供 repair_records 与 repair_record_artifacts 持久化端口。 */
+    @Bean
+    public RepairRecordRepository repairRecordRepository(
+            @Value("${rd.knowledge.store:memory}") String storeMode,
+            ObjectMapper objectMapper,
+            SnowflakeIdGenerator idGenerator,
+            org.springframework.beans.factory.ObjectProvider<RepairRecordMapper> recordMapperProvider,
+            org.springframework.beans.factory.ObjectProvider<RepairRecordArtifactMapper> artifactMapperProvider
+    ) {
+        if ("postgres".equalsIgnoreCase(storeMode)) {
+            return new PostgresRepairRecordRepository(
+                    recordMapperProvider.getObject(),
+                    artifactMapperProvider.getObject(),
+                    objectMapper,
+                    idGenerator
+            );
+        }
+        return new InMemoryRepairRecordRepository(idGenerator);
+    }
+
+    /** 知识库工作区：聚合知识库、文档、分块与向量存储，是知识域 facade。 */
+    @Bean
+    public KnowledgeWorkspace knowledgeWorkspace(
+            VectorStore vectorStore,
+            SnowflakeIdGenerator idGenerator,
+            KnowledgeBaseStore baseStore,
+            KnowledgeDocumentStore documentStore,
+            KnowledgeChunkStore chunkStore
+    ) {
+        return KnowledgeWorkspace.withStores(vectorStore, idGenerator, baseStore, documentStore, chunkStore);
+    }
+
+    /** Feishu 文档读取端口：P0 默认 mock，可替换为真实 OpenAPI 适配。 */
+    @Bean
+    public FeishuDocumentClient feishuDocumentClient() {
+        return source -> new FeishuDocumentSnapshot(
+                extractFeishuToken(source),
+                source == null ? "" : source,
+                "feishu-" + extractFeishuToken(source),
+                "mock-revision-1",
+                "# Feishu Mock Document\n\n来源：" + (source == null ? "" : source) + "\n\nRD-Bot P0 知识库生产化导入验证内容。",
+                System.currentTimeMillis()
+        );
+    }
+
+    /** Feishu 知识导入器：负责 URL/token → 文档快照 → 知识库写入与分块。 */
+    @Bean
+    public FeishuDocKnowledgeImporter feishuDocKnowledgeImporter(
+            KnowledgeWorkspace workspace,
+            FeishuDocumentClient feishuDocumentClient
+    ) {
+        return new FeishuDocKnowledgeImporter(workspace, feishuDocumentClient);
     }
 
     /** 知识管理编排层：对外暴露知识库/文档/分块/概览等管理能力。 */
@@ -62,8 +239,12 @@ public class RdBotRuntimeConfiguration {
 
     /** 摄取管理注册表：维护可配置管线与已执行任务，依赖知识工作区落地文档与分块。 */
     @Bean
-    public IngestionAdminRegistry ingestionAdminRegistry(KnowledgeWorkspace workspace) {
-        return IngestionAdminRegistry.inMemory(workspace);
+    public IngestionAdminRegistry ingestionAdminRegistry(
+            KnowledgeWorkspace workspace,
+            IngestionTaskStore taskStore,
+            SnowflakeIdGenerator idGenerator
+    ) {
+        return IngestionAdminRegistry.withTaskStore(workspace, taskStore, idGenerator);
     }
 
     /** 摄取管理编排层：对外暴露管线 CRUD、任务执行、上传等接口。 */
@@ -199,5 +380,21 @@ public class RdBotRuntimeConfiguration {
                 globalRateLimitEnabled,
                 globalMaxConcurrent
         );
+    }
+
+    private String extractFeishuToken(String source) {
+        String trimmed = source == null ? "" : source.strip();
+        if (trimmed.isBlank()) {
+            return "empty";
+        }
+        String[] parts = trimmed.split("/");
+        for (int i = 0; i < parts.length - 1; i++) {
+            if ("docx".equalsIgnoreCase(parts[i]) || "wiki".equalsIgnoreCase(parts[i])) {
+                String token = parts[i + 1];
+                int queryIndex = token.indexOf('?');
+                return queryIndex > 0 ? token.substring(0, queryIndex) : token;
+            }
+        }
+        return trimmed.replaceAll("[^A-Za-z0-9_-]", "");
     }
 }

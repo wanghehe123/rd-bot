@@ -1,175 +1,182 @@
 package com.wish.rd.rag.knowledge;
 
 import com.wish.rd.framework.convention.RetrievedChunk;
+import com.wish.rd.framework.id.SnowflakeIdGenerator;
 import com.wish.rd.rag.ingestion.IngestionNodeLog;
 import com.wish.rd.rag.ingestion.IngestionTaskCommand;
 import com.wish.rd.rag.ingestion.IngestionTaskResult;
 import com.wish.rd.rag.ingestion.PipelineDefinition;
 import com.wish.rd.rag.ingestion.TaskIngestionEngine;
+import com.wish.rd.rag.knowledge.store.InMemoryKnowledgeBaseStore;
+import com.wish.rd.rag.knowledge.store.InMemoryKnowledgeChunkStore;
+import com.wish.rd.rag.knowledge.store.InMemoryKnowledgeDocumentStore;
+import com.wish.rd.rag.knowledge.store.KnowledgeBaseStore;
+import com.wish.rd.rag.knowledge.store.KnowledgeChunkStore;
+import com.wish.rd.rag.knowledge.store.KnowledgeDocumentStore;
 import com.wish.rd.rag.vector.InMemoryVectorStore;
+import com.wish.rd.rag.vector.VectorStore;
 
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
 /**
- * 知识库工作区：知识域的内存聚合根，统一管理知识库、文档、分块与向量存储。
+ * 知识库工作区 facade：统一管理知识库、文档、分块与向量索引的一致性。
  *
- * <p>这是 /knowledge-base 系列管理接口、摄取任务、以及 /rag/v3/chat 检索的共同数据后端。
- * 所有对外写操作均加 {@code synchronized} 保证并发安全（MVP 单机内存模型，无持久化）。
- *
- * <p>核心数据结构：
- * <ul>
- *   <li>{@link InMemoryVectorStore}：实际承载检索能力，存储 {@link RetrievedChunk}；</li>
- *   <li>{@code bases/documents/chunks}：业务实体的有序存储；</li>
- *   <li>{@code documentChunkIds}：文档→分块 ID 列表的映射；</li>
- *   <li>{@code documentRawContent}：文档原始文本，供预览与搜索。</li>
- * </ul>
- *
- * <p>写文档流程（{@link #writeDocument(PipelineDefinition, IngestionTaskCommand)}）：
- * 调用 {@link TaskIngestionEngine} 走"解析→分块→索引"管线，把结果固化为
- * {@link KnowledgeDocument} + 多个 {@link KnowledgeChunk}，并写入向量库。
+ * <p>对上保持原有 {@code /knowledge-base} 管理接口语义，对下委托 Store 端口完成
+ * 内存或 PostgreSQL 持久化。跨实体级联操作仍收敛在此聚合根，避免外部绕过根直接
+ * 修改子实体导致向量库、分块计数和文档状态不一致。
  */
 public final class KnowledgeWorkspace {
 
-    private final InMemoryVectorStore vectorStore;
-    /** 知识库集合，按创建顺序排列。 */
-    private final LinkedHashMap<String, KnowledgeBase> bases = new LinkedHashMap<>();
-    /** 文档集合。 */
-    private final LinkedHashMap<String, KnowledgeDocument> documents = new LinkedHashMap<>();
-    /** 分块集合。 */
-    private final LinkedHashMap<String, KnowledgeChunk> chunks = new LinkedHashMap<>();
-    /** 文档→其分块 ID 列表的映射，维护文档与分块的从属关系。 */
-    private final LinkedHashMap<String, List<String>> documentChunkIds = new LinkedHashMap<>();
-    /** 文档→原始文本内容的映射，供预览与全文搜索。 */
-    private final LinkedHashMap<String, String> documentRawContent = new LinkedHashMap<>();
-    /** 知识库自增序列，生成 kb-N 形式的 ID。 */
-    private long baseSequence;
-    /** 文档自增序列，生成 doc-N 形式的 ID。 */
-    private long documentSequence;
+    private final VectorStore vectorStore;
+    private final SnowflakeIdGenerator idGenerator;
+    private final KnowledgeBaseStore baseStore;
+    private final KnowledgeDocumentStore documentStore;
+    private final KnowledgeChunkStore chunkStore;
 
-    private KnowledgeWorkspace(InMemoryVectorStore vectorStore) {
+    private KnowledgeWorkspace(
+            VectorStore vectorStore,
+            SnowflakeIdGenerator idGenerator,
+            KnowledgeBaseStore baseStore,
+            KnowledgeDocumentStore documentStore,
+            KnowledgeChunkStore chunkStore
+    ) {
         this.vectorStore = vectorStore;
-    }
-
-    /** 创建一个空工作区，内置一个新的内存向量库。 */
-    public static KnowledgeWorkspace inMemory() {
-        return new KnowledgeWorkspace(new InMemoryVectorStore());
+        this.idGenerator = idGenerator;
+        this.baseStore = baseStore;
+        this.documentStore = documentStore;
+        this.chunkStore = chunkStore;
     }
 
     /**
-     * 创建知识库：分配 kb-N 的 ID 并记录创建时间。
+     * 创建一个空工作区，使用内存 Store 和默认 Snowflake 生成器。
+     *
+     * @return 内存知识工作区
+     */
+    public static KnowledgeWorkspace inMemory() {
+        return inMemory(SnowflakeIdGenerator.defaultGenerator());
+    }
+
+    /**
+     * 创建一个可注入 ID 生成器的内存工作区，供单测稳定断言。
+     *
+     * @param idGenerator ID 生成器
+     * @return 内存知识工作区
+     */
+    public static KnowledgeWorkspace inMemory(SnowflakeIdGenerator idGenerator) {
+        return withStores(
+                new InMemoryVectorStore(),
+                idGenerator,
+                new InMemoryKnowledgeBaseStore(),
+                new InMemoryKnowledgeDocumentStore(),
+                new InMemoryKnowledgeChunkStore()
+        );
+    }
+
+    /**
+     * 用指定 Store 组装工作区，供 PostgreSQL 适配层和 Store 边界测试使用。
+     *
+     * @param vectorStore   向量库端口
+     * @param idGenerator   ID 生成器
+     * @param baseStore     知识库 Store
+     * @param documentStore 文档 Store
+     * @param chunkStore    分块 Store
+     * @return 知识工作区 facade
+     */
+    public static KnowledgeWorkspace withStores(
+            VectorStore vectorStore,
+            SnowflakeIdGenerator idGenerator,
+            KnowledgeBaseStore baseStore,
+            KnowledgeDocumentStore documentStore,
+            KnowledgeChunkStore chunkStore
+    ) {
+        return new KnowledgeWorkspace(vectorStore, idGenerator, baseStore, documentStore, chunkStore);
+    }
+
+    /**
+     * 创建知识库：分配 Snowflake ID 并记录创建时间。
      *
      * @param command 创建命令（名称、描述）
-     * @return 新建的知识库对象
+     * @return 新建知识库
      */
     public synchronized KnowledgeBase createBase(CreateKnowledgeBaseCommand command) {
-        String id = "kb-" + ++baseSequence;
         KnowledgeBase base = new KnowledgeBase(
-                id,
+                idGenerator.nextIdString(),
                 command.name(),
                 command.description(),
                 true,
                 System.currentTimeMillis()
         );
-        bases.put(id, base);
-        return base;
+        return baseStore.save(base);
     }
 
     /**
-     * 写入文档（使用默认管线 + 行内命令）的便捷重载。
-     * 把 {@link WriteKnowledgeDocumentCommand} 转换为 {@link IngestionTaskCommand} 后委托给完整流程。
+     * 写入本地文档，使用默认摄取管线。
+     *
+     * @param command 文档写入命令
+     * @return 已索引文档
      */
     public synchronized KnowledgeDocument writeDocument(WriteKnowledgeDocumentCommand command) {
-        return writeDocument(
-                PipelineDefinition.defaultDocumentPipeline(),
-                new IngestionTaskCommand(
-                        "task-inline",
-                        command.sourceName(),
-                        command.knowledgeBaseId(),
-                        command.knowledgeType(),
-                        command.mimeType(),
-                        command.content(),
-                        command.chunkingMode(),
-                        command.chunkSize(),
-                        command.overlapSize()
-                )
-        );
+        return writeDocument(PipelineDefinition.defaultDocumentPipeline(), command, KnowledgeDocumentSource.local());
     }
 
     /**
-     * 写入文档的完整流程：执行摄取管线生成分块，再逐一固化为知识分块并写入向量库。
+     * 写入管线文档，供摄取任务调用。
      *
-     * <p>步骤：
-     * <ol>
-     *   <li>校验目标知识库存在，分配 doc-N 文档 ID；</li>
-     *   <li>用 {@link TaskIngestionEngine} 跑管线，得到 {@link RetrievedChunk} 列表与节点日志；</li>
-     *   <li>清除同名旧分块后，按顺序为每个分块分配 chunkId 并写入 {@link KnowledgeChunk}；</li>
-     *   <li>把分块索引进向量库，记录文档→分块映射与原文；</li>
-     *   <li>组装并存储 {@link KnowledgeDocument}（含分块数与节点日志）。</li>
-     * </ol>
-     *
-     * @param pipeline 摄取管线定义（节点链）
-     * @param command  摄取任务命令
-     * @return 新建的知识文档
+     * @param pipeline 摄取管线
+     * @param command  摄取命令
+     * @return 已索引文档
      */
     public synchronized KnowledgeDocument writeDocument(PipelineDefinition pipeline, IngestionTaskCommand command) {
-        requireBase(command.knowledgeBaseId());
-        String documentId = "doc-" + ++documentSequence;
-        IngestionTaskResult ingestionResult = TaskIngestionEngine.inMemory(vectorStore).execute(pipeline, command);
-
-        List<String> chunkIds = new ArrayList<>();
-        List<RetrievedChunk> retrievedChunks = ingestionResult.chunks();
-        // 先清除管线可能已索引的临时分块，统一由工作区重新分配 chunkId
-        vectorStore.removeChunks(retrievedChunks.stream()
-                .map(RetrievedChunk::chunkId)
-                .toList());
-        List<RetrievedChunk> indexedChunks = new ArrayList<>();
-        for (int i = 0; i < retrievedChunks.size(); i++) {
-            RetrievedChunk retrievedChunk = retrievedChunks.get(i);
-            int chunkIndex = chunkIndex(retrievedChunk, i);
-            String chunkId = documentId + "-" + chunkIndex;
-            KnowledgeChunk chunk = new KnowledgeChunk(
-                    chunkId,
-                    documentId,
-                    command.knowledgeBaseId(),
-                    chunkIndex,
-                    retrievedChunk.content(),
-                    retrievedChunk.knowledgeType(),
-                    retrievedChunk.sourceName(),
-                    true,
-                    withDocumentMetadata(retrievedChunk.metadata(), documentId)
-            );
-            chunks.put(chunkId, chunk);
-            chunkIds.add(chunkId);
-            indexedChunks.add(toRetrievedChunk(chunk));
-        }
-        vectorStore.index(indexedChunks);
-        documentChunkIds.put(documentId, List.copyOf(chunkIds));
-        documentRawContent.put(documentId, new String(command.content(), StandardCharsets.UTF_8));
-
-        KnowledgeDocument document = new KnowledgeDocument(
-                documentId,
-                command.knowledgeBaseId(),
-                command.sourceName(),
-                command.knowledgeType(),
-                command.mimeType(),
-                KnowledgeDocumentStatus.INDEXED,
-                true,
-                chunkIds.size(),
-                ingestionResult.nodeLogs(),
-                System.currentTimeMillis()
-        );
-        documents.put(documentId, document);
-        return document;
+        return writeDocument(pipeline, toWriteCommand(command), KnowledgeDocumentSource.local());
     }
 
-    /** 返回全部知识库的快照。 */
+    /**
+     * 写入带来源元数据的文档，供 Feishu 导入和刷新使用。
+     *
+     * @param command 文档写入命令
+     * @param source  外部来源元数据
+     * @return 已索引文档
+     */
+    public synchronized KnowledgeDocument writeDocument(
+            WriteKnowledgeDocumentCommand command,
+            KnowledgeDocumentSource source
+    ) {
+        return writeDocument(PipelineDefinition.defaultDocumentPipeline(), command, source);
+    }
+
+    /**
+     * 同来源、同 revision/checksum 的文档直接返回现有记录，避免重复写入。
+     *
+     * @param command 文档写入命令
+     * @param source  外部来源元数据
+     * @return 现有或新建文档
+     */
+    public synchronized KnowledgeDocument writeDocumentIfChanged(
+            WriteKnowledgeDocumentCommand command,
+            KnowledgeDocumentSource source
+    ) {
+        String checksum = checksum(command.content());
+        return documentStore.findBySource(
+                        command.knowledgeBaseId(),
+                        source.sourceType(),
+                        source.sourceToken(),
+                        source.sourceUrl()
+                )
+                .filter(existing -> sameRevision(existing, source, checksum))
+                .orElseGet(() -> writeDocument(command, source));
+    }
+
+    /** 返回全部知识库快照。 */
     public synchronized List<KnowledgeBase> listBases() {
-        return List.copyOf(bases.values());
+        return baseStore.list();
     }
 
     /** 按 ID 查询知识库，不存在抛异常。 */
@@ -179,29 +186,25 @@ public final class KnowledgeWorkspace {
 
     /** 重命名知识库。 */
     public synchronized KnowledgeBase updateBase(String knowledgeBaseId, String name) {
-        KnowledgeBase base = requireBase(knowledgeBaseId);
-        KnowledgeBase updated = base.withName(name);
-        bases.put(knowledgeBaseId, updated);
-        return updated;
+        KnowledgeBase updated = requireBase(knowledgeBaseId).withName(name);
+        return baseStore.save(updated);
     }
 
-    /**
-     * 删除知识库及其下属全部文档（级联清理分块、原文与向量）。
-     */
+    /** 删除知识库及其下属全部文档、分块和向量。 */
     public synchronized void deleteBase(String knowledgeBaseId) {
         KnowledgeBase base = requireBase(knowledgeBaseId);
-        List<String> documentIds = documents.values().stream()
-                .filter(document -> document.knowledgeBaseId().equals(base.id()))
+        documentStore.listByKnowledgeBaseId(base.id())
+                .stream()
                 .map(KnowledgeDocument::id)
-                .toList();
-        documentIds.forEach(this::deleteDocument);
-        bases.remove(base.id());
+                .toList()
+                .forEach(this::deleteDocument);
+        baseStore.delete(base.id());
     }
 
     /** 按名称/描述模糊搜索知识库，关键词为空时返回全部。 */
     public synchronized List<KnowledgeBase> searchBases(String keyword) {
         String normalizedKeyword = normalize(keyword);
-        return bases.values().stream()
+        return baseStore.list().stream()
                 .filter(base -> normalizedKeyword.isBlank()
                         || normalize(base.name()).contains(normalizedKeyword)
                         || normalize(base.description()).contains(normalizedKeyword))
@@ -211,63 +214,50 @@ public final class KnowledgeWorkspace {
     /** 统计指定知识库下的文档数。 */
     public synchronized long countDocuments(String knowledgeBaseId) {
         requireBase(knowledgeBaseId);
-        return documents.values().stream()
-                .filter(document -> document.knowledgeBaseId().equals(knowledgeBaseId))
-                .count();
+        return documentStore.listByKnowledgeBaseId(knowledgeBaseId).size();
     }
 
     /** 按 ID 查询文档，不存在抛异常。 */
     public synchronized KnowledgeDocument getDocument(String documentId) {
-        KnowledgeDocument document = documents.get(documentId);
-        if (document == null) {
-            throw new IllegalArgumentException("knowledge document not found: " + documentId);
-        }
-        return document;
+        return documentStore.findById(documentId)
+                .orElseThrow(() -> new IllegalArgumentException("knowledge document not found: " + documentId));
     }
 
-    /** 列出指定知识库下的全部文档。 */
+    /** 列出指定知识库下的文档。 */
     public synchronized List<KnowledgeDocument> listDocuments(String knowledgeBaseId) {
         requireBase(knowledgeBaseId);
-        return documents.values().stream()
-                .filter(document -> document.knowledgeBaseId().equals(knowledgeBaseId))
-                .toList();
+        return documentStore.listByKnowledgeBaseId(knowledgeBaseId);
     }
 
-    /** 列出全部文档（跨知识库），供全局检索/概览使用。 */
+    /** 列出全部文档。 */
     public synchronized List<KnowledgeDocument> listAllDocuments() {
-        return List.copyOf(documents.values());
+        return documentStore.listAll();
     }
 
     /** 按 ID 查询分块，不存在抛异常。 */
     public synchronized KnowledgeChunk getChunk(String chunkId) {
-        KnowledgeChunk chunk = chunks.get(chunkId);
-        if (chunk == null) {
-            throw new IllegalArgumentException("knowledge chunk not found: " + chunkId);
-        }
-        return chunk;
+        return chunkStore.findById(chunkId)
+                .orElseThrow(() -> new IllegalArgumentException("knowledge chunk not found: " + chunkId));
     }
 
-    /** 列出指定文档下的全部分块（按文档→分块映射）。 */
+    /** 列出指定文档下的全部分块。 */
     public synchronized List<KnowledgeChunk> listChunks(String documentId) {
         getDocument(documentId);
-        return documentChunkIds.getOrDefault(documentId, List.of()).stream()
-                .map(chunks::get)
-                .filter(chunk -> chunk != null)
-                .toList();
+        return chunkStore.listByDocumentId(documentId);
     }
 
-    /** 列出全部分块（跨文档），供概览/统计使用。 */
+    /** 列出全部分块。 */
     public synchronized List<KnowledgeChunk> listAllChunks() {
-        return List.copyOf(chunks.values());
+        return chunkStore.listAll();
     }
 
     /** 预览文档原始文本内容。 */
     public synchronized String previewDocument(String documentId) {
         getDocument(documentId);
-        return documentRawContent.getOrDefault(documentId, "");
+        return documentStore.rawContent(documentId);
     }
 
-    /** 查看文档的摄取节点日志（解析/分块/索引各步骤记录）。 */
+    /** 查看文档的摄取节点日志。 */
     public synchronized List<IngestionNodeLog> listDocumentLogs(String documentId) {
         return getDocument(documentId).nodeLogs();
     }
@@ -276,139 +266,106 @@ public final class KnowledgeWorkspace {
     public synchronized List<KnowledgeDocument> searchDocuments(String knowledgeBaseId, String keyword) {
         String normalizedKeyword = normalize(keyword);
         return listDocuments(knowledgeBaseId).stream()
-                .filter(document -> normalizedKeyword.isBlank()
-                        || normalize(document.sourceName()).contains(normalizedKeyword)
-                        || normalize(previewDocument(document.id())).contains(normalizedKeyword))
+                .filter(document -> matchesDocument(document, normalizedKeyword))
                 .toList();
     }
 
-    /** 切换单个分块的启用/禁用状态。 */
+    /** 切换单个分块启用/禁用状态。 */
     public synchronized KnowledgeChunk setChunkEnabled(String chunkId, boolean enabled) {
-        KnowledgeChunk chunk = chunks.get(chunkId);
-        if (chunk == null) {
-            throw new IllegalArgumentException("knowledge chunk not found: " + chunkId);
-        }
-        KnowledgeChunk updated = chunk.withEnabled(enabled);
-        chunks.put(chunkId, updated);
-        return updated;
+        KnowledgeChunk updated = getChunk(chunkId).withEnabled(enabled);
+        return chunkStore.save(updated);
     }
 
-    /** 切换文档的启用/禁用状态。 */
+    /** 切换文档启用/禁用状态。 */
     public synchronized KnowledgeDocument setDocumentEnabled(String documentId, boolean enabled) {
-        KnowledgeDocument document = getDocument(documentId);
-        KnowledgeDocument updated = document.withEnabled(enabled);
-        documents.put(documentId, updated);
-        return updated;
+        KnowledgeDocument updated = getDocument(documentId).withEnabled(enabled);
+        return documentStore.save(updated, documentStore.rawContent(documentId));
     }
 
-    /**
-     * 更新文档的名称与知识类型，并同步刷新其下所有分块的对应字段与向量库条目，
-     * 保证检索时打分所用的文本（含类型/来源）保持一致。
-     */
+    /** 更新文档名称与知识类型，并同步刷新其下分块与向量库。 */
     public synchronized KnowledgeDocument updateDocument(String documentId, String sourceName, String knowledgeType) {
         KnowledgeDocument document = getDocument(documentId);
         String updatedSourceName = blank(sourceName) ? document.sourceName() : sourceName.strip();
         String updatedKnowledgeType = blank(knowledgeType) ? document.knowledgeType() : knowledgeType.strip();
         KnowledgeDocument updated = document.withDocumentFields(updatedSourceName, updatedKnowledgeType);
-        documents.put(documentId, updated);
-        // 同步更新该文档下每个分块的类型/来源，并替换向量库中的对应条目
-        for (String chunkId : documentChunkIds.getOrDefault(documentId, List.of())) {
-            KnowledgeChunk chunk = chunks.get(chunkId);
-            if (chunk != null) {
-                KnowledgeChunk updatedChunk = chunk.withDocumentFields(updatedKnowledgeType, updatedSourceName);
-                chunks.put(chunkId, updatedChunk);
-                vectorStore.replace(toRetrievedChunk(updatedChunk));
-            }
+        documentStore.save(updated, documentStore.rawContent(documentId));
+        for (KnowledgeChunk chunk : chunkStore.listByDocumentId(documentId)) {
+            KnowledgeChunk updatedChunk = chunk.withDocumentFields(updatedKnowledgeType, updatedSourceName);
+            chunkStore.save(updatedChunk);
+            vectorStore.replace(toRetrievedChunk(updatedChunk));
         }
         return updated;
     }
 
-    /**
-     * 删除文档及其全部分块、原文与向量库条目。
-     */
+    /** 删除文档及其全部分块、原文与向量库条目。 */
     public synchronized void deleteDocument(String documentId) {
         KnowledgeDocument document = getDocument(documentId);
-        List<String> chunkIds = documentChunkIds.getOrDefault(document.id(), List.of());
+        List<String> chunkIds = chunkStore.listByDocumentId(document.id()).stream()
+                .map(KnowledgeChunk::id)
+                .toList();
         vectorStore.removeChunks(chunkIds);
-        chunkIds.forEach(chunks::remove);
-        documentChunkIds.remove(document.id());
-        documentRawContent.remove(document.id());
-        documents.remove(document.id());
+        chunkStore.deleteByDocumentId(document.id());
+        documentStore.delete(document.id());
     }
 
-    /**
-     * 为文档手工新增一个分块（不经过摄取管线），分配 chunkId 并立即写入向量库。
-     * chunkId 已存在则抛异常。
-     */
+    /** 为文档手工新增分块并立即写入向量库。 */
     public synchronized KnowledgeChunk createChunk(String documentId, String chunkId, int index, String content) {
         KnowledgeDocument document = getDocument(documentId);
-        String actualChunkId = blank(chunkId) ? documentId + "-manual-" + Math.max(0, index) : chunkId.strip();
-        if (chunks.containsKey(actualChunkId)) {
+        String actualChunkId = blank(chunkId) ? idGenerator.nextIdString() : chunkId.strip();
+        if (chunkStore.findById(actualChunkId).isPresent()) {
             throw new IllegalArgumentException("knowledge chunk already exists: " + actualChunkId);
         }
+        int chunkIndex = Math.max(0, index);
         KnowledgeChunk chunk = new KnowledgeChunk(
                 actualChunkId,
                 document.id(),
                 document.knowledgeBaseId(),
-                Math.max(0, index),
+                chunkIndex,
                 content == null ? "" : content,
                 document.knowledgeType(),
                 document.sourceName(),
                 true,
                 Map.of(
                         "documentId", document.id(),
-                        "chunkIndex", String.valueOf(Math.max(0, index)),
+                        "chunkIndex", String.valueOf(chunkIndex),
                         "manual", "true"
                 )
         );
-        chunks.put(chunk.id(), chunk);
-        // 维护文档→分块映射并更新文档的分块计数
-        List<String> updatedChunkIds = new ArrayList<>(documentChunkIds.getOrDefault(document.id(), List.of()));
-        updatedChunkIds.add(chunk.id());
-        documentChunkIds.put(document.id(), List.copyOf(updatedChunkIds));
-        documents.put(document.id(), document.withChunkCount(updatedChunkIds.size()));
+        chunkStore.save(chunk);
+        int newChunkCount = chunkStore.listByDocumentId(document.id()).size();
+        documentStore.save(document.withChunkCount(newChunkCount), documentStore.rawContent(document.id()));
         vectorStore.index(List.of(toRetrievedChunk(chunk)));
         return chunk;
     }
 
-    /** 更新分块内容并替换向量库中的对应条目（保证检索文本同步）。 */
+    /** 更新分块内容并替换向量库条目。 */
     public synchronized KnowledgeChunk updateChunk(String documentId, String chunkId, String content) {
         ensureChunkBelongsToDocument(documentId, chunkId);
-        KnowledgeChunk chunk = getChunk(chunkId);
-        KnowledgeChunk updated = chunk.withContent(content == null ? "" : content);
-        chunks.put(chunkId, updated);
+        KnowledgeChunk updated = getChunk(chunkId).withContent(content == null ? "" : content);
+        chunkStore.save(updated);
         vectorStore.replace(toRetrievedChunk(updated));
         return updated;
     }
 
-    /**
-     * 删除分块：校验归属后从存储、文档映射与向量库中一并移除，并更新文档分块计数。
-     *
-     * @return 是否真的删除了（不存在时返回 false）
-     */
+    /** 删除分块并同步文档分块计数与向量库。 */
     public synchronized boolean deleteChunk(String documentId, String chunkId) {
         ensureChunkBelongsToDocument(documentId, chunkId);
-        KnowledgeChunk removed = chunks.remove(chunkId);
-        if (removed == null) {
+        if (chunkStore.findById(chunkId).isEmpty()) {
             return false;
         }
-        List<String> updatedChunkIds = new ArrayList<>(documentChunkIds.getOrDefault(documentId, List.of()));
-        updatedChunkIds.remove(chunkId);
-        documentChunkIds.put(documentId, List.copyOf(updatedChunkIds));
-        documents.put(documentId, getDocument(documentId).withChunkCount(updatedChunkIds.size()));
+        chunkStore.delete(chunkId);
         vectorStore.removeChunks(List.of(chunkId));
+        KnowledgeDocument document = getDocument(documentId);
+        int newChunkCount = chunkStore.listByDocumentId(documentId).size();
+        documentStore.save(document.withChunkCount(newChunkCount), documentStore.rawContent(documentId));
         return true;
     }
 
-    /**
-     * 批量切换分块启用状态。chunkIds 为空时作用于该文档的全部分块。
-     *
-     * @return 实际更新的分块数量
-     */
+    /** 批量切换分块启用状态。chunkIds 为空时作用于该文档全部分块。 */
     public synchronized int batchSetChunksEnabled(String documentId, List<String> chunkIds, boolean enabled) {
         getDocument(documentId);
         List<String> targets = chunkIds == null || chunkIds.isEmpty()
-                ? documentChunkIds.getOrDefault(documentId, List.of())
+                ? chunkStore.listByDocumentId(documentId).stream().map(KnowledgeChunk::id).toList()
                 : chunkIds;
         int updatedCount = 0;
         for (String chunkId : targets) {
@@ -419,33 +376,135 @@ public final class KnowledgeWorkspace {
         return updatedCount;
     }
 
-    /** 跨知识库按名称/类型/原文模糊搜索文档，带数量上限（默认 8）。 */
+    /** 跨知识库按名称/类型/原文模糊搜索文档，带数量上限。 */
     public synchronized List<KnowledgeDocument> searchAllDocuments(String keyword, int limit) {
         String normalizedKeyword = normalize(keyword);
         int safeLimit = limit <= 0 ? 8 : limit;
-        return documents.values().stream()
-                .filter(document -> normalizedKeyword.isBlank()
-                        || normalize(document.sourceName()).contains(normalizedKeyword)
-                        || normalize(document.knowledgeType()).contains(normalizedKeyword)
-                        || normalize(previewDocument(document.id())).contains(normalizedKeyword))
+        return documentStore.listAll().stream()
+                .filter(document -> matchesDocument(document, normalizedKeyword))
                 .limit(safeLimit)
                 .toList();
     }
 
-    /** 暴露底层向量库，供检索引擎与摄取引擎直接使用。 */
-    public InMemoryVectorStore vectorStore() {
+    /** 查询到期需要刷新的文档，供调度器使用。 */
+    public synchronized List<KnowledgeDocument> dueRefreshDocuments(long nowEpochMillis, int limit) {
+        int safeLimit = limit <= 0 ? 20 : limit;
+        return documentStore.listAll().stream()
+                .filter(document -> document.nextRefreshAtEpochMillis() > 0L)
+                .filter(document -> document.nextRefreshAtEpochMillis() <= nowEpochMillis)
+                .limit(safeLimit)
+                .toList();
+    }
+
+    /** 暴露底层向量库端口，供检索引擎和摄取引擎使用。 */
+    public VectorStore vectorStore() {
         return vectorStore;
     }
 
-    /** 校验分块归属于指定文档，不存在或归属不符则抛异常。 */
+    private KnowledgeDocument writeDocument(
+            PipelineDefinition pipeline,
+            WriteKnowledgeDocumentCommand command,
+            KnowledgeDocumentSource source
+    ) {
+        requireBase(command.knowledgeBaseId());
+        String documentId = idGenerator.nextIdString();
+        IngestionTaskResult ingestionResult = TaskIngestionEngine.inMemory(new InMemoryVectorStore()).execute(
+                pipeline,
+                new IngestionTaskCommand(
+                        "task-inline-" + documentId,
+                        command.sourceName(),
+                        command.knowledgeBaseId(),
+                        command.knowledgeType(),
+                        command.mimeType(),
+                        command.content(),
+                        command.chunkingMode(),
+                        command.chunkSize(),
+                        command.overlapSize()
+                )
+        );
+        List<RetrievedChunk> temporaryChunks = ingestionResult.chunks();
+
+        ArrayList<KnowledgeChunk> persistedChunks = new ArrayList<>();
+        ArrayList<RetrievedChunk> indexedChunks = new ArrayList<>();
+        for (int i = 0; i < temporaryChunks.size(); i++) {
+            RetrievedChunk retrievedChunk = temporaryChunks.get(i);
+            int chunkIndex = chunkIndex(retrievedChunk, i);
+            KnowledgeChunk chunk = new KnowledgeChunk(
+                    idGenerator.nextIdString(),
+                    documentId,
+                    command.knowledgeBaseId(),
+                    chunkIndex,
+                    retrievedChunk.content(),
+                    retrievedChunk.knowledgeType(),
+                    retrievedChunk.sourceName(),
+                    true,
+                    withDocumentMetadata(retrievedChunk.metadata(), documentId)
+            );
+            persistedChunks.add(chunk);
+            indexedChunks.add(toRetrievedChunk(chunk));
+        }
+        String rawContent = new String(command.content(), StandardCharsets.UTF_8);
+        long now = System.currentTimeMillis();
+        KnowledgeDocument document = new KnowledgeDocument(
+                documentId,
+                command.knowledgeBaseId(),
+                command.sourceName(),
+                command.knowledgeType(),
+                command.mimeType(),
+                KnowledgeDocumentStatus.INDEXED,
+                true,
+                persistedChunks.size(),
+                ingestionResult.nodeLogs(),
+                now,
+                source.sourceType(),
+                source.sourceToken(),
+                source.sourceUrl(),
+                source.revisionId(),
+                checksum(command.content()),
+                preview(rawContent),
+                source.lastSyncedAtEpochMillis() > 0L ? source.lastSyncedAtEpochMillis() : now,
+                source.nextRefreshAtEpochMillis()
+        );
+        KnowledgeDocument savedDocument = documentStore.save(document, rawContent);
+        chunkStore.saveAll(persistedChunks);
+        vectorStore.index(indexedChunks);
+        return savedDocument;
+    }
+
+    private WriteKnowledgeDocumentCommand toWriteCommand(IngestionTaskCommand command) {
+        return new WriteKnowledgeDocumentCommand(
+                command.knowledgeBaseId(),
+                command.sourceName(),
+                command.knowledgeType(),
+                command.mimeType(),
+                command.content(),
+                command.chunkingMode(),
+                command.chunkSize(),
+                command.overlapSize()
+        );
+    }
+
+    private boolean matchesDocument(KnowledgeDocument document, String normalizedKeyword) {
+        return normalizedKeyword.isBlank()
+                || normalize(document.sourceName()).contains(normalizedKeyword)
+                || normalize(document.knowledgeType()).contains(normalizedKeyword)
+                || normalize(document.rawPreview()).contains(normalizedKeyword)
+                || normalize(documentStore.rawContent(document.id())).contains(normalizedKeyword);
+    }
+
+    private boolean sameRevision(KnowledgeDocument existing, KnowledgeDocumentSource source, String checksum) {
+        boolean revisionMatches = !source.revisionId().isBlank() && source.revisionId().equals(existing.revisionId());
+        boolean checksumMatches = !checksum.isBlank() && checksum.equals(existing.checksum());
+        return revisionMatches || checksumMatches;
+    }
+
     private void ensureChunkBelongsToDocument(String documentId, String chunkId) {
         getDocument(documentId);
-        if (blank(chunkId) || !documentChunkIds.getOrDefault(documentId, List.of()).contains(chunkId)) {
+        if (blank(chunkId) || chunkStore.listByDocumentId(documentId).stream().noneMatch(chunk -> chunk.id().equals(chunkId))) {
             throw new IllegalArgumentException("knowledge chunk not found in document: " + chunkId);
         }
     }
 
-    /** 把知识分块转为可检索的 {@link RetrievedChunk}（打分统一占位 1.0，实际打分由检索阶段计算）。 */
     private RetrievedChunk toRetrievedChunk(KnowledgeChunk chunk) {
         return new RetrievedChunk(
                 chunk.id(),
@@ -458,16 +517,11 @@ public final class KnowledgeWorkspace {
         );
     }
 
-    /** 校验知识库存在，不存在抛异常。 */
     private KnowledgeBase requireBase(String knowledgeBaseId) {
-        KnowledgeBase base = bases.get(knowledgeBaseId);
-        if (base == null) {
-            throw new IllegalArgumentException("knowledge base not found: " + knowledgeBaseId);
-        }
-        return base;
+        return baseStore.findById(knowledgeBaseId)
+                .orElseThrow(() -> new IllegalArgumentException("knowledge base not found: " + knowledgeBaseId));
     }
 
-    /** 从分块元数据读取 chunkIndex，缺失或非法时回退为序号。 */
     private int chunkIndex(RetrievedChunk chunk, int fallback) {
         String rawIndex = chunk.metadata().get("chunkIndex");
         if (rawIndex == null || rawIndex.isBlank()) {
@@ -480,14 +534,29 @@ public final class KnowledgeWorkspace {
         }
     }
 
-    /** 复制元数据并补入 documentId，便于检索结果回溯到文档。 */
     private Map<String, String> withDocumentMetadata(Map<String, String> metadata, String documentId) {
         LinkedHashMap<String, String> copied = new LinkedHashMap<>(metadata);
         copied.put("documentId", documentId);
         return copied;
     }
 
-    /** 关键词归一化：转小写，null 视为空串。 */
+    private String checksum(byte[] content) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256").digest(content == null ? new byte[0] : content);
+            return HexFormat.of().formatHex(digest);
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 algorithm unavailable", exception);
+        }
+    }
+
+    private String preview(String rawContent) {
+        if (rawContent == null || rawContent.isBlank()) {
+            return "";
+        }
+        String stripped = rawContent.strip();
+        return stripped.length() <= 512 ? stripped : stripped.substring(0, 512);
+    }
+
     private String normalize(String value) {
         return value == null ? "" : value.toLowerCase(Locale.ROOT);
     }

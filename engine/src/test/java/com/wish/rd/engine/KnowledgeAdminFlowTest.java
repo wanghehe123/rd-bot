@@ -51,8 +51,10 @@ class KnowledgeAdminFlowTest {
 
         List<KnowledgeChunk> chunks = workspace.listChunks(document.id());
 
-        assertEquals("kb-1", knowledgeBase.id());
-        assertEquals("doc-1", document.id());
+        assertTrue(Long.parseLong(knowledgeBase.id()) > 0);
+        assertTrue(Long.parseLong(document.id()) > 0);
+        assertFalse("kb-1".equals(knowledgeBase.id()));
+        assertFalse("doc-1".equals(document.id()));
         assertEquals(KnowledgeDocumentStatus.INDEXED, document.status());
         assertEquals(List.of(document), workspace.listDocuments(knowledgeBase.id()));
         assertFalse(chunks.isEmpty());

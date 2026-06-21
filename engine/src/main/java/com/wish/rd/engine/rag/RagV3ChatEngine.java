@@ -19,6 +19,7 @@ import com.wish.rd.rag.runtime.RagRuntimeFactory;
 import com.wish.rd.rag.runtime.RagStreamTask;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
 import com.wish.rd.rag.vector.InMemoryVectorStore;
+import com.wish.rd.rag.vector.VectorStore;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -196,7 +197,7 @@ public final class RagV3ChatEngine {
      * 同时注入两条 mock 的日志/代码端口回调，用于演示 LogCenter 与代码检索通道。
      */
     private RepairRagPipeline repairPipeline() {
-        InMemoryVectorStore vectorStore = knowledgeWorkspace == null
+        VectorStore vectorStore = knowledgeWorkspace == null
                 ? new InMemoryVectorStore()
                 : knowledgeWorkspace.vectorStore();
         if (vectorStore.allChunks().isEmpty()) {
@@ -225,7 +226,7 @@ public final class RagV3ChatEngine {
     /**
      * 在空向量库中种入默认支付系统文档，确保 /rag/v3/chat 在无前置摄取时也有可检索内容。
      */
-    private void seedDefaultPaymentDocument(InMemoryVectorStore vectorStore) {
+    private void seedDefaultPaymentDocument(VectorStore vectorStore) {
         DocumentIngestionService.inMemory(vectorStore).write(new DocumentIngestionCommand(
                 "payment-api.md",
                 "payment-system",

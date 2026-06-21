@@ -1,5 +1,6 @@
 package com.wish.rd.rag.ingestion;
 
+import com.wish.rd.framework.id.SnowflakeIdGenerator;
 import com.wish.rd.rag.knowledge.KnowledgeDocument;
 import com.wish.rd.rag.knowledge.KnowledgeWorkspace;
 import com.wish.rd.rag.vector.InMemoryVectorStore;
@@ -14,19 +15,36 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class IngestionAdminRegistry {
 
     private final KnowledgeWorkspace workspace;
+    private final IngestionTaskStore taskStore;
+    private final SnowflakeIdGenerator idGenerator;
     private final LinkedHashMap<String, ManagedIngestionPipeline> pipelines = new LinkedHashMap<>();
-    private final LinkedHashMap<String, ManagedIngestionTask> tasks = new LinkedHashMap<>();
-    private final LinkedHashMap<String, List<ManagedIngestionTaskNode>> taskNodes = new LinkedHashMap<>();
     private final AtomicLong pipelineSequence = new AtomicLong();
-    private final AtomicLong taskSequence = new AtomicLong();
 
-    private IngestionAdminRegistry(KnowledgeWorkspace workspace) {
+    private IngestionAdminRegistry(
+            KnowledgeWorkspace workspace,
+            IngestionTaskStore taskStore,
+            SnowflakeIdGenerator idGenerator
+    ) {
         this.workspace = workspace;
+        this.taskStore = taskStore;
+        this.idGenerator = idGenerator;
         seedDefaultPipeline();
     }
 
     public static IngestionAdminRegistry inMemory(KnowledgeWorkspace workspace) {
-        return new IngestionAdminRegistry(workspace);
+        return new IngestionAdminRegistry(
+                workspace,
+                new InMemoryIngestionTaskStore(),
+                SnowflakeIdGenerator.defaultGenerator()
+        );
+    }
+
+    public static IngestionAdminRegistry withTaskStore(
+            KnowledgeWorkspace workspace,
+            IngestionTaskStore taskStore,
+            SnowflakeIdGenerator idGenerator
+    ) {
+        return new IngestionAdminRegistry(workspace, taskStore, idGenerator);
     }
 
     public synchronized ManagedIngestionPipeline createPipeline(IngestionPipelineCommand command) {
@@ -81,7 +99,7 @@ public final class IngestionAdminRegistry {
 
     public synchronized ManagedIngestionTask executeTask(ManagedIngestionTaskCommand command) {
         ManagedIngestionPipeline pipeline = getPipeline(command.pipelineId());
-        String taskId = "ingestion-task-" + taskSequence.incrementAndGet();
+        String taskId = idGenerator.nextIdString();
         long startedAt = System.currentTimeMillis();
         try {
             KnowledgeDocument document = workspace.writeDocument(
@@ -117,8 +135,8 @@ public final class IngestionAdminRegistry {
                     startedAt,
                     completedAt
             );
-            tasks.put(taskId, task);
-            taskNodes.put(taskId, toTaskNodes(task, pipeline, workspace.listDocumentLogs(document.id())));
+            taskStore.saveTask(task);
+            taskStore.saveTaskNodes(taskId, toTaskNodes(task, pipeline, workspace.listDocumentLogs(document.id())));
             return task;
         } catch (RuntimeException exception) {
             long completedAt = System.currentTimeMillis();
@@ -140,30 +158,27 @@ public final class IngestionAdminRegistry {
                     startedAt,
                     completedAt
             );
-            tasks.put(taskId, failed);
-            taskNodes.put(taskId, List.of());
+            taskStore.saveTask(failed);
+            taskStore.saveTaskNodes(taskId, List.of());
             return failed;
         }
     }
 
     public synchronized ManagedIngestionTask getTask(String taskId) {
-        ManagedIngestionTask task = tasks.get(taskId);
-        if (task == null) {
-            throw new IllegalArgumentException("ingestion task not found: " + taskId);
-        }
-        return task;
+        return taskStore.findTask(taskId)
+                .orElseThrow(() -> new IllegalArgumentException("ingestion task not found: " + taskId));
     }
 
     public synchronized List<ManagedIngestionTaskNode> listTaskNodes(String taskId) {
         getTask(taskId);
-        return taskNodes.getOrDefault(taskId, List.of());
+        return taskStore.listTaskNodes(taskId);
     }
 
     public synchronized IngestionTaskPage pageTasks(String status, int pageNo, int pageSize) {
         int safePageNo = pageNo <= 0 ? 1 : pageNo;
         int safePageSize = pageSize <= 0 ? 10 : pageSize;
         String normalizedStatus = status == null ? "" : status.strip().toUpperCase(Locale.ROOT);
-        List<ManagedIngestionTask> filtered = tasks.values().stream()
+        List<ManagedIngestionTask> filtered = taskStore.listTasks().stream()
                 .filter(task -> normalizedStatus.isBlank() || task.status().name().equals(normalizedStatus))
                 .toList();
         int fromIndex = Math.min((safePageNo - 1) * safePageSize, filtered.size());
@@ -202,7 +217,7 @@ public final class IngestionAdminRegistry {
             ManagedIngestionPipelineNode pipelineNode = index < pipeline.nodes().size() ? pipeline.nodes().get(index) : null;
             long now = System.currentTimeMillis();
             nodes.add(new ManagedIngestionTaskNode(
-                    task.id() + "-node-" + (index + 1),
+                    idGenerator.nextIdString(),
                     task.id(),
                     task.pipelineId(),
                     pipelineNode == null ? log.nodeType().name().toLowerCase(Locale.ROOT) : pipelineNode.nodeId(),

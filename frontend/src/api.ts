@@ -55,6 +55,11 @@ export const api = {
       method: "POST",
       body: jsonBody(payload)
     }),
+  importFeishuDocument: (kbId: string, payload: AnyRecord) =>
+    request<KnowledgeDocument>(`/knowledge-base/${enc(kbId)}/docs/import/feishu`, {
+      method: "POST",
+      body: jsonBody(payload)
+    }),
   uploadDocument: (kbId: string, file: File) => {
     const formData = new FormData();
     formData.append("file", file);

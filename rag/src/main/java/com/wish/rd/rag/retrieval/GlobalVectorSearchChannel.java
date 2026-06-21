@@ -1,6 +1,6 @@
 package com.wish.rd.rag.retrieval;
 
-import com.wish.rd.rag.vector.InMemoryVectorStore;
+import com.wish.rd.rag.vector.VectorStore;
 
 import java.util.List;
 
@@ -12,9 +12,9 @@ import java.util.List;
  */
 public final class GlobalVectorSearchChannel implements SearchChannel {
 
-    private final InMemoryVectorStore vectorStore;
+    private final VectorStore vectorStore;
 
-    public GlobalVectorSearchChannel(InMemoryVectorStore vectorStore) {
+    public GlobalVectorSearchChannel(VectorStore vectorStore) {
         this.vectorStore = vectorStore;
     }
 

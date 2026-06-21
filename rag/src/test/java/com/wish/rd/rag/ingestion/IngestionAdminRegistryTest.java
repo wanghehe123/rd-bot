@@ -2,6 +2,7 @@ package com.wish.rd.rag.ingestion;
 
 import com.wish.rd.rag.core.chunk.ChunkingMode;
 import com.wish.rd.rag.knowledge.CreateKnowledgeBaseCommand;
+import com.wish.rd.rag.knowledge.KnowledgeBase;
 import com.wish.rd.rag.knowledge.KnowledgeWorkspace;
 import org.junit.jupiter.api.Test;
 
@@ -19,7 +20,7 @@ class IngestionAdminRegistryTest {
     @Test
     void createsPipelineExecutesTaskAndStoresKnowledgeDocumentWithNodeLogs() {
         KnowledgeWorkspace workspace = KnowledgeWorkspace.inMemory();
-        workspace.createBase(new CreateKnowledgeBaseCommand("支付系统", "支付 API 文档"));
+        KnowledgeBase base = workspace.createBase(new CreateKnowledgeBaseCommand("支付系统", "支付 API 文档"));
         IngestionAdminRegistry registry = IngestionAdminRegistry.inMemory(workspace);
 
         ManagedIngestionPipeline pipeline = registry.createPipeline(new IngestionPipelineCommand(
@@ -35,7 +36,7 @@ class IngestionAdminRegistryTest {
 
         ManagedIngestionTask task = registry.executeTask(new ManagedIngestionTaskCommand(
                 pipeline.id(),
-                "kb-1",
+                base.id(),
                 "api",
                 "text/markdown",
                 "payment-api.md",
@@ -55,10 +56,10 @@ class IngestionAdminRegistryTest {
         assertEquals(IngestionStatus.COMPLETED, task.status());
         assertEquals(pipeline.id(), task.pipelineId());
         assertEquals("payment-api.md", task.sourceFileName());
-        assertEquals("doc-1", task.documentId());
         assertTrue(task.chunkCount() > 0);
-        assertEquals(1, workspace.listDocuments("kb-1").size());
-        assertFalse(workspace.listChunks("doc-1").isEmpty());
+        assertEquals(1, workspace.listDocuments(base.id()).size());
+        assertEquals(workspace.listDocuments(base.id()).getFirst().id(), task.documentId());
+        assertFalse(workspace.listChunks(task.documentId()).isEmpty());
 
         List<ManagedIngestionTaskNode> nodes = registry.listTaskNodes(task.id());
         assertEquals(List.of("FETCHER", "PARSER", "CHUNKER", "INDEXER"),

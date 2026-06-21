@@ -16,7 +16,7 @@ import com.wish.rd.rag.retrieval.KeywordBM25SearchChannel;
 import com.wish.rd.rag.retrieval.LogCenterSearchChannel;
 import com.wish.rd.rag.retrieval.MultiChannelRetrievalEngine;
 import com.wish.rd.rag.retrieval.SearchChannel;
-import com.wish.rd.rag.vector.InMemoryVectorStore;
+import com.wish.rd.rag.vector.VectorStore;
 
 import java.util.List;
 
@@ -40,7 +40,7 @@ public final class RagRuntimeFactory {
      *
      * @param vectorStore 目标向量库
      */
-    public static IngestionPipeline ingestionPipeline(InMemoryVectorStore vectorStore) {
+    public static IngestionPipeline ingestionPipeline(VectorStore vectorStore) {
         return new SimpleIngestionPipeline(vectorStore);
     }
 
@@ -52,7 +52,7 @@ public final class RagRuntimeFactory {
      * @param taskContextPort  上下文回调端口（可空）
      */
     public static RepairRagPipeline repairRagPipeline(
-            InMemoryVectorStore vectorStore,
+            VectorStore vectorStore,
             IntentTree intentTree,
             RepairTaskContextPort taskContextPort
     ) {
@@ -82,7 +82,7 @@ public final class RagRuntimeFactory {
      * @param taskContextPort        上下文回调端口（可空）
      */
     public static RepairRagPipeline repairRagPipeline(
-            InMemoryVectorStore vectorStore,
+            VectorStore vectorStore,
             IntentTree intentTree,
             LogCenterPort logCenterPort,
             CodeRepositorySearchPort codeRepositorySearchPort,

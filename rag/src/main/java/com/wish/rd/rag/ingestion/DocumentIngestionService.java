@@ -10,18 +10,18 @@ import com.wish.rd.rag.core.parser.DocumentParserSelector;
 import com.wish.rd.rag.core.parser.MarkdownDocumentParser;
 import com.wish.rd.rag.core.parser.ParseResult;
 import com.wish.rd.rag.core.parser.PlainTextDocumentParser;
-import com.wish.rd.rag.vector.InMemoryVectorStore;
+import com.wish.rd.rag.vector.VectorStore;
 
 import java.util.List;
 
 public final class DocumentIngestionService {
 
-    private final InMemoryVectorStore vectorStore;
+    private final VectorStore vectorStore;
     private final DocumentParserSelector parserSelector;
     private final ChunkingStrategyFactory chunkingStrategyFactory;
 
     public DocumentIngestionService(
-            InMemoryVectorStore vectorStore,
+            VectorStore vectorStore,
             DocumentParserSelector parserSelector,
             ChunkingStrategyFactory chunkingStrategyFactory
     ) {
@@ -30,7 +30,7 @@ public final class DocumentIngestionService {
         this.chunkingStrategyFactory = chunkingStrategyFactory;
     }
 
-    public static DocumentIngestionService inMemory(InMemoryVectorStore vectorStore) {
+    public static DocumentIngestionService inMemory(VectorStore vectorStore) {
         return new DocumentIngestionService(
                 vectorStore,
                 new DocumentParserSelector(List.of(new MarkdownDocumentParser(), new PlainTextDocumentParser())),

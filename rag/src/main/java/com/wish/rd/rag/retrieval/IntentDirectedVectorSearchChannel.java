@@ -1,6 +1,6 @@
 package com.wish.rd.rag.retrieval;
 
-import com.wish.rd.rag.vector.InMemoryVectorStore;
+import com.wish.rd.rag.vector.VectorStore;
 
 /**
  * 意图导向向量检索通道。
@@ -10,9 +10,9 @@ import com.wish.rd.rag.vector.InMemoryVectorStore;
  */
 public final class IntentDirectedVectorSearchChannel implements SearchChannel {
 
-    private final InMemoryVectorStore vectorStore;
+    private final VectorStore vectorStore;
 
-    public IntentDirectedVectorSearchChannel(InMemoryVectorStore vectorStore) {
+    public IntentDirectedVectorSearchChannel(VectorStore vectorStore) {
         this.vectorStore = vectorStore;
     }
 

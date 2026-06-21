@@ -1,6 +1,6 @@
 package com.wish.rd.rag.retrieval;
 
-import com.wish.rd.rag.vector.InMemoryVectorStore;
+import com.wish.rd.rag.vector.VectorStore;
 
 /**
  * 关键词（BM25 风格）检索通道。
@@ -10,9 +10,9 @@ import com.wish.rd.rag.vector.InMemoryVectorStore;
  */
 public final class KeywordBM25SearchChannel implements SearchChannel {
 
-    private final InMemoryVectorStore vectorStore;
+    private final VectorStore vectorStore;
 
-    public KeywordBM25SearchChannel(InMemoryVectorStore vectorStore) {
+    public KeywordBM25SearchChannel(VectorStore vectorStore) {
         this.vectorStore = vectorStore;
     }
 

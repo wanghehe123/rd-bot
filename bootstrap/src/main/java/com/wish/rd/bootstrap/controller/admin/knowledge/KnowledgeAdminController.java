@@ -4,6 +4,8 @@ import com.wish.rd.engine.admin.knowledge.KnowledgeAdminEngine;
 import com.wish.rd.engine.admin.knowledge.KnowledgeAdminOverview;
 import com.wish.rd.rag.core.chunk.ChunkingMode;
 import com.wish.rd.rag.knowledge.CreateKnowledgeBaseCommand;
+import com.wish.rd.rag.knowledge.FeishuDocImportCommand;
+import com.wish.rd.rag.knowledge.FeishuDocKnowledgeImporter;
 import com.wish.rd.rag.knowledge.KnowledgeBase;
 import com.wish.rd.rag.knowledge.KnowledgeChunk;
 import com.wish.rd.rag.knowledge.KnowledgeDocument;
@@ -36,10 +38,16 @@ public final class KnowledgeAdminController {
 
     private final KnowledgeWorkspace workspace;
     private final KnowledgeAdminEngine adminEngine;
+    private final FeishuDocKnowledgeImporter feishuImporter;
 
-    public KnowledgeAdminController(KnowledgeWorkspace workspace, KnowledgeAdminEngine adminEngine) {
+    public KnowledgeAdminController(
+            KnowledgeWorkspace workspace,
+            KnowledgeAdminEngine adminEngine,
+            FeishuDocKnowledgeImporter feishuImporter
+    ) {
         this.workspace = workspace;
         this.adminEngine = adminEngine;
+        this.feishuImporter = feishuImporter;
     }
 
     @GetMapping("/knowledge-base")
@@ -96,6 +104,20 @@ public final class KnowledgeAdminController {
                 request.mimeType(),
                 request.contentBytes(),
                 request.chunkingMode(),
+                request.chunkSize(),
+                request.overlapSize()
+        ));
+    }
+
+    @PostMapping("/knowledge-base/{knowledgeBaseId}/docs/import/feishu")
+    public KnowledgeDocument importFeishuDocument(
+            @PathVariable("knowledgeBaseId") String knowledgeBaseId,
+            @RequestBody FeishuImportRequest request
+    ) {
+        return feishuImporter.importDocument(new FeishuDocImportCommand(
+                knowledgeBaseId,
+                request.source(),
+                request.knowledgeType(),
                 request.chunkSize(),
                 request.overlapSize()
         ));
@@ -244,6 +266,14 @@ public final class KnowledgeAdminController {
     }
 
     public record KnowledgeBaseUpdateRequest(String name) {
+    }
+
+    public record FeishuImportRequest(
+            String source,
+            String knowledgeType,
+            int chunkSize,
+            int overlapSize
+    ) {
     }
 
     public record KnowledgeBaseView(
