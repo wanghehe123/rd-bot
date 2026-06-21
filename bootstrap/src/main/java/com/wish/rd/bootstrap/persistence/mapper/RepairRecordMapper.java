@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.wish.rd.bootstrap.persistence.entity.RepairRecordRow;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Update;
 
 @Mapper
 public interface RepairRecordMapper extends BaseMapper<RepairRecordRow> {
@@ -22,4 +23,13 @@ public interface RepairRecordMapper extends BaseMapper<RepairRecordRow> {
             )
             """)
     void insertRecord(RepairRecordRow row);
+
+    @Update("""
+            UPDATE repair_records
+            SET status = #{status},
+                rag_summary = #{ragSummary},
+                updated_at = #{updatedAt}
+            WHERE id = #{id}
+            """)
+    void updateStatus(RepairRecordRow row);
 }

@@ -77,7 +77,7 @@ public final class PostgresRepairRecordRepository implements RepairRecordReposit
         row.status = status.name();
         row.ragSummary = ragSummary == null ? "" : ragSummary;
         row.updatedAt = OffsetDateTime.now();
-        recordMapper.updateById(row);
+        recordMapper.updateStatus(row);
         return toRecord(row);
     }
 
