@@ -91,7 +91,7 @@ public final class RagBugFixEngine {
         String userQuestion = userQuestion(safeTicket);
         return chatQueueLimiter.enqueue(
                 new ChatQueueLimiter.ChatQueueRequest(userQuestion, taskId),
-                () -> runBugFixFlow(safeTicket, safeLogs, taskId, deepThinking, userQuestion),
+                () -> runBugFixRagFlow(safeTicket, safeLogs, taskId, deepThinking, userQuestion),
                 () -> reject(safeTicket, safeLogs, taskId, deepThinking, userQuestion)
         );
     }
@@ -105,7 +105,7 @@ public final class RagBugFixEngine {
         return streamTaskRegistry.get(taskId);
     }
 
-    private BugFixMessage runBugFixFlow(
+    private BugFixMessage runBugFixRagFlow(
             TicketSnapshot ticket,
             List<String> logs,
             String taskId,
