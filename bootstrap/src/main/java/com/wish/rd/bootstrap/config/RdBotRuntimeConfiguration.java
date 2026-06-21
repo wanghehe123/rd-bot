@@ -21,7 +21,8 @@ import com.wish.rd.engine.admin.intent.IntentTreeAdminEngine;
 import com.wish.rd.engine.admin.knowledge.KnowledgeAdminEngine;
 import com.wish.rd.engine.admin.feedback.MessageFeedbackAdminEngine;
 import com.wish.rd.engine.admin.rewrite.QueryTermMappingAdminEngine;
-import com.wish.rd.engine.rag.RagV3ChatEngine;
+import com.wish.rd.engine.rag.BugFixAgentEngine;
+import com.wish.rd.engine.rag.RagBugFixEngine;
 import com.wish.rd.engine.admin.sample.SampleQuestionAdminEngine;
 import com.wish.rd.exec.repair.InMemoryRepairRecordRepository;
 import com.wish.rd.exec.repair.RepairRecordRepository;
@@ -66,7 +67,7 @@ import org.springframework.context.annotation.Configuration;
  *
  * <p>本项目不使用数据库等外部中间件（MVP 全部为内存实现），因此所有核心组件都通过
  * 本类以 {@code @Bean} 方式集中创建，注入到对应的 {@code engine}/{@code controller}。
- * 装配顺序遵循"知识库 → 摄取 → 对话/反馈 → 改写 → 意图 → 样例 → 流式任务 → V3 Chat"的依赖链。
+ * 装配顺序遵循"知识库 → 摄取 → 对话/反馈 → 改写 → 意图 → 样例 → 流式任务 → Bug 修复 RAG"的依赖链。
  *
  * <p>各 Bean 的职责：
  * <ul>
@@ -77,7 +78,7 @@ import org.springframework.context.annotation.Configuration;
  *       （基于虚拟线程异步加载历史）；</li>
  *   <li>反馈/改写/意图/样例：分别对应各自的内存注册表；</li>
  *   <li>运行时：{@link RagTraceStore}（轻量链路追踪）、{@link RagStreamTaskRegistry}
- *       （聊天任务状态）、{@link RagV3ChatEngine}（对外聊天总编排）。</li>
+ *       （聊天任务状态）、{@link RagBugFixEngine}（工单修复 RAG 总编排）。</li>
  * </ul>
  */
 @Configuration
@@ -355,28 +356,25 @@ public class RdBotRuntimeConfiguration {
         return RagStreamTaskRegistry.inMemory();
     }
 
-    /**
-     * V3 聊天总编排引擎，注入所有运行时依赖。
-     *
-     * <p>全局并发限流开关与上限来自配置 {@code rag.rate-limit.global.*}：
-     * 默认关闭（{@code enabled=false}），上限 {@code max-concurrent=4}。
-     */
+    /** Bug 修复 RAG 编排引擎，注入所有运行时依赖。 */
     @Bean
-    public RagV3ChatEngine ragV3ChatEngine(
+    public RagBugFixEngine ragBugFixEngine(
             ConversationMemoryService memoryService,
             QueryTermMappingRegistry queryTermMappingRegistry,
             IntentTreeRegistry intentTreeRegistry,
             KnowledgeWorkspace knowledgeWorkspace,
             RagStreamTaskRegistry streamTaskRegistry,
+            org.springframework.beans.factory.ObjectProvider<BugFixAgentEngine> agentEngineProvider,
             @Value("${rag.rate-limit.global.enabled:false}") boolean globalRateLimitEnabled,
             @Value("${rag.rate-limit.global.max-concurrent:4}") int globalMaxConcurrent
     ) {
-        return new RagV3ChatEngine(
+        return new RagBugFixEngine(
                 memoryService,
                 queryTermMappingRegistry,
                 intentTreeRegistry,
                 knowledgeWorkspace,
                 streamTaskRegistry,
+                agentEngineProvider.getIfAvailable(),
                 globalRateLimitEnabled,
                 globalMaxConcurrent
         );
