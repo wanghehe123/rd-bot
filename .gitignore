@@ -1,0 +1,40 @@
+# ===== 构建产物 =====
+target/
+build/
+out/
+*.class
+
+# ===== Maven =====
+!.mvn/wrapper/maven-wrapper.properties
+dependency-reduced-pom.xml
+
+# ===== IDE =====
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.project
+.classpath
+*.swp
+
+# ===== 操作系统 =====
+.DS_Store
+Thumbs.db
+
+# ===== 日志 =====
+*.log
+logs/
+
+# ===== 文档（永不提交）=====
+docs/
+
+# ===== 生成产物 / 本地输出 =====
+lark-output/
+
+# ===== 本地环境与密钥 =====
+*.env
+*.local
+application-local.yml
+application-local.yaml
