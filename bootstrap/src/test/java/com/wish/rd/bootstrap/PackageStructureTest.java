@@ -35,4 +35,43 @@ class PackageStructureTest {
                     .containsExactlyInAnyOrderElementsOf(allowed);
         }
     }
+
+    @Test
+    void userDomainFollowsRagentMvcPackageShape() {
+        Path userRoot = PROJECT_ROOT.resolve("bootstrap/src/main/java/com/wish/rd/bootstrap/user");
+
+        assertThat(userRoot.resolve("controller/UserAdminController.java")).exists();
+        assertThat(userRoot.resolve("controller/request/UserCreateRequest.java")).exists();
+        assertThat(userRoot.resolve("controller/request/UserUpdateRequest.java")).exists();
+        assertThat(userRoot.resolve("controller/request/ChangePasswordRequest.java")).exists();
+        assertThat(userRoot.resolve("controller/vo/UserVO.java")).exists();
+        assertThat(userRoot.resolve("controller/vo/UserPageVO.java")).exists();
+        assertThat(userRoot.resolve("controller/vo/DeleteVO.java")).exists();
+        assertThat(userRoot.resolve("service/UserAdminService.java")).exists();
+        assertThat(userRoot.resolve("service/impl/InMemoryUserAdminService.java")).exists();
+        assertThat(userRoot.resolve("service/impl/PostgresUserAdminService.java")).exists();
+        assertThat(userRoot.resolve("dao/entity/AdminUserDO.java")).exists();
+        assertThat(userRoot.resolve("dao/mapper/AdminUserMapper.java")).exists();
+
+        assertThat(PROJECT_ROOT.resolve("bootstrap/src/main/java/com/wish/rd/bootstrap/controller/admin/user/UserAdminController.java"))
+                .doesNotExist();
+        assertThat(PROJECT_ROOT.resolve("bootstrap/src/main/java/com/wish/rd/bootstrap/user/UserAdminService.java"))
+                .doesNotExist();
+        assertThat(PROJECT_ROOT.resolve("bootstrap/src/main/java/com/wish/rd/bootstrap/persistence/PostgresUserAdminService.java"))
+                .doesNotExist();
+    }
+
+    @Test
+    void userServicesAreSpringManagedInsteadOfConfigurationConstructed() throws Exception {
+        Path userRoot = PROJECT_ROOT.resolve("bootstrap/src/main/java/com/wish/rd/bootstrap/user");
+        String postgresService = Files.readString(userRoot.resolve("service/impl/PostgresUserAdminService.java"));
+        String inMemoryService = Files.readString(userRoot.resolve("service/impl/InMemoryUserAdminService.java"));
+        String configuration = Files.readString(PROJECT_ROOT.resolve("bootstrap/src/main/java/com/wish/rd/bootstrap/config/RdBotRuntimeConfiguration.java"));
+
+        assertThat(postgresService).contains("@Service");
+        assertThat(inMemoryService).contains("@Service");
+        assertThat(configuration).doesNotContain("userAdminService(");
+        assertThat(configuration).doesNotContain("new PostgresUserAdminService");
+        assertThat(configuration).doesNotContain("new InMemoryUserAdminService");
+    }
 }

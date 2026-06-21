@@ -1,9 +1,6 @@
-package com.wish.rd.bootstrap.user;
+package com.wish.rd.bootstrap.user.controller.vo;
 
-/**
- * 后台用户聚合视图。
- */
-public record ManagedUser(
+public record UserVO(
         String id,
         String username,
         String role,

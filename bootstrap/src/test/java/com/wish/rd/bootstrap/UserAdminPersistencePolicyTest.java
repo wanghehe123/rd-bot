@@ -13,7 +13,7 @@ class UserAdminPersistencePolicyTest {
     @Test
     void userControllerDelegatesStorageToPersistenceLayer() throws Exception {
         Path moduleRoot = Path.of(System.getProperty("user.dir"));
-        Path controller = moduleRoot.resolve("src/main/java/com/wish/rd/bootstrap/controller/admin/user/UserAdminController.java");
+        Path controller = moduleRoot.resolve("src/main/java/com/wish/rd/bootstrap/user/controller/UserAdminController.java");
         String source = Files.readString(controller);
 
         assertFalse(source.contains("LinkedHashMap"), "UserAdminController must not own in-memory user storage");

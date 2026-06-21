@@ -9,6 +9,9 @@ import org.springframework.context.annotation.Configuration;
  */
 @Configuration
 @ConditionalOnProperty(name = "rd.knowledge.store", havingValue = "postgres")
-@MapperScan("com.wish.rd.bootstrap.persistence.mapper")
+@MapperScan({
+        "com.wish.rd.bootstrap.persistence.mapper",
+        "com.wish.rd.bootstrap.user.dao.mapper"
+})
 public class MyBatisPlusPersistenceConfiguration {
 }

@@ -1,13 +1,14 @@
-package com.wish.rd.bootstrap.persistence;
+package com.wish.rd.bootstrap.user.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
-import com.wish.rd.bootstrap.persistence.entity.AdminUserRow;
-import com.wish.rd.bootstrap.persistence.mapper.AdminUserMapper;
-import com.wish.rd.bootstrap.user.ManagedUser;
-import com.wish.rd.bootstrap.user.ManagedUserPage;
-import com.wish.rd.bootstrap.user.UserAdminService;
-import com.wish.rd.bootstrap.user.UserPasswordHashing;
+import com.wish.rd.bootstrap.user.controller.vo.UserPageVO;
+import com.wish.rd.bootstrap.user.controller.vo.UserVO;
+import com.wish.rd.bootstrap.user.dao.entity.AdminUserDO;
+import com.wish.rd.bootstrap.user.dao.mapper.AdminUserMapper;
+import com.wish.rd.bootstrap.user.service.UserAdminService;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.stereotype.Service;
 
 import java.time.OffsetDateTime;
 import java.util.List;
@@ -17,6 +18,8 @@ import java.util.NoSuchElementException;
 /**
  * PostgreSQL 后台用户管理服务。
  */
+@Service
+@ConditionalOnProperty(name = "rd.knowledge.store", havingValue = "postgres")
 public final class PostgresUserAdminService implements UserAdminService {
 
     private static final long DEFAULT_ADMIN_ID = 1L;
@@ -31,10 +34,10 @@ public final class PostgresUserAdminService implements UserAdminService {
     }
 
     @Override
-    public ManagedUserPage list(int current, int size, String keyword) {
+    public UserPageVO<UserVO> list(int current, int size, String keyword) {
         int page = Math.max(1, current);
         int pageSize = Math.max(1, size);
-        QueryWrapper<AdminUserRow> query = new QueryWrapper<>();
+        QueryWrapper<AdminUserDO> query = new QueryWrapper<>();
         String normalized = normalizeKeyword(keyword);
         if (normalized != null) {
             query.and(wrapper -> wrapper
@@ -43,7 +46,7 @@ public final class PostgresUserAdminService implements UserAdminService {
                     .apply("LOWER(role) LIKE {0}", "%" + normalized + "%"));
         }
         query.orderByAsc("created_at").orderByAsc("id");
-        List<ManagedUser> all = mapper.selectList(query)
+        List<UserVO> all = mapper.selectList(query)
                 .stream()
                 .map(this::toUser)
                 .toList();
@@ -51,16 +54,16 @@ public final class PostgresUserAdminService implements UserAdminService {
         int fromIndex = Math.min((page - 1) * pageSize, total);
         int toIndex = Math.min(fromIndex + pageSize, total);
         int pages = total == 0 ? 0 : (int) Math.ceil((double) total / pageSize);
-        return new ManagedUserPage(all.subList(fromIndex, toIndex), total, pageSize, page, pages);
+        return new UserPageVO<>(all.subList(fromIndex, toIndex), total, pageSize, page, pages);
     }
 
     @Override
-    public ManagedUser create(String username, String password, String role, String avatar) {
+    public UserVO create(String username, String password, String role, String avatar) {
         String normalizedUsername = requireText(username, "username must not be blank");
         String normalizedPassword = requireText(password, "password must not be blank");
         ensureUsernameAvailable(normalizedUsername, null);
         OffsetDateTime now = OffsetDateTime.now();
-        AdminUserRow row = new AdminUserRow();
+        AdminUserDO row = new AdminUserDO();
         row.id = idGenerator.nextId();
         row.username = normalizedUsername;
         row.role = normalizeRole(role);
@@ -73,8 +76,8 @@ public final class PostgresUserAdminService implements UserAdminService {
     }
 
     @Override
-    public ManagedUser update(String id, String username, String password, String role, String avatar) {
-        AdminUserRow existing = requireUser(id);
+    public UserVO update(String id, String username, String password, String role, String avatar) {
+        AdminUserDO existing = requireUser(id);
         String normalizedUsername = normalize(username);
         if (normalizedUsername != null) {
             ensureUsernameAvailable(normalizedUsername, existing.id);
@@ -92,7 +95,7 @@ public final class PostgresUserAdminService implements UserAdminService {
 
     @Override
     public boolean delete(String id) {
-        AdminUserRow existing = requireUser(id);
+        AdminUserDO existing = requireUser(id);
         if ("admin".equals(existing.username)) {
             throw new IllegalArgumentException("default admin user cannot be deleted");
         }
@@ -104,7 +107,7 @@ public final class PostgresUserAdminService implements UserAdminService {
     public boolean changePassword(String currentPassword, String newPassword) {
         String current = requireText(currentPassword, "currentPassword must not be blank");
         String next = requireText(newPassword, "newPassword must not be blank");
-        AdminUserRow admin = findByUsername("admin");
+        AdminUserDO admin = findByUsername("admin");
         if (admin == null) {
             throw new NoSuchElementException("user not found: admin");
         }
@@ -122,7 +125,7 @@ public final class PostgresUserAdminService implements UserAdminService {
             return;
         }
         OffsetDateTime now = OffsetDateTime.now();
-        AdminUserRow row = new AdminUserRow();
+        AdminUserDO row = new AdminUserDO();
         row.id = DEFAULT_ADMIN_ID;
         row.username = "admin";
         row.role = "admin";
@@ -133,8 +136,8 @@ public final class PostgresUserAdminService implements UserAdminService {
         mapper.insert(row);
     }
 
-    private AdminUserRow requireUser(String id) {
-        AdminUserRow user = mapper.selectById(PostgresPersistenceSupport.parseId(id));
+    private AdminUserDO requireUser(String id) {
+        AdminUserDO user = mapper.selectById(parseId(id));
         if (user == null) {
             throw new NoSuchElementException("user not found: " + id);
         }
@@ -142,24 +145,24 @@ public final class PostgresUserAdminService implements UserAdminService {
     }
 
     private void ensureUsernameAvailable(String username, Long currentId) {
-        AdminUserRow existing = findByUsername(username);
+        AdminUserDO existing = findByUsername(username);
         if (existing != null && !existing.id.equals(currentId)) {
             throw new IllegalArgumentException("username already exists: " + username);
         }
     }
 
-    private AdminUserRow findByUsername(String username) {
-        QueryWrapper<AdminUserRow> query = new QueryWrapper<>();
+    private AdminUserDO findByUsername(String username) {
+        QueryWrapper<AdminUserDO> query = new QueryWrapper<>();
         query.eq("username", username);
         return mapper.selectOne(query);
     }
 
-    private ManagedUser toUser(AdminUserRow row) {
-        return new ManagedUser(
-                PostgresPersistenceSupport.idString(row.id),
+    private UserVO toUser(AdminUserDO row) {
+        return new UserVO(
+                idString(row.id),
                 row.username,
                 row.role,
-                PostgresPersistenceSupport.safe(row.avatar),
+                safe(row.avatar),
                 toInstantString(row.createdAt),
                 toInstantString(row.updatedAt)
         );
@@ -204,5 +207,17 @@ public final class PostgresUserAdminService implements UserAdminService {
             return "";
         }
         return dateTime.toInstant().toString();
+    }
+
+    private long parseId(String id) {
+        return Long.parseLong(id);
+    }
+
+    private String idString(Long id) {
+        return id == null ? "" : id.toString();
+    }
+
+    private String safe(String value) {
+        return value == null ? "" : value;
     }
 }

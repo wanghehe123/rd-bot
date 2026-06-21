@@ -1,4 +1,4 @@
-package com.wish.rd.bootstrap.persistence.entity;
+package com.wish.rd.bootstrap.user.dao.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
@@ -7,7 +7,7 @@ import com.baomidou.mybatisplus.annotation.TableName;
 import java.time.OffsetDateTime;
 
 @TableName("admin_users")
-public class AdminUserRow {
+public class AdminUserDO {
 
     @TableId(type = IdType.INPUT)
     public Long id;

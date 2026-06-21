@@ -1,6 +1,11 @@
-package com.wish.rd.bootstrap.user;
+package com.wish.rd.bootstrap.user.service.impl;
 
+import com.wish.rd.bootstrap.user.controller.vo.UserPageVO;
+import com.wish.rd.bootstrap.user.controller.vo.UserVO;
+import com.wish.rd.bootstrap.user.service.UserAdminService;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.stereotype.Service;
 
 import java.time.Instant;
 import java.util.Comparator;
@@ -13,6 +18,8 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * 非 PostgreSQL 模式下的用户管理实现，保证本地测试和 demo 仍可直接运行。
  */
+@Service
+@ConditionalOnProperty(name = "rd.knowledge.store", havingValue = "memory", matchIfMissing = true)
 public final class InMemoryUserAdminService implements UserAdminService {
 
     private static final String DEFAULT_ADMIN_ID = "1";
@@ -35,11 +42,11 @@ public final class InMemoryUserAdminService implements UserAdminService {
     }
 
     @Override
-    public ManagedUserPage list(int current, int size, String keyword) {
+    public UserPageVO<UserVO> list(int current, int size, String keyword) {
         int page = Math.max(1, current);
         int pageSize = Math.max(1, size);
         String normalized = normalizeKeyword(keyword);
-        List<ManagedUser> all = users.values()
+        List<UserVO> all = users.values()
                 .stream()
                 .filter(user -> normalized == null
                         || user.username().toLowerCase(Locale.ROOT).contains(normalized)
@@ -51,11 +58,11 @@ public final class InMemoryUserAdminService implements UserAdminService {
         int fromIndex = Math.min((page - 1) * pageSize, total);
         int toIndex = Math.min(fromIndex + pageSize, total);
         int pages = total == 0 ? 0 : (int) Math.ceil((double) total / pageSize);
-        return new ManagedUserPage(all.subList(fromIndex, toIndex), total, pageSize, page, pages);
+        return new UserPageVO<>(all.subList(fromIndex, toIndex), total, pageSize, page, pages);
     }
 
     @Override
-    public ManagedUser create(String username, String password, String role, String avatar) {
+    public UserVO create(String username, String password, String role, String avatar) {
         String normalizedUsername = requireText(username, "username must not be blank");
         String normalizedPassword = requireText(password, "password must not be blank");
         ensureUsernameAvailable(normalizedUsername, null);
@@ -75,7 +82,7 @@ public final class InMemoryUserAdminService implements UserAdminService {
     }
 
     @Override
-    public ManagedUser update(String id, String username, String password, String role, String avatar) {
+    public UserVO update(String id, String username, String password, String role, String avatar) {
         StoredUser existing = requireUser(id);
         String normalizedUsername = normalize(username);
         if (normalizedUsername != null) {
@@ -141,8 +148,8 @@ public final class InMemoryUserAdminService implements UserAdminService {
         }
     }
 
-    private ManagedUser toUser(StoredUser user) {
-        return new ManagedUser(user.id(), user.username(), user.role(), user.avatar(), user.createTime(), user.updateTime());
+    private UserVO toUser(StoredUser user) {
+        return new UserVO(user.id(), user.username(), user.role(), user.avatar(), user.createTime(), user.updateTime());
     }
 
     private String normalizeRole(String role) {

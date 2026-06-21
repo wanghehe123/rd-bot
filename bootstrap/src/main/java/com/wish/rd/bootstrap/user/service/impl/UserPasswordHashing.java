@@ -1,4 +1,4 @@
-package com.wish.rd.bootstrap.user;
+package com.wish.rd.bootstrap.user.service.impl;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
