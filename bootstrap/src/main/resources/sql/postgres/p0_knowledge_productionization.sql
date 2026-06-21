@@ -1,5 +1,21 @@
 CREATE EXTENSION IF NOT EXISTS vector;
 
+CREATE TABLE IF NOT EXISTS admin_users (
+    id            BIGINT PRIMARY KEY,
+    username      VARCHAR(128) NOT NULL,
+    role          VARCHAR(32) NOT NULL DEFAULT 'user',
+    avatar        TEXT NOT NULL DEFAULT '',
+    password_hash VARCHAR(128) NOT NULL,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_admin_users_username ON admin_users (username);
+
+INSERT INTO admin_users (id, username, role, avatar, password_hash)
+VALUES (1, 'admin', 'admin', '', '8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918')
+ON CONFLICT (username) DO NOTHING;
+
 CREATE TABLE IF NOT EXISTS knowledge_bases (
     id          BIGINT PRIMARY KEY,
     name        VARCHAR(128) NOT NULL,
