@@ -12,7 +12,8 @@ import java.nio.charset.StandardCharsets;
  * 管理后台前端路由控制器。
  *
  * <p>将 /admin、/admin/dashboard、/admin/knowledge、/admin/intent-tree、
- * /admin/intent-list、/admin/users 等前端路由统一回退到类路径下的静态
+ * /admin/intent-list、/admin/users、/admin/ingestion、/admin/mappings、
+ * /admin/traces、/admin/sample-questions、/admin/settings 等前端路由统一回退到类路径下的静态
  * index.html，以支持单页应用（SPA）的前端直连刷新。
  */
 @Controller
@@ -26,7 +27,13 @@ public final class AdminFrontendController {
             "/admin/knowledge/{knowledgeBaseId}/docs/{documentId}",
             "/admin/intent-tree",
             "/admin/intent-list",
-            "/admin/users"
+            "/admin/users",
+            "/admin/ingestion",
+            "/admin/mappings",
+            "/admin/traces",
+            "/admin/traces/{traceId}",
+            "/admin/sample-questions",
+            "/admin/settings"
     })
     @ResponseBody
     public String admin() throws IOException {

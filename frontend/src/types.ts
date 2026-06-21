@@ -1,0 +1,74 @@
+export type PageResponse<T> = {
+  records?: T[];
+  items?: T[];
+  total?: number;
+  size?: number;
+  current?: number;
+  pages?: number;
+  pageNo?: number;
+  pageSize?: number;
+};
+
+export type AnyRecord = Record<string, any>;
+
+export type KnowledgeBase = {
+  id: string;
+  name: string;
+  description?: string;
+  enabled?: boolean;
+  documentCount?: number;
+  collectionName?: string;
+  embeddingModel?: string;
+  createTime?: string;
+  updateTime?: string;
+  createdAtEpochMillis?: number;
+};
+
+export type KnowledgeDocument = {
+  id: string;
+  knowledgeBaseId: string;
+  sourceName: string;
+  knowledgeType: string;
+  mimeType?: string;
+  status?: string;
+  enabled?: boolean;
+  chunkCount?: number;
+  createdAtEpochMillis?: number;
+};
+
+export type KnowledgeChunk = {
+  id: string;
+  documentId: string;
+  knowledgeBaseId: string;
+  index: number;
+  content: string;
+  knowledgeType: string;
+  sourceName: string;
+  enabled?: boolean;
+};
+
+export type IntentNode = {
+  id: string;
+  intentCode: string;
+  name: string;
+  level?: number;
+  parentCode?: string | null;
+  description?: string;
+  kbId?: string | null;
+  examples?: string[];
+  enabled?: number | boolean;
+  sortOrder?: number;
+  children?: IntentNode[];
+  pathText?: string;
+};
+
+export type ManagedUser = {
+  id: string;
+  username: string;
+  role: string;
+  avatar?: string;
+  createTime?: string;
+  updateTime?: string;
+};
+
+export type ToastTone = "success" | "error" | "info";
