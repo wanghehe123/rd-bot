@@ -22,6 +22,7 @@ import com.wish.rd.engine.admin.knowledge.KnowledgeAdminEngine;
 import com.wish.rd.engine.admin.feedback.MessageFeedbackAdminEngine;
 import com.wish.rd.engine.admin.rewrite.QueryTermMappingAdminEngine;
 import com.wish.rd.engine.rag.BugFixAgentEngine;
+import com.wish.rd.engine.rag.ChatQueueLimiter;
 import com.wish.rd.engine.rag.RagBugFixEngine;
 import com.wish.rd.engine.admin.sample.SampleQuestionAdminEngine;
 import com.wish.rd.exec.repair.InMemoryRepairRecordRepository;
@@ -365,8 +366,7 @@ public class RdBotRuntimeConfiguration {
             KnowledgeWorkspace knowledgeWorkspace,
             RagStreamTaskRegistry streamTaskRegistry,
             org.springframework.beans.factory.ObjectProvider<BugFixAgentEngine> agentEngineProvider,
-            @Value("${rag.rate-limit.global.enabled:false}") boolean globalRateLimitEnabled,
-            @Value("${rag.rate-limit.global.max-concurrent:4}") int globalMaxConcurrent
+            org.springframework.beans.factory.ObjectProvider<ChatQueueLimiter> chatQueueLimiterProvider
     ) {
         return new RagBugFixEngine(
                 memoryService,
@@ -375,8 +375,7 @@ public class RdBotRuntimeConfiguration {
                 knowledgeWorkspace,
                 streamTaskRegistry,
                 agentEngineProvider.getIfAvailable(),
-                globalRateLimitEnabled,
-                globalMaxConcurrent
+                chatQueueLimiterProvider.getIfAvailable(ChatQueueLimiter::passThrough)
         );
     }
 
