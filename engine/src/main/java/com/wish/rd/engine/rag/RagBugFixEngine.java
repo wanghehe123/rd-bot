@@ -27,7 +27,6 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Bug 修复 RAG 编排引擎。
@@ -45,11 +44,17 @@ public final class RagBugFixEngine {
     private final KnowledgeWorkspace knowledgeWorkspace;
     private final RagStreamTaskRegistry streamTaskRegistry;
     private final BugFixAgentEngine agentEngine;
-    private final boolean globalRateLimitEnabled;
-    private final int globalMaxConcurrent;
-    private final AtomicInteger activeChats = new AtomicInteger();
+    private final ChatQueueLimiter chatQueueLimiter;
 
     public RagBugFixEngine(ConversationMemoryService memoryService, BugFixAgentEngine agentEngine) {
+        this(memoryService, agentEngine, ChatQueueLimiter.passThrough());
+    }
+
+    public RagBugFixEngine(
+            ConversationMemoryService memoryService,
+            BugFixAgentEngine agentEngine,
+            ChatQueueLimiter chatQueueLimiter
+    ) {
         this(
                 memoryService,
                 QueryTermMappingRegistry.withDefaults(),
@@ -57,8 +62,7 @@ public final class RagBugFixEngine {
                 null,
                 RagStreamTaskRegistry.inMemory(),
                 agentEngine,
-                false,
-                4
+                chatQueueLimiter
         );
     }
 
@@ -69,8 +73,7 @@ public final class RagBugFixEngine {
             KnowledgeWorkspace knowledgeWorkspace,
             RagStreamTaskRegistry streamTaskRegistry,
             BugFixAgentEngine agentEngine,
-            boolean globalRateLimitEnabled,
-            int globalMaxConcurrent
+            ChatQueueLimiter chatQueueLimiter
     ) {
         this.memoryService = memoryService == null ? DefaultConversationMemoryService.inMemory() : memoryService;
         this.queryTermMappingRegistry = queryTermMappingRegistry == null
@@ -80,8 +83,7 @@ public final class RagBugFixEngine {
         this.knowledgeWorkspace = knowledgeWorkspace;
         this.streamTaskRegistry = streamTaskRegistry == null ? RagStreamTaskRegistry.inMemory() : streamTaskRegistry;
         this.agentEngine = agentEngine;
-        this.globalRateLimitEnabled = globalRateLimitEnabled;
-        this.globalMaxConcurrent = globalMaxConcurrent;
+        this.chatQueueLimiter = chatQueueLimiter == null ? ChatQueueLimiter.passThrough() : chatQueueLimiter;
     }
 
     public BugFixMessage findBugFixMessgaesForAgent(TicketSnapshot ticket, List<String> logs) {
@@ -99,44 +101,11 @@ public final class RagBugFixEngine {
         String actualConversationId = blank(conversationId) ? "conversation-" + UUID.randomUUID() : conversationId;
         String taskId = "task-" + UUID.randomUUID();
         String userQuestion = userQuestion(safeTicket);
-        if (!tryAcquireChatSlot()) {
-            return reject(safeTicket, safeLogs, actualConversationId, taskId, deepThinking, userQuestion);
-        }
-
-        try {
-            streamTaskRegistry.registerRunning(taskId, actualConversationId);
-            RepairRagRequest request = new RepairRagRequest(safeTicket.ticketId(), ticketFieldsText(safeTicket), safeLogs);
-            RepairContextPackage context = repairPipeline().prepareContext(request);
-            List<ChatMessage> history = memoryService.loadAndAppend(
-                    actualConversationId,
-                    DEFAULT_USER_ID,
-                    ChatMessage.user(userQuestion)
-            );
-            RepairPromptPlan promptPlan = RepairPromptService
-                    .defaultService(queryTermMappingRegistry.rewriteService())
-                    .build(request, context, history);
-            String answer = deterministicAnswer(promptPlan);
-            String assistantMessageId = memoryService.append(
-                    actualConversationId,
-                    DEFAULT_USER_ID,
-                    ChatMessage.assistant(answer)
-            );
-            streamTaskRegistry.complete(taskId, assistantMessageId, titleFrom(userQuestion));
-            BugFixMessage message = toMessage(
-                    safeTicket,
-                    actualConversationId,
-                    taskId,
-                    deepThinking,
-                    context,
-                    promptPlan,
-                    answer,
-                    false
-            );
-            submitToAgent(message);
-            return message;
-        } finally {
-            releaseChatSlot();
-        }
+        return chatQueueLimiter.enqueue(
+                new ChatQueueLimiter.ChatQueueRequest(userQuestion, actualConversationId, taskId),
+                () -> runBugFixFlow(safeTicket, safeLogs, actualConversationId, taskId, deepThinking, userQuestion),
+                () -> reject(safeTicket, safeLogs, actualConversationId, taskId, deepThinking, userQuestion)
+        );
     }
 
     public BugFixStopResult stop(String taskId) {
@@ -146,6 +115,46 @@ public final class RagBugFixEngine {
 
     public RagStreamTask task(String taskId) {
         return streamTaskRegistry.get(taskId);
+    }
+
+    private BugFixMessage runBugFixFlow(
+            TicketSnapshot ticket,
+            List<String> logs,
+            String conversationId,
+            String taskId,
+            boolean deepThinking,
+            String userQuestion
+    ) {
+        streamTaskRegistry.registerRunning(taskId, conversationId);
+        RepairRagRequest request = new RepairRagRequest(ticket.ticketId(), ticketFieldsText(ticket), logs);
+        RepairContextPackage context = repairPipeline().prepareContext(request);
+        List<ChatMessage> history = memoryService.loadAndAppend(
+                conversationId,
+                DEFAULT_USER_ID,
+                ChatMessage.user(userQuestion)
+        );
+        RepairPromptPlan promptPlan = RepairPromptService
+                .defaultService(queryTermMappingRegistry.rewriteService())
+                .build(request, context, history);
+        String answer = deterministicAnswer(promptPlan);
+        String assistantMessageId = memoryService.append(
+                conversationId,
+                DEFAULT_USER_ID,
+                ChatMessage.assistant(answer)
+        );
+        streamTaskRegistry.complete(taskId, assistantMessageId, titleFrom(userQuestion));
+        BugFixMessage message = toMessage(
+                ticket,
+                conversationId,
+                taskId,
+                deepThinking,
+                context,
+                promptPlan,
+                answer,
+                false
+        );
+        submitToAgent(message);
+        return message;
     }
 
     private RepairRagPipeline repairPipeline() {
@@ -310,30 +319,6 @@ public final class RagBugFixEngine {
             return ticket.title().strip();
         }
         return ticket.ticketId();
-    }
-
-    private boolean tryAcquireChatSlot() {
-        if (!globalRateLimitEnabled) {
-            return true;
-        }
-        if (globalMaxConcurrent <= 0) {
-            return false;
-        }
-        while (true) {
-            int current = activeChats.get();
-            if (current >= globalMaxConcurrent) {
-                return false;
-            }
-            if (activeChats.compareAndSet(current, current + 1)) {
-                return true;
-            }
-        }
-    }
-
-    private void releaseChatSlot() {
-        if (globalRateLimitEnabled && globalMaxConcurrent > 0) {
-            activeChats.updateAndGet(current -> Math.max(0, current - 1));
-        }
     }
 
     private String titleFrom(String question) {
