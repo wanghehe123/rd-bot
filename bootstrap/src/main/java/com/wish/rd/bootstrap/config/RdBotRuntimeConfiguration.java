@@ -1,14 +1,12 @@
 package com.wish.rd.bootstrap.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.wish.rd.bootstrap.persistence.PostgresUserAdminService;
 import com.wish.rd.bootstrap.persistence.PostgresIngestionTaskStore;
 import com.wish.rd.bootstrap.persistence.PostgresKnowledgeBaseStore;
 import com.wish.rd.bootstrap.persistence.PostgresKnowledgeChunkStore;
 import com.wish.rd.bootstrap.persistence.PostgresKnowledgeDocumentStore;
 import com.wish.rd.bootstrap.persistence.PostgresRepairRecordRepository;
 import com.wish.rd.bootstrap.persistence.PostgresVectorStore;
-import com.wish.rd.bootstrap.persistence.mapper.AdminUserMapper;
 import com.wish.rd.bootstrap.persistence.mapper.IngestionTaskMapper;
 import com.wish.rd.bootstrap.persistence.mapper.IngestionTaskNodeMapper;
 import com.wish.rd.bootstrap.persistence.mapper.KnowledgeBaseMapper;
@@ -55,8 +53,6 @@ import com.wish.rd.rag.trace.RagTraceStore;
 import com.wish.rd.rag.vector.InMemoryVectorStore;
 import com.wish.rd.rag.vector.VectorStore;
 import com.wish.rd.bootstrap.storage.S3ObjectStorageService;
-import com.wish.rd.bootstrap.user.InMemoryUserAdminService;
-import com.wish.rd.bootstrap.user.UserAdminService;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import javax.sql.DataSource;
@@ -113,19 +109,6 @@ public class RdBotRuntimeConfiguration {
     @Bean
     public SnowflakeIdGenerator snowflakeIdGenerator() {
         return SnowflakeIdGenerator.defaultGenerator();
-    }
-
-    /** 后台用户管理服务：默认内存，PostgreSQL 模式落库到 admin_users。 */
-    @Bean
-    public UserAdminService userAdminService(
-            @Value("${rd.knowledge.store:memory}") String storeMode,
-            SnowflakeIdGenerator idGenerator,
-            org.springframework.beans.factory.ObjectProvider<AdminUserMapper> mapperProvider
-    ) {
-        if ("postgres".equalsIgnoreCase(storeMode)) {
-            return new PostgresUserAdminService(mapperProvider.getObject(), idGenerator);
-        }
-        return new InMemoryUserAdminService(idGenerator);
     }
 
     /** 向量库端口：默认内存，PostgreSQL 模式使用 pgvector 表。 */
