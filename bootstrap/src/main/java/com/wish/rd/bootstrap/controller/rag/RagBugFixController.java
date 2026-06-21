@@ -4,7 +4,7 @@ import com.wish.rd.adapter.TicketSnapshot;
 import com.wish.rd.engine.rag.BugFixMessage;
 import com.wish.rd.engine.rag.BugFixStopResult;
 import com.wish.rd.engine.rag.RagBugFixEngine;
-import com.wish.rd.rag.runtime.RagStreamTask;
+import com.wish.rd.rag.runtime.RdBugFixTask;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -61,7 +61,7 @@ public class RagBugFixController {
     }
 
     @GetMapping("/rag/v3/tasks/{taskId}")
-    public RagStreamTask task(@PathVariable("taskId") String taskId) {
+    public RdBugFixTask task(@PathVariable("taskId") String taskId) {
         return bugFixEngine.task(taskId);
     }
 

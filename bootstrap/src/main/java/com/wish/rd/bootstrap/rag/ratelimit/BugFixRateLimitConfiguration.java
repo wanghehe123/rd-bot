@@ -1,6 +1,5 @@
 package com.wish.rd.bootstrap.rag.ratelimit;
 
-import com.wish.rd.engine.rag.BugFixMessage;
 import com.wish.rd.engine.rag.ChatQueueLimiter;
 import org.redisson.Redisson;
 import org.redisson.api.RedissonClient;
@@ -107,10 +106,10 @@ public class BugFixRateLimitConfiguration {
         }
 
         @Override
-        public BugFixMessage enqueue(
+        public <T> T enqueue(
                 ChatQueueRequest request,
-                Supplier<BugFixMessage> onAcquire,
-                Supplier<BugFixMessage> onTimeout
+                Supplier<T> onAcquire,
+                Supplier<T> onTimeout
         ) {
             return delegate.enqueue(request, onAcquire, onTimeout);
         }

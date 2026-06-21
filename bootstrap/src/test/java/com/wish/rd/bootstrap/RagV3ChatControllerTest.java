@@ -29,7 +29,7 @@ class RagV3ChatControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(content().contentTypeCompatibleWith("text/event-stream"))
                 .andExpect(content().string(containsString("event: meta")))
-                .andExpect(content().string(containsString("\"taskId\":\"task-")))
+                .andExpect(content().string(containsString("\"taskId\":\"")))
                 .andExpect(content().string(containsString("event: delta")))
                 .andExpect(content().string(containsString("OrderService.create")))
                 .andExpect(content().string(containsString("event: done")));

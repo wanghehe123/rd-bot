@@ -28,7 +28,7 @@ class RagV3ChatRateLimitControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(content().contentTypeCompatibleWith("text/event-stream"))
                 .andExpect(content().string(containsString("event: meta")))
-                .andExpect(content().string(containsString("\"taskId\":\"task-")))
+                .andExpect(content().string(containsString("\"taskId\":\"")))
                 .andExpect(content().string(containsString("event: reject")))
                 .andExpect(content().string(containsString("系统繁忙，请稍后再试")))
                 .andExpect(content().string(containsString("event: done")));

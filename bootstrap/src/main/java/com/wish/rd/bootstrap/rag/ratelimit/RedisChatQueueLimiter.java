@@ -1,6 +1,5 @@
 package com.wish.rd.bootstrap.rag.ratelimit;
 
-import com.wish.rd.engine.rag.BugFixMessage;
 import com.wish.rd.engine.rag.ChatQueueLimiter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -54,13 +53,13 @@ public final class RedisChatQueueLimiter implements ChatQueueLimiter, AutoClosea
     }
 
     @Override
-    public BugFixMessage enqueue(
+    public <T> T enqueue(
             ChatQueueRequest request,
-            Supplier<BugFixMessage> onAcquire,
-            Supplier<BugFixMessage> onTimeout
+            Supplier<T> onAcquire,
+            Supplier<T> onTimeout
     ) {
         FairDistributedRateLimiter actualRateLimiter = ensureStarted();
-        CompletableFuture<BugFixMessage> result = new CompletableFuture<>();
+        CompletableFuture<T> result = new CompletableFuture<>();
         AtomicReference<Runnable> cancelRef = new AtomicReference<>();
         actualRateLimiter.acquire(new FairDistributedRateLimiter.AcquireRequest(
                 maxWaitMillis,
@@ -116,7 +115,7 @@ public final class RedisChatQueueLimiter implements ChatQueueLimiter, AutoClosea
         }
     }
 
-    private void complete(CompletableFuture<BugFixMessage> result, Supplier<BugFixMessage> supplier) {
+    private <T> void complete(CompletableFuture<T> result, Supplier<T> supplier) {
         try {
             result.complete(supplier.get());
         } catch (Throwable ex) {

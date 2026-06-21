@@ -11,28 +11,62 @@ import java.util.function.Supplier;
 @FunctionalInterface
 public interface ChatQueueLimiter {
 
-    BugFixMessage enqueue(
+    /**
+     * 将请求放入限流队列，拿到执行权后调用 {@code onAcquire}，超时则调用 {@code onTimeout}。
+     *
+     * @param request   队列请求
+     * @param onAcquire 获得执行权后的回调
+     * @param onTimeout 等待超时后的回调
+     * @return 回调结果
+     */
+    <T> T enqueue(
             ChatQueueRequest request,
-            Supplier<BugFixMessage> onAcquire,
-            Supplier<BugFixMessage> onTimeout
+            Supplier<T> onAcquire,
+            Supplier<T> onTimeout
     );
 
+    /**
+     * 创建直接放行的限流器。
+     *
+     * @return 直接执行 {@code onAcquire} 的限流器
+     */
     static ChatQueueLimiter passThrough() {
-        return (request, onAcquire, onTimeout) -> onAcquire.get();
+        return new ChatQueueLimiter() {
+            @Override
+            public <T> T enqueue(ChatQueueRequest request, Supplier<T> onAcquire, Supplier<T> onTimeout) {
+                return onAcquire.get();
+            }
+        };
     }
 
+    /**
+     * 创建永远拒绝的限流器。
+     *
+     * @return 直接执行 {@code onTimeout} 的限流器
+     */
     static ChatQueueLimiter alwaysReject() {
-        return (request, onAcquire, onTimeout) -> onTimeout.get();
+        return new ChatQueueLimiter() {
+            @Override
+            public <T> T enqueue(ChatQueueRequest request, Supplier<T> onAcquire, Supplier<T> onTimeout) {
+                return onTimeout.get();
+            }
+        };
     }
 
     record ChatQueueRequest(
             String question,
-            String taskId
+            String taskId,
+            String priority
     ) {
+
+        public ChatQueueRequest(String question, String taskId) {
+            this(question, taskId, "P2");
+        }
 
         public ChatQueueRequest {
             question = question == null ? "" : question;
             taskId = Objects.requireNonNull(taskId, "taskId must not be null");
+            priority = priority == null || priority.isBlank() ? "P2" : priority.strip().toUpperCase();
         }
     }
 }

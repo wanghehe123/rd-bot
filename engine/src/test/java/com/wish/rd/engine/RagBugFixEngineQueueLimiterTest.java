@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -23,9 +24,12 @@ class RagBugFixEngineQueueLimiterTest {
     @Test
     void routesBugFixMessageBuildThroughChatQueueLimiter() {
         AtomicReference<ChatQueueLimiter.ChatQueueRequest> queueRequest = new AtomicReference<>();
-        ChatQueueLimiter limiter = (request, onAcquire, onTimeout) -> {
-            queueRequest.set(request);
-            return onAcquire.get();
+        ChatQueueLimiter limiter = new ChatQueueLimiter() {
+            @Override
+            public <T> T enqueue(ChatQueueRequest request, Supplier<T> onAcquire, Supplier<T> onTimeout) {
+                queueRequest.set(request);
+                return onAcquire.get();
+            }
         };
         RagBugFixEngine engine = new RagBugFixEngine(
                 QueryTermMappingRegistry.withDefaults(),
@@ -49,7 +53,7 @@ class RagBugFixEngineQueueLimiterTest {
         );
 
         assertNotNull(queueRequest.get());
-        assertTrue(queueRequest.get().taskId().startsWith("task-"));
+        assertFalse(queueRequest.get().taskId().isBlank());
         assertTrue(queueRequest.get().question().contains("OrderService.create"));
         assertFalse(message.rejected());
         assertEquals("ticket-queue-1", message.ticketId());

@@ -44,7 +44,7 @@ class RagBugFixEngineTest {
         assertEquals("ticket-payment-1", message.ticketId());
         assertEquals("支付系统下单接口 500", message.ticketTitle());
         assertTrue(message.ticketDescription().contains("OrderService.create"));
-        assertTrue(message.taskId().startsWith("task-"));
+        assertFalse(message.taskId().isBlank());
         assertEquals("payment-system", message.primaryIntentSystemId());
         assertTrue(message.searchChannels().contains("IntentDirectedVectorSearch"));
         assertTrue(message.searchChannels().contains("LogCenterSearch"));

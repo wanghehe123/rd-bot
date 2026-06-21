@@ -9,7 +9,8 @@ import org.springframework.test.web.servlet.MockMvc;
 import java.nio.charset.StandardCharsets;
 
 import static org.hamcrest.Matchers.containsString;
-import static org.hamcrest.Matchers.startsWith;
+import static org.hamcrest.Matchers.emptyString;
+import static org.hamcrest.Matchers.not;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
@@ -36,10 +37,9 @@ class RagV3ChatRuntimeControllerTest {
 
         mockMvc.perform(get("/rag/v3/tasks/{taskId}", taskId))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.taskId").value(startsWith("task-")))
+                .andExpect(jsonPath("$.taskId").value(not(emptyString())))
                 .andExpect(jsonPath("$.taskId").value(taskId))
-                .andExpect(jsonPath("$.conversationId").value(""))
-                .andExpect(jsonPath("$.status").value("DONE"));
+                .andExpect(jsonPath("$.status").value("COMMITTED"));
 
         mockMvc.perform(post("/rag/v3/stop")
                         .param("taskId", "task-cancel-before-register"))
@@ -49,6 +49,6 @@ class RagV3ChatRuntimeControllerTest {
 
         mockMvc.perform(get("/rag/v3/tasks/task-cancel-before-register"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("CANCELLED"));
+                .andExpect(jsonPath("$.status").value("REJECTED"));
     }
 }

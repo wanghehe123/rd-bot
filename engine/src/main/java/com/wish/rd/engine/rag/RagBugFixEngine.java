@@ -14,8 +14,8 @@ import com.wish.rd.rag.prompt.RepairPromptPlan;
 import com.wish.rd.rag.prompt.RepairPromptService;
 import com.wish.rd.rag.rewrite.QueryTermMappingRegistry;
 import com.wish.rd.rag.runtime.RagRuntimeFactory;
-import com.wish.rd.rag.runtime.RagStreamTask;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
+import com.wish.rd.rag.runtime.RdBugFixTask;
 import com.wish.rd.rag.vector.InMemoryVectorStore;
 import com.wish.rd.rag.vector.VectorStore;
 
@@ -87,7 +87,8 @@ public final class RagBugFixEngine {
     ) {
         TicketSnapshot safeTicket = normalizeTicket(ticket);
         List<String> safeLogs = logs == null ? List.of() : List.copyOf(logs);
-        String taskId = "task-" + UUID.randomUUID();
+        RdBugFixTask task = streamTaskRegistry.createBugFixTask(safeTicket, "P2");
+        String taskId = task.taskId();
         String userQuestion = userQuestion(safeTicket);
         return chatQueueLimiter.enqueue(
                 new ChatQueueLimiter.ChatQueueRequest(userQuestion, taskId),
@@ -96,12 +97,35 @@ public final class RagBugFixEngine {
         );
     }
 
+    /**
+     * 使用上游已创建的任务 ID 只构建 Bug 修复 RAG 消息。
+     *
+     * @param ticket       工单快照
+     * @param logs         日志列表
+     * @param deepThinking 是否启用深度思考
+     * @param taskId       上游任务 ID
+     * @return RAG 上下文消息
+     */
+    public BugFixMessage findBugFixMessgaesForAgent(
+            TicketSnapshot ticket,
+            List<String> logs,
+            boolean deepThinking,
+            String taskId
+    ) {
+        TicketSnapshot safeTicket = normalizeTicket(ticket);
+        List<String> safeLogs = logs == null ? List.of() : List.copyOf(logs);
+        String safeTaskId = taskId == null || taskId.isBlank()
+                ? streamTaskRegistry.createBugFixTask(safeTicket, "P2").taskId()
+                : taskId.strip();
+        return buildBugFixRagMessage(safeTicket, safeLogs, safeTaskId, deepThinking);
+    }
+
     public BugFixStopResult stop(String taskId) {
         streamTaskRegistry.cancel(taskId);
         return new BugFixStopResult(taskId, "STOPPED");
     }
 
-    public RagStreamTask task(String taskId) {
+    public RdBugFixTask task(String taskId) {
         return streamTaskRegistry.get(taskId);
     }
 
@@ -112,23 +136,26 @@ public final class RagBugFixEngine {
             boolean deepThinking,
             String userQuestion
     ) {
-        streamTaskRegistry.registerRunning(taskId, "");
+        streamTaskRegistry.markSearching(taskId, "RAG 检索中");
+        BugFixMessage message = buildBugFixRagMessage(ticket, logs, taskId, deepThinking);
+        streamTaskRegistry.markExecuting(taskId, message.agentUserMessage());
+        streamTaskRegistry.complete(taskId, "", titleFrom(userQuestion));
+        return message;
+    }
+
+    private BugFixMessage buildBugFixRagMessage(
+            TicketSnapshot ticket,
+            List<String> logs,
+            String taskId,
+            boolean deepThinking
+    ) {
         RepairRagRequest request = new RepairRagRequest(ticket.ticketId(), ticketFieldsText(ticket), logs);
         RepairContextPackage context = repairPipeline().prepareContext(request);
         RepairPromptPlan promptPlan = RepairPromptService
                 .defaultService(queryTermMappingRegistry.rewriteService())
                 .build(request, context);
         String answer = deterministicAnswer(promptPlan);
-        streamTaskRegistry.complete(taskId, "", titleFrom(userQuestion));
-        return toMessage(
-                ticket,
-                taskId,
-                deepThinking,
-                context,
-                promptPlan,
-                answer,
-                false
-        );
+        return toMessage(ticket, taskId, deepThinking, context, promptPlan, answer, false);
     }
 
     private RepairRagPipeline repairPipeline() {

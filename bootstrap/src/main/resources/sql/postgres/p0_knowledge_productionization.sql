@@ -127,6 +127,26 @@ CREATE TABLE IF NOT EXISTS ingestion_task_nodes (
 
 CREATE INDEX IF NOT EXISTS idx_ingestion_task_nodes_task ON ingestion_task_nodes (task_id, node_order);
 
+CREATE TABLE IF NOT EXISTS rd_tasks (
+    id                 BIGINT PRIMARY KEY,
+    task_type          VARCHAR(64) NOT NULL,
+    ticket_id          VARCHAR(256) NOT NULL DEFAULT '',
+    ticket_title       TEXT NOT NULL DEFAULT '',
+    priority           VARCHAR(16) NOT NULL DEFAULT 'P2',
+    status             VARCHAR(32) NOT NULL,
+    message_id         VARCHAR(256) NOT NULL DEFAULT '',
+    title              TEXT NOT NULL DEFAULT '',
+    prompt_snapshot    TEXT NOT NULL DEFAULT '',
+    execution_result_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    pull_request_url   TEXT NOT NULL DEFAULT '',
+    error_message      TEXT NOT NULL DEFAULT '',
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_rd_tasks_type_status ON rd_tasks (task_type, status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_rd_tasks_ticket ON rd_tasks (ticket_id);
+
 CREATE TABLE IF NOT EXISTS repair_records (
     id             BIGINT PRIMARY KEY,
     ticket_id      VARCHAR(256) NOT NULL,
