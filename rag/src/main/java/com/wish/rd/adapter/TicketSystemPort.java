@@ -3,11 +3,16 @@ package com.wish.rd.adapter;
 import java.util.Optional;
 
 /**
- * 工单系统访问端口：按工单 ID 查询工单快照。
+ * 工单系统访问端口（旧版整合接口）。
  *
- * <p>RAG 能力层只定义契约，具体实现由外部适配器提供。当前主流程未直接调用，
- * 作为后续"工单驱动修复"的预留边界。
+ * <p>已废弃：P1 起被拆分为读取端口 {@link TicketProviderPort} 与写入端口
+ * {@link TicketUpdatePort}，以避免单一胖接口在实现端被部分实现。
+ *
+ * <p>保留此接口仅为历史代码兼容；新代码请使用拆分后的端口。
+ *
+ * @deprecated 使用 {@link TicketProviderPort} 与 {@link TicketUpdatePort}
  */
+@Deprecated(forRemoval = true)
 public interface TicketSystemPort {
 
     /**
