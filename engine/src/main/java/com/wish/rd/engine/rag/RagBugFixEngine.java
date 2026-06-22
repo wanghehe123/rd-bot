@@ -24,6 +24,8 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -37,11 +39,14 @@ import org.springframework.stereotype.Service;
 @Service
 public final class RagBugFixEngine {
 
+    private static final Logger LOGGER = LoggerFactory.getLogger(RagBugFixEngine.class);
+
     private final QueryTermMappingRegistry queryTermMappingRegistry;
     private final IntentTreeRegistry intentTreeRegistry;
     private final KnowledgeWorkspace knowledgeWorkspace;
     private final RagStreamTaskRegistry streamTaskRegistry;
     private final ChatQueueLimiter chatQueueLimiter;
+    private final RagRetrievalLogSink retrievalLogSink;
 
     @Autowired
     public RagBugFixEngine(
@@ -49,14 +54,16 @@ public final class RagBugFixEngine {
             IntentTreeRegistry intentTreeRegistry,
             KnowledgeWorkspace knowledgeWorkspace,
             RagStreamTaskRegistry streamTaskRegistry,
-            ObjectProvider<ChatQueueLimiter> chatQueueLimiterProvider
+            ObjectProvider<ChatQueueLimiter> chatQueueLimiterProvider,
+            ObjectProvider<RagRetrievalLogSink> retrievalLogSinkProvider
     ) {
         this(
                 queryTermMappingRegistry,
                 intentTreeRegistry,
                 knowledgeWorkspace,
                 streamTaskRegistry,
-                chatQueueLimiterProvider.getIfAvailable(ChatQueueLimiter::passThrough)
+                chatQueueLimiterProvider.getIfAvailable(ChatQueueLimiter::passThrough),
+                retrievalLogSinkProvider.getIfAvailable(RagRetrievalLogSink::noop)
         );
     }
 
@@ -67,6 +74,24 @@ public final class RagBugFixEngine {
             RagStreamTaskRegistry streamTaskRegistry,
             ChatQueueLimiter chatQueueLimiter
     ) {
+        this(
+                queryTermMappingRegistry,
+                intentTreeRegistry,
+                knowledgeWorkspace,
+                streamTaskRegistry,
+                chatQueueLimiter,
+                RagRetrievalLogSink.noop()
+        );
+    }
+
+    public RagBugFixEngine(
+            QueryTermMappingRegistry queryTermMappingRegistry,
+            IntentTreeRegistry intentTreeRegistry,
+            KnowledgeWorkspace knowledgeWorkspace,
+            RagStreamTaskRegistry streamTaskRegistry,
+            ChatQueueLimiter chatQueueLimiter,
+            RagRetrievalLogSink retrievalLogSink
+    ) {
         this.queryTermMappingRegistry = queryTermMappingRegistry == null
                 ? QueryTermMappingRegistry.withDefaults()
                 : queryTermMappingRegistry;
@@ -74,6 +99,7 @@ public final class RagBugFixEngine {
         this.knowledgeWorkspace = knowledgeWorkspace;
         this.streamTaskRegistry = streamTaskRegistry == null ? RagStreamTaskRegistry.inMemory() : streamTaskRegistry;
         this.chatQueueLimiter = chatQueueLimiter == null ? ChatQueueLimiter.passThrough() : chatQueueLimiter;
+        this.retrievalLogSink = retrievalLogSink == null ? RagRetrievalLogSink.noop() : retrievalLogSink;
     }
 
     public BugFixMessage findBugFixMessgaesForAgent(TicketSnapshot ticket, List<String> logs) {
@@ -151,11 +177,45 @@ public final class RagBugFixEngine {
     ) {
         RepairRagRequest request = new RepairRagRequest(ticket.ticketId(), ticketFieldsText(ticket), logs);
         RepairContextPackage context = repairPipeline().prepareContext(request);
+        appendRetrievalLog(ticket, logs, taskId, deepThinking, context);
         RepairPromptPlan promptPlan = RepairPromptService
                 .defaultService(queryTermMappingRegistry.rewriteService())
                 .build(request, context);
         String answer = deterministicAnswer(promptPlan);
         return toMessage(ticket, taskId, deepThinking, context, promptPlan, answer, false);
+    }
+
+    private void appendRetrievalLog(
+            TicketSnapshot ticket,
+            List<String> logs,
+            String taskId,
+            boolean deepThinking,
+            RepairContextPackage context
+    ) {
+        try {
+            retrievalLogSink.append(new RagRetrievalLogEvent(
+                    Instant.now(),
+                    taskId,
+                    ticket.ticketId(),
+                    ticket.title(),
+                    ticket.description(),
+                    ticket.labels(),
+                    logs,
+                    deepThinking,
+                    context.primaryIntent().map(score -> score.node().systemId()).orElse(""),
+                    context.primaryIntent().map(score -> score.node().name()).orElse(""),
+                    context.guidanceDecision().action().name(),
+                    context.guidanceDecision().prompt(),
+                    context.searchChannels(),
+                    context.retrievedChunks(),
+                    context.summary()
+            ));
+        } catch (RuntimeException exception) {
+            LOGGER.warn("failed to append RAG retrieval log: taskId={}, ticketId={}",
+                    taskId,
+                    ticket.ticketId(),
+                    exception);
+        }
     }
 
     private RepairRagPipeline repairPipeline() {

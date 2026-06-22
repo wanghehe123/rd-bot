@@ -4,12 +4,15 @@ import com.wish.rd.adapter.TicketSnapshot;
 import com.wish.rd.engine.rag.BugFixMessage;
 import com.wish.rd.engine.rag.ChatQueueLimiter;
 import com.wish.rd.engine.rag.RagBugFixEngine;
+import com.wish.rd.engine.rag.RagRetrievalLogEvent;
+import com.wish.rd.engine.rag.RagRetrievalLogSink;
 import com.wish.rd.rag.intent.IntentTreeRegistry;
 import com.wish.rd.rag.rewrite.QueryTermMappingRegistry;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -55,5 +58,54 @@ class RagBugFixEngineTest {
         assertTrue(message.agentUserMessage().contains("支付系统下单接口 500"));
         assertTrue(message.agentUserMessage().contains("ERROR orders.amount is null"));
         assertFalse(message.promptSections().contains("对话记忆"));
+    }
+
+    @Test
+    void publishesRetrievedChunksForEvaluationLogging() {
+        RecordingRagRetrievalLogSink logSink = new RecordingRagRetrievalLogSink();
+        RagBugFixEngine engine = new RagBugFixEngine(
+                QueryTermMappingRegistry.withDefaults(),
+                IntentTreeRegistry.withDefaults(),
+                null,
+                RagStreamTaskRegistry.inMemory(),
+                ChatQueueLimiter.passThrough(),
+                logSink
+        );
+        TicketSnapshot ticket = new TicketSnapshot(
+                "ticket-payment-2",
+                "支付系统下单接口 500",
+                "金额为空时 OrderService.create 写入订单失败",
+                List.of("payment", "orders.amount"),
+                Instant.parse("2026-06-21T00:00:00Z")
+        );
+
+        BugFixMessage message = engine.findBugFixMessgaesForAgent(
+                ticket,
+                List.of("ERROR orders.amount is null at OrderService.create"),
+                true,
+                "task-rag-log-1"
+        );
+
+        assertEquals(1, logSink.events.size());
+        RagRetrievalLogEvent event = logSink.events.getFirst();
+        assertEquals("task-rag-log-1", event.taskId());
+        assertEquals("ticket-payment-2", event.ticketId());
+        assertEquals(message.contextSummary(), event.contextSummary());
+        assertEquals(message.searchChannels(), event.searchChannels());
+        assertEquals(message.retrievedChunks(), event.retrievedChunks());
+        assertTrue(event.deepThinking());
+        assertTrue(event.logs().contains("ERROR orders.amount is null at OrderService.create"));
+        assertTrue(event.retrievedChunks().stream()
+                .anyMatch(chunk -> chunk.content().contains("OrderService.create")));
+    }
+
+    private static final class RecordingRagRetrievalLogSink implements RagRetrievalLogSink {
+
+        private final List<RagRetrievalLogEvent> events = new ArrayList<>();
+
+        @Override
+        public void append(RagRetrievalLogEvent event) {
+            events.add(event);
+        }
     }
 }
