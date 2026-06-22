@@ -1,0 +1,149 @@
+spring:
+  application:
+    name: rd-bot
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 100MB
+  datasource:
+    url: ${POSTGRES_URL:jdbc:postgresql://127.0.0.1:5432/ragent?client_encoding=UTF8}
+    username: ${POSTGRES_USERNAME:postgres}
+    password: ${POSTGRES_PASSWORD:postgres}
+    hikari:
+      maximum-pool-size: ${POSTGRES_MAXIMUM_POOL_SIZE:10}
+      minimum-idle: ${POSTGRES_MINIMUM_IDLE:2}
+      connection-timeout: ${POSTGRES_CONNECTION_TIMEOUT_MS:5000}
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+
+rag:
+  default:
+    collection-name: rd_bot_collection
+    dimension: 768
+    metric-type: COSINE
+  query-rewrite:
+    enabled: true
+  memory:
+    history-keep-turns: 8
+    summary-enabled: false
+    summary-start-turns: 9
+    summary-max-chars: 200
+    title-max-length: 30
+  rate-limit:
+    global:
+      enabled: false
+      executor-size: 4
+      max-concurrent: 4
+      max-wait-seconds: 20
+      lease-seconds: 600
+      poll-interval-ms: 200
+
+rustfs:
+  url: ${RUSTFS_URL:http://localhost:9000}
+  bucket: ${RUSTFS_BUCKET:biz}
+  access-key-id: ${RUSTFS_ACCESS_KEY_ID:rustfsadmin}
+  secret-access-key: ${RUSTFS_SECRET_ACCESS_KEY:rustfsadmin}
+
+rd:
+  rag:
+    retrieval-log:
+      enabled: ${RD_RAG_RETRIEVAL_LOG_ENABLED:true}
+      path: ${RD_RAG_RETRIEVAL_LOG_PATH:logs/rag-retrieval.jsonl}
+  knowledge:
+    store: memory
+  storage:
+    mode: s3
+  repair:
+    queue:
+      mode: memory
+    ticket:
+      ingestion:
+        default-source: feishu
+  rocketmq:
+    repair:
+      topic: RD_BOT_REPAIR_TICKET
+      consumer-group: GID_RD_BOT_REPAIR_WORKER
+      producer-group: ${ROCKETMQ_PRODUCER_GROUP:GID_RD_BOT_REPAIR_PRODUCER}
+      name-server: ${ROCKETMQ_NAME_SERVER:127.0.0.1:9876}
+      send-message-timeout-millis: 2000
+      max-retry-attempts: 3
+  executor:
+    repository:
+      owner: ${RD_EXECUTOR_REPOSITORY_OWNER:local}
+      name: ${RD_EXECUTOR_REPOSITORY_NAME:repository}
+      url: ${RD_EXECUTOR_REPOSITORY_URL:}
+      base-branch: ${RD_EXECUTOR_REPOSITORY_BASE_BRANCH:main}
+      work-branch-prefix: ${RD_EXECUTOR_REPOSITORY_WORK_BRANCH_PREFIX:repair/}
+    docker:
+      enabled: false
+      image: ${RD_EXECUTOR_DOCKER_IMAGE:rd-bot/claude-code:local}
+      workspace-root: ${RD_EXECUTOR_DOCKER_WORKSPACE_ROOT:/tmp/rd-bot/repair-workspaces}
+      command: claude
+      yolo-flag: --dangerously-skip-permissions
+      output-format: stream-json
+      network-mode: bridge
+      remove-after-exit: true
+      timeout-alert-millis: 1800000
+      budget-alert-usd: 5.00
+      providers:
+        - name: deepseek
+          base-url: https://api.deepseek.com/anthropic
+          auth-token-env: DEEPSEEK_API_KEY
+          model: "deepseek-v4-pro[1m]"
+          default-opus-model: "deepseek-v4-pro[1m]"
+          default-sonnet-model: "deepseek-v4-pro[1m]"
+          default-haiku-model: deepseek-v4-flash
+          subagent-model: deepseek-v4-flash
+          effort-level: max
+        - name: anthropic
+          api-key-env: ANTHROPIC_API_KEY
+          model: ${ANTHROPIC_MODEL:}
+  github:
+    code-platform:
+      mode: mock
+      allowed-repositories: []
+      auth-mode: GITHUB_APP
+      app-id: ${GITHUB_APP_ID:}
+      installation-id: ${GITHUB_INSTALLATION_ID:}
+      private-key-ref: ${GITHUB_PRIVATE_KEY_REF:}
+      pat-token: ${GITHUB_PAT:}
+  ticket:
+    write-back:
+      mode: mock
+  feishu:
+    helpdesk:
+      enabled: false
+      write-back:
+        enabled: false
+      app-id: ${FEISHU_APP_ID:}
+      app-secret: ${FEISHU_APP_SECRET:}
+      helpdesk-id: ${FEISHU_HELPDESK_ID:}
+      helpdesk-token: ${FEISHU_HELPDESK_TOKEN:}
+      http:
+        connect-timeout-millis: 3000
+        request-timeout-millis: 10000
+      field-mapping:
+        problemSystem: problemSystem
+        symptom: symptom
+        triggerWay: triggerWay
+        logs: logs
+        repository: repository
+        branch: branch
+        expectedResult: expectedResult
+        actualResult: actualResult
+  ai:
+    providers:
+      mock:
+        api-key: ""
+    chat:
+      default-model: deterministic-repair-model
+      deep-thinking-model: deterministic-repair-model
+    embedding:
+      default-model: deterministic-text-score
+    rerank:
+      default-model: deterministic-score-sort
+    stream:
+      message-chunk-size: 256
