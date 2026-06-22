@@ -77,6 +77,11 @@ class RdBotFixEngineTest {
         assertNotNull(executionRequest.get());
         assertTrue(executionRequest.get().prompt().contains("研发修复任务"));
         assertTrue(executionRequest.get().prompt().contains("## 执行边界"));
+        assertTrue(executionRequest.get().prompt().contains("按需安装缺失工具链"));
+        assertTrue(executionRequest.get().prompt().contains("sudo apt-get update"));
+        assertTrue(executionRequest.get().prompt().contains("sudo apt-get install"));
+        assertTrue(executionRequest.get().prompt().contains("Java 17"));
+        assertTrue(executionRequest.get().prompt().contains("Maven"));
         assertTrue(executionRequest.get().prompt().contains("\"pullRequestUrl\""));
         assertTrue(executionRequest.get().prompt().contains("OrderService.create"));
         assertEquals(RdTaskStatus.COMMITTED, result.status());
