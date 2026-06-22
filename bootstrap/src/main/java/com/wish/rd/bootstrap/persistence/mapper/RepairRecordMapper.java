@@ -32,4 +32,52 @@ public interface RepairRecordMapper extends BaseMapper<RepairRecordRow> {
             WHERE id = #{id}
             """)
     void updateStatus(RepairRecordRow row);
+
+    @Update("""
+            UPDATE repair_records
+            SET executor_json = #{executorJson}::jsonb,
+                updated_at = #{updatedAt}
+            WHERE id = #{id}
+            """)
+    void updateExecutorJson(RepairRecordRow row);
+
+    @Update("""
+            UPDATE repair_records
+            SET docker_json = #{dockerJson}::jsonb,
+                updated_at = #{updatedAt}
+            WHERE id = #{id}
+            """)
+    void updateDockerJson(RepairRecordRow row);
+
+    @Update("""
+            UPDATE repair_records
+            SET github_json = #{githubJson}::jsonb,
+                updated_at = #{updatedAt}
+            WHERE id = #{id}
+            """)
+    void updateGithubJson(RepairRecordRow row);
+
+    @Update("""
+            UPDATE repair_records
+            SET test_json = #{testJson}::jsonb,
+                updated_at = #{updatedAt}
+            WHERE id = #{id}
+            """)
+    void updateTestJson(RepairRecordRow row);
+
+    @Update("""
+            UPDATE repair_records
+            SET risk_json = #{riskJson}::jsonb,
+                updated_at = #{updatedAt}
+            WHERE id = #{id}
+            """)
+    void updateRiskJson(RepairRecordRow row);
+
+    @Update("""
+            UPDATE repair_records
+            SET error_message = #{errorMessage},
+                updated_at = #{updatedAt}
+            WHERE id = #{id}
+            """)
+    void updateErrorMessage(RepairRecordRow row);
 }

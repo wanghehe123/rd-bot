@@ -56,6 +56,42 @@ public final class InMemoryRepairRecordRepository implements RepairRecordReposit
     }
 
     @Override
+    public synchronized RepairRecord updateExecutorJson(String repairRecordId, String executorJson) {
+        RepairRecord record = existingRecord(repairRecordId);
+        return save(record.withExecutorJson(executorJson, System.currentTimeMillis()));
+    }
+
+    @Override
+    public synchronized RepairRecord updateDockerJson(String repairRecordId, String dockerJson) {
+        RepairRecord record = existingRecord(repairRecordId);
+        return save(record.withDockerJson(dockerJson, System.currentTimeMillis()));
+    }
+
+    @Override
+    public synchronized RepairRecord updateGithubJson(String repairRecordId, String githubJson) {
+        RepairRecord record = existingRecord(repairRecordId);
+        return save(record.withGithubJson(githubJson, System.currentTimeMillis()));
+    }
+
+    @Override
+    public synchronized RepairRecord updateTestJson(String repairRecordId, String testJson) {
+        RepairRecord record = existingRecord(repairRecordId);
+        return save(record.withTestJson(testJson, System.currentTimeMillis()));
+    }
+
+    @Override
+    public synchronized RepairRecord updateRiskJson(String repairRecordId, String riskJson) {
+        RepairRecord record = existingRecord(repairRecordId);
+        return save(record.withRiskJson(riskJson, System.currentTimeMillis()));
+    }
+
+    @Override
+    public synchronized RepairRecord updateErrorMessage(String repairRecordId, String errorMessage) {
+        RepairRecord record = existingRecord(repairRecordId);
+        return save(record.withErrorMessage(errorMessage, System.currentTimeMillis()));
+    }
+
+    @Override
     public synchronized Optional<RepairRecord> findById(String repairRecordId) {
         return Optional.ofNullable(records.get(repairRecordId));
     }
@@ -66,6 +102,43 @@ public final class InMemoryRepairRecordRepository implements RepairRecordReposit
         return records.values().stream()
                 .filter(record -> record.ticketId().equals(normalizedTicketId))
                 .findFirst();
+    }
+
+    @Override
+    public synchronized RepairRecordPage query(RepairRecordQuery query) {
+        RepairRecordQuery safe = query == null ? RepairRecordQuery.empty() : query;
+        // 按创建时间倒序过滤
+        List<RepairRecord> filtered = records.values().stream()
+                .filter(record -> matches(record, safe))
+                .sorted((left, right) -> Long.compare(right.createdAtEpochMillis(), left.createdAtEpochMillis()))
+                .toList();
+        long total = filtered.size();
+        int fromIndex = Math.min((safe.page() - 1) * safe.pageSize(), filtered.size());
+        int toIndex = Math.min(fromIndex + safe.pageSize(), filtered.size());
+        List<RepairRecord> page = filtered.subList(fromIndex, toIndex);
+        return new RepairRecordPage(List.copyOf(page), safe.page(), safe.pageSize(), total);
+    }
+
+    private boolean matches(RepairRecord record, RepairRecordQuery query) {
+        if (!query.ticketId().isBlank() && !record.ticketId().equals(query.ticketId())) {
+            return false;
+        }
+        if (!query.status().isBlank() && !record.status().name().equals(query.status())) {
+            return false;
+        }
+        if (!query.priority().isBlank()) {
+            String priority = record.extensionJson().getOrDefault("priority", "");
+            if (!priority.equals(query.priority())) {
+                return false;
+            }
+        }
+        if (query.createdFrom() > 0 && record.createdAtEpochMillis() < query.createdFrom()) {
+            return false;
+        }
+        if (query.createdTo() > 0 && record.createdAtEpochMillis() > query.createdTo()) {
+            return false;
+        }
+        return true;
     }
 
     @Override
@@ -87,5 +160,15 @@ public final class InMemoryRepairRecordRepository implements RepairRecordReposit
     @Override
     public synchronized List<RepairRecordArtifact> listArtifacts(String repairRecordId) {
         return List.copyOf(artifacts.getOrDefault(repairRecordId, List.of()));
+    }
+
+    private RepairRecord existingRecord(String repairRecordId) {
+        return findById(repairRecordId)
+                .orElseThrow(() -> new IllegalArgumentException("repair record not found: " + repairRecordId));
+    }
+
+    private RepairRecord save(RepairRecord record) {
+        records.put(record.id(), record);
+        return record;
     }
 }

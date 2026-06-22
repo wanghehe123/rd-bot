@@ -11,6 +11,9 @@ import com.wish.rd.exec.repair.CreateRepairRecordArtifactCommand;
 import com.wish.rd.exec.repair.CreateRepairRecordCommand;
 import com.wish.rd.exec.repair.RepairRecord;
 import com.wish.rd.exec.repair.RepairRecordArtifact;
+import com.wish.rd.exec.repair.RepairRecordJson;
+import com.wish.rd.exec.repair.RepairRecordPage;
+import com.wish.rd.exec.repair.RepairRecordQuery;
 import com.wish.rd.exec.repair.RepairRecordRepository;
 import com.wish.rd.exec.repair.RepairRecordStatus;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
@@ -70,14 +73,65 @@ public final class PostgresRepairRecordRepository implements RepairRecordReposit
 
     @Override
     public RepairRecord updateStatus(String repairRecordId, RepairRecordStatus status, String ragSummary) {
-        RepairRecordRow row = recordMapper.selectById(PostgresPersistenceSupport.parseId(repairRecordId));
-        if (row == null) {
-            throw new IllegalArgumentException("repair record not found: " + repairRecordId);
-        }
+        RepairRecordRow row = existingRow(repairRecordId);
         row.status = status.name();
         row.ragSummary = ragSummary == null ? "" : ragSummary;
         row.updatedAt = OffsetDateTime.now();
         recordMapper.updateStatus(row);
+        return toRecord(row);
+    }
+
+    @Override
+    public RepairRecord updateExecutorJson(String repairRecordId, String executorJson) {
+        RepairRecordRow row = existingRow(repairRecordId);
+        row.executorJson = normalizeJson(executorJson);
+        row.updatedAt = OffsetDateTime.now();
+        recordMapper.updateExecutorJson(row);
+        return toRecord(row);
+    }
+
+    @Override
+    public RepairRecord updateDockerJson(String repairRecordId, String dockerJson) {
+        RepairRecordRow row = existingRow(repairRecordId);
+        row.dockerJson = normalizeJson(dockerJson);
+        row.updatedAt = OffsetDateTime.now();
+        recordMapper.updateDockerJson(row);
+        return toRecord(row);
+    }
+
+    @Override
+    public RepairRecord updateGithubJson(String repairRecordId, String githubJson) {
+        RepairRecordRow row = existingRow(repairRecordId);
+        row.githubJson = normalizeJson(githubJson);
+        row.updatedAt = OffsetDateTime.now();
+        recordMapper.updateGithubJson(row);
+        return toRecord(row);
+    }
+
+    @Override
+    public RepairRecord updateTestJson(String repairRecordId, String testJson) {
+        RepairRecordRow row = existingRow(repairRecordId);
+        row.testJson = normalizeJson(testJson);
+        row.updatedAt = OffsetDateTime.now();
+        recordMapper.updateTestJson(row);
+        return toRecord(row);
+    }
+
+    @Override
+    public RepairRecord updateRiskJson(String repairRecordId, String riskJson) {
+        RepairRecordRow row = existingRow(repairRecordId);
+        row.riskJson = normalizeJson(riskJson);
+        row.updatedAt = OffsetDateTime.now();
+        recordMapper.updateRiskJson(row);
+        return toRecord(row);
+    }
+
+    @Override
+    public RepairRecord updateErrorMessage(String repairRecordId, String errorMessage) {
+        RepairRecordRow row = existingRow(repairRecordId);
+        row.errorMessage = errorMessage == null ? "" : errorMessage;
+        row.updatedAt = OffsetDateTime.now();
+        recordMapper.updateErrorMessage(row);
         return toRecord(row);
     }
 
@@ -96,6 +150,36 @@ public final class PostgresRepairRecordRepository implements RepairRecordReposit
                         .comparing((RepairRecordRow row) -> row.createdAt)
                         .thenComparing(row -> row.id))
                 .map(this::toRecord);
+    }
+
+    @Override
+    public RepairRecordPage query(RepairRecordQuery query) {
+        RepairRecordQuery safe = query == null ? RepairRecordQuery.empty() : query;
+        QueryWrapper<RepairRecordRow> wrapper = new QueryWrapper<>();
+        if (!safe.ticketId().isBlank()) {
+            wrapper.eq("ticket_id", safe.ticketId());
+        }
+        if (!safe.status().isBlank()) {
+            wrapper.eq("status", safe.status());
+        }
+        if (safe.createdFrom() > 0) {
+            wrapper.ge("created_at", PostgresPersistenceSupport.toDateTime(safe.createdFrom()));
+        }
+        if (safe.createdTo() > 0) {
+            wrapper.le("created_at", PostgresPersistenceSupport.toDateTime(safe.createdTo()));
+        }
+        wrapper.orderByDesc("created_at", "id");
+        // priority 存于 extension_json，先全量过滤后再内存分页/筛选
+        List<RepairRecord> filtered = recordMapper.selectList(wrapper).stream()
+                .map(this::toRecord)
+                .filter(record -> safe.priority().isBlank()
+                        ? true
+                        : safe.priority().equals(record.extensionJson().getOrDefault("priority", "")))
+                .toList();
+        long total = filtered.size();
+        int fromIndex = Math.min((safe.page() - 1) * safe.pageSize(), filtered.size());
+        int toIndex = Math.min(fromIndex + safe.pageSize(), filtered.size());
+        return new RepairRecordPage(List.copyOf(filtered.subList(fromIndex, toIndex)), safe.page(), safe.pageSize(), total);
     }
 
     @Override
@@ -167,6 +251,12 @@ public final class PostgresRepairRecordRepository implements RepairRecordReposit
                 row.title,
                 RepairRecordStatus.valueOf(row.status),
                 row.ragSummary,
+                row.executorJson,
+                row.dockerJson,
+                row.githubJson,
+                row.testJson,
+                row.riskJson,
+                row.errorMessage,
                 fromJson(row.extensionJson),
                 PostgresPersistenceSupport.toEpochMillis(row.createdAt),
                 PostgresPersistenceSupport.toEpochMillis(row.updatedAt)
@@ -198,5 +288,17 @@ public final class PostgresRepairRecordRepository implements RepairRecordReposit
         } catch (Exception exception) {
             throw new IllegalStateException("failed to parse repair extension json", exception);
         }
+    }
+
+    private RepairRecordRow existingRow(String repairRecordId) {
+        RepairRecordRow row = recordMapper.selectById(PostgresPersistenceSupport.parseId(repairRecordId));
+        if (row == null) {
+            throw new IllegalArgumentException("repair record not found: " + repairRecordId);
+        }
+        return row;
+    }
+
+    private String normalizeJson(String value) {
+        return RepairRecordJson.normalizeMetadataJson(value);
     }
 }
