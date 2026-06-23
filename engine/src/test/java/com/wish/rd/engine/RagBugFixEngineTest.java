@@ -61,6 +61,42 @@ class RagBugFixEngineTest {
     }
 
     @Test
+    void routesWaimaiOrderBugToWaimaiKnowledgeBase() {
+        RagBugFixEngine engine = new RagBugFixEngine(
+                QueryTermMappingRegistry.withDefaults(),
+                IntentTreeRegistry.withDefaults(),
+                null,
+                RagStreamTaskRegistry.inMemory(),
+                ChatQueueLimiter.passThrough()
+        );
+        TicketSnapshot ticket = new TicketSnapshot(
+                "ticket-waimai-1",
+                "外卖下单接口返回 500",
+                """
+                问题: 外卖下单接口返回 500
+                系统: waimai
+                优先级: P1
+                日志: POST /api/orders 创建订单失败，客户端提交 delivery_address/remark 后服务端返回 500
+                实际: 提交订单接口返回 500，下单失败
+                期望: 订单创建成功并返回订单号
+                """,
+                List.of("feishu-im", "waimai"),
+                Instant.parse("2026-06-23T08:04:32Z")
+        );
+
+        BugFixMessage message = engine.findBugFixMessgaesForAgent(
+                ticket,
+                List.of("POST /api/orders failed because required fields address phone customer_name are missing"),
+                false
+        );
+
+        assertEquals("waimai", message.primaryIntentSystemId());
+        assertEquals("外卖平台", message.primaryIntentName());
+        assertTrue(message.contextSummary().contains("server/src/routes/orders.ts"));
+        assertTrue(message.contextSummary().contains("delivery_address"));
+    }
+
+    @Test
     void publishesRetrievedChunksForEvaluationLogging() {
         RecordingRagRetrievalLogSink logSink = new RecordingRagRetrievalLogSink();
         RagBugFixEngine engine = new RagBugFixEngine(

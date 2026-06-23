@@ -246,6 +246,18 @@ public final class IntentTreeRegistry {
 
     private void seedDefaults() {
         create(new IntentNodeCommand(
+                "waimai",
+                "外卖平台",
+                0,
+                null,
+                "外卖、waimai、下单、订单、POST /api/orders、创建订单、收货地址、delivery_address、address、customer_name",
+                "waimai",
+                List.of("外卖下单接口返回 500", "waimai 创建订单失败", "POST /api/orders 创建订单失败"),
+                List.of("waimai"),
+                1,
+                -10
+        ));
+        create(new IntentNodeCommand(
                 "payment-system",
                 "支付系统",
                 0,

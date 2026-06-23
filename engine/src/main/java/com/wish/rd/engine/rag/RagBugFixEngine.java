@@ -222,24 +222,65 @@ public final class RagBugFixEngine {
         VectorStore vectorStore = knowledgeWorkspace == null
                 ? new InMemoryVectorStore()
                 : knowledgeWorkspace.vectorStore();
-        if (vectorStore.allChunks().isEmpty()) {
-            seedDefaultPaymentDocument(vectorStore);
-        }
+        ensureDefaultDocuments(vectorStore);
         return RagRuntimeFactory.repairRagPipeline(
                 vectorStore,
                 intentTreeRegistry.intentTree(),
-                query -> List.of("ERROR orders.amount is null at OrderService.create"),
-                query -> List.of(new RetrievedChunk(
-                        "payment-service#OrderService.java#42",
-                        "OrderService.create should validate amount before repository.save",
-                        "payment-system",
-                        "code-snippet",
-                        "OrderService.java",
-                        9.0d,
-                        Map.of("repositoryId", query.repositoryId())
-                )),
+                query -> {
+                    if ("waimai".equals(query.systemId())) {
+                        return List.of("ERROR POST /api/orders failed: createOrder payload missing address phone customer_name; client sent delivery_address remark");
+                    }
+                    return List.of("ERROR orders.amount is null at OrderService.create");
+                },
+                query -> {
+                    if ("waimai".equals(query.repositoryId())) {
+                        return List.of(
+                                new RetrievedChunk(
+                                        "waimai#client/src/api.ts#createOrder",
+                                        "client/src/api.ts createOrder currently sends merchant_id, items, delivery_address and remark to POST /api/orders.",
+                                        "waimai",
+                                        "code-snippet",
+                                        "client/src/api.ts",
+                                        9.5d,
+                                        Map.of("repositoryId", query.repositoryId())
+                                ),
+                                new RetrievedChunk(
+                                        "waimai#server/src/routes/orders.ts#post",
+                                        "server/src/routes/orders.ts POST /api/orders requires merchant_id, items, address, phone and customer_name before inserting orders.",
+                                        "waimai",
+                                        "code-snippet",
+                                        "server/src/routes/orders.ts",
+                                        9.4d,
+                                        Map.of("repositoryId", query.repositoryId())
+                                )
+                        );
+                    }
+                    return List.of(new RetrievedChunk(
+                            "payment-service#OrderService.java#42",
+                            "OrderService.create should validate amount before repository.save",
+                            "payment-system",
+                            "code-snippet",
+                            "OrderService.java",
+                            9.0d,
+                            Map.of("repositoryId", query.repositoryId())
+                    ));
+                },
                 context -> {}
         );
+    }
+
+    private void ensureDefaultDocuments(VectorStore vectorStore) {
+        if (!hasKnowledgeBase(vectorStore, "payment-system")) {
+            seedDefaultPaymentDocument(vectorStore);
+        }
+        if (!hasKnowledgeBase(vectorStore, "waimai")) {
+            seedDefaultWaimaiDocuments(vectorStore);
+        }
+    }
+
+    private boolean hasKnowledgeBase(VectorStore vectorStore, String knowledgeBaseId) {
+        return vectorStore.allChunks().stream()
+                .anyMatch(chunk -> knowledgeBaseId.equals(chunk.knowledgeBaseId()));
     }
 
     private void seedDefaultPaymentDocument(VectorStore vectorStore) {
@@ -257,6 +298,42 @@ public final class RagBugFixEngine {
                 ChunkingMode.STRUCTURE_AWARE,
                 96,
                 12
+        ));
+    }
+
+    private void seedDefaultWaimaiDocuments(VectorStore vectorStore) {
+        DocumentIngestionService.inMemory(vectorStore).write(new DocumentIngestionCommand(
+                "waimai-order-api.md",
+                "waimai",
+                "api",
+                "text/markdown",
+                """
+                # 外卖平台订单 API
+
+                POST /api/orders 是外卖平台顾客创建订单接口，对应服务端文件 server/src/routes/orders.ts。
+                服务端创建订单时要求请求体包含 merchant_id、items、address、phone、customer_name，可选 note。
+                客户端 client/src/api.ts 的 createOrder 当前提交 merchant_id、items、delivery_address、remark。
+                如果前端只传 delivery_address/remark，服务端校验拿不到 address、phone、customer_name，下单会失败。
+                """.getBytes(StandardCharsets.UTF_8),
+                ChunkingMode.STRUCTURE_AWARE,
+                128,
+                16
+        ));
+        DocumentIngestionService.inMemory(vectorStore).write(new DocumentIngestionCommand(
+                "waimai-schema.md",
+                "waimai",
+                "database",
+                "text/markdown",
+                """
+                # 外卖平台订单表
+
+                orders 表字段包含 order_no、customer_id、merchant_id、status、total_amount、delivery_fee、address、phone、customer_name、note。
+                address、phone、customer_name 是创建订单需要落库的配送信息。
+                order_items 表通过 order_id 关联订单，保存 product_id、product_name、product_price、quantity、subtotal。
+                """.getBytes(StandardCharsets.UTF_8),
+                ChunkingMode.STRUCTURE_AWARE,
+                128,
+                16
         ));
     }
 
