@@ -201,6 +201,7 @@ Tests run: 1, Failures: 0, Errors: 0, Skipped: 0
 | 查询工单消息 | 获取服务台资源详情 | `helpdesk:all:readonly` |
 | 查询服务台自定义字段 | 获取服务台资源详情 | `helpdesk:all:readonly` |
 | 订阅服务台事件 | 获取服务台资源详情 | `helpdesk:all:readonly` |
+| 创建服务台对话/工单 | 访问服务台 | `helpdesk:helpdesk:access` |
 | 发送工单消息 | 更新服务台资源详情 | `helpdesk:all` |
 | 更新工单详情 | 更新服务台资源详情 | `helpdesk:all` |
 
@@ -212,6 +213,7 @@ Tests run: 1, Failures: 0, Errors: 0, Skipped: 0
 | 获取工单消息详情 | `GET /open-apis/helpdesk/v1/tickets/:ticket_id/messages` | `helpdesk:all:readonly` |
 | 获取服务台自定义字段 | `GET /open-apis/helpdesk/v1/customized_fields` | `helpdesk:all:readonly` |
 | 订阅服务台事件 | `POST /open-apis/helpdesk/v1/events/subscribe` | `helpdesk:all:readonly` |
+| 创建服务台对话 | `POST /open-apis/helpdesk/v1/start_service` | `helpdesk:helpdesk:access` |
 | 发送工单消息 | `POST /open-apis/helpdesk/v1/tickets/:ticket_id/messages` | `helpdesk:all` |
 | 更新工单详情 | `PUT /open-apis/helpdesk/v1/tickets/:ticket_id` | `helpdesk:all` |
 
@@ -222,7 +224,37 @@ Tests run: 1, Failures: 0, Errors: 0, Skipped: 0
 - `X-Lark-Helpdesk-Authorization` 的值是 `base64(helpdesk_id:helpdesk_token)`。
 - 应用权限变更后，需要重新发布应用，并由租户管理员安装或升级应用权限。
 
-### 5.2 RD-Bot 环境变量
+### 5.2 参考项目工单创建方式
+
+参考项目 `EMIYAttk/Intelligent_work_order_Agent` 的“创建工单”不是 Feishu Helpdesk 工单：
+
+1. `feishu_bot_ws.py` 监听飞书 IM `P2ImMessageReceiveV1` 事件。
+2. 从消息事件里取 `sender.sender_id.open_id` 和 `message.chat_id`。
+3. 调用本地 FastAPI/Agent 得到结构化结果。
+4. 本地生成 `TK-xxxxxxxx` 工单号。
+5. 调用 `POST /open-apis/im/v1/messages` 向原 chat 发送飞书交互卡片。
+
+结论：该参考项目展示的是“IM 机器人 + 本地工单卡片”流程，不会在 Feishu Helpdesk 中生成真实 `ticket_id`。
+
+RD-Bot 要生成真实服务台工单，应调用：
+
+```http
+POST /open-apis/helpdesk/v1/start_service
+```
+
+最小请求体：
+
+```json
+{
+  "open_id": "ou_xxx",
+  "human_service": true,
+  "customized_info": "RD-Bot 自动创建：用户原始问题、RAG 摘要或 traceId"
+}
+```
+
+其中 `open_id` 可以沿用参考项目的取法：IM 事件中的 `sender.sender_id.open_id`。如果希望响应里返回真实 `ticket_id`，建议 `human_service=true`；官方文档说明 `ticket_id` 通常仅人工工单返回，只创建机器人对话时可能只有 `chat_id`。
+
+### 5.3 RD-Bot 环境变量
 
 不要把 secret 写入仓库。建议本地启动或测试时通过环境变量注入：
 
@@ -235,7 +267,7 @@ export FEISHU_HELPDESK_TOKEN="<服务台 token>"
 
 `FEISHU_HELPDESK_ID` 和 `FEISHU_HELPDESK_TOKEN` 的官方获取入口是 [服务台管理后台](https://feishu.cn/helpdesk/admin) 的 **设置中心 > API 凭证**。该 token 代表服务台负责人对服务台资源的访问权限；重置 token 会生成新 token，旧 token 自动失效。
 
-### 5.3 tenant_access_token 连通性验证
+### 5.4 tenant_access_token 连通性验证
 
 已使用用户提供的 `FEISHU_APP_ID` 和 `FEISHU_APP_SECRET` 调用官方接口：
 
@@ -260,9 +292,42 @@ POST https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal
 
 - 该结果证明自建应用 app 凭据可获取 `tenant_access_token`。
 - 测试过程未打印、保存或提交 `tenant_access_token` 明文。
-- 后续真实 Helpdesk 工单拉取仍需要 `FEISHU_HELPDESK_ID`、`FEISHU_HELPDESK_TOKEN` 和一个真实工单 ID。
+- 后续真实 Helpdesk 工单拉取还需要应用后台开通 `helpdesk:all:readonly`。
 
-### 5.4 自定义字段映射
+### 5.5 Helpdesk 凭据与权限 live check
+
+已使用用户提供的 `FEISHU_HELPDESK_ID` / `FEISHU_HELPDESK_TOKEN` 做脱敏验证：
+
+```json
+{
+  "tenant": {
+    "httpStatus": 200,
+    "code": 0,
+    "msg": "ok",
+    "tokenPresent": true
+  },
+  "customized_fields": {
+    "httpStatus": 400,
+    "code": 99991672,
+    "requiredScope": "helpdesk:all:readonly"
+  },
+  "tickets": {
+    "httpStatus": 400,
+    "code": 99991672,
+    "requiredScope": "helpdesk:all:readonly"
+  }
+}
+```
+
+结论：
+
+- App 凭据有效，能获取 `tenant_access_token`。
+- Helpdesk ID/token 已参与请求，但当前应用尚未开通 `helpdesk:all:readonly`，所以自定义字段和工单列表被飞书拒绝。
+- 飞书错误给出的开通入口是应用 `cli_a9458f91d17b5cd6` 的权限管理页，搜索并开通 `helpdesk:all:readonly`。
+- 若要让机器人创建真实服务台工单，还需要开通 `helpdesk:helpdesk:access`。
+- 权限变更后需要重新发布应用，并由租户管理员安装或升级应用权限。
+
+### 5.6 自定义字段映射
 
 推荐在飞书后台创建或调整工单自定义字段时，让 `key_name` 直接使用 RD-Bot 标准 key：
 
@@ -297,13 +362,15 @@ rd:
 - 工单描述或 `symptom` 至少一个非空。
 - `logs` 或 `repository` 至少一个非空。
 
-### 5.5 Feishu 真实拉取未完成项
+### 5.7 Feishu 真实拉取未完成项
 
-本轮已验证 app 级 `tenant_access_token` 获取成功，但没有执行 `FeishuHelpdeskRealSmokeTest` 的真实工单拉取，因为还缺以下运行期信息：
+本轮已验证 app 级 `tenant_access_token` 获取成功，并验证 Helpdesk 请求已到达权限检查阶段；但没有执行 `FeishuHelpdeskRealSmokeTest` 的真实工单拉取，因为当前应用还缺 `helpdesk:all:readonly` 权限。
 
-1. `FEISHU_HELPDESK_ID`
-2. `FEISHU_HELPDESK_TOKEN`
-3. 一个已存在的 `rd.feishu.smoke.ticket-id`
+完成真实拉取还需要：
+
+1. 在飞书应用后台开通 `helpdesk:all:readonly`。
+2. 重新发布应用，并由租户管理员安装或升级应用权限。
+3. 一个已存在的 `rd.feishu.smoke.ticket-id`，或先通过 `start_service` 创建真实工单后使用返回的 `ticket_id`。
 
 具备这些信息后，可执行：
 
@@ -336,7 +403,8 @@ rd:
 
 结果：
 
-- `FeishuTicketAdapterTest`：11 tests，0 failures，0 errors。
+- `FeishuTicketAdapterTest`：新增 `start_service` 覆盖后应为 13 tests，0 failures，0 errors。
+- `FeishuHelpdeskRealSmokeTest`：3 tests 默认跳过，编译通过；真实创建服务台对话需显式开启。
 - `GitHubCodePlatformRealSmokeTest`：默认跳过，编译通过。
 
 ### 6.2 全量测试
@@ -350,7 +418,7 @@ rd:
 结果：
 
 ```text
-Tests run: 113, Failures: 0, Errors: 0, Skipped: 6
+Tests run: 116, Failures: 0, Errors: 0, Skipped: 7
 BUILD SUCCESS
 ```
 
@@ -369,6 +437,9 @@ git diff --check
 本轮相关提交：
 
 ```text
+04746ac docs(feishu): document helpdesk credential source
+b5f4c3a docs(smoke): record feishu tenant token check
+b777452 docs(smoke): record bugfix real smoke report
 05e0c0b test(github): add real pull request smoke
 0e2a112 fix(feishu): align helpdesk fields with official API
 764b6d7 docs(smoke): document helpdesk and auto execution setup
@@ -384,12 +455,14 @@ db9200a fix(feishu): send helpdesk auth on read APIs
 - Feishu Helpdesk 读接口补齐服务台鉴权头。
 - Feishu 自定义字段 API 路径已对齐官方文档。
 - Feishu 工单字段映射兼容字段 ID、`key_name` 和 `display_name`。
+- RD-Bot 已封装 Feishu `start_service`，可在显式开启 smoke 并提供用户 open_id 后创建真实服务台对话/工单。
 - RocketMQ 本地 Docker broker 真实发布通过。
 - GitHub 真实 PR 由现有 Java `GitHubCodePlatformAdapter` 创建成功。
 - 未新增 Java gh 适配器。
 
-仍需外部信息才能继续验证：
+仍需外部配置才能继续真实 Feishu 工单验证：
 
-- `FEISHU_HELPDESK_ID`
-- `FEISHU_HELPDESK_TOKEN`
-- 可用于 smoke 的真实工单 ID
+- 在飞书应用后台开通 `helpdesk:all:readonly`，用于读取工单、自定义字段和消息。
+- 如果要让机器人创建真实服务台工单，再开通 `helpdesk:helpdesk:access`。
+- 权限变更后重新发布应用，并由租户管理员安装或升级权限。
+- 提供一个可读的真实工单 ID，或提供用户 open_id 后用 `start_service` 先创建工单。

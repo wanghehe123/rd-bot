@@ -24,7 +24,7 @@ P1 的真实外部依赖（飞书 Helpdesk、RocketMQ、PostgreSQL）冒烟测�
 1. **凭据**：配置 `FEISHU_APP_ID` / `FEISHU_APP_SECRET`，用于 `POST /open-apis/auth/v3/tenant_access_token/internal` 获取 `tenant_access_token`。
 2. **Helpdesk 鉴权**：从 [服务台管理后台](https://feishu.cn/helpdesk/admin) 的 **设置中心 > API 凭证** 获取 `FEISHU_HELPDESK_ID` / `FEISHU_HELPDESK_TOKEN`。RD-Bot 会生成 `X-Lark-Helpdesk-Authorization = base64(helpdeskId:helpdeskToken)`，并在查询工单、消息、自定义字段、回写接口中发送。请由服务台负责人妥善保管该凭据；重置 token 后旧 token 立即失效。
 3. **事件订阅**：订阅并启用回调事件 `helpdesk.ticket.created_v1`、`helpdesk.ticket.updated_v1`、`helpdesk.ticket_message.created_v1`，回调地址为 `POST /feishu/helpdesk/events`。
-4. **接口权限**：读工单详情、消息、自定义字段和事件订阅需要开通 `获取服务台资源详情(helpdesk:all:readonly)`，覆盖 `GET /open-apis/helpdesk/v1/tickets/:ticket_id`、`GET /open-apis/helpdesk/v1/tickets/:ticket_id/messages`、`GET /open-apis/helpdesk/v1/customized_fields`、`POST /open-apis/helpdesk/v1/events/subscribe`。如果要回写工单，再开通 `更新服务台资源详情(helpdesk:all)`，覆盖 `POST /open-apis/helpdesk/v1/tickets/:ticket_id/messages` 与 `PUT /open-apis/helpdesk/v1/tickets/:ticket_id`。
+4. **接口权限**：读工单详情、消息、自定义字段和事件订阅需要开通 `获取服务台资源详情(helpdesk:all:readonly)`，覆盖 `GET /open-apis/helpdesk/v1/tickets/:ticket_id`、`GET /open-apis/helpdesk/v1/tickets/:ticket_id/messages`、`GET /open-apis/helpdesk/v1/customized_fields`、`POST /open-apis/helpdesk/v1/events/subscribe`。如果要让机器人创建服务台对话/工单，再开通 `访问服务台(helpdesk:helpdesk:access)`，覆盖 `POST /open-apis/helpdesk/v1/start_service`。如果要回写工单，再开通 `更新服务台资源详情(helpdesk:all)`，覆盖 `POST /open-apis/helpdesk/v1/tickets/:ticket_id/messages` 与 `PUT /open-apis/helpdesk/v1/tickets/:ticket_id`。
 5. **应用发布/安装**：权限变更后需要重新发布应用，并由租户管理员安装或升级应用权限。
 
 自定义字段映射按飞书后台的字段 `key_name`、`display_name` 或字段 ID 配置。推荐在飞书后台新建/调整工单自定义字段时直接使用下表的 RD-Bot 标准字段作为 `key_name`，这样可以沿用 `application.yaml` 默认值；如果已有字段不能改名，则把对应配置项改成飞书字段 ID 或展示名。
@@ -40,6 +40,37 @@ P1 的真实外部依赖（飞书 Helpdesk、RocketMQ、PostgreSQL）冒烟测�
 | `actualResult` | 实际结果 | `rd.feishu.helpdesk.field-mapping.actualResult` |
 
 RD-Bot 进入 RAG 的最小条件：工单描述或 `symptom` 至少一个非空，并且 `logs` 或 `repository` 至少一个非空。
+
+### 1.2 机器人如何创建真实服务台工单
+
+参考项目 `EMIYAttk/Intelligent_work_order_Agent` 的流程是：监听飞书 IM 事件，取 `sender.sender_id.open_id` 和 `message.chat_id`，调用 Agent 生成结构化工单内容，自己生成 `TK-xxxx` 本地工单号，然后通过 `POST /open-apis/im/v1/messages` 发送交互卡片。它没有调用 Feishu Helpdesk 的工单创建 API，因此那里的“工单编号”不是服务台真实 `ticket_id`。
+
+如果要创建真实 Feishu Helpdesk 工单，走官方服务台 API：
+
+```http
+POST /open-apis/helpdesk/v1/start_service
+Authorization: Bearer <tenant_access_token>
+X-Lark-Helpdesk-Authorization: base64(helpdesk_id:helpdesk_token)
+Content-Type: application/json; charset=utf-8
+```
+
+请求体示例：
+
+```json
+{
+  "open_id": "ou_xxx",
+  "human_service": true,
+  "customized_info": "RD-Bot 自动创建：用户原始问题、RAG 摘要或外部 traceId"
+}
+```
+
+配置要点：
+
+- `open_id` 来自 IM 机器人消息事件中的 `sender.sender_id.open_id`，即参考项目 `feishu_bot_ws.py` 已经打印的用户 open_id。
+- 要拿到真实 `ticket_id`，建议 `human_service=true`；官方文档说明 `ticket_id` 通常仅人工工单返回，只创建机器人对话时可能只返回 `chat_id`。
+- 用户必须在该服务台可见范围内，否则可能返回 `154402 Helpdesk can't be see by user`。
+- 应用必须开通 `访问服务台(helpdesk:helpdesk:access)`，否则 `start_service` 会被权限拒绝。
+- RD-Bot 已在 `FeishuHelpdeskClient.startService(...)` 中封装该调用；真实 smoke 需额外传 `-Drd.feishu.smoke.create-ticket.enabled=true -Drd.feishu.smoke.open-id=<用户 open_id>`。
 
 ## 2. RocketMQ Topic 准备
 
