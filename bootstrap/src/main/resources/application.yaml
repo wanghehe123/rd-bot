@@ -92,19 +92,22 @@ rd:
       timeout-alert-millis: 1800000
       budget-alert-usd: 5.00
       providers:
-        - name: deepseek
-          base-url: https://api.deepseek.com/anthropic
-          auth-token-env: DEEPSEEK_API_KEY
-          model: "deepseek-v4-pro[1m]"
-          default-opus-model: "deepseek-v4-pro[1m]"
-          default-sonnet-model: "deepseek-v4-pro[1m]"
-          default-haiku-model: deepseek-v4-flash
-          subagent-model: deepseek-v4-flash
+        - name: mimo
+          base-url: https://token-plan-cn.xiaomimimo.com/anthropic
+          api-key-env: MIMO_API_KEY
+          model: mimo-v2.5-pro
+          default-opus-model: mimo-v2.5-pro
+          default-sonnet-model: mimo-v2.5-pro
+          default-haiku-model: mimo-v2.5-pro
+          subagent-model: mimo-v2.5-pro
           effort-level: max
         - name: anthropic
           api-key-env: ANTHROPIC_API_KEY
           model: ${ANTHROPIC_MODEL:}
   github:
+    merge-sync:
+      enabled: ${RD_GITHUB_MERGE_SYNC_ENABLED:false}
+      poll-interval-millis: ${RD_GITHUB_MERGE_SYNC_POLL_INTERVAL_MILLIS:30000}
     code-platform:
       mode: mock
       allowed-repositories: []
