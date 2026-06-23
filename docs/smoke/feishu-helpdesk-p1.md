@@ -19,6 +19,8 @@ P1 的真实外部依赖（飞书 Helpdesk、RocketMQ、PostgreSQL）冒烟测�
 
 ### 1.1 飞书权限与字段配置
 
+完整检查清单见 [Feishu Helpdesk 权限与字段映射检查清单](feishu-helpdesk-configuration-checklist.md)。本节保留 P1 smoke 运行所需的最小配置。
+
 在飞书开放平台应用后台配置：
 
 1. **凭据**：配置 `FEISHU_APP_ID` / `FEISHU_APP_SECRET`，用于 `POST /open-apis/auth/v3/tenant_access_token/internal` 获取 `tenant_access_token`。
@@ -33,6 +35,7 @@ P1 的真实外部依赖（飞书 Helpdesk、RocketMQ、PostgreSQL）冒烟测�
 | --- | --- | --- |
 | `problemSystem` | 故障系统/模块 | `rd.feishu.helpdesk.field-mapping.problemSystem` |
 | `symptom` | 故障现象 | `rd.feishu.helpdesk.field-mapping.symptom` |
+| `triggerWay` | 触发方式 | `rd.feishu.helpdesk.field-mapping.triggerWay` |
 | `logs` | 错误日志/异常栈 | `rd.feishu.helpdesk.field-mapping.logs` |
 | `repository` | 代码仓库 URL 或 owner/repo | `rd.feishu.helpdesk.field-mapping.repository` |
 | `branch` | 基准分支 | `rd.feishu.helpdesk.field-mapping.branch` |
@@ -40,6 +43,8 @@ P1 的真实外部依赖（飞书 Helpdesk、RocketMQ、PostgreSQL）冒烟测�
 | `actualResult` | 实际结果 | `rd.feishu.helpdesk.field-mapping.actualResult` |
 
 RD-Bot 进入 RAG 的最小条件：工单描述或 `symptom` 至少一个非空，并且 `logs` 或 `repository` 至少一个非空。
+
+当前用户提供的 app 凭据可以成功获取 `tenant_access_token`，但最新 live check 仍显示 `GET /open-apis/helpdesk/v1/customized_fields` 和 `GET /open-apis/helpdesk/v1/tickets` 被飞书拒绝，错误码 `99991672`，缺少 `helpdesk:all:readonly`。因此在飞书开放平台完成权限开通、发布和租户安装前，RD-Bot 不能真实读取工单或字段定义。
 
 ### 1.2 机器人如何创建真实服务台工单
 

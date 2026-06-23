@@ -125,6 +125,17 @@ rocketmq published, ticketId=SMOKE-dbc1fe48, tag=P1, msgId=C61200016AA318FF02E47
 - RD-Bot 可用生产 RocketMQ adapter 发布 `RD_BOT_REPAIR_TICKET` 消息。
 - P1 “memory 只用于本地回放，生产队列走 RocketMQ”具备真实连通性证据。
 
+2026-06-23 14:14 复查仍通过：
+
+```text
+rocketmq producer started, group=GID_RD_BOT_REPAIR_PRODUCER, nameserver=127.0.0.1:9876
+rocketmq consumer started, group=GID_RD_BOT_REPAIR_WORKER, topic=RD_BOT_REPAIR_TICKET
+rocketmq published, ticketId=SMOKE-5e5b28db, tag=P1, msgId=C61200010C6F18FF02E4745A32340000
+[smoke] published to topic=RD_BOT_REPAIR_TICKET tag=P1 msgId=C61200010C6F18FF02E4745A32340000 ticketId=SMOKE-5e5b28db
+Tests run: 1, Failures: 0, Errors: 0, Skipped: 0
+BUILD SUCCESS
+```
+
 ## 4. GitHub 真实 PR 创建测试
 
 ### 4.1 gh CLI 准备的测试仓库
@@ -319,6 +330,30 @@ POST https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal
 }
 ```
 
+2026-06-23 复查结果仍一致：
+
+```json
+{
+  "tenant": {
+    "httpStatus": 200,
+    "code": 0,
+    "msg": "ok",
+    "tokenPresent": true,
+    "expire": 5538
+  },
+  "customized_fields": {
+    "httpStatus": 400,
+    "code": 99991672,
+    "requiredScope": "helpdesk:all:readonly"
+  },
+  "tickets": {
+    "httpStatus": 400,
+    "code": 99991672,
+    "requiredScope": "helpdesk:all:readonly"
+  }
+}
+```
+
 结论：
 
 - App 凭据有效，能获取 `tenant_access_token`。
@@ -329,12 +364,15 @@ POST https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal
 
 ### 5.6 自定义字段映射
 
+详细配置检查清单见 `docs/smoke/feishu-helpdesk-configuration-checklist.md`。
+
 推荐在飞书后台创建或调整工单自定义字段时，让 `key_name` 直接使用 RD-Bot 标准 key：
 
 | RD-Bot 标准字段 | 建议飞书 key_name | 含义 |
 | --- | --- | --- |
 | `problemSystem` | `problemSystem` | 故障系统/模块 |
 | `symptom` | `symptom` | 故障现象 |
+| `triggerWay` | `triggerWay` | 触发方式 |
 | `logs` | `logs` | 错误日志/异常栈 |
 | `repository` | `repository` | 代码仓库 URL 或 owner/repo |
 | `branch` | `branch` | 基准分支 |
@@ -350,6 +388,7 @@ rd:
       field-mapping:
         problemSystem: "<飞书字段 ID / key_name / display_name>"
         symptom: "<飞书字段 ID / key_name / display_name>"
+        triggerWay: "<飞书字段 ID / key_name / display_name>"
         logs: "<飞书字段 ID / key_name / display_name>"
         repository: "<飞书字段 ID / key_name / display_name>"
         branch: "<飞书字段 ID / key_name / display_name>"
@@ -445,6 +484,8 @@ b777452 docs(smoke): record bugfix real smoke report
 764b6d7 docs(smoke): document helpdesk and auto execution setup
 db9200a fix(feishu): send helpdesk auth on read APIs
 1b3b3f1 feat(engine): trigger bugfix execution from ticket queue
+9c2ba99 feat(feishu): support helpdesk start service
+88abbda docs(feishu): explain real helpdesk ticket creation
 ```
 
 ## 8. 结论
