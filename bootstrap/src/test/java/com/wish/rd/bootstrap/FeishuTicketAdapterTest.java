@@ -9,6 +9,8 @@ import com.wish.rd.adapter.TicketUpdateResult;
 import com.wish.rd.bootstrap.feishu.ticket.FeishuHelpdeskAuth;
 import com.wish.rd.bootstrap.feishu.ticket.FeishuHelpdeskClient;
 import com.wish.rd.bootstrap.feishu.ticket.FeishuHelpdeskProperties;
+import com.wish.rd.bootstrap.feishu.ticket.FeishuStartServiceCommand;
+import com.wish.rd.bootstrap.feishu.ticket.FeishuStartServiceResult;
 import com.wish.rd.bootstrap.feishu.ticket.FeishuTicketAdapter;
 import com.wish.rd.bootstrap.feishu.ticket.FeishuTicketMapper;
 import org.junit.jupiter.api.Test;
@@ -127,6 +129,45 @@ class FeishuTicketAdapterTest {
                 request.headers().firstValue("X-Lark-Helpdesk-Authorization").isPresent(),
                 "customized_fields GET must carry X-Lark-Helpdesk-Authorization"
         );
+    }
+
+    @Test
+    void startServiceShouldUseOfficialEndpointAndReturnTicketId() {
+        StubTransport transport = new StubTransport();
+        transport.enqueue("{\"code\":0,\"msg\":\"success\",\"data\":"
+                + "{\"chat_id\":\"oc-helpdesk\",\"ticket_id\":\"7474857595946745884\"}}");
+        FeishuHelpdeskClient client = FeishuHelpdeskClient.forTesting(
+                enabledWithWriteBack(false),
+                objectMapper,
+                transport
+        );
+
+        FeishuStartServiceResult result = client.startService(new FeishuStartServiceCommand(
+                "ou-user",
+                true,
+                List.of("ou-agent"),
+                "RD-Bot smoke source"
+        ));
+
+        assertEquals("oc-helpdesk", result.chatId());
+        assertEquals("7474857595946745884", result.ticketId());
+        assertEquals("feishu-helpdesk", result.metadata().get("provider"));
+        java.net.http.HttpRequest request = transport.nonTokenRequests().getFirst();
+        assertTrue(request.uri().toString().endsWith("/open-apis/helpdesk/v1/start_service"));
+        assertTrue(
+                request.headers().firstValue("X-Lark-Helpdesk-Authorization").isPresent(),
+                "start_service POST must carry X-Lark-Helpdesk-Authorization"
+        );
+    }
+
+    @Test
+    void startServiceShouldRejectAppointedAgentsWithoutHumanService() {
+        IllegalArgumentException exception = org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalArgumentException.class,
+                () -> new FeishuStartServiceCommand("ou-user", false, List.of("ou-agent"), "")
+        );
+
+        assertTrue(exception.getMessage().contains("humanService"));
     }
 
     @Test

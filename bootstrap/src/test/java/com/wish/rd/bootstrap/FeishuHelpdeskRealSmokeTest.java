@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.wish.rd.bootstrap.feishu.ticket.FeishuHelpdeskAuth;
 import com.wish.rd.bootstrap.feishu.ticket.FeishuHelpdeskClient;
 import com.wish.rd.bootstrap.feishu.ticket.FeishuHelpdeskProperties;
+import com.wish.rd.bootstrap.feishu.ticket.FeishuStartServiceCommand;
+import com.wish.rd.bootstrap.feishu.ticket.FeishuStartServiceResult;
 import com.wish.rd.adapter.TicketMessageQuery;
 import com.wish.rd.adapter.TicketMessages;
 import com.wish.rd.adapter.TicketSnapshot;
@@ -39,6 +41,12 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  *   -Drd.feishu.helpdesk.helpdesk-token=$HELPDESK_TOKEN \
  *   -Drd.feishu.smoke.ticket-id=$TICKET_ID \
  *   test
+ * </pre>
+ *
+ * <p>真实创建服务台对话默认关闭；如需验证机器人创建工单，额外传入：
+ * <pre>
+ *   -Drd.feishu.smoke.create-ticket.enabled=true \
+ *   -Drd.feishu.smoke.open-id=$USER_OPEN_ID
  * </pre>
  *
  * <p>缺凭据时给出清晰假设失败，而不是随机连接错误。
@@ -87,6 +95,33 @@ class FeishuHelpdeskRealSmokeTest {
         JsonNode customFields = client.listCustomFields();
         assertNotNull(customFields);
         System.out.println("[smoke] custom fields count=" + (customFields.isArray() ? customFields.size() : 0));
+    }
+
+    @Test
+    void createsHelpdeskConversationWhenExplicitlyEnabled() {
+        assumeTrue(Boolean.getBoolean("rd.feishu.smoke.create-ticket.enabled"),
+                "set rd.feishu.smoke.create-ticket.enabled=true to create a real Helpdesk conversation");
+        assumeTrue(!properties.getAppId().isBlank(), "rd.feishu.helpdesk.app-id must be set");
+        assumeTrue(!properties.getAppSecret().isBlank(), "rd.feishu.helpdesk.app-secret must be set");
+        assumeTrue(!properties.getHelpdeskId().isBlank(), "rd.feishu.helpdesk.helpdesk-id must be set");
+        assumeTrue(!properties.getHelpdeskToken().isBlank(), "rd.feishu.helpdesk.helpdesk-token must be set");
+
+        String openId = System.getProperty("rd.feishu.smoke.open-id", "");
+        assumeTrue(!openId.isBlank(), "rd.feishu.smoke.open-id must be set to an existing user open_id");
+
+        FeishuHelpdeskClient client = new FeishuHelpdeskClient(
+                properties, new com.fasterxml.jackson.databind.ObjectMapper(), 3000, 10_000
+        );
+        FeishuStartServiceResult result = client.startService(new FeishuStartServiceCommand(
+                openId,
+                true,
+                java.util.List.of(),
+                "RD-Bot real start_service smoke"
+        ));
+
+        assertTrue(!result.chatId().isBlank(), "start_service should return chat_id");
+        System.out.println("[smoke] start_service chatId=" + result.chatId()
+                + " ticketId=" + result.ticketId());
     }
 
     @Test

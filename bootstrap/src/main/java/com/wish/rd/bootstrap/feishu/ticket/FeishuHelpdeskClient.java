@@ -27,6 +27,7 @@ import java.util.Optional;
  *   <li>获取 tenant_access_token：{@code POST /open-apis/auth/v3/tenant_access_token/internal}</li>
  *   <li>查询工单详情：{@code GET /open-apis/helpdesk/v1/tickets/:ticket_id}</li>
  *   <li>查询工单消息：{@code GET /open-apis/helpdesk/v1/tickets/:ticket_id/messages}</li>
+ *   <li>创建服务台对话：{@code POST /open-apis/helpdesk/v1/start_service}</li>
  *   <li>发送消息：{@code POST /open-apis/helpdesk/v1/tickets/:ticket_id/messages}</li>
  *   <li>更新工单：{@code PUT /open-apis/helpdesk/v1/tickets/:ticket_id}</li>
  *   <li>查询自定义字段：{@code GET /open-apis/helpdesk/v1/customized_fields}</li>
@@ -182,6 +183,38 @@ public class FeishuHelpdeskClient {
                 + "&page_size=" + Math.max(1, pageSize);
         JsonNode response = getHelpdeskJson(url);
         return response.path("data").path("items");
+    }
+
+    /**
+     * 创建服务台对话。
+     *
+     * <p>飞书仅在进入人工工单时通常返回 {@code ticket_id}；如果只创建机器人对话，
+     * 响应可能只有 {@code chat_id}。
+     *
+     * @param command 创建服务台对话命令
+     * @return 创建结果
+     */
+    public FeishuStartServiceResult startService(FeishuStartServiceCommand command) {
+        if (command == null) {
+            throw new IllegalArgumentException("command must not be null");
+        }
+        String url = properties.getBaseUrl() + "/open-apis/helpdesk/v1/start_service";
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("open_id", command.openId());
+        body.put("human_service", command.humanService());
+        if (!command.appointedAgents().isEmpty()) {
+            body.put("appointed_agents", command.appointedAgents());
+        }
+        if (!command.customizedInfo().isBlank()) {
+            body.put("customized_info", command.customizedInfo());
+        }
+        JsonNode response = postJson(url, toJson(body), true);
+        JsonNode data = response.path("data");
+        return new FeishuStartServiceResult(
+                data.path("chat_id").asText(""),
+                data.path("ticket_id").asText(""),
+                Map.of("provider", "feishu-helpdesk")
+        );
     }
 
     /**
