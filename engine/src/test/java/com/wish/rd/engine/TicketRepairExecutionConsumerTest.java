@@ -4,7 +4,11 @@ import com.wish.rd.adapter.TicketMessage;
 import com.wish.rd.adapter.TicketMessageQuery;
 import com.wish.rd.adapter.TicketMessages;
 import com.wish.rd.adapter.TicketProviderPort;
+import com.wish.rd.adapter.TicketReplyCommand;
 import com.wish.rd.adapter.TicketSnapshot;
+import com.wish.rd.adapter.TicketUpdateCommand;
+import com.wish.rd.adapter.TicketUpdatePort;
+import com.wish.rd.adapter.TicketUpdateResult;
 import com.wish.rd.engine.bugfix.BugFixExecutionResult;
 import com.wish.rd.engine.bugfix.BugFixExecutor;
 import com.wish.rd.engine.bugfix.RdBotFixEngine;
@@ -72,6 +76,48 @@ class TicketRepairExecutionConsumerTest {
         assertEquals(1, executor.requests.size());
         assertEquals("FS-READY", executor.requests.getFirst().ragMessage().ticketId());
         assertTrue(executor.requests.getFirst().ragMessage().contextSummary().contains("OrderService.create"));
+    }
+
+    @Test
+    void readyTicketShouldWriteBackExecutionResultWhenEnabled() {
+        ReadyProvider provider = new ReadyProvider();
+        RepairRecordRepository repository = InMemoryRepairRecordRepository.inMemory();
+        TicketRepairEngine ticketRepairEngine = TicketRepairEngine.forTesting(
+                provider,
+                null,
+                repository,
+                ragEngine(),
+                TicketFieldMapping.defaults(),
+                false
+        );
+        RecordingBugFixExecutor executor = new RecordingBugFixExecutor();
+        RecordingUpdater updater = new RecordingUpdater();
+        RdBotFixEngine fixEngine = new RdBotFixEngine(
+                ChatQueueLimiter.passThrough(),
+                ragEngine(),
+                taskRegistry(),
+                com.wish.rd.engine.bugfix.BugFixPromptBuilder.defaultBuilder(),
+                executor
+        );
+        TicketRepairExecutionConsumer consumer = new TicketRepairExecutionConsumer(
+                ticketRepairEngine,
+                provider,
+                fixEngine,
+                TicketFieldMapping.defaults(),
+                true,
+                updater,
+                true
+        );
+
+        boolean success = consumer.handle(message("FS-READY"));
+
+        assertTrue(success);
+        assertEquals(1, updater.replies.size());
+        String content = updater.replies.getFirst().content();
+        assertTrue(content.contains("内部工单：FS-READY"));
+        assertTrue(content.contains("RAG 状态：CONTEXT_READY"));
+        assertTrue(content.contains("执行状态：COMMITTED"));
+        assertTrue(content.contains("PR：https://github.example.local/acme/order/pull/1"));
     }
 
     @Test
@@ -187,6 +233,21 @@ class TicketRepairExecutionConsumerTest {
                     "https://github.example.local/acme/order/pull/1",
                     "{\"status\":\"SUCCESS\"}"
             );
+        }
+    }
+
+    private static final class RecordingUpdater implements TicketUpdatePort {
+        private final List<TicketReplyCommand> replies = new ArrayList<>();
+
+        @Override
+        public TicketUpdateResult sendMessage(TicketReplyCommand command) {
+            replies.add(command);
+            return TicketUpdateResult.success("reply-" + replies.size(), "ok");
+        }
+
+        @Override
+        public TicketUpdateResult updateTicket(TicketUpdateCommand command) {
+            return TicketUpdateResult.success("update", "ok");
         }
     }
 }

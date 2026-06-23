@@ -34,21 +34,23 @@ public class FeishuImTicketParser {
         String symptom = "";
         StringBuilder description = new StringBuilder();
         for (String line : raw.lines().map(String::strip).filter(value -> !value.isBlank()).toList()) {
-            ParsedLine parsed = parseLine(line);
-            if (parsed.key().isBlank()) {
-                appendLine(description, line);
-                continue;
-            }
-            String mappedKey = mapKey(parsed.key());
-            if ("priority".equals(mappedKey)) {
-                priority = parsed.value();
-            } else if (!mappedKey.isBlank()) {
-                fields.put(mappedKey, parsed.value());
-                if (TicketFieldMapping.KEY_SYMPTOM.equals(mappedKey)) {
-                    symptom = parsed.value();
+            for (String segment : splitSegments(line)) {
+                ParsedLine parsed = parseLine(segment);
+                if (parsed.key().isBlank()) {
+                    appendLine(description, segment);
+                    continue;
                 }
-            } else {
-                appendLine(description, line);
+                String mappedKey = mapKey(parsed.key());
+                if ("priority".equals(mappedKey)) {
+                    priority = parsed.value();
+                } else if (!mappedKey.isBlank()) {
+                    fields.put(mappedKey, parsed.value());
+                    if (TicketFieldMapping.KEY_SYMPTOM.equals(mappedKey)) {
+                        symptom = parsed.value();
+                    }
+                } else {
+                    appendLine(description, segment);
+                }
             }
         }
 
@@ -76,15 +78,67 @@ public class FeishuImTicketParser {
         return new ParsedLine(line.substring(0, index).strip(), line.substring(index + 1).strip());
     }
 
+    private static java.util.List<String> splitSegments(String line) {
+        java.util.List<String> segments = new java.util.ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        for (int index = 0; index < line.length(); index++) {
+            char value = line.charAt(index);
+            if (isFieldDelimiter(value) && startsStructuredField(line, index + 1)) {
+                addSegment(segments, current);
+                current.setLength(0);
+                index = skipWhitespace(line, index + 1) - 1;
+                continue;
+            }
+            current.append(value);
+        }
+        addSegment(segments, current);
+        return segments;
+    }
+
+    private static boolean startsStructuredField(String line, int start) {
+        int index = skipWhitespace(line, start);
+        int nextDelimiter = nextDelimiterIndex(line, index);
+        String candidate = nextDelimiter < 0 ? line.substring(index) : line.substring(index, nextDelimiter);
+        return !mapKey(parseLine(candidate).key()).isBlank();
+    }
+
+    private static int skipWhitespace(String line, int start) {
+        int index = start;
+        while (index < line.length() && Character.isWhitespace(line.charAt(index))) {
+            index++;
+        }
+        return index;
+    }
+
+    private static int nextDelimiterIndex(String line, int start) {
+        for (int index = start; index < line.length(); index++) {
+            if (isFieldDelimiter(line.charAt(index))) {
+                return index;
+            }
+        }
+        return -1;
+    }
+
+    private static boolean isFieldDelimiter(char value) {
+        return value == '|' || value == ';' || value == '；';
+    }
+
+    private static void addSegment(java.util.List<String> segments, StringBuilder builder) {
+        String value = builder.toString().strip();
+        if (!value.isBlank()) {
+            segments.add(value);
+        }
+    }
+
     private static String mapKey(String key) {
         return switch (key.strip()) {
             case "系统", "模块", "服务", "problemSystem" -> TicketFieldMapping.KEY_PROBLEM_SYSTEM;
             case "仓库", "代码仓库", "repository" -> TicketFieldMapping.KEY_REPOSITORY;
             case "分支", "branch" -> TicketFieldMapping.KEY_BRANCH;
             case "问题", "现象", "symptom" -> TicketFieldMapping.KEY_SYMPTOM;
-            case "日志", "log", "logs" -> TicketFieldMapping.KEY_LOGS;
-            case "期望", "expectedResult" -> TicketFieldMapping.KEY_EXPECTED_RESULT;
-            case "实际", "actualResult" -> TicketFieldMapping.KEY_ACTUAL_RESULT;
+            case "日志", "错误日志", "log", "logs" -> TicketFieldMapping.KEY_LOGS;
+            case "期望", "期望结果", "expectedResult" -> TicketFieldMapping.KEY_EXPECTED_RESULT;
+            case "实际", "实际结果", "actualResult" -> TicketFieldMapping.KEY_ACTUAL_RESULT;
             case "优先级", "priority" -> "priority";
             default -> "";
         };

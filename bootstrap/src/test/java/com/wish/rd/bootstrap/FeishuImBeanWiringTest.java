@@ -4,11 +4,15 @@ import com.wish.rd.adapter.TicketProviderPort;
 import com.wish.rd.adapter.TicketUpdatePort;
 import com.wish.rd.bootstrap.feishu.im.FeishuImMessageController;
 import com.wish.rd.bootstrap.feishu.im.FeishuImTicketAdapter;
+import com.wish.rd.engine.ticket.TicketRepairEngine;
+import com.wish.rd.engine.ticket.TicketRepairExecutionConsumer;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 /**
@@ -22,6 +26,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
         properties = {
                 "rd.repair.ticket.provider=feishu-im",
                 "rd.feishu.im.enabled=true",
+                "rd.feishu.im.write-back.enabled=true",
                 "rd.feishu.im.app-id=app-id-for-wiring-test",
                 "rd.feishu.im.app-secret=app-secret-for-wiring-test"
         }
@@ -34,11 +39,21 @@ class FeishuImBeanWiringTest {
     private TicketProviderPort providerPort;
     @Autowired
     private TicketUpdatePort updatePort;
+    @Autowired
+    private TicketRepairEngine repairEngine;
+    @Autowired
+    private TicketRepairExecutionConsumer executionConsumer;
 
     @Test
     void should_wire飞书IM工单端口_当启用IMProvider() {
         assertNotNull(controller);
         assertInstanceOf(FeishuImTicketAdapter.class, providerPort);
         assertInstanceOf(FeishuImTicketAdapter.class, updatePort);
+    }
+
+    @Test
+    void should_use飞书IM回写开关_当未显式配置通用回写开关() {
+        assertEquals(true, ReflectionTestUtils.getField(repairEngine, "writeBackEnabled"));
+        assertEquals(true, ReflectionTestUtils.getField(executionConsumer, "writeBackEnabled"));
     }
 }

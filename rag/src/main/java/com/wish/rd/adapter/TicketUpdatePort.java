@@ -4,7 +4,9 @@ package com.wish.rd.adapter;
  * 工单系统写入端口：向工单会话回复消息、更新工单状态/字段。
  *
  * <p>具体实现由 {@code bootstrap} 提供方适配器注入；RAG/Engine 只依赖此契约。
- * 写回默认关闭，由配置 {@code rd.feishu.helpdesk.write-back.enabled=true} 显式开启。
+ * 写回默认关闭，由配置 {@code rd.ticket.write-back.enabled=true} 显式开启；
+ * 使用具体飞书入口时，也可由 {@code rd.feishu.im.write-back.enabled=true}
+ * 或 {@code rd.feishu.helpdesk.write-back.enabled=true} 打开。
  */
 public interface TicketUpdatePort {
 

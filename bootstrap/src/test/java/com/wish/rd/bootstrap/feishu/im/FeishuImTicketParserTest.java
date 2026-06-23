@@ -37,6 +37,23 @@ class FeishuImTicketParserTest {
     }
 
     @Test
+    void shouldParsePipeSeparatedKeyValueFieldsOnOneLine() {
+        FeishuImTicketDraft draft = parser.parse(
+                "RD-Bot 真实流程测试 2026-06-23 15:56 | 系统: waimai | 优先级: P1 | 问题: 外卖下单接口返回 500 | "
+                        + "实际结果: 接口返回 500，下单失败 | 期望结果: 订单创建成功并返回订单号 | "
+                        + "错误日志: java.lang.NullPointerException at OrderService.createOrder(OrderService.java:42)"
+        );
+
+        assertEquals("P1", draft.priority());
+        assertEquals("外卖下单接口返回 500", draft.title());
+        assertEquals("waimai", draft.customFields().get("problemSystem"));
+        assertEquals("java.lang.NullPointerException at OrderService.createOrder(OrderService.java:42)",
+                draft.customFields().get("logs"));
+        assertEquals("订单创建成功并返回订单号", draft.customFields().get("expectedResult"));
+        assertEquals("接口返回 500，下单失败", draft.customFields().get("actualResult"));
+    }
+
+    @Test
     void shouldFallbackToRawTextWhenNoStructuredKeysExist() {
         FeishuImTicketDraft draft = parser.parse("waimai 下单接口 500，日志 NPE");
 

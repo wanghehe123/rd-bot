@@ -3,7 +3,10 @@ package com.wish.rd.engine.ticket;
 import com.wish.rd.adapter.TicketMessageQuery;
 import com.wish.rd.adapter.TicketMessages;
 import com.wish.rd.adapter.TicketProviderPort;
+import com.wish.rd.adapter.TicketReplyCommand;
 import com.wish.rd.adapter.TicketSnapshot;
+import com.wish.rd.adapter.TicketUpdatePort;
+import com.wish.rd.adapter.TicketUpdateResult;
 import com.wish.rd.engine.bugfix.RdBotFixCommand;
 import com.wish.rd.engine.bugfix.RdBotFixEngine;
 import com.wish.rd.engine.bugfix.RdBotFixResult;
@@ -17,6 +20,7 @@ import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -37,6 +41,8 @@ public class TicketRepairExecutionConsumer implements RepairQueueConsumer {
     private final RdBotFixEngine fixEngine;
     private final TicketFieldMapping fieldMapping;
     private final boolean autoExecuteEnabled;
+    private final TicketUpdatePort updatePort;
+    private final boolean writeBackEnabled;
 
     /**
      * 创建正式修复队列消费者。
@@ -53,14 +59,20 @@ public class TicketRepairExecutionConsumer implements RepairQueueConsumer {
             TicketProviderPort providerPort,
             RdBotFixEngine fixEngine,
             ObjectProvider<TicketFieldMapping> fieldMapping,
-            @Value("${rd.repair.ticket.auto-execute.enabled:false}") boolean autoExecuteEnabled
+            @Value("${rd.repair.ticket.auto-execute.enabled:false}") boolean autoExecuteEnabled,
+            ObjectProvider<TicketUpdatePort> updatePort,
+            @Value("#{${rd.ticket.write-back.enabled:false} || ${rd.feishu.im.write-back.enabled:false} || "
+                    + "${rd.feishu.helpdesk.write-back.enabled:false}}")
+            boolean writeBackEnabled
     ) {
         this(
                 ticketRepairEngine,
                 providerPort,
                 fixEngine,
                 fieldMapping.getIfAvailable(TicketFieldMapping::defaults),
-                autoExecuteEnabled
+                autoExecuteEnabled,
+                updatePort.getIfAvailable(),
+                writeBackEnabled
         );
     }
 
@@ -71,11 +83,25 @@ public class TicketRepairExecutionConsumer implements RepairQueueConsumer {
             TicketFieldMapping fieldMapping,
             boolean autoExecuteEnabled
     ) {
+        this(ticketRepairEngine, providerPort, fixEngine, fieldMapping, autoExecuteEnabled, null, false);
+    }
+
+    public TicketRepairExecutionConsumer(
+            TicketRepairEngine ticketRepairEngine,
+            TicketProviderPort providerPort,
+            RdBotFixEngine fixEngine,
+            TicketFieldMapping fieldMapping,
+            boolean autoExecuteEnabled,
+            TicketUpdatePort updatePort,
+            boolean writeBackEnabled
+    ) {
         this.ticketRepairEngine = ticketRepairEngine;
         this.providerPort = providerPort;
         this.fixEngine = fixEngine;
         this.fieldMapping = fieldMapping == null ? TicketFieldMapping.defaults() : fieldMapping;
         this.autoExecuteEnabled = autoExecuteEnabled;
+        this.updatePort = updatePort;
+        this.writeBackEnabled = writeBackEnabled;
     }
 
     @Override
@@ -90,10 +116,10 @@ public class TicketRepairExecutionConsumer implements RepairQueueConsumer {
         if (outcome.decision() != TicketRepairDecision.READY_FOR_RAG || !autoExecuteEnabled) {
             return true;
         }
-        return executeReadyTicket(message);
+        return executeReadyTicket(message, outcome);
     }
 
-    private boolean executeReadyTicket(RepairTicketMessage message) {
+    private boolean executeReadyTicket(RepairTicketMessage message, TicketRepairEngine.RepairOutcome outcome) {
         Optional<TicketSnapshot> snapshotOpt = providerPort.findTicket(message.ticketId());
         if (snapshotOpt.isEmpty()) {
             log.warn("auto execute skipped because ticket disappeared, ticketId={}", message.ticketId());
@@ -113,7 +139,44 @@ public class TicketRepairExecutionConsumer implements RepairQueueConsumer {
                 result.status(),
                 result.rejected()
         );
+        writeBackExecutionResult(message, outcome, result);
         return !result.rejected();
+    }
+
+    private void writeBackExecutionResult(
+            RepairTicketMessage message,
+            TicketRepairEngine.RepairOutcome outcome,
+            RdBotFixResult result
+    ) {
+        if (!writeBackEnabled || updatePort == null) {
+            return;
+        }
+        String pullRequestUrl = result.executionResult().pullRequestUrl();
+        String content = """
+                RD-Bot 自动修复已完成
+                内部工单：%s
+                RAG 状态：CONTEXT_READY
+                执行状态：%s
+                任务ID：%s
+                PR：%s
+                """.formatted(
+                message.ticketId(),
+                result.status().name(),
+                result.taskId(),
+                pullRequestUrl.isBlank() ? "未生成" : pullRequestUrl
+        ).strip();
+        TicketReplyCommand reply = new TicketReplyCommand(
+                message.ticketId(),
+                "text",
+                content,
+                List.of(),
+                Map.of("taskId", result.taskId(), "executionStatus", result.status().name()),
+                message.traceId(),
+                outcome.repairRecordId()
+        );
+        TicketUpdateResult updateResult = updatePort.sendMessage(reply);
+        log.info("wrote back auto repair result, ticketId={}, taskId={}, success={}",
+                message.ticketId(), result.taskId(), updateResult.success());
     }
 
     private List<String> extractLogs(TicketSnapshot snapshot) {
