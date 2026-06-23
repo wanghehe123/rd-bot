@@ -1,0 +1,18 @@
+=== Test Log for repair/7474767083549626368 ===
+Date: 2026-06-22
+
+Command: npm test
+Test framework: Jest
+
+Results:
+  Test Suites: 1 passed, 1 total
+  Tests:       7 passed, 7 total
+
+Test cases:
+  1. ✓ should create an order with valid data
+  2. ✓ should reject order creation when amount is null
+  3. ✓ should reject order creation when amount is undefined
+  4. ✓ should reject order creation when amount is not a number
+  5. ✓ should reject order creation when amount is negative
+  6. ✓ should reject order creation when amount is zero
+  7. ✓ should not persist invalid orders to repository

@@ -1,0 +1,55 @@
+{
+    "ticketId": "FS-MOCK-1",
+    "repairRecordId": "7475034040727375872",
+    "status": "CONTEXT_READY",
+    "contextSummary": "\u76ee\u6807\u7cfb\u7edf\uff1a\u652f\u4ed8\u7cfb\u7edf\n[api] # \u652f\u4ed8\u7cfb\u7edf API\n\nPOST /api/orders \u662f\u4e0b\u5355\u63a5\u53e3\u3002\nOrderService.create \u5199\u5165\u8ba2\u5355\u524d\u5fc5\u987b\u6821\u9a8c orders.amount\u3002\n[code-snippet] OrderService.create should validate amount before repository.save\n[runtime-log] ERROR orders.amount is null at OrderService.create",
+    "ragSummary": "\u76ee\u6807\u7cfb\u7edf\uff1a\u652f\u4ed8\u7cfb\u7edf\n[api] # \u652f\u4ed8\u7cfb\u7edf API\n\nPOST /api/orders \u662f\u4e0b\u5355\u63a5\u53e3\u3002\nOrderService.create \u5199\u5165\u8ba2\u5355\u524d\u5fc5\u987b\u6821\u9a8c orders.amount\u3002\n[code-snippet] OrderService.create should validate amount before repository.save\n[runtime-log] ERROR orders.amount is null at OrderService.create",
+    "ticket": {
+        "ticketId": "FS-MOCK-1",
+        "title": "\u652f\u4ed8\u7cfb\u7edf\u4e0b\u5355\u63a5\u53e3 500",
+        "description": "\u91d1\u989d\u4e3a\u7a7a\u65f6 OrderService.create \u5199\u5165\u8ba2\u5355\u5931\u8d25",
+        "priority": "P1",
+        "status": "processing",
+        "source": "feishu"
+    },
+    "messages": [
+        {
+            "messageId": "msg-1",
+            "senderType": "2",
+            "content": "ERROR orders.amount is null at OrderService.create",
+            "createdAt": "2026-06-21T00:01:00Z"
+        }
+    ],
+    "artifacts": [
+        {
+            "id": "7475034040735764480",
+            "artifactType": "FEISHU_EVENT",
+            "summary": "traceId=trace-demo-001\nsource=feishu\neventType=helpdesk.ticket.created_v1\nattempt=1\npriority=P1\neventId=evt-e8926222-4b17-464d-a6f0-78f2a038ba5d"
+        },
+        {
+            "id": "7475034040739958784",
+            "artifactType": "FEISHU_TICKET_SNAPSHOT",
+            "summary": "ticketId=FS-MOCK-1\ntitle=\u652f\u4ed8\u7cfb\u7edf\u4e0b\u5355\u63a5\u53e3 500\nstatus=processing\nstage=\npriority=P1\nsource=feishu"
+        },
+        {
+            "id": "7475034040739958785",
+            "artifactType": "FEISHU_MESSAGES",
+            "summary": "[2] ERROR orders.amount is null at OrderService.create"
+        },
+        {
+            "id": "7475034040844816384",
+            "artifactType": "RAG_CONTEXT",
+            "summary": "\u76ee\u6807\u7cfb\u7edf\uff1a\u652f\u4ed8\u7cfb\u7edf\n[api] # \u652f\u4ed8\u7cfb\u7edf API\n\nPOST /api/orders \u662f\u4e0b\u5355\u63a5\u53e3\u3002\nOrderService.create \u5199\u5165\u8ba2\u5355\u524d\u5fc5\u987b\u6821\u9a8c orders.amount\u3002\n[code-snippet] OrderService.create should validate amount before repository.save\n[runtime-log] ERROR orders.amount is null at OrderService.create"
+        }
+    ],
+    "publishedMessage": {
+        "ticketId": "FS-MOCK-1",
+        "priority": "P1",
+        "traceId": "trace-demo-001",
+        "attempt": 1,
+        "source": "feishu",
+        "eventId": "evt-e8926222-4b17-464d-a6f0-78f2a038ba5d",
+        "eventType": "helpdesk.ticket.created_v1",
+        "createdAt": "2026-06-23T03:56:34.678077Z"
+    }
+}

@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rd-bot.local/schemas/repair-result.schema.json",
+  "title": "RD-Bot Docker Claude Code Repair Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status",
+    "summary",
+    "changedFiles",
+    "testCommands",
+    "testStatus",
+    "riskLevel",
+    "needHumanAction"
+  ],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["SUCCESS", "FAILED", "NEED_INFO", "UNSAFE"]
+    },
+    "summary": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "changedFiles": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "\\S"
+      }
+    },
+    "testCommands": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "\\S"
+      }
+    },
+    "testStatus": {
+      "type": "string",
+      "enum": ["PASSED", "FAILED", "SKIPPED"]
+    },
+    "riskLevel": {
+      "type": "string",
+      "enum": ["LOW", "MEDIUM", "HIGH"]
+    },
+    "prBody": {
+      "type": "string"
+    },
+    "needHumanAction": {
+      "type": "boolean"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "not": {
+          "properties": {
+            "status": {
+              "enum": ["NEED_INFO", "FAILED"]
+            }
+          },
+          "required": ["status"]
+        }
+      },
+      "then": {
+        "properties": {
+          "changedFiles": {
+            "minItems": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "SUCCESS"
+          }
+        },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "prBody": {
+            "type": "string",
+            "pattern": "\\S"
+          }
+        },
+        "required": ["prBody"]
+      }
+    },
+    {
+      "if": {
+        "not": {
+          "properties": {
+            "testStatus": {
+              "const": "SKIPPED"
+            }
+          },
+          "required": ["testStatus"]
+        }
+      },
+      "then": {
+        "properties": {
+          "testCommands": {
+            "minItems": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "anyOf": [
+          {
+            "properties": {
+              "status": {
+                "const": "NEED_INFO"
+              }
+            },
+            "required": ["status"]
+          },
+          {
+            "properties": {
+              "status": {
+                "const": "UNSAFE"
+              }
+            },
+            "required": ["status"]
+          },
+          {
+            "properties": {
+              "testStatus": {
+                "const": "FAILED"
+              }
+            },
+            "required": ["testStatus"]
+          }
+        ]
+      },
+      "then": {
+        "properties": {
+          "needHumanAction": {
+            "const": true
+          }
+        }
+      }
+    }
+  ]
+}

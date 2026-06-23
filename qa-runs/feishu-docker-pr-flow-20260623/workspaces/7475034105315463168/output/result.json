@@ -1,0 +1,10 @@
+{
+  "status": "FAILED",
+  "summary": "Claude Code did not write result.json. See claude-events.jsonl and test.log for details.",
+  "changedFiles": [],
+  "testCommands": [],
+  "testStatus": "SKIPPED",
+  "riskLevel": "HIGH",
+  "prBody": "",
+  "needHumanAction": true
+}

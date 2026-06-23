@@ -1,0 +1,19 @@
+{
+  "taskId" : "7474768767151640576",
+  "ticketId" : "FS-DEEPSEEK-PATCH-FIXED-1",
+  "repoOwner" : "local",
+  "repoName" : "repository",
+  "baseBranch" : "main",
+  "workBranch" : "repair/7474768767151640576",
+  "contextJson" : {
+    "contextSummary" : "目标系统：支付系统\n[api] # 支付系统 API\n\nPOST /api/orders 是下单接口。\nOrderService.create 写入订单前必须校验 orders.amount。\n[code-snippet] OrderService.create should validate amount before repository.save\n[runtime-log] ERROR orders.amount is null at OrderService.create",
+    "evidenceChunkIds" : "payment-api.md#0,payment-service#OrderService.java#42,log-center#payment-system#0",
+    "ticketId" : "FS-DEEPSEEK-PATCH-FIXED-1",
+    "ticketTitle" : "支付系统下单接口 500",
+    "ticketDescription" : "金额为空时 OrderService.create 写入订单失败",
+    "answer" : "已经定位到 OrderService.create 缺少 orders.amount 校验。"
+  },
+  "policyJson" : {
+    "bridge" : "engine-bugfix-executor"
+  }
+}

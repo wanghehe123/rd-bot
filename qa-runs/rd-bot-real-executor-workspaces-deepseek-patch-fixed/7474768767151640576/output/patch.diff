@@ -1,0 +1,59 @@
+diff --git a/src/main/java/com/payment/OrderService.java b/src/main/java/com/payment/OrderService.java
+index 4e2d778..84087ad 100644
+--- a/src/main/java/com/payment/OrderService.java
++++ b/src/main/java/com/payment/OrderService.java
+@@ -12,6 +12,9 @@ public class OrderService {
+     }
+ 
+     public Order create(Order order) {
++        if (order.getAmount() == null) {
++            throw new IllegalArgumentException("orders.amount must not be null");
++        }
+         order.setStatus("PENDING");
+         return orderRepository.save(order);
+     }
+diff --git a/src/test/java/com/payment/OrderServiceTest.java b/src/test/java/com/payment/OrderServiceTest.java
+new file mode 100644
+index 0000000..2181aad
+--- /dev/null
++++ b/src/test/java/com/payment/OrderServiceTest.java
+@@ -0,0 +1,39 @@
++package com.payment;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertNotNull;
++import static org.junit.jupiter.api.Assertions.assertThrows;
++
++import java.math.BigDecimal;
++
++import org.junit.jupiter.api.Test;
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.boot.test.context.SpringBootTest;
++
++@SpringBootTest
++class OrderServiceTest {
++
++    @Autowired
++    private OrderService orderService;
++
++    @Test
++    void createShouldSucceedWhenAmountIsValid() {
++        Order order = new Order("customer-1", new BigDecimal("100.00"));
++        Order created = orderService.create(order);
++
++        assertNotNull(created.getId());
++        assertEquals("PENDING", created.getStatus());
++        assertEquals(new BigDecimal("100.00"), created.getAmount());
++    }
++
++    @Test
++    void createShouldThrowWhenAmountIsNull() {
++        Order order = new Order("customer-2", null);
++
++        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class, () -> {
++            orderService.create(order);
++        });
++
++        assertEquals("orders.amount must not be null", ex.getMessage());
++    }
++}
