@@ -68,6 +68,25 @@ class FeishuTicketAdapterTest {
     }
 
     @Test
+    void mapsCustomFieldsByIdKeyNameAndDisplayName() {
+        StubTransport transport = new StubTransport();
+        transport.enqueue("{\"code\":0,\"data\":{\"ticket\":"
+                + "{\"id\":\"FS-FIELD\",\"title\":\"字段映射\",\"desc\":\"desc\","
+                + "\"status\":100,\"custom_fields\":["
+                + "{\"id\":\"field-logs\",\"key_name\":\"logs\",\"display_name\":\"错误日志\","
+                + "\"value\":\"ERROR by key name\"}"
+                + "]}"
+                + "}}");
+        FeishuTicketAdapter adapter = newAdapter(enabledWithWriteBack(false), transport);
+
+        TicketSnapshot ticket = adapter.findTicket("FS-FIELD").orElseThrow();
+
+        assertEquals("ERROR by key name", ticket.customFields().get("field-logs"));
+        assertEquals("ERROR by key name", ticket.customFields().get("logs"));
+        assertEquals("ERROR by key name", ticket.customFields().get("错误日志"));
+    }
+
+    @Test
     void findTicketShouldSendHelpdeskAuthorizationHeader() {
         StubTransport transport = new StubTransport();
         transport.enqueue("{\"code\":0,\"data\":{\"ticket\":"
@@ -83,6 +102,30 @@ class FeishuTicketAdapterTest {
         assertTrue(
                 ticketRequest.headers().firstValue("X-Lark-Helpdesk-Authorization").isPresent(),
                 "Helpdesk ticket detail GET must carry X-Lark-Helpdesk-Authorization"
+        );
+    }
+
+    @Test
+    void listCustomFieldsShouldUseOfficialEndpointAndHelpdeskAuthorization() {
+        StubTransport transport = new StubTransport();
+        transport.enqueue("{\"code\":0,\"data\":{\"ticket_customized_fields\":["
+                + "{\"ticket_customized_field_id\":\"field-logs\",\"key_name\":\"logs\",\"display_name\":\"错误日志\"}"
+                + "],\"user_customized_fields\":[]}}");
+        FeishuHelpdeskClient client = FeishuHelpdeskClient.forTesting(
+                enabledWithWriteBack(false),
+                objectMapper,
+                transport
+        );
+
+        com.fasterxml.jackson.databind.JsonNode fields = client.listCustomFields();
+
+        assertEquals(1, fields.size());
+        assertEquals("logs", fields.get(0).path("key_name").asText());
+        java.net.http.HttpRequest request = transport.nonTokenRequests().getFirst();
+        assertTrue(request.uri().toString().endsWith("/open-apis/helpdesk/v1/customized_fields"));
+        assertTrue(
+                request.headers().firstValue("X-Lark-Helpdesk-Authorization").isPresent(),
+                "customized_fields GET must carry X-Lark-Helpdesk-Authorization"
         );
     }
 

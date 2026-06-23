@@ -16,8 +16,8 @@ import java.util.Map;
  * 飞书 Helpdesk DTO 到标准工单 record 的映射器。
  *
  * <p>把 Helpdesk 原始 JSON 节点映射成 {@link TicketSnapshot}/{@link TicketMessage}，
- * 隔离厂商专属字段名，使 engine 层只依赖标准形状。自定义字段以 {@code field_id -> value}
- * 或 {@code field_name -> value} 两种形式落到 {@code customFields}。
+ * 隔离厂商专属字段名，使 engine 层只依赖标准形状。自定义字段会同时以字段 ID、
+ * {@code key_name}、{@code display_name} 和配置映射名落到 {@code customFields}。
  *
  * <p>飞书 Helpdesk 状态映射：
  * <ul>
@@ -214,11 +214,22 @@ public final class FeishuTicketMapper {
             if (fieldId.isBlank()) {
                 fieldId = text(field, "id");
             }
+            if (fieldId.isBlank()) {
+                fieldId = text(field, "ticket_customized_field_id");
+            }
             String value = text(field, "value");
-            String name = customFieldNameById.getOrDefault(fieldId, fieldId);
-            result.put(name, value);
+            putCustomField(result, fieldId, value);
+            putCustomField(result, text(field, "key_name"), value);
+            putCustomField(result, text(field, "display_name"), value);
+            putCustomField(result, customFieldNameById.getOrDefault(fieldId, ""), value);
         }
         return result;
+    }
+
+    private void putCustomField(Map<String, String> target, String key, String value) {
+        if (!key.isBlank()) {
+            target.put(key, value);
+        }
     }
 
     private boolean matchesQuery(TicketMessage message, TicketMessageQuery query) {

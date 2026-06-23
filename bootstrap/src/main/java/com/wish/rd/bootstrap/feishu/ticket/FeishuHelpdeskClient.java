@@ -29,7 +29,7 @@ import java.util.Optional;
  *   <li>查询工单消息：{@code GET /open-apis/helpdesk/v1/tickets/:ticket_id/messages}</li>
  *   <li>发送消息：{@code POST /open-apis/helpdesk/v1/tickets/:ticket_id/messages}</li>
  *   <li>更新工单：{@code PUT /open-apis/helpdesk/v1/tickets/:ticket_id}</li>
- *   <li>查询自定义字段：{@code GET /open-apis/helpdesk/v1/ticket_custom_fields}</li>
+ *   <li>查询自定义字段：{@code GET /open-apis/helpdesk/v1/customized_fields}</li>
  * </ul>
  *
  * <p>所有请求附带 {@code Authorization: Bearer <token>} 与 {@code X-Lark-Helpdesk-Authorization}。
@@ -227,9 +227,18 @@ public class FeishuHelpdeskClient {
      * @return 自定义字段列表 JSON 节点
      */
     public JsonNode listCustomFields() {
-        String url = properties.getBaseUrl() + "/open-apis/helpdesk/v1/ticket_custom_fields";
+        String url = properties.getBaseUrl() + "/open-apis/helpdesk/v1/customized_fields";
         JsonNode response = getHelpdeskJson(url);
-        return response.path("data").path("items");
+        JsonNode data = response.path("data");
+        JsonNode ticketFields = data.path("ticket_customized_fields");
+        if (ticketFields.isArray()) {
+            return ticketFields;
+        }
+        JsonNode userFields = data.path("user_customized_fields");
+        if (userFields.isArray()) {
+            return userFields;
+        }
+        return data;
     }
 
     private JsonNode getJson(String url) {

@@ -24,10 +24,10 @@ P1 的真实外部依赖（飞书 Helpdesk、RocketMQ、PostgreSQL）冒烟测�
 1. **凭据**：配置 `FEISHU_APP_ID` / `FEISHU_APP_SECRET`，用于 `POST /open-apis/auth/v3/tenant_access_token/internal` 获取 `tenant_access_token`。
 2. **Helpdesk 鉴权**：从服务台后台获取 `FEISHU_HELPDESK_ID` / `FEISHU_HELPDESK_TOKEN`。RD-Bot 会生成 `X-Lark-Helpdesk-Authorization = base64(helpdeskId:helpdeskToken)`，并在查询工单、消息、自定义字段、回写接口中发送。
 3. **事件订阅**：订阅并启用回调事件 `helpdesk.ticket.created_v1`、`helpdesk.ticket.updated_v1`、`helpdesk.ticket_message.created_v1`，回调地址为 `POST /feishu/helpdesk/events`。
-4. **接口权限**：在权限管理中按接口路径搜索并开通下列 Helpdesk API 的读权限：`GET /open-apis/helpdesk/v1/tickets/:ticket_id`、`GET /open-apis/helpdesk/v1/tickets/:ticket_id/messages`、`GET /open-apis/helpdesk/v1/ticket_custom_fields`。如果要回写工单，再开通 `POST /open-apis/helpdesk/v1/tickets/:ticket_id/messages` 与 `PUT /open-apis/helpdesk/v1/tickets/:ticket_id`。
+4. **接口权限**：读工单详情、消息、自定义字段和事件订阅需要开通 `获取服务台资源详情(helpdesk:all:readonly)`，覆盖 `GET /open-apis/helpdesk/v1/tickets/:ticket_id`、`GET /open-apis/helpdesk/v1/tickets/:ticket_id/messages`、`GET /open-apis/helpdesk/v1/customized_fields`、`POST /open-apis/helpdesk/v1/events/subscribe`。如果要回写工单，再开通 `更新服务台资源详情(helpdesk:all)`，覆盖 `POST /open-apis/helpdesk/v1/tickets/:ticket_id/messages` 与 `PUT /open-apis/helpdesk/v1/tickets/:ticket_id`。
 5. **应用发布/安装**：权限变更后需要重新发布应用，并由租户管理员安装或升级应用权限。
 
-自定义字段映射按飞书后台字段 ID 或字段名配置。最小可运行字段如下：
+自定义字段映射按飞书后台的字段 `key_name`、`display_name` 或字段 ID 配置。推荐在飞书后台新建/调整工单自定义字段时直接使用下表的 RD-Bot 标准字段作为 `key_name`，这样可以沿用 `application.yaml` 默认值；如果已有字段不能改名，则把对应配置项改成飞书字段 ID 或展示名。
 
 | RD-Bot 标准字段 | 飞书字段含义 | 配置项 |
 | --- | --- | --- |
@@ -95,7 +95,7 @@ docker exec -it rmqbroker sh -c \
 - `tenant_access_token` 获取成功。
 - `GET /open-apis/helpdesk/v1/tickets/:ticket_id` 返回工单详情并映射到 `TicketSnapshot`。
 - `GET /open-apis/helpdesk/v1/tickets/:ticket_id/messages` 返回消息列表。
-- `GET /open-apis/helpdesk/v1/ticket_custom_fields` 返回自定义字段定义。
+- `GET /open-apis/helpdesk/v1/customized_fields` 返回自定义字段定义。
 - `FeishuHelpdeskAuth.toString()` 不泄漏 helpdesk token。
 
 ### 4.2 回写冒烟（需额外显式开启）
