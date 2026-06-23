@@ -233,6 +233,8 @@ export FEISHU_HELPDESK_ID="<服务台 ID>"
 export FEISHU_HELPDESK_TOKEN="<服务台 token>"
 ```
 
+`FEISHU_HELPDESK_ID` 和 `FEISHU_HELPDESK_TOKEN` 的官方获取入口是 [服务台管理后台](https://feishu.cn/helpdesk/admin) 的 **设置中心 > API 凭证**。该 token 代表服务台负责人对服务台资源的访问权限；重置 token 会生成新 token，旧 token 自动失效。
+
 ### 5.3 tenant_access_token 连通性验证
 
 已使用用户提供的 `FEISHU_APP_ID` 和 `FEISHU_APP_SECRET` 调用官方接口：

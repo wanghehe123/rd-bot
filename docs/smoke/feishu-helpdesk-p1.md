@@ -15,14 +15,14 @@ P1 的真实外部依赖（飞书 Helpdesk、RocketMQ、PostgreSQL）冒烟测�
 
 - App ID：`cli_a9458f91d17b5cd6`
 - App Secret：通过环境变量 `FEISHU_APP_SECRET` 注入，不要写入仓库。
-- Helpdesk ID / Helpdesk Token：由飞书客服后台获取。
+- Helpdesk ID / Helpdesk Token：由飞书服务台后台获取。官方入口是 [服务台管理后台](https://feishu.cn/helpdesk/admin) 的 **设置中心 > API 凭证**；重置 token 会生成新 token，旧 token 自动失效。
 
 ### 1.1 飞书权限与字段配置
 
 在飞书开放平台应用后台配置：
 
 1. **凭据**：配置 `FEISHU_APP_ID` / `FEISHU_APP_SECRET`，用于 `POST /open-apis/auth/v3/tenant_access_token/internal` 获取 `tenant_access_token`。
-2. **Helpdesk 鉴权**：从服务台后台获取 `FEISHU_HELPDESK_ID` / `FEISHU_HELPDESK_TOKEN`。RD-Bot 会生成 `X-Lark-Helpdesk-Authorization = base64(helpdeskId:helpdeskToken)`，并在查询工单、消息、自定义字段、回写接口中发送。
+2. **Helpdesk 鉴权**：从 [服务台管理后台](https://feishu.cn/helpdesk/admin) 的 **设置中心 > API 凭证** 获取 `FEISHU_HELPDESK_ID` / `FEISHU_HELPDESK_TOKEN`。RD-Bot 会生成 `X-Lark-Helpdesk-Authorization = base64(helpdeskId:helpdeskToken)`，并在查询工单、消息、自定义字段、回写接口中发送。请由服务台负责人妥善保管该凭据；重置 token 后旧 token 立即失效。
 3. **事件订阅**：订阅并启用回调事件 `helpdesk.ticket.created_v1`、`helpdesk.ticket.updated_v1`、`helpdesk.ticket_message.created_v1`，回调地址为 `POST /feishu/helpdesk/events`。
 4. **接口权限**：读工单详情、消息、自定义字段和事件订阅需要开通 `获取服务台资源详情(helpdesk:all:readonly)`，覆盖 `GET /open-apis/helpdesk/v1/tickets/:ticket_id`、`GET /open-apis/helpdesk/v1/tickets/:ticket_id/messages`、`GET /open-apis/helpdesk/v1/customized_fields`、`POST /open-apis/helpdesk/v1/events/subscribe`。如果要回写工单，再开通 `更新服务台资源详情(helpdesk:all)`，覆盖 `POST /open-apis/helpdesk/v1/tickets/:ticket_id/messages` 与 `PUT /open-apis/helpdesk/v1/tickets/:ticket_id`。
 5. **应用发布/安装**：权限变更后需要重新发布应用，并由租户管理员安装或升级应用权限。
