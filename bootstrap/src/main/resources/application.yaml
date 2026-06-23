@@ -60,6 +60,7 @@ rd:
     queue:
       mode: memory
     ticket:
+      provider: ${RD_REPAIR_TICKET_PROVIDER:mock}
       auto-execute:
         enabled: ${RD_REPAIR_TICKET_AUTO_EXECUTE_ENABLED:false}
       ingestion:
@@ -114,8 +115,20 @@ rd:
       pat-token: ${GITHUB_PAT:}
   ticket:
     write-back:
+      enabled: ${RD_TICKET_WRITE_BACK_ENABLED:false}
       mode: mock
   feishu:
+    im:
+      enabled: ${FEISHU_IM_ENABLED:false}
+      base-url: ${FEISHU_BASE_URL:https://open.feishu.cn}
+      app-id: ${FEISHU_APP_ID:}
+      app-secret: ${FEISHU_APP_SECRET:}
+      require-at-mention: ${FEISHU_IM_REQUIRE_AT_MENTION:true}
+      write-back:
+        enabled: ${FEISHU_IM_WRITE_BACK_ENABLED:false}
+      http:
+        connect-timeout-millis: 3000
+        request-timeout-millis: 10000
     helpdesk:
       enabled: false
       write-back:

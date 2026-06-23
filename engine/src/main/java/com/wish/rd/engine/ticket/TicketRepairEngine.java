@@ -62,7 +62,7 @@ public class TicketRepairEngine implements RepairQueueConsumer {
             TicketProviderPort providerPort,
             RepairRecordRepository recordRepository,
             RagBugFixEngine ragBugFixEngine,
-            @Value("${rd.feishu.helpdesk.write-back.enabled:false}") boolean writeBackEnabled
+            @Value("${rd.ticket.write-back.enabled:${rd.feishu.helpdesk.write-back.enabled:false}}") boolean writeBackEnabled
     ) {
         this(providerPort, null, recordRepository, ragBugFixEngine, TicketFieldMapping.defaults(), writeBackEnabled);
     }
@@ -74,7 +74,7 @@ public class TicketRepairEngine implements RepairQueueConsumer {
             RepairRecordRepository recordRepository,
             RagBugFixEngine ragBugFixEngine,
             ObjectProvider<TicketFieldMapping> fieldMappingProvider,
-            @Value("${rd.feishu.helpdesk.write-back.enabled:false}") boolean writeBackEnabled
+            @Value("${rd.ticket.write-back.enabled:${rd.feishu.helpdesk.write-back.enabled:false}}") boolean writeBackEnabled
     ) {
         this(
                 providerPort,

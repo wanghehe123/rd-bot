@@ -1,6 +1,7 @@
 package com.wish.rd.bootstrap.feishu.im;
 
 import com.wish.rd.engine.ticket.TicketFieldMapping;
+import org.springframework.stereotype.Component;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -11,6 +12,7 @@ import java.util.Map;
  * <p>支持用户在飞书消息中使用简单的 {@code key: value} 或 {@code key：value}
  * 行格式提交自动修复信息；未命中结构化字段时，把整段文本作为标题和描述。
  */
+@Component
 public class FeishuImTicketParser {
 
     private static final int TITLE_MAX_LENGTH = 80;

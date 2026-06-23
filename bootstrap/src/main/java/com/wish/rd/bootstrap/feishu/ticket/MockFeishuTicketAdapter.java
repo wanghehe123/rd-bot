@@ -11,7 +11,7 @@ import com.wish.rd.adapter.TicketUpdatePort;
 import com.wish.rd.adapter.TicketUpdateResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
@@ -31,12 +31,7 @@ import java.util.Optional;
  * <p>支持 {@link #register(TicketSnapshot)} 注入自定义工单用于测试回放。
  */
 @Component
-@ConditionalOnProperty(
-        prefix = "rd.feishu.helpdesk",
-        name = "enabled",
-        havingValue = "false",
-        matchIfMissing = true
-)
+@ConditionalOnExpression("'${rd.repair.ticket.provider:mock}' == 'mock' && '${rd.feishu.helpdesk.enabled:false}' == 'false'")
 public class MockFeishuTicketAdapter implements TicketProviderPort, TicketUpdatePort {
 
     private static final Logger log = LoggerFactory.getLogger(MockFeishuTicketAdapter.class);

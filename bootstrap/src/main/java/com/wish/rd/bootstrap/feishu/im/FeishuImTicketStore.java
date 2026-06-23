@@ -4,6 +4,8 @@ import com.wish.rd.adapter.TicketMessage;
 import com.wish.rd.adapter.TicketMessageQuery;
 import com.wish.rd.adapter.TicketMessages;
 import com.wish.rd.adapter.TicketSnapshot;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
+import org.springframework.stereotype.Component;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -19,6 +21,8 @@ import java.util.Optional;
  * {@code TicketProviderPort} 读取提供本地快照。MVP 阶段使用内存注册表模式；
  * 后续可替换为 PostgreSQL 实现而不影响 engine/rag 端口。
  */
+@Component
+@ConditionalOnExpression("'${rd.repair.ticket.provider:mock}' == 'feishu-im' && '${rd.feishu.im.enabled:false}' == 'true'")
 public class FeishuImTicketStore {
 
     /** 飞书 IM 工单来源标识。 */

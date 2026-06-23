@@ -33,6 +33,7 @@ public record TicketEventInput(
     public static final String TYPE_TICKET_CREATED = "helpdesk.ticket.created_v1";
     public static final String TYPE_TICKET_UPDATED = "helpdesk.ticket.updated_v1";
     public static final String TYPE_TICKET_MESSAGE_CREATED = "helpdesk.ticket_message.created_v1";
+    public static final String TYPE_FEISHU_IM_MESSAGE_CREATED = "feishu.im.message.created_v1";
 
     public TicketEventInput {
         if (ticketId == null || ticketId.isBlank()) {
