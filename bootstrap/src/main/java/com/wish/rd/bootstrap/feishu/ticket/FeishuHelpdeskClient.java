@@ -325,7 +325,7 @@ public class FeishuHelpdeskClient {
             int status = response.statusCode();
             String raw = response.body() == null ? "" : response.body();
             if (status < 200 || status >= 300) {
-                throw new FeishuHelpdeskException("feishu http error: status=" + status + ", body=" + redact(raw));
+                throw httpError(status, raw);
             }
             JsonNode node = objectMapper.readTree(raw);
             int code = node.path("code").asInt(0);
@@ -339,6 +339,22 @@ public class FeishuHelpdeskClient {
         } catch (Exception exception) {
             throw new FeishuHelpdeskException("feishu request failed: " + exception.getClass().getSimpleName(), exception);
         }
+    }
+
+    private FeishuHelpdeskException httpError(int status, String raw) {
+        try {
+            JsonNode node = objectMapper.readTree(raw == null ? "" : raw);
+            int code = node.path("code").asInt(-1);
+            String msg = node.path("msg").asText("");
+            if (code != -1 || !msg.isBlank()) {
+                return new FeishuHelpdeskException(
+                        "feishu http error: status=" + status + ", code=" + code + ", msg=" + redact(msg)
+                );
+            }
+        } catch (Exception ignored) {
+            // Fall back to a redacted body snippet when the provider did not return JSON.
+        }
+        return new FeishuHelpdeskException("feishu http error: status=" + status + ", body=" + redact(raw));
     }
 
     private String toJson(Map<String, Object> body) {

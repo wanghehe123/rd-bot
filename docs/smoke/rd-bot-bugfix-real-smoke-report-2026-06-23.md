@@ -82,6 +82,22 @@
 - 测试只调用现有 Java `GitHubCodePlatformAdapter`。
 - `gh` 不进入 Java 生产代码，也没有新增 gh Java 适配器。
 
+### 2.5 Feishu 权限错误传播
+
+提交：本轮 `fix(feishu): propagate helpdesk permission errors`
+
+修复点：
+
+- `FeishuHelpdeskClient` 对 HTTP 4xx/5xx 中的飞书 JSON 错误体解析 `code` 和 `msg`，例如真实复现的 `99991672` / `helpdesk:all:readonly`。
+- `FeishuTicketAdapter.findTicket` 不再把 Helpdesk API 异常转换成 `Optional.empty()`，避免把权限/认证错误误判为“工单不存在”。
+- `FeishuTicketAdapter.findMessages` 不再把 Helpdesk API 异常转换成空消息列表，避免权限失败时静默丢失工单上下文。
+- 异常消息只包含 HTTP 状态、飞书业务 code 和 msg，不包含 Helpdesk token。
+
+覆盖测试：
+
+- `FeishuTicketAdapterTest.permissionErrorShouldPropagateWithFeishuCodeWithoutLeakingToken`
+- `FeishuTicketAdapterTest.listMessagesPermissionErrorShouldPropagate`
+
 ## 3. RocketMQ 真实队列测试
 
 ### 3.1 Docker 容器状态
@@ -442,7 +458,7 @@ rd:
 
 结果：
 
-- `FeishuTicketAdapterTest`：新增 `start_service` 覆盖后应为 13 tests，0 failures，0 errors。
+- `FeishuTicketAdapterTest`：新增 `start_service` 和权限错误传播覆盖后为 14 tests，0 failures，0 errors。
 - `FeishuHelpdeskRealSmokeTest`：3 tests 默认跳过，编译通过；真实创建服务台对话需显式开启。
 - `GitHubCodePlatformRealSmokeTest`：默认跳过，编译通过。
 
@@ -457,7 +473,7 @@ rd:
 结果：
 
 ```text
-Tests run: 116, Failures: 0, Errors: 0, Skipped: 7
+Tests run: 117, Failures: 0, Errors: 0, Skipped: 7
 BUILD SUCCESS
 ```
 
@@ -486,6 +502,7 @@ db9200a fix(feishu): send helpdesk auth on read APIs
 1b3b3f1 feat(engine): trigger bugfix execution from ticket queue
 9c2ba99 feat(feishu): support helpdesk start service
 88abbda docs(feishu): explain real helpdesk ticket creation
+eec0286 docs(feishu): add helpdesk configuration checklist
 ```
 
 ## 8. 结论
@@ -496,6 +513,7 @@ db9200a fix(feishu): send helpdesk auth on read APIs
 - Feishu Helpdesk 读接口补齐服务台鉴权头。
 - Feishu 自定义字段 API 路径已对齐官方文档。
 - Feishu 工单字段映射兼容字段 ID、`key_name` 和 `display_name`。
+- Feishu 权限/认证类 API 错误不会再被误判为工单不存在或空消息列表。
 - RD-Bot 已封装 Feishu `start_service`，可在显式开启 smoke 并提供用户 open_id 后创建真实服务台对话/工单。
 - RocketMQ 本地 Docker broker 真实发布通过。
 - GitHub 真实 PR 由现有 Java `GitHubCodePlatformAdapter` 创建成功。

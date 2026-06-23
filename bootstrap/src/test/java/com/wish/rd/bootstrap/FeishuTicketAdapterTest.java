@@ -25,6 +25,7 @@ import java.util.Optional;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -223,13 +224,35 @@ class FeishuTicketAdapterTest {
     }
 
     @Test
-    void apiErrorReturnsEmptySnapshotWithoutLeakingToken() {
+    void permissionErrorShouldPropagateWithFeishuCodeWithoutLeakingToken() {
         StubTransport transport = new StubTransport();
-        transport.enqueue("{\"code\":99991663,\"msg\":\"access token invalid\"}");
+        transport.enqueue(400, "{\"code\":99991672,"
+                + "\"msg\":\"Access denied. One of the following scopes is required: [helpdesk:all:readonly]\"}");
         FeishuTicketAdapter adapter = newAdapter(enabledWithWriteBack(false), transport);
 
-        Optional<TicketSnapshot> snapshot = adapter.findTicket("FS-ERR");
-        assertTrue(snapshot.isEmpty());
+        FeishuHelpdeskClient.FeishuHelpdeskException exception = assertThrows(
+                FeishuHelpdeskClient.FeishuHelpdeskException.class,
+                () -> adapter.findTicket("FS-ERR")
+        );
+        assertTrue(exception.getMessage().contains("code=99991672"));
+        assertTrue(exception.getMessage().contains("helpdesk:all:readonly"));
+        assertFalse(exception.getMessage().contains("hd-token"));
+    }
+
+    @Test
+    void listMessagesPermissionErrorShouldPropagate() {
+        StubTransport transport = new StubTransport();
+        transport.enqueue(400, "{\"code\":99991672,"
+                + "\"msg\":\"Access denied. One of the following scopes is required: [helpdesk:all:readonly]\"}");
+        FeishuTicketAdapter adapter = newAdapter(enabledWithWriteBack(false), transport);
+
+        FeishuHelpdeskClient.FeishuHelpdeskException exception = assertThrows(
+                FeishuHelpdeskClient.FeishuHelpdeskException.class,
+                () -> adapter.findMessages("FS-ERR", TicketMessageQuery.defaults())
+        );
+        assertTrue(exception.getMessage().contains("code=99991672"));
+        assertTrue(exception.getMessage().contains("helpdesk:all:readonly"));
+        assertFalse(exception.getMessage().contains("hd-token"));
     }
 
     @Test
@@ -303,6 +326,10 @@ class FeishuTicketAdapterTest {
 
         void enqueue(String body) {
             responses.add(new FeishuHelpdeskClient.HttpExchange(200, body));
+        }
+
+        void enqueue(int statusCode, String body) {
+            responses.add(new FeishuHelpdeskClient.HttpExchange(statusCode, body));
         }
 
         @Override

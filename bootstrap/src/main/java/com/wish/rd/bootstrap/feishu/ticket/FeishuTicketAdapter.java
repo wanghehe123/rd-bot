@@ -59,7 +59,7 @@ public class FeishuTicketAdapter implements TicketProviderPort, TicketUpdatePort
             return Optional.of(mapper.toSnapshot(ticketId, node.get()));
         } catch (FeishuHelpdeskClient.FeishuHelpdeskException exception) {
             log.error("feishu getTicket failed, ticketId={}", ticketId, exception);
-            return Optional.empty();
+            throw exception;
         }
     }
 
@@ -72,7 +72,7 @@ public class FeishuTicketAdapter implements TicketProviderPort, TicketUpdatePort
             return mapper.toMessages(ticketId, items, safe, total);
         } catch (FeishuHelpdeskClient.FeishuHelpdeskException exception) {
             log.error("feishu listMessages failed, ticketId={}", ticketId, exception);
-            return TicketMessages.empty();
+            throw exception;
         }
     }
 
