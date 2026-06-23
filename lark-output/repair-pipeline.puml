@@ -1,0 +1,77 @@
+@startuml
+title 标准 Repair Pipeline 流程图
+
+skinparam backgroundColor #F8FAFC
+skinparam defaultFontName "Noto Sans CJK SC"
+skinparam shadowing false
+skinparam roundcorner 14
+skinparam ArrowColor #8A9099
+skinparam ArrowThickness 2
+skinparam ActivityBorderThickness 2
+skinparam ActivityFontColor #1F2329
+skinparam ActivityBackgroundColor #FFFFFF
+skinparam ActivityBorderColor #5178C6
+skinparam DiamondBackgroundColor #FFFFFF
+skinparam DiamondBorderColor #D4B45B
+
+start
+
+repeat
+partition "输入与复现" {
+  :1 Ticket Parsing
+  解析症状和影响面;
+  :2 Context Collect
+  日志 / trace / 代码图;
+  :3 Reproduction
+  request replay / mock input;
+}
+repeat while (可复现?) is (否：补日志、补 trace、补 replay) not (是)
+
+partition "诊断与定位" {
+  :4 Hypothesis Generation
+  生成根因假设;
+  :5 Code Localization
+  定位函数和调用链;
+  :6 Fix Strategy Planning
+  选择低风险修复策略;
+}
+
+repeat
+partition "修复与验证" {
+  :7 Code Generation
+  agent 输出 patch;
+  :8 Sandbox Execution
+  docker / fake DB / mocked services;
+}
+repeat while (测试通过?) is (否：回到修复策略) not (是)
+
+partition "修复与验证" {
+  :9 Regression Check
+  impacted module tests + diff-based selection;
+}
+
+repeat
+partition "交付与审查" {
+  :10 PR Generation
+  diff / reason / risk_level;
+  :11 Human Review Gate
+  人工审查与风险确认;
+}
+repeat while (人工通过?) is (否：带 review 反馈重跑执行器) not (是)
+
+partition "交付与审查" {
+  :12 Merge / Ship
+  CI 通过后合并，可选 deploy hook;
+}
+
+note right
+每个状态都保存 state_snapshot：
+ticket / logs / code_refs / hypothesis
+patch_diff / test_results / review_feedback
+
+作用：
+可重试、可回滚、可审计、可多 agent 协作
+end note
+
+stop
+@enduml
