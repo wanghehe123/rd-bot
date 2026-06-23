@@ -17,6 +17,30 @@ P1 的真实外部依赖（飞书 Helpdesk、RocketMQ、PostgreSQL）冒烟测�
 - App Secret：通过环境变量 `FEISHU_APP_SECRET` 注入，不要写入仓库。
 - Helpdesk ID / Helpdesk Token：由飞书客服后台获取。
 
+### 1.1 飞书权限与字段配置
+
+在飞书开放平台应用后台配置：
+
+1. **凭据**：配置 `FEISHU_APP_ID` / `FEISHU_APP_SECRET`，用于 `POST /open-apis/auth/v3/tenant_access_token/internal` 获取 `tenant_access_token`。
+2. **Helpdesk 鉴权**：从服务台后台获取 `FEISHU_HELPDESK_ID` / `FEISHU_HELPDESK_TOKEN`。RD-Bot 会生成 `X-Lark-Helpdesk-Authorization = base64(helpdeskId:helpdeskToken)`，并在查询工单、消息、自定义字段、回写接口中发送。
+3. **事件订阅**：订阅并启用回调事件 `helpdesk.ticket.created_v1`、`helpdesk.ticket.updated_v1`、`helpdesk.ticket_message.created_v1`，回调地址为 `POST /feishu/helpdesk/events`。
+4. **接口权限**：在权限管理中按接口路径搜索并开通下列 Helpdesk API 的读权限：`GET /open-apis/helpdesk/v1/tickets/:ticket_id`、`GET /open-apis/helpdesk/v1/tickets/:ticket_id/messages`、`GET /open-apis/helpdesk/v1/ticket_custom_fields`。如果要回写工单，再开通 `POST /open-apis/helpdesk/v1/tickets/:ticket_id/messages` 与 `PUT /open-apis/helpdesk/v1/tickets/:ticket_id`。
+5. **应用发布/安装**：权限变更后需要重新发布应用，并由租户管理员安装或升级应用权限。
+
+自定义字段映射按飞书后台字段 ID 或字段名配置。最小可运行字段如下：
+
+| RD-Bot 标准字段 | 飞书字段含义 | 配置项 |
+| --- | --- | --- |
+| `problemSystem` | 故障系统/模块 | `rd.feishu.helpdesk.field-mapping.problemSystem` |
+| `symptom` | 故障现象 | `rd.feishu.helpdesk.field-mapping.symptom` |
+| `logs` | 错误日志/异常栈 | `rd.feishu.helpdesk.field-mapping.logs` |
+| `repository` | 代码仓库 URL 或 owner/repo | `rd.feishu.helpdesk.field-mapping.repository` |
+| `branch` | 基准分支 | `rd.feishu.helpdesk.field-mapping.branch` |
+| `expectedResult` | 期望结果 | `rd.feishu.helpdesk.field-mapping.expectedResult` |
+| `actualResult` | 实际结果 | `rd.feishu.helpdesk.field-mapping.actualResult` |
+
+RD-Bot 进入 RAG 的最小条件：工单描述或 `symptom` 至少一个非空，并且 `logs` 或 `repository` 至少一个非空。
+
 ## 2. RocketMQ Topic 准备
 
 RocketMQ 5.x 默认启用 autoCreateTopic，但生产建议显式创建：
@@ -101,6 +125,20 @@ docker exec -it rmqbroker sh -c \
 - `RocketMqRepairQueueAdapter.publish` 成功发布到 topic `RD_BOT_REPAIR_TICKET`。
 - 消息 key = `ticketId`，tag = 优先级（`P0`/`P1`/`P2`），property 含 `traceId`/`attempt`/`source`。
 - 消费端到端验证（回调被触发、状态推进）通过本地端到端联调的 `/test/repair/tickets/{id}/run` 通道完成，避免冒烟测试与 Spring 上下文中已注册的 `TicketRepairEngine` 消费者产生冲突。
+
+### 5.1 RocketMQ + 自动执行启动参数
+
+真实从 MQ 消费后继续触发 Docker/PR 执行，需要额外开启：
+
+```bash
+--rd.repair.queue.mode=rocketmq
+--rd.rocketmq.repair.name-server=127.0.0.1:9876
+--rd.repair.ticket.auto-execute.enabled=true
+--rd.executor.docker.enabled=true
+--rd.github.code-platform.mode=real
+```
+
+`rd.repair.ticket.auto-execute.enabled=false` 是默认值，用于避免零配置环境把 mock 执行结果误当成真实 PR。
 
 ## 6. 本地端到端联调（无需真实外部依赖）
 
