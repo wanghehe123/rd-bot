@@ -152,6 +152,17 @@ Tests run: 1, Failures: 0, Errors: 0, Skipped: 0
 BUILD SUCCESS
 ```
 
+2026-06-23 15:37 最终复查仍通过：
+
+```text
+rocketmq producer started, group=GID_RD_BOT_REPAIR_PRODUCER, nameserver=127.0.0.1:9876
+rocketmq consumer started, group=GID_RD_BOT_REPAIR_WORKER, topic=RD_BOT_REPAIR_TICKET
+rocketmq published, ticketId=SMOKE-2b547627, tag=P1, msgId=C612000170D018FF02E474A6332E0000
+[smoke] published to topic=RD_BOT_REPAIR_TICKET tag=P1 msgId=C612000170D018FF02E474A6332E0000 ticketId=SMOKE-2b547627
+Tests run: 1, Failures: 0, Errors: 0, Skipped: 0
+BUILD SUCCESS
+```
+
 ## 4. GitHub 真实 PR 创建测试
 
 ### 4.1 gh CLI 准备的测试仓库
