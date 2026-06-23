@@ -233,7 +233,34 @@ export FEISHU_HELPDESK_ID="<服务台 ID>"
 export FEISHU_HELPDESK_TOKEN="<服务台 token>"
 ```
 
-### 5.3 自定义字段映射
+### 5.3 tenant_access_token 连通性验证
+
+已使用用户提供的 `FEISHU_APP_ID` 和 `FEISHU_APP_SECRET` 调用官方接口：
+
+```text
+POST https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal
+```
+
+脱敏验证结果：
+
+```json
+{
+  "ok": true,
+  "code": 0,
+  "msg": "ok",
+  "expire": 7200,
+  "tenantAccessTokenPresent": true,
+  "tenantAccessTokenLength": 42
+}
+```
+
+说明：
+
+- 该结果证明自建应用 app 凭据可获取 `tenant_access_token`。
+- 测试过程未打印、保存或提交 `tenant_access_token` 明文。
+- 后续真实 Helpdesk 工单拉取仍需要 `FEISHU_HELPDESK_ID`、`FEISHU_HELPDESK_TOKEN` 和一个真实工单 ID。
+
+### 5.4 自定义字段映射
 
 推荐在飞书后台创建或调整工单自定义字段时，让 `key_name` 直接使用 RD-Bot 标准 key：
 
@@ -268,9 +295,9 @@ rd:
 - 工单描述或 `symptom` 至少一个非空。
 - `logs` 或 `repository` 至少一个非空。
 
-### 5.4 Feishu 真实拉取未完成项
+### 5.5 Feishu 真实拉取未完成项
 
-本轮没有执行 `FeishuHelpdeskRealSmokeTest` 的真实拉取，因为还缺以下运行期信息：
+本轮已验证 app 级 `tenant_access_token` 获取成功，但没有执行 `FeishuHelpdeskRealSmokeTest` 的真实工单拉取，因为还缺以下运行期信息：
 
 1. `FEISHU_HELPDESK_ID`
 2. `FEISHU_HELPDESK_TOKEN`
