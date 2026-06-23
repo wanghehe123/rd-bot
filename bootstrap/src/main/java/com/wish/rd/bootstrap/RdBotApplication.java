@@ -3,6 +3,7 @@ package com.wish.rd.bootstrap;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
  * RD-Bot 单体 Spring Boot 服务入口。
@@ -22,6 +23,7 @@ import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
         scanBasePackages = "com.wish.rd",
         exclude = DataSourceAutoConfiguration.class
 )
+@EnableScheduling
 public class RdBotApplication {
 
     /**

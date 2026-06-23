@@ -3,6 +3,8 @@ package com.wish.rd.bootstrap.github;
 import com.wish.rd.exec.repair.code.CodePlatformPort;
 import com.wish.rd.exec.repair.code.CreatePullRequestCommand;
 import com.wish.rd.exec.repair.code.PullRequestResult;
+import com.wish.rd.engine.merge.PullRequestMergeStatus;
+import com.wish.rd.engine.merge.PullRequestMergeStatusPort;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
@@ -13,7 +15,7 @@ import java.util.Map;
  */
 @Component
 @ConditionalOnProperty(prefix = "rd.github.code-platform", name = "mode", havingValue = "mock", matchIfMissing = true)
-public class MockGitHubCodePlatformAdapter implements CodePlatformPort {
+public class MockGitHubCodePlatformAdapter implements CodePlatformPort, PullRequestMergeStatusPort {
 
     private final GitHubCodePlatformProperties properties;
 
@@ -46,5 +48,10 @@ public class MockGitHubCodePlatformAdapter implements CodePlatformPort {
                         "repository", repository
                 )
         );
+    }
+
+    @Override
+    public PullRequestMergeStatus findByUrl(String pullRequestUrl) {
+        return new PullRequestMergeStatus(pullRequestUrl, "", "", "open", false);
     }
 }

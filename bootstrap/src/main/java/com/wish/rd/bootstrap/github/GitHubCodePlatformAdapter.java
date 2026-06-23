@@ -3,6 +3,8 @@ package com.wish.rd.bootstrap.github;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.wish.rd.engine.merge.PullRequestMergeStatus;
+import com.wish.rd.engine.merge.PullRequestMergeStatusPort;
 import com.wish.rd.exec.repair.code.CodePlatformPort;
 import com.wish.rd.exec.repair.code.CreatePullRequestCommand;
 import com.wish.rd.exec.repair.code.PullRequestResult;
@@ -36,7 +38,7 @@ import java.util.Objects;
  */
 @Component
 @ConditionalOnProperty(prefix = "rd.github.code-platform", name = "mode", havingValue = "real")
-public class GitHubCodePlatformAdapter implements CodePlatformPort {
+public class GitHubCodePlatformAdapter implements CodePlatformPort, PullRequestMergeStatusPort {
 
     private static final String API_VERSION = "2022-11-28";
     private static final Base64.Encoder BASE64_URL = Base64.getUrlEncoder().withoutPadding();
@@ -92,6 +94,31 @@ public class GitHubCodePlatformAdapter implements CodePlatformPort {
             throw new IllegalStateException("GitHub create pull request failed with status " + response.statusCode());
         }
         return toPullRequestResult(command, response.body());
+    }
+
+    @Override
+    public PullRequestMergeStatus findByUrl(String pullRequestUrl) {
+        ParsedPullRequestUrl parsed = parsePullRequestUrl(pullRequestUrl);
+        if (!properties.isRepositoryAllowed(parsed.owner(), parsed.repo())) {
+            throw new IllegalArgumentException("repository is not allowlisted: " + parsed.repository());
+        }
+        properties.validateForRealAdapter();
+
+        GitHubHttpRequest request = new GitHubHttpRequest(
+                "GET",
+                apiUrl("/repos/%s/%s/pulls/%s".formatted(
+                        path(parsed.owner()),
+                        path(parsed.repo()),
+                        path(parsed.number())
+                )),
+                headers(authorizationHeader()),
+                ""
+        );
+        GitHubHttpResponse response = sender.send(request);
+        if (response.statusCode() < 200 || response.statusCode() >= 300) {
+            throw new IllegalStateException("GitHub get pull request failed with status " + response.statusCode());
+        }
+        return toPullRequestMergeStatus(pullRequestUrl, parsed, response.body());
     }
 
     private GitHubHttpRequest createPullRequestHttpRequest(CreatePullRequestCommand command, String authorizationHeader) {
@@ -200,6 +227,44 @@ public class GitHubCodePlatformAdapter implements CodePlatformPort {
         }
     }
 
+    private PullRequestMergeStatus toPullRequestMergeStatus(
+            String pullRequestUrl,
+            ParsedPullRequestUrl parsed,
+            String body
+    ) {
+        try {
+            JsonNode root = objectMapper.readTree(body == null ? "{}" : body);
+            return new PullRequestMergeStatus(
+                    root.path("html_url").asText(pullRequestUrl),
+                    parsed.repository(),
+                    parsed.number(),
+                    root.path("state").asText(""),
+                    root.path("merged").asBoolean(false)
+            );
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("failed to parse GitHub pull request status response", exception);
+        }
+    }
+
+    private static ParsedPullRequestUrl parsePullRequestUrl(String pullRequestUrl) {
+        String normalized = normalize(pullRequestUrl);
+        if (normalized.isBlank()) {
+            throw new IllegalArgumentException("pullRequestUrl must not be blank");
+        }
+        URI uri = URI.create(normalized);
+        String[] rawParts = normalize(uri.getPath()).split("/");
+        java.util.ArrayList<String> parts = new java.util.ArrayList<>();
+        for (String rawPart : rawParts) {
+            if (!rawPart.isBlank()) {
+                parts.add(rawPart);
+            }
+        }
+        if (parts.size() != 4 || !"pull".equals(parts.get(2)) || parts.get(3).isBlank()) {
+            throw new IllegalArgumentException("pullRequestUrl must match /{owner}/{repo}/pull/{number}");
+        }
+        return new ParsedPullRequestUrl(parts.get(0), parts.get(1), parts.get(3));
+    }
+
     private Map<String, String> headers(String authorizationHeader) {
         Map<String, String> headers = new LinkedHashMap<>();
         headers.put("Accept", "application/vnd.github+json");
@@ -294,8 +359,12 @@ public class GitHubCodePlatformAdapter implements CodePlatformPort {
         @Override
         public GitHubHttpResponse send(GitHubHttpRequest request) {
             try {
-                HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(request.url()))
-                        .method(request.method(), HttpRequest.BodyPublishers.ofString(request.body()));
+                HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(request.url()));
+                if ("GET".equalsIgnoreCase(request.method()) && request.body().isBlank()) {
+                    builder.GET();
+                } else {
+                    builder.method(request.method(), HttpRequest.BodyPublishers.ofString(request.body()));
+                }
                 request.headers().forEach(builder::header);
                 HttpResponse<String> response = httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofString());
                 return new GitHubHttpResponse(response.statusCode(), response.body());
@@ -310,6 +379,19 @@ public class GitHubCodePlatformAdapter implements CodePlatformPort {
 
     private static String normalize(String value) {
         return value == null ? "" : value.strip();
+    }
+
+    private record ParsedPullRequestUrl(String owner, String repo, String number) {
+
+        private ParsedPullRequestUrl {
+            owner = normalize(owner);
+            repo = normalize(repo);
+            number = normalize(number);
+        }
+
+        private String repository() {
+            return owner + "/" + repo;
+        }
     }
 
     private static Map<String, String> redactedHeaders(Map<String, String> headers) {
