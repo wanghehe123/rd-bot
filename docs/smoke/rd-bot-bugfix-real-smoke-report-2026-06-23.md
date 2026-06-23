@@ -545,7 +545,7 @@ rd:
     ticket:
       provider: feishu-im
       ingestion:
-        default-source: feishu-im
+        default-source: ${RD_REPAIR_TICKET_DEFAULT_SOURCE:feishu-im}
   feishu:
     im:
       enabled: true
@@ -678,6 +678,7 @@ BUILD SUCCESS
 ### 9.6 新增提交
 
 ```text
+daaf97c chore(config): allow ticket ingestion source override
 790f7b2 docs(feishu): specify im ticket replacement
 6b48be0 feat(feishu): add im ticket parsing store
 5961298 feat(feishu): ingest im tickets
