@@ -64,7 +64,7 @@ rd:
       auto-execute:
         enabled: ${RD_REPAIR_TICKET_AUTO_EXECUTE_ENABLED:false}
       ingestion:
-        default-source: feishu
+        default-source: ${RD_REPAIR_TICKET_DEFAULT_SOURCE:feishu}
   rocketmq:
     repair:
       topic: RD_BOT_REPAIR_TICKET
