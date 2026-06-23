@@ -159,7 +159,7 @@ public class FeishuHelpdeskClient {
      */
     public Optional<JsonNode> getTicket(String ticketId) {
         String url = properties.getBaseUrl() + "/open-apis/helpdesk/v1/tickets/" + urlEncode(ticketId);
-        JsonNode response = getJson(url);
+        JsonNode response = getHelpdeskJson(url);
         JsonNode data = response.path("data").path("ticket");
         if (data.isMissingNode() || data.isNull()) {
             return Optional.empty();
@@ -180,7 +180,7 @@ public class FeishuHelpdeskClient {
                 + "/open-apis/helpdesk/v1/tickets/" + urlEncode(ticketId)
                 + "/messages?page=" + Math.max(1, page)
                 + "&page_size=" + Math.max(1, pageSize);
-        JsonNode response = getJson(url);
+        JsonNode response = getHelpdeskJson(url);
         return response.path("data").path("items");
     }
 
@@ -228,12 +228,17 @@ public class FeishuHelpdeskClient {
      */
     public JsonNode listCustomFields() {
         String url = properties.getBaseUrl() + "/open-apis/helpdesk/v1/ticket_custom_fields";
-        JsonNode response = getJson(url);
+        JsonNode response = getHelpdeskJson(url);
         return response.path("data").path("items");
     }
 
     private JsonNode getJson(String url) {
         HttpRequest request = baseRequest(url, "GET", null);
+        return sendAndParse(request);
+    }
+
+    private JsonNode getHelpdeskJson(String url) {
+        HttpRequest request = withHelpdeskAuth(baseRequest(url, "GET", null));
         return sendAndParse(request);
     }
 

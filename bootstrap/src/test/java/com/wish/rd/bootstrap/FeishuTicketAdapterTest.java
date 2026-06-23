@@ -15,6 +15,7 @@ import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -63,6 +64,25 @@ class FeishuTicketAdapterTest {
                 () -> assertTrue(ticket.labels().contains("payment")),
                 () -> assertEquals("ERROR orders.amount is null", ticket.customFields().get("logs")),
                 () -> assertFalse(ticket.isClosed())
+        );
+    }
+
+    @Test
+    void findTicketShouldSendHelpdeskAuthorizationHeader() {
+        StubTransport transport = new StubTransport();
+        transport.enqueue("{\"code\":0,\"data\":{\"ticket\":"
+                + "{\"id\":\"FS-AUTH\",\"title\":\"auth\",\"desc\":\"desc\","
+                + "\"status\":100,\"custom_fields\":[{\"field_id\":\"logs\",\"value\":\"ERROR\"}]}"
+                + "}}");
+        FeishuTicketAdapter adapter = newAdapter(enabledWithWriteBack(false), transport);
+
+        Optional<TicketSnapshot> snapshot = adapter.findTicket("FS-AUTH");
+
+        assertTrue(snapshot.isPresent());
+        java.net.http.HttpRequest ticketRequest = transport.nonTokenRequests().getFirst();
+        assertTrue(
+                ticketRequest.headers().firstValue("X-Lark-Helpdesk-Authorization").isPresent(),
+                "Helpdesk ticket detail GET must carry X-Lark-Helpdesk-Authorization"
         );
     }
 
@@ -195,6 +215,7 @@ class FeishuTicketAdapterTest {
      */
     private static final class StubTransport implements FeishuHelpdeskClient.HttpTransport {
         private final ArrayDeque<FeishuHelpdeskClient.HttpExchange> responses = new ArrayDeque<>();
+        private final List<java.net.http.HttpRequest> nonTokenRequests = new ArrayList<>();
 
         void enqueue(String body) {
             responses.add(new FeishuHelpdeskClient.HttpExchange(200, body));
@@ -209,11 +230,16 @@ class FeishuTicketAdapterTest {
                         200, "{\"code\":0,\"tenant_access_token\":\"stub-token\",\"expire\":7200}"
                 );
             }
+            nonTokenRequests.add(request);
             FeishuHelpdeskClient.HttpExchange exchange = responses.poll();
             if (exchange == null) {
                 throw new IllegalStateException("no stubbed response for " + url);
             }
             return exchange;
+        }
+
+        private List<java.net.http.HttpRequest> nonTokenRequests() {
+            return List.copyOf(nonTokenRequests);
         }
     }
 }
