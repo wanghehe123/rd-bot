@@ -29,6 +29,13 @@ if [[ -n "${RD_CLAUDE_AUTH_TOKEN_ENV:-}" ]]; then
   fi
 fi
 
+if [[ -n "${RD_CLAUDE_API_KEY_ENV:-}" ]]; then
+  api_key_value="${!RD_CLAUDE_API_KEY_ENV:-}"
+  if [[ -n "$api_key_value" ]]; then
+    export ANTHROPIC_API_KEY="$api_key_value"
+  fi
+fi
+
 if [[ "$#" -eq 0 ]]; then
   set -- claude -p --dangerously-skip-permissions --output-format stream-json --verbose
 fi

@@ -5,6 +5,7 @@ import com.wish.rd.exec.repair.alert.RepairExecutionWatchdog;
 import com.wish.rd.exec.repair.docker.ContainerRunnerPort;
 import com.wish.rd.exec.repair.docker.DockerClaudeCodeExecutor;
 import com.wish.rd.exec.repair.docker.RepairWorkspaceFactory;
+import com.wish.rd.exec.repair.docker.RepairWorkspaceRepositoryPort;
 import com.wish.rd.exec.repair.execution.RepairExecutorPort;
 import com.wish.rd.exec.repair.result.StructuredResultValidator;
 import org.springframework.beans.factory.ObjectProvider;
@@ -81,6 +82,7 @@ public class DockerExecutorConfiguration {
      * @param resultValidator  structured result validator
      * @param properties       docker executor properties
      * @param watchdog         timeout and budget watchdog
+     * @param repositoryPortProvider workspace repository port provider
      * @return repair executor port
      */
     @Bean
@@ -91,13 +93,15 @@ public class DockerExecutorConfiguration {
             ContainerRunnerPort containerRunner,
             StructuredResultValidator resultValidator,
             DockerExecutorProperties properties,
-            RepairExecutionWatchdog watchdog
+            RepairExecutionWatchdog watchdog,
+            ObjectProvider<RepairWorkspaceRepositoryPort> repositoryPortProvider
     ) {
         return new DockerClaudeCodeExecutor(
                 workspaceFactory,
                 containerRunner,
                 resultValidator,
                 properties.toExecutorConfiguration(),
+                repositoryPortProvider.getIfAvailable(RepairWorkspaceRepositoryPort::noop),
                 watchdog
         );
     }

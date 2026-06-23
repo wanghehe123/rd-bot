@@ -159,7 +159,7 @@ public class ProcessContainerRunner implements ContainerRunnerPort {
 
     private static boolean isSecretEnvKey(String key) {
         String normalized = key == null ? "" : key.toUpperCase();
-        if ("RD_CLAUDE_AUTH_TOKEN_ENV".equals(normalized)) {
+        if ("RD_CLAUDE_AUTH_TOKEN_ENV".equals(normalized) || "RD_CLAUDE_API_KEY_ENV".equals(normalized)) {
             return false;
         }
         return normalized.contains("SECRET")

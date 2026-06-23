@@ -3,11 +3,13 @@ package com.wish.rd.bootstrap;
 import com.wish.rd.bootstrap.executor.DockerExecutorConfiguration;
 import com.wish.rd.bootstrap.executor.DockerExecutorProperties;
 import com.wish.rd.bootstrap.executor.InMemoryRepairAlertSink;
+import com.wish.rd.bootstrap.executor.ProcessGitRepairWorkspaceRepository;
 import com.wish.rd.bootstrap.executor.ProcessContainerRunner;
 import com.wish.rd.exec.repair.alert.RepairAlert;
 import com.wish.rd.exec.repair.alert.RepairAlertSinkPort;
 import com.wish.rd.exec.repair.alert.RepairAlertType;
 import com.wish.rd.exec.repair.docker.DockerClaudeCodeExecutor;
+import com.wish.rd.exec.repair.docker.RepairWorkspaceRepositoryPort;
 import com.wish.rd.exec.repair.execution.RepairExecutorPort;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
@@ -47,6 +49,10 @@ class DockerExecutorConfigurationTest {
         assertTrue(properties.isRemoveAfterExit());
         assertEquals(1_800_000L, properties.getTimeoutAlertMillis());
         assertEquals(0, new BigDecimal("5.00").compareTo(properties.getBudgetAlertUsd()));
+        assertFalse(properties.getGit().isEnabled());
+        assertEquals("RD-Bot", properties.getGit().getUserName());
+        assertEquals("rd-bot@example.local", properties.getGit().getUserEmail());
+        assertEquals(120L, properties.getGit().getTimeoutSeconds());
 
         DockerClaudeCodeExecutor.Configuration configuration = properties.toExecutorConfiguration();
 
@@ -89,6 +95,8 @@ class DockerExecutorConfigurationTest {
             assertEquals("deepseek-v4-pro[1m]", deepseekEnv.get("ANTHROPIC_MODEL"));
             assertEquals("deepseek-v4-flash", deepseekEnv.get("CLAUDE_CODE_SUBAGENT_MODEL"));
             assertEquals("max", deepseekEnv.get("CLAUDE_CODE_EFFORT_LEVEL"));
+            assertEquals("ANTHROPIC_API_KEY", properties.toExecutorConfiguration().providers().get(1).env()
+                    .get("RD_CLAUDE_API_KEY_ENV"));
             assertEquals("", properties.toExecutorConfiguration().providers().get(1).env().get("ANTHROPIC_API_KEY"));
         });
     }
@@ -143,10 +151,26 @@ class DockerExecutorConfigurationTest {
                 });
     }
 
+    @Test
+    void shouldRegisterGitWorkspaceRepositoryOnlyWhenEnabled() {
+        ApplicationContextRunner contextRunner = new ApplicationContextRunner()
+                .withUserConfiguration(DockerConfigurationContext.class);
+
+        contextRunner.run(context -> assertEquals(0, context.getBeanNamesForType(RepairWorkspaceRepositoryPort.class).length));
+        contextRunner
+                .withPropertyValues("rd.executor.docker.git.enabled=true")
+                .run(context -> {
+                    assertEquals(1, context.getBeanNamesForType(RepairWorkspaceRepositoryPort.class).length);
+                    assertTrue(context.getBean(RepairWorkspaceRepositoryPort.class)
+                            instanceof ProcessGitRepairWorkspaceRepository);
+                });
+    }
+
     @Configuration(proxyBeanMethods = false)
     @Import({
             DockerExecutorProperties.class,
             ProcessContainerRunner.class,
+            ProcessGitRepairWorkspaceRepository.class,
             InMemoryRepairAlertSink.class,
             DockerExecutorConfiguration.class
     })

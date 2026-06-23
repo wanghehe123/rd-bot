@@ -49,6 +49,7 @@ public class DockerExecutorProperties {
     private boolean removeAfterExit = true;
     private long timeoutAlertMillis = DEFAULT_TIMEOUT_ALERT_MILLIS;
     private BigDecimal budgetAlertUsd = DEFAULT_BUDGET_ALERT_USD;
+    private GitProperties git = new GitProperties();
     private List<ModelProviderProperties> providers = new ArrayList<>();
 
     public boolean isEnabled() {
@@ -131,6 +132,14 @@ public class DockerExecutorProperties {
         this.budgetAlertUsd = budgetAlertUsd == null ? DEFAULT_BUDGET_ALERT_USD : budgetAlertUsd;
     }
 
+    public GitProperties getGit() {
+        return git;
+    }
+
+    public void setGit(GitProperties git) {
+        this.git = git == null ? new GitProperties() : git;
+    }
+
     public List<ModelProviderProperties> getProviders() {
         return providers;
     }
@@ -189,6 +198,49 @@ public class DockerExecutorProperties {
 
     private static String normalize(String value) {
         return value == null ? "" : value.strip();
+    }
+
+    /**
+     * Docker 执行前后本地 Git 工作区配置。
+     */
+    public static class GitProperties {
+
+        private boolean enabled = false;
+        private String userName = "RD-Bot";
+        private String userEmail = "rd-bot@example.local";
+        private long timeoutSeconds = 120L;
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public String getUserName() {
+            return userName;
+        }
+
+        public void setUserName(String userName) {
+            this.userName = defaultWhenBlank(userName, "RD-Bot");
+        }
+
+        public String getUserEmail() {
+            return userEmail;
+        }
+
+        public void setUserEmail(String userEmail) {
+            this.userEmail = defaultWhenBlank(userEmail, "rd-bot@example.local");
+        }
+
+        public long getTimeoutSeconds() {
+            return timeoutSeconds;
+        }
+
+        public void setTimeoutSeconds(long timeoutSeconds) {
+            this.timeoutSeconds = Math.max(1L, timeoutSeconds);
+        }
     }
 
     /**
@@ -307,6 +359,7 @@ public class DockerExecutorProperties {
             putIfNotBlank(env, "CLAUDE_CODE_SUBAGENT_MODEL", subagentModel);
             putIfNotBlank(env, "CLAUDE_CODE_EFFORT_LEVEL", effortLevel);
             putIfNotBlank(env, "RD_CLAUDE_AUTH_TOKEN_ENV", authTokenEnv);
+            putIfNotBlank(env, "RD_CLAUDE_API_KEY_ENV", apiKeyEnv);
             if (!authTokenEnv.isBlank()) {
                 env.put(authTokenEnv, "");
             }

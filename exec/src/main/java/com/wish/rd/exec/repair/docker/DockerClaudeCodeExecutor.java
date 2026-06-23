@@ -39,6 +39,7 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
     private final ContainerRunnerPort containerRunner;
     private final StructuredResultValidator resultValidator;
     private final Configuration configuration;
+    private final RepairWorkspaceRepositoryPort workspaceRepository;
     private final RepairExecutionWatchdog watchdog;
 
     /**
@@ -74,6 +75,34 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
             Configuration configuration,
             RepairExecutionWatchdog watchdog
     ) {
+        this(
+                workspaceFactory,
+                containerRunner,
+                resultValidator,
+                configuration,
+                RepairWorkspaceRepositoryPort.noop(),
+                watchdog
+        );
+    }
+
+    /**
+     * 创建可接入仓库准备、仓库发布和告警观察器的 Docker Claude Code 执行器。
+     *
+     * @param workspaceFactory   工作区工厂
+     * @param containerRunner    容器执行端口
+     * @param resultValidator    结构化结果校验器
+     * @param configuration      Docker 与 Claude Code 命令配置
+     * @param workspaceRepository 修复工作区仓库端口
+     * @param watchdog           超时和预算告警观察器，可为空
+     */
+    public DockerClaudeCodeExecutor(
+            RepairWorkspaceFactory workspaceFactory,
+            ContainerRunnerPort containerRunner,
+            StructuredResultValidator resultValidator,
+            Configuration configuration,
+            RepairWorkspaceRepositoryPort workspaceRepository,
+            RepairExecutionWatchdog watchdog
+    ) {
         if (workspaceFactory == null) {
             throw new IllegalArgumentException("workspaceFactory must not be null");
         }
@@ -84,6 +113,9 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
         this.containerRunner = containerRunner;
         this.resultValidator = resultValidator == null ? new StructuredResultValidator() : resultValidator;
         this.configuration = configuration == null ? Configuration.defaultConfiguration() : configuration;
+        this.workspaceRepository = workspaceRepository == null
+                ? RepairWorkspaceRepositoryPort.noop()
+                : workspaceRepository;
         this.watchdog = watchdog;
     }
 
@@ -102,13 +134,19 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
         RepairExecutionResult lastResult = null;
         try {
             RepairWorkspace workspace = workspaceFactory.create(command);
+            Map<String, String> repositoryMetadata = new LinkedHashMap<>(
+                    workspaceRepository.prepare(command, workspace).metadataJson()
+            );
             List<ClaudeCodeModelProvider> providers = configuration.providers();
             //TODO 模型降级链迁移 先探测模型是否可用，再真实的去运行
             for (int index = 0; index < providers.size(); index++) {
                 ClaudeCodeModelProvider provider = providers.get(index);
                 cleanOutputDirectory(workspace.outputDirectory());
                 AttemptOutcome outcome = runProvider(command, workspace, provider, index + 1, providers.size());
-                lastResult = outcome.result();
+                lastResult = withRepositoryMetadata(outcome.result(), repositoryMetadata);
+                if (lastResult.status() == RepairExecutionStatus.SUCCESS) {
+                    lastResult = publishRepository(command, workspace, lastResult);
+                }
                 providerAttempts.add(attemptMetadata(provider, index + 1, lastResult));
                 if (!shouldFallback(lastResult) || index == providers.size() - 1) {
                     return withProviderMetadata(lastResult, provider, providerAttempts);
@@ -120,6 +158,20 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
             );
         } catch (IOException e) {
             return failedExecution(e.getMessage());
+        }
+    }
+
+    private RepairExecutionResult publishRepository(
+            RepairJobCommand command,
+            RepairWorkspace workspace,
+            RepairExecutionResult result
+    ) {
+        try {
+            RepairWorkspaceRepositoryPort.RepositoryOperationResult publishResult =
+                    workspaceRepository.publish(command, workspace);
+            return withRepositoryMetadata(result, publishResult.metadataJson());
+        } catch (IOException exception) {
+            return repositoryFailure(result, exception.getMessage());
         }
     }
 
@@ -227,6 +279,29 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
         );
     }
 
+    private static RepairExecutionResult withRepositoryMetadata(
+            RepairExecutionResult result,
+            Map<String, String> repositoryMetadata
+    ) {
+        if (repositoryMetadata == null || repositoryMetadata.isEmpty()) {
+            return result;
+        }
+        Map<String, String> githubMetadata = new LinkedHashMap<>(result.githubMetadataJson());
+        repositoryMetadata.forEach((key, value) -> githubMetadata.put("repository." + key, value));
+        return new RepairExecutionResult(
+                result.status(),
+                result.summary(),
+                result.pullRequestUrl(),
+                result.artifacts(),
+                result.rawResultJson(),
+                result.dockerMetadataJson(),
+                githubMetadata,
+                result.testMetadataJson(),
+                result.riskMetadataJson(),
+                result.errorMessage()
+        );
+    }
+
     private static RepairExecutionResult withProviderAttempts(
             RepairExecutionResult result,
             List<Map<String, String>> providerAttempts
@@ -326,6 +401,21 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
                 Map.of(),
                 Map.of(),
                 Map.of(),
+                errorMessage == null ? "" : errorMessage
+        );
+    }
+
+    private RepairExecutionResult repositoryFailure(RepairExecutionResult result, String errorMessage) {
+        return new RepairExecutionResult(
+                RepairExecutionStatus.FAILED,
+                "Repository publish failed.",
+                "",
+                result.artifacts(),
+                result.rawResultJson(),
+                result.dockerMetadataJson(),
+                result.githubMetadataJson(),
+                result.testMetadataJson(),
+                result.riskMetadataJson(),
                 errorMessage == null ? "" : errorMessage
         );
     }

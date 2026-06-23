@@ -101,7 +101,9 @@ class ProcessContainerRunnerTest {
                         "ANTHROPIC_BASE_URL", "https://api.deepseek.com/anthropic",
                         "ANTHROPIC_MODEL", "deepseek-v4-pro[1m]",
                         "RD_CLAUDE_AUTH_TOKEN_ENV", "DEEPSEEK_API_KEY",
-                        "DEEPSEEK_API_KEY", "sk-deepseek-raw-secret"
+                        "DEEPSEEK_API_KEY", "sk-deepseek-raw-secret",
+                        "RD_CLAUDE_API_KEY_ENV", "MIMO_API_KEY",
+                        "MIMO_API_KEY", "sk-mimo-raw-secret"
                 ),
                 Map.of(temporaryDirectory.resolve("workspace").toString(), "/work")
         );
@@ -115,8 +117,13 @@ class ProcessContainerRunnerTest {
         assertTrue(argv.contains("RD_CLAUDE_AUTH_TOKEN_ENV=DEEPSEEK_API_KEY"));
         assertTrue(argv.contains("DEEPSEEK_API_KEY"));
         assertFalse(argv.contains("DEEPSEEK_API_KEY=sk-deepseek-raw-secret"));
+        assertTrue(argv.contains("RD_CLAUDE_API_KEY_ENV=MIMO_API_KEY"));
+        assertTrue(argv.contains("MIMO_API_KEY"));
+        assertFalse(argv.contains("MIMO_API_KEY=sk-mimo-raw-secret"));
         assertFalse(result.metadata().toString().contains("sk-deepseek-raw-secret"));
+        assertFalse(result.metadata().toString().contains("sk-mimo-raw-secret"));
         assertFalse(dockerMetaJson.contains("sk-deepseek-raw-secret"));
+        assertFalse(dockerMetaJson.contains("sk-mimo-raw-secret"));
     }
 
     @Test

@@ -1,0 +1,72 @@
+package com.wish.rd.exec.repair.docker;
+
+import com.wish.rd.exec.repair.execution.RepairJobCommand;
+
+import java.io.IOException;
+import java.util.Map;
+
+/**
+ * Docker 修复工作区的代码仓库端口，由 bootstrap 适配 Git CLI 或其他代码平台工作区实现。
+ */
+public interface RepairWorkspaceRepositoryPort {
+
+    /**
+     * 在容器启动前准备本地仓库工作树。
+     *
+     * @param command   修复执行命令
+     * @param workspace Docker 修复工作区
+     * @return 仓库准备结果
+     * @throws IOException 仓库克隆或分支检出失败
+     */
+    RepositoryOperationResult prepare(RepairJobCommand command, RepairWorkspace workspace) throws IOException;
+
+    /**
+     * 在容器成功修复后提交并发布工作分支。
+     *
+     * @param command   修复执行命令
+     * @param workspace Docker 修复工作区
+     * @return 仓库发布结果
+     * @throws IOException 仓库提交或推送失败
+     */
+    RepositoryOperationResult publish(RepairJobCommand command, RepairWorkspace workspace) throws IOException;
+
+    /**
+     * 返回不操作代码仓库的默认实现，供非真实执行或测试场景使用。
+     *
+     * @return no-op 仓库端口
+     */
+    static RepairWorkspaceRepositoryPort noop() {
+        return new RepairWorkspaceRepositoryPort() {
+            @Override
+            public RepositoryOperationResult prepare(RepairJobCommand command, RepairWorkspace workspace) {
+                return RepositoryOperationResult.empty();
+            }
+
+            @Override
+            public RepositoryOperationResult publish(RepairJobCommand command, RepairWorkspace workspace) {
+                return RepositoryOperationResult.empty();
+            }
+        };
+    }
+
+    /**
+     * 仓库操作结果元数据。
+     *
+     * @param metadataJson 仓库操作元数据
+     */
+    record RepositoryOperationResult(Map<String, String> metadataJson) {
+
+        public RepositoryOperationResult {
+            metadataJson = metadataJson == null ? Map.of() : Map.copyOf(metadataJson);
+        }
+
+        /**
+         * 返回空仓库操作结果。
+         *
+         * @return 空结果
+         */
+        public static RepositoryOperationResult empty() {
+            return new RepositoryOperationResult(Map.of());
+        }
+    }
+}

@@ -88,7 +88,9 @@ class DockerAssetPolicyTest {
         assertTrue(entrypoint.contains("PIPESTATUS[0]"));
         assertTrue(entrypoint.contains("RD_CLAUDE_AUTH_TOKEN_ENV"));
         assertTrue(entrypoint.contains("export ANTHROPIC_AUTH_TOKEN"));
-        assertFalse(entrypoint.contains("ANTHROPIC_API_KEY="));
+        assertTrue(entrypoint.contains("RD_CLAUDE_API_KEY_ENV"));
+        assertTrue(entrypoint.contains("export ANTHROPIC_API_KEY"));
+        assertFalse(entrypoint.contains("ANTHROPIC_API_KEY=sk"));
         assertFalse(entrypoint.contains(">/work/input"));
         assertFalse(entrypoint.contains(">/work/repo"));
     }

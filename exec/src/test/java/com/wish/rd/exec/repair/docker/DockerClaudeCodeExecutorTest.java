@@ -223,6 +223,54 @@ class DockerClaudeCodeExecutorTest {
     }
 
     @Test
+    void shouldPrepareAndPublishRepositoryAroundSuccessfulExecution() {
+        CapturingRunner runner = CapturingRunner.withResult(validResultJson("SUCCESS"));
+        RecordingRepositoryPort repositoryPort = new RecordingRepositoryPort();
+        DockerClaudeCodeExecutor executor = executor(
+                new RepairWorkspaceFactory(temporaryDirectory, RESULT_SCHEMA_JSON),
+                runner,
+                COMMAND,
+                repositoryPort,
+                null
+        );
+
+        RepairExecutionResult result = executor.execute(command());
+
+        assertEquals(RepairExecutionStatus.SUCCESS, result.status());
+        assertEquals(1, repositoryPort.prepared().size());
+        assertEquals(1, repositoryPort.published().size());
+        assertEquals("true", result.githubMetadataJson().get("repository.prepared"));
+        assertEquals("true", result.githubMetadataJson().get("repository.pushed"));
+        assertEquals("abc123", result.githubMetadataJson().get("repository.commitSha"));
+        assertEquals(runner.request().mounts().keySet().stream()
+                .filter(path -> path.endsWith("/repo"))
+                .findFirst()
+                .orElseThrow(), repositoryPort.prepared().getFirst().repoDirectory().toString());
+    }
+
+    @Test
+    void shouldFailExecutionWhenRepositoryPublishFails() {
+        CapturingRunner runner = CapturingRunner.withResult(validResultJson("SUCCESS"));
+        RecordingRepositoryPort repositoryPort = new RecordingRepositoryPort(true);
+        DockerClaudeCodeExecutor executor = executor(
+                new RepairWorkspaceFactory(temporaryDirectory, RESULT_SCHEMA_JSON),
+                runner,
+                COMMAND,
+                repositoryPort,
+                null
+        );
+
+        RepairExecutionResult result = executor.execute(command());
+
+        assertEquals(RepairExecutionStatus.FAILED, result.status());
+        assertEquals("Repository publish failed.", result.summary());
+        assertTrue(result.errorMessage().contains("push failed"));
+        assertEquals(1, repositoryPort.prepared().size());
+        assertEquals(1, repositoryPort.published().size());
+        assertEquals("true", result.githubMetadataJson().get("repository.prepared"));
+    }
+
+    @Test
     void shouldIncludeDockerMetadataInExecutionResult() throws IOException {
         List<String> command = List.of("claude", "--append-system-prompt", "line 1\nline 2\twith tab");
         CapturingRunner runner = CapturingRunner.withExitCodeAndResult(0, validResultJson("UNSAFE"));
@@ -356,6 +404,16 @@ class DockerClaudeCodeExecutorTest {
             List<String> command,
             RepairExecutionWatchdog watchdog
     ) {
+        return executor(workspaceFactory, runner, command, RepairWorkspaceRepositoryPort.noop(), watchdog);
+    }
+
+    private DockerClaudeCodeExecutor executor(
+            RepairWorkspaceFactory workspaceFactory,
+            ContainerRunnerPort runner,
+            List<String> command,
+            RepairWorkspaceRepositoryPort repositoryPort,
+            RepairExecutionWatchdog watchdog
+    ) {
         DockerClaudeCodeExecutor.Configuration configuration = new DockerClaudeCodeExecutor.Configuration(
                 "rd-bot/claude-code:test",
                 command,
@@ -368,6 +426,7 @@ class DockerClaudeCodeExecutorTest {
                 runner,
                 new StructuredResultValidator(),
                 configuration,
+                repositoryPort,
                 watchdog
         );
     }
@@ -671,6 +730,44 @@ class DockerClaudeCodeExecutorTest {
 
         private List<RepairAlert> alerts() {
             return List.copyOf(alerts);
+        }
+    }
+
+    private static final class RecordingRepositoryPort implements RepairWorkspaceRepositoryPort {
+
+        private final boolean failPublish;
+        private final List<RepairWorkspace> prepared = new ArrayList<>();
+        private final List<RepairWorkspace> published = new ArrayList<>();
+
+        private RecordingRepositoryPort() {
+            this(false);
+        }
+
+        private RecordingRepositoryPort(boolean failPublish) {
+            this.failPublish = failPublish;
+        }
+
+        @Override
+        public RepositoryOperationResult prepare(RepairJobCommand command, RepairWorkspace workspace) {
+            prepared.add(workspace);
+            return new RepositoryOperationResult(Map.of("prepared", "true"));
+        }
+
+        @Override
+        public RepositoryOperationResult publish(RepairJobCommand command, RepairWorkspace workspace) throws IOException {
+            published.add(workspace);
+            if (failPublish) {
+                throw new IOException("push failed");
+            }
+            return new RepositoryOperationResult(Map.of("pushed", "true", "commitSha", "abc123"));
+        }
+
+        private List<RepairWorkspace> prepared() {
+            return List.copyOf(prepared);
+        }
+
+        private List<RepairWorkspace> published() {
+            return List.copyOf(published);
         }
     }
 }
