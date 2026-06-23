@@ -84,7 +84,7 @@
 
 ### 2.5 Feishu 权限错误传播
 
-提交：本轮 `fix(feishu): propagate helpdesk permission errors`
+提交：`3c39916 fix(feishu): propagate helpdesk permission errors`
 
 修复点：
 
@@ -503,6 +503,7 @@ db9200a fix(feishu): send helpdesk auth on read APIs
 9c2ba99 feat(feishu): support helpdesk start service
 88abbda docs(feishu): explain real helpdesk ticket creation
 eec0286 docs(feishu): add helpdesk configuration checklist
+3c39916 fix(feishu): propagate helpdesk permission errors
 ```
 
 ## 8. 结论
