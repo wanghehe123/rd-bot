@@ -1,0 +1,192 @@
+package com.wish.rd.engine;
+
+import com.wish.rd.adapter.TicketMessage;
+import com.wish.rd.adapter.TicketMessageQuery;
+import com.wish.rd.adapter.TicketMessages;
+import com.wish.rd.adapter.TicketProviderPort;
+import com.wish.rd.adapter.TicketSnapshot;
+import com.wish.rd.engine.bugfix.BugFixExecutionResult;
+import com.wish.rd.engine.bugfix.BugFixExecutor;
+import com.wish.rd.engine.bugfix.RdBotFixEngine;
+import com.wish.rd.engine.rag.ChatQueueLimiter;
+import com.wish.rd.engine.rag.RagBugFixEngine;
+import com.wish.rd.engine.ticket.InMemoryRepairRecordRepository;
+import com.wish.rd.engine.ticket.RepairRecordRepository;
+import com.wish.rd.engine.ticket.RepairTicketMessage;
+import com.wish.rd.engine.ticket.TicketFieldMapping;
+import com.wish.rd.engine.ticket.TicketRepairEngine;
+import com.wish.rd.engine.ticket.TicketRepairExecutionConsumer;
+import com.wish.rd.framework.id.SnowflakeIdGenerator;
+import com.wish.rd.rag.intent.IntentTreeRegistry;
+import com.wish.rd.rag.rewrite.QueryTermMappingRegistry;
+import com.wish.rd.rag.runtime.InMemoryRdTaskStore;
+import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
+import org.junit.jupiter.api.Test;
+
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicLong;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/**
+ * 验证正式修复队列消费编排：工单先准备 RAG 上下文，再按配置触发 Docker/PR 执行入口。
+ */
+class TicketRepairExecutionConsumerTest {
+
+    @Test
+    void readyTicketShouldTriggerBugFixExecutionWhenAutoExecuteEnabled() {
+        ReadyProvider provider = new ReadyProvider();
+        RepairRecordRepository repository = InMemoryRepairRecordRepository.inMemory();
+        TicketRepairEngine ticketRepairEngine = TicketRepairEngine.forTesting(
+                provider,
+                null,
+                repository,
+                ragEngine(),
+                TicketFieldMapping.defaults(),
+                false
+        );
+        RecordingBugFixExecutor executor = new RecordingBugFixExecutor();
+        RdBotFixEngine fixEngine = new RdBotFixEngine(
+                ChatQueueLimiter.passThrough(),
+                ragEngine(),
+                taskRegistry(),
+                com.wish.rd.engine.bugfix.BugFixPromptBuilder.defaultBuilder(),
+                executor
+        );
+        TicketRepairExecutionConsumer consumer = new TicketRepairExecutionConsumer(
+                ticketRepairEngine,
+                provider,
+                fixEngine,
+                TicketFieldMapping.defaults(),
+                true
+        );
+
+        boolean success = consumer.handle(message("FS-READY"));
+
+        assertTrue(success);
+        assertEquals(1, executor.requests.size());
+        assertEquals("FS-READY", executor.requests.getFirst().ragMessage().ticketId());
+        assertTrue(executor.requests.getFirst().ragMessage().contextSummary().contains("OrderService.create"));
+    }
+
+    @Test
+    void readyTicketShouldOnlyPrepareRagWhenAutoExecuteDisabled() {
+        ReadyProvider provider = new ReadyProvider();
+        TicketRepairEngine ticketRepairEngine = TicketRepairEngine.forTesting(
+                provider,
+                null,
+                InMemoryRepairRecordRepository.inMemory(),
+                ragEngine(),
+                TicketFieldMapping.defaults(),
+                false
+        );
+        RecordingBugFixExecutor executor = new RecordingBugFixExecutor();
+        RdBotFixEngine fixEngine = new RdBotFixEngine(
+                ChatQueueLimiter.passThrough(),
+                ragEngine(),
+                taskRegistry(),
+                com.wish.rd.engine.bugfix.BugFixPromptBuilder.defaultBuilder(),
+                executor
+        );
+        TicketRepairExecutionConsumer consumer = new TicketRepairExecutionConsumer(
+                ticketRepairEngine,
+                provider,
+                fixEngine,
+                TicketFieldMapping.defaults(),
+                false
+        );
+
+        boolean success = consumer.handle(message("FS-READY"));
+
+        assertTrue(success);
+        assertTrue(executor.requests.isEmpty());
+    }
+
+    private static RagBugFixEngine ragEngine() {
+        return new RagBugFixEngine(
+                QueryTermMappingRegistry.withDefaults(),
+                IntentTreeRegistry.withDefaults(),
+                null,
+                RagStreamTaskRegistry.inMemory(),
+                ChatQueueLimiter.passThrough()
+        );
+    }
+
+    private static RagStreamTaskRegistry taskRegistry() {
+        AtomicLong now = new AtomicLong(1_780_000_000_000L);
+        return new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(),
+                new SnowflakeIdGenerator(1, 1, now::getAndIncrement)
+        );
+    }
+
+    private static RepairTicketMessage message(String ticketId) {
+        return new RepairTicketMessage(
+                ticketId,
+                "P1",
+                "trace-" + ticketId,
+                1,
+                "feishu",
+                "evt-" + ticketId,
+                "helpdesk.ticket.created_v1",
+                Instant.parse("2026-06-21T00:00:00Z")
+        );
+    }
+
+    private static final class ReadyProvider implements TicketProviderPort {
+
+        @Override
+        public Optional<TicketSnapshot> findTicket(String ticketId) {
+            return Optional.of(new TicketSnapshot(
+                    ticketId,
+                    "支付系统下单接口 500",
+                    "金额为空时 OrderService.create 写入订单失败",
+                    List.of("payment", "orders.amount"),
+                    Instant.parse("2026-06-21T00:00:00Z"),
+                    "P1",
+                    "processing",
+                    "",
+                    "feishu",
+                    "",
+                    Map.of(TicketFieldMapping.KEY_LOGS, "ERROR orders.amount is null"),
+                    Instant.EPOCH,
+                    Instant.EPOCH
+            ));
+        }
+
+        @Override
+        public TicketMessages findMessages(String ticketId, TicketMessageQuery query) {
+            return new TicketMessages(List.of(new TicketMessage(
+                    "m-1",
+                    "2",
+                    "u-1",
+                    "text",
+                    "ERROR orders.amount is null at OrderService.create",
+                    List.of(),
+                    Map.of(),
+                    Instant.parse("2026-06-21T00:01:00Z")
+            )), 1, 50, 1, false);
+        }
+    }
+
+    private static final class RecordingBugFixExecutor implements BugFixExecutor {
+        private final List<com.wish.rd.engine.bugfix.BugFixExecutionRequest> requests = new ArrayList<>();
+
+        @Override
+        public BugFixExecutionResult execute(com.wish.rd.engine.bugfix.BugFixExecutionRequest request) {
+            requests.add(request);
+            return new BugFixExecutionResult(
+                    request.taskId(),
+                    request.ragMessage().ticketTitle(),
+                    "executed",
+                    "https://github.example.local/acme/order/pull/1",
+                    "{\"status\":\"SUCCESS\"}"
+            );
+        }
+    }
+}

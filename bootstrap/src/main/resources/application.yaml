@@ -60,6 +60,8 @@ rd:
     queue:
       mode: memory
     ticket:
+      auto-execute:
+        enabled: ${RD_REPAIR_TICKET_AUTO_EXECUTE_ENABLED:false}
       ingestion:
         default-source: feishu
   rocketmq:
