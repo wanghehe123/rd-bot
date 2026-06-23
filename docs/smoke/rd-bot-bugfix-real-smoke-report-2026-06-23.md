@@ -526,3 +526,163 @@ eec0286 docs(feishu): add helpdesk configuration checklist
 - 如果要让机器人创建真实服务台工单，再开通 `helpdesk:helpdesk:access`。
 - 权限变更后重新发布应用，并由租户管理员安装或升级权限。
 - 提供一个可读的真实工单 ID，或提供用户 open_id 后用 `start_service` 先创建工单。
+
+## 9. Helpdesk 不可用后的最小替代方案落地
+
+### 9.1 背景
+
+后续确认：Feishu Helpdesk 仅支持商业专业版及以上版本，个人开发者账号无法继续把 Helpdesk 作为真实工单入口。因此本轮将工单入口切换为个人开发者可用的 **Feishu IM Bot + RD-Bot 内部工单**。
+
+参考项目 `EMIYAttk/Intelligent_work_order_Agent` 的“创建工单”路径也是 IM 机器人模式：收到用户消息后在本地生成 `TK-*` 编号，再通过飞书消息/卡片回发，并不会在 Feishu Helpdesk 中创建真实 `ticket_id`。
+
+### 9.2 已实现内容
+
+新增 provider：
+
+```yaml
+rd:
+  repair:
+    ticket:
+      provider: feishu-im
+      ingestion:
+        default-source: feishu-im
+  feishu:
+    im:
+      enabled: true
+      app-id: ${FEISHU_APP_ID:}
+      app-secret: ${FEISHU_APP_SECRET:}
+      require-at-mention: true
+      write-back:
+        enabled: false
+```
+
+新增入口与适配层：
+
+- `POST /feishu/im/events`：接收飞书 IM 事件，支持 `url_verification`。
+- `FeishuImMessageController`：解析飞书 `im.message.receive_v1` 事件，过滤未 @ 机器人的群消息，清理 mention 文本。
+- `FeishuImTicketParser`：解析 `系统/仓库/分支/优先级/问题/日志/期望/实际` 行式字段。
+- `FeishuImTicketStore`：用内存注册表保存内部工单和消息。
+- `FeishuImTicketAdapter`：实现现有 `TicketProviderPort` / `TicketUpdatePort`。
+- `FeishuImClient`：使用 app id/secret 获取 tenant token，并通过 IM `messages` API 回写文本。
+
+保留 Helpdesk 路径：
+
+- Helpdesk 代码未删除。
+- `rd.repair.ticket.provider=mock` 仍是默认值。
+- `rd.feishu.helpdesk.enabled=true` 的企业版路径仍通过 `FeishuHelpdeskBeanWiringTest` 验证。
+
+### 9.3 IM 提单文本格式
+
+推荐用户在飞书群 @ 机器人后发送：
+
+```text
+系统: waimai
+仓库: github.com/example/waimai
+分支: main
+优先级: P1
+问题: 下单接口 500
+日志: NullPointerException at OrderService.create
+期望: 下单成功
+实际: 返回 500
+```
+
+字段映射：
+
+| 文本字段 | RD-Bot 字段 |
+| --- | --- |
+| 系统 | `customFields.problemSystem` |
+| 仓库 | `customFields.repository` |
+| 分支 | `customFields.branch` |
+| 优先级 | `priority` |
+| 问题 | `customFields.symptom`，并作为标题优先来源 |
+| 日志 | `customFields.logs` |
+| 期望 | `customFields.expectedResult` |
+| 实际 | `customFields.actualResult` |
+
+如果用户只发自然语言，RD-Bot 会把全文作为标题和描述，优先级默认为 `P2`。
+
+### 9.4 飞书后台配置
+
+个人开发者路径不再需要 Helpdesk ID / Helpdesk Token。需要配置普通自建应用机器人：
+
+1. 开启机器人能力。
+2. 订阅消息事件：`im.message.receive_v1`，重点是“接收群聊中 @ 机器人消息事件”。
+3. 开通发送消息、接收群聊 @ 机器人消息、必要的群聊消息读取权限。
+4. 发布应用版本，并把机器人加入测试群。
+5. 真实事件回调需要公网可访问地址；本地可通过内网穿透、部署环境或后续长连接 SDK 方案接入。
+
+### 9.5 新增验证
+
+TDD RED 证据：
+
+- `FeishuImTicketParserTest,FeishuImTicketStoreTest` 初次运行失败：缺少 `FeishuImTicketParser`、`FeishuImTicketDraft`、`FeishuImTicketStore`。
+- `FeishuImTicketAdapterTest,FeishuImMessageControllerTest` 初次运行失败：缺少 `FeishuImProperties`、`FeishuImClient`、`FeishuImTicketAdapter`、`FeishuImMessageController`。
+- `FeishuImBeanWiringTest` 初次运行失败：`feishuImTicketAdapter` 和 `mockFeishuTicketAdapter` 同时成为 `TicketProviderPort`。
+- 修复 provider 条件后，`FeishuImBeanWiringTest` 再次暴露 `FeishuImClient` 多构造器未标注生产构造器的问题；已补 `@Autowired`。
+
+Focused 验证命令：
+
+```bash
+./mvnw -pl bootstrap -am \
+  -Dtest=FeishuImTicketParserTest,FeishuImTicketStoreTest,FeishuImTicketAdapterTest,FeishuImMessageControllerTest,FeishuImBeanWiringTest,FeishuHelpdeskBeanWiringTest \
+  -Dsurefire.failIfNoSpecifiedTests=false \
+  test
+```
+
+结果：
+
+```text
+Tests run: 12, Failures: 0, Errors: 0, Skipped: 0
+BUILD SUCCESS
+```
+
+Engine 回归命令：
+
+```bash
+./mvnw -pl engine -Dtest=TicketRepairEngineTest test
+```
+
+结果：
+
+```text
+Tests run: 7, Failures: 0, Errors: 0, Skipped: 0
+BUILD SUCCESS
+```
+
+模块级验证命令：
+
+```bash
+./mvnw -pl bootstrap -am test
+```
+
+结果：
+
+```text
+Tests run: 128, Failures: 0, Errors: 0, Skipped: 7
+BUILD SUCCESS
+```
+
+全量验证命令：
+
+```bash
+./mvnw test
+```
+
+结果：
+
+```text
+Tests run: 128, Failures: 0, Errors: 0, Skipped: 7
+BUILD SUCCESS
+```
+
+### 9.6 新增提交
+
+```text
+790f7b2 docs(feishu): specify im ticket replacement
+6b48be0 feat(feishu): add im ticket parsing store
+5961298 feat(feishu): ingest im tickets
+```
+
+### 9.7 当前结论
+
+Helpdesk 对个人开发者不可用的问题已通过替代入口绕开：RD-Bot 现在可以通过 Feishu IM 事件创建内部工单，并继续复用现有 RocketMQ、RAG、自动修复和 GitHub PR 创建链路。真实飞书事件联调剩余条件是提供公网回调地址或后续改成长连接 SDK 接入；这属于部署/接入方式，不再依赖 Helpdesk 商业能力。
