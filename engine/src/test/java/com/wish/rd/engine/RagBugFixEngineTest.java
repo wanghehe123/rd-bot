@@ -94,6 +94,51 @@ class RagBugFixEngineTest {
         assertEquals("外卖平台", message.primaryIntentName());
         assertTrue(message.contextSummary().contains("server/src/routes/orders.ts"));
         assertTrue(message.contextSummary().contains("delivery_address"));
+        assertFalse(message.retrievedChunks().isEmpty());
+        assertFalse(message.evidenceChunkIds().isEmpty());
+        assertFalse(message.answer().contains("未检索到足够证据"));
+        assertTrue(message.answer().contains("client/src/api.ts"));
+    }
+
+    @Test
+    void routesWaimaiPaymentCallbackBugToPaymentStatusEvidence() {
+        RagBugFixEngine engine = new RagBugFixEngine(
+                QueryTermMappingRegistry.withDefaults(),
+                IntentTreeRegistry.withDefaults(),
+                null,
+                RagStreamTaskRegistry.inMemory(),
+                ChatQueueLimiter.passThrough()
+        );
+        TicketSnapshot ticket = new TicketSnapshot(
+                "ticket-waimai-payment-1",
+                "外卖订单支付成功后状态仍为待支付",
+                """
+                问题: 外卖订单支付成功后状态仍为待支付
+                系统: waimai
+                优先级: P1
+                日志: java.lang.IllegalStateException: Payment callback handled but order status remains PENDING_PAYMENT at com.waimai.payment.PaymentCallbackService.handleSuccess(PaymentCallbackService.java:67)
+                实际: 用户支付成功后，订单详情仍显示待支付，商家无法接单
+                期望: 支付成功后订单状态更新为 PAID，并通知商家接单
+                """,
+                List.of("feishu-im", "waimai", "P1"),
+                Instant.parse("2026-06-25T04:00:00Z")
+        );
+
+        BugFixMessage message = engine.findBugFixMessgaesForAgent(
+                ticket,
+                List.of("PaymentCallbackService.handleSuccess completed but orders.status remains PENDING_PAYMENT"),
+                false
+        );
+
+        assertEquals("waimai", message.primaryIntentSystemId());
+        assertEquals("外卖平台", message.primaryIntentName());
+        assertFalse(message.retrievedChunks().isEmpty());
+        assertFalse(message.evidenceChunkIds().isEmpty());
+        assertTrue(message.contextSummary().contains("PaymentCallbackService"));
+        assertTrue(message.contextSummary().contains("PENDING_PAYMENT"));
+        assertTrue(message.contextSummary().contains("PAID"));
+        assertFalse(message.answer().contains("未检索到足够证据"));
+        assertTrue(message.answer().contains("PaymentCallbackService.handleSuccess"));
     }
 
     @Test

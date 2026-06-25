@@ -181,7 +181,7 @@ public final class RagBugFixEngine {
         RepairPromptPlan promptPlan = RepairPromptService
                 .defaultService(queryTermMappingRegistry.rewriteService())
                 .build(request, context);
-        String answer = deterministicAnswer(promptPlan);
+        String answer = deterministicAnswer(request, context, promptPlan);
         return toMessage(ticket, taskId, deepThinking, context, promptPlan, answer, false);
     }
 
@@ -228,12 +228,37 @@ public final class RagBugFixEngine {
                 intentTreeRegistry.intentTree(),
                 query -> {
                     if ("waimai".equals(query.systemId())) {
+                        if (isWaimaiPaymentCallbackText(String.join(" ", query.keywords()))) {
+                            return List.of("ERROR PaymentCallbackService.handleSuccess completed but orders.status remains PENDING_PAYMENT; expected PAID before merchant notification");
+                        }
                         return List.of("ERROR POST /api/orders failed: createOrder payload missing address phone customer_name; client sent delivery_address remark");
                     }
                     return List.of("ERROR orders.amount is null at OrderService.create");
                 },
                 query -> {
                     if ("waimai".equals(query.repositoryId())) {
+                        if (isWaimaiPaymentCallbackText(query.query())) {
+                            return List.of(
+                                    new RetrievedChunk(
+                                            "waimai#server/src/services/PaymentCallbackService.java#handleSuccess",
+                                            "server/src/services/PaymentCallbackService.java handleSuccess should mark the order PAID when a successful payment callback is verified.",
+                                            "waimai",
+                                            "code-snippet",
+                                            "server/src/services/PaymentCallbackService.java",
+                                            9.6d,
+                                            Map.of("repositoryId", query.repositoryId())
+                                    ),
+                                    new RetrievedChunk(
+                                            "waimai#server/src/services/OrderService.java#markPaid",
+                                            "server/src/services/OrderService.java markPaid must update orders.status from PENDING_PAYMENT to PAID and persist paidAt/paymentTransactionId.",
+                                            "waimai",
+                                            "code-snippet",
+                                            "server/src/services/OrderService.java",
+                                            9.5d,
+                                            Map.of("repositoryId", query.repositoryId())
+                                    )
+                            );
+                        }
                         return List.of(
                                 new RetrievedChunk(
                                         "waimai#client/src/api.ts#createOrder",
@@ -335,6 +360,26 @@ public final class RagBugFixEngine {
                 128,
                 16
         ));
+        DocumentIngestionService.inMemory(vectorStore).write(new DocumentIngestionCommand(
+                "waimai-payment-callback.md",
+                "waimai",
+                "runbook",
+                "text/markdown",
+                """
+                # 外卖平台支付回调状态修复手册
+
+                故障标题：外卖订单支付成功后状态仍为待支付。
+                关键日志：java.lang.IllegalStateException: Payment callback handled but order status remains PENDING_PAYMENT at com.waimai.payment.PaymentCallbackService.handleSuccess(PaymentCallbackService.java:67)
+                适用服务：server/src/services/PaymentCallbackService.java、server/src/services/OrderService.java。
+                支付成功回调完成后，PaymentCallbackService.handleSuccess 必须在同一事务中把 orders.status 从 PENDING_PAYMENT 更新为 PAID，并写入 paid_at、payment_transaction_id。
+                如果只记录 payment transaction 或只确认第三方回调成功，但没有调用 OrderService.markPaid / OrderRepository.updateStatus，订单详情会继续显示待支付，商家无法接单。
+                已经是 PAID 的订单应幂等返回成功，不应重复通知商家。
+                状态更新成功后再发布 MerchantOrderPaidEvent 或调用商家通知逻辑，通知商家可以接单。
+                """.getBytes(StandardCharsets.UTF_8),
+                ChunkingMode.STRUCTURE_AWARE,
+                160,
+                24
+        ));
     }
 
     private BugFixMessage toMessage(
@@ -412,11 +457,62 @@ public final class RagBugFixEngine {
         return toMessage(ticket, taskId, deepThinking, context, promptPlan, message, true);
     }
 
-    private String deterministicAnswer(RepairPromptPlan promptPlan) {
-        if (promptPlan.userPrompt().contains("orders.amount")) {
+    private String deterministicAnswer(
+            RepairRagRequest request,
+            RepairContextPackage context,
+            RepairPromptPlan promptPlan
+    ) {
+        if (!hasRagEvidence(context, promptPlan)) {
+            return "未检索到足够证据，请补充系统、接口、日志或代码上下文。";
+        }
+        String requestText = requestText(request);
+        if (requestText.contains("orders.amount")) {
             return "已经定位到 OrderService.create 缺少 orders.amount 校验。";
         }
-        return "未检索到足够证据，请补充系统、接口、日志或代码上下文。";
+        if (isWaimaiPaymentCallbackText(requestText)) {
+            return "已经定位到 PaymentCallbackService.handleSuccess 支付成功后未把订单状态从 PENDING_PAYMENT 更新为 PAID。";
+        }
+        return evidenceBasedAnswer(context, promptPlan);
+    }
+
+    private String requestText(RepairRagRequest request) {
+        if (request == null) {
+            return "";
+        }
+        return request.description() + "\n" + String.join("\n", request.logs());
+    }
+
+    private boolean isWaimaiPaymentCallbackText(String text) {
+        String raw = safe(text);
+        return raw.contains("PaymentCallbackService")
+                || raw.contains("PENDING_PAYMENT")
+                || raw.contains("PAID")
+                || raw.contains("支付回调")
+                || raw.contains("支付成功")
+                || raw.contains("待支付");
+    }
+
+    private boolean hasRagEvidence(RepairContextPackage context, RepairPromptPlan promptPlan) {
+        return !context.retrievedChunks().isEmpty() || !promptPlan.evidenceChunkIds().isEmpty();
+    }
+
+    private String evidenceBasedAnswer(RepairContextPackage context, RepairPromptPlan promptPlan) {
+        List<String> sources = context.retrievedChunks().stream()
+                .map(RetrievedChunk::sourceName)
+                .filter(source -> source != null && !source.isBlank())
+                .distinct()
+                .limit(6)
+                .toList();
+        int evidenceCount = context.retrievedChunks().isEmpty()
+                ? promptPlan.evidenceChunkIds().size()
+                : context.retrievedChunks().size();
+        if (sources.isEmpty()) {
+            return "已检索到 %d 个 RAG 证据 chunk，请基于 evidenceChunkIds 继续定位修复。".formatted(evidenceCount);
+        }
+        return "已检索到 %d 条 RAG 证据，优先查看：%s。".formatted(
+                evidenceCount,
+                String.join("、", sources)
+        );
     }
 
     private TicketSnapshot normalizeTicket(TicketSnapshot ticket) {

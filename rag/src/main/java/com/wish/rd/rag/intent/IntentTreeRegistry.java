@@ -250,9 +250,15 @@ public final class IntentTreeRegistry {
                 "外卖平台",
                 0,
                 null,
-                "外卖、waimai、下单、订单、POST /api/orders、创建订单、收货地址、delivery_address、address、customer_name",
+                "外卖、waimai、下单、订单、POST /api/orders、创建订单、收货地址、delivery_address、address、customer_name、"
+                        + "支付、支付回调、PaymentCallbackService、PENDING_PAYMENT、PAID、订单状态、商家接单",
                 "waimai",
-                List.of("外卖下单接口返回 500", "waimai 创建订单失败", "POST /api/orders 创建订单失败"),
+                List.of(
+                        "外卖下单接口返回 500",
+                        "waimai 创建订单失败",
+                        "POST /api/orders 创建订单失败",
+                        "外卖订单支付成功后状态仍为待支付"
+                ),
                 List.of("waimai"),
                 1,
                 -10
