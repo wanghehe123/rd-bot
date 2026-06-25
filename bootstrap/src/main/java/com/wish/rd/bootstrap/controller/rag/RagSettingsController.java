@@ -34,7 +34,9 @@ public class RagSettingsController {
     private final int summaryStartTurns;
     private final int summaryMaxChars;
     private final int titleMaxLength;
-    private final String mockProviderApiKey;
+    private final String aiProviderName;
+    private final String aiProviderBaseUrl;
+    private final String aiProviderApiKey;
     private final String chatDefaultModel;
     private final String chatDeepThinkingModel;
     private final String embeddingDefaultModel;
@@ -45,7 +47,7 @@ public class RagSettingsController {
             @Value("${spring.servlet.multipart.max-file-size:50MB}") DataSize maxFileSize,
             @Value("${spring.servlet.multipart.max-request-size:100MB}") DataSize maxRequestSize,
             @Value("${rag.default.collection-name:rd_bot_collection}") String collectionName,
-            @Value("${rag.default.dimension:768}") int dimension,
+            @Value("${rag.default.dimension:1536}") int dimension,
             @Value("${rag.default.metric-type:COSINE}") String metricType,
             @Value("${rag.query-rewrite.enabled:true}") boolean queryRewriteEnabled,
             @Value("${rag.rate-limit.global.enabled:false}") boolean rateLimitEnabled,
@@ -58,11 +60,13 @@ public class RagSettingsController {
             @Value("${rag.memory.summary-start-turns:9}") int summaryStartTurns,
             @Value("${rag.memory.summary-max-chars:200}") int summaryMaxChars,
             @Value("${rag.memory.title-max-length:30}") int titleMaxLength,
-            @Value("${rd.ai.providers.mock.api-key:}") String mockProviderApiKey,
-            @Value("${rd.ai.chat.default-model:deterministic-repair-model}") String chatDefaultModel,
-            @Value("${rd.ai.chat.deep-thinking-model:deterministic-repair-model}") String chatDeepThinkingModel,
-            @Value("${rd.ai.embedding.default-model:deterministic-text-score}") String embeddingDefaultModel,
-            @Value("${rd.ai.rerank.default-model:deterministic-score-sort}") String rerankDefaultModel,
+            @Value("${rd.ai.provider.name:deepseek}") String aiProviderName,
+            @Value("${rd.ai.provider.base-url:https://api.deepseek.com}") String aiProviderBaseUrl,
+            @Value("${rd.ai.provider.api-key:}") String aiProviderApiKey,
+            @Value("${rd.ai.chat.default-model:deepseek-chat}") String chatDefaultModel,
+            @Value("${rd.ai.chat.deep-thinking-model:deepseek-reasoner}") String chatDeepThinkingModel,
+            @Value("${rd.ai.embedding.default-model:bge-m3}") String embeddingDefaultModel,
+            @Value("${rd.ai.rerank.default-model:bge-reranker-v2-m3}") String rerankDefaultModel,
             @Value("${rd.ai.stream.message-chunk-size:256}") int streamMessageChunkSize
     ) {
         this.maxFileSize = maxFileSize;
@@ -81,7 +85,9 @@ public class RagSettingsController {
         this.summaryStartTurns = summaryStartTurns;
         this.summaryMaxChars = summaryMaxChars;
         this.titleMaxLength = titleMaxLength;
-        this.mockProviderApiKey = mockProviderApiKey;
+        this.aiProviderName = normalize(aiProviderName, "deepseek");
+        this.aiProviderBaseUrl = normalize(aiProviderBaseUrl, "https://api.deepseek.com");
+        this.aiProviderApiKey = aiProviderApiKey == null ? "" : aiProviderApiKey.strip();
         this.chatDefaultModel = chatDefaultModel;
         this.chatDeepThinkingModel = chatDeepThinkingModel;
         this.embeddingDefaultModel = embeddingDefaultModel;
@@ -129,31 +135,34 @@ public class RagSettingsController {
     private Map<String, Object> aiSettings() {
         Map<String, Object> ai = new LinkedHashMap<>();
         Map<String, Object> providers = new LinkedHashMap<>();
-        if (!mockProviderApiKey.isBlank()) {
-            providers.put("mock", Map.of(
-                    "url", "local://deterministic",
-                    "apiKey", maskApiKey(mockProviderApiKey),
-                    "endpoints", Map.of("chat", "/rag/v3/chat")
-            ));
+        if (!aiProviderName.isBlank()) {
+            Map<String, Object> provider = new LinkedHashMap<>();
+            provider.put("url", aiProviderBaseUrl);
+            provider.put("endpoints", Map.of("chat", "/rag/v3/chat"));
+            String maskedApiKey = maskApiKey(aiProviderApiKey);
+            if (maskedApiKey != null) {
+                provider.put("apiKey", maskedApiKey);
+            }
+            providers.put(aiProviderName, provider);
         }
         ai.put("providers", providers);
         ai.put("chat", Map.of(
                 "defaultModel", chatDefaultModel,
                 "deepThinkingModel", chatDeepThinkingModel,
                 "candidates", java.util.List.of(Map.of(
-                        "id", "local-chat",
-                        "provider", "mock",
+                        "id", aiProviderName + "-chat",
+                        "provider", aiProviderName,
                         "model", chatDefaultModel,
                         "priority", 1,
                         "enabled", true,
-                        "supportsThinking", false
+                        "supportsThinking", true
                 ))
         ));
         ai.put("embedding", Map.of(
                 "defaultModel", embeddingDefaultModel,
                 "candidates", java.util.List.of(Map.of(
-                        "id", "local-embedding",
-                        "provider", "mock",
+                        "id", aiProviderName + "-embedding",
+                        "provider", aiProviderName,
                         "model", embeddingDefaultModel,
                         "dimension", dimension,
                         "priority", 1,
@@ -164,8 +173,8 @@ public class RagSettingsController {
         ai.put("rerank", Map.of(
                 "defaultModel", rerankDefaultModel,
                 "candidates", java.util.List.of(Map.of(
-                        "id", "local-rerank",
-                        "provider", "mock",
+                        "id", aiProviderName + "-rerank",
+                        "provider", aiProviderName,
                         "model", rerankDefaultModel,
                         "priority", 1,
                         "enabled", true,
@@ -178,6 +187,11 @@ public class RagSettingsController {
         ));
         ai.put("stream", Map.of("messageChunkSize", streamMessageChunkSize));
         return ai;
+    }
+
+    private String normalize(String value, String defaultValue) {
+        String normalized = value == null ? "" : value.strip();
+        return normalized.isBlank() ? defaultValue : normalized;
     }
 
     private String maskApiKey(String apiKey) {

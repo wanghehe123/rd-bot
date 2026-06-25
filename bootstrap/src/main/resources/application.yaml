@@ -1,3 +1,5 @@
+server:
+  port: ${SERVER_PORT:18080}
 spring:
   application:
     name: rd-bot
@@ -22,7 +24,7 @@ spring:
 rag:
   default:
     collection-name: rd_bot_collection
-    dimension: 768
+    dimension: 1536
     metric-type: COSINE
   query-rewrite:
     enabled: true
@@ -53,18 +55,25 @@ rd:
       enabled: ${RD_RAG_RETRIEVAL_LOG_ENABLED:true}
       path: ${RD_RAG_RETRIEVAL_LOG_PATH:logs/rag-retrieval.jsonl}
   knowledge:
-    store: memory
+    store: ${RD_KNOWLEDGE_STORE:postgres}
   storage:
-    mode: s3
+    mode: ${RD_STORAGE_MODE:s3}
   repair:
     queue:
-      mode: memory
+      mode: ${RD_REPAIR_QUEUE_MODE:rocketmq}
     ticket:
-      provider: ${RD_REPAIR_TICKET_PROVIDER:mock}
+      provider: ${RD_REPAIR_TICKET_PROVIDER:feishu-im}
       auto-execute:
-        enabled: ${RD_REPAIR_TICKET_AUTO_EXECUTE_ENABLED:false}
+        enabled: ${RD_REPAIR_TICKET_AUTO_EXECUTE_ENABLED:true}
       ingestion:
         default-source: ${RD_REPAIR_TICKET_DEFAULT_SOURCE:feishu}
+    acceptance:
+      enabled: ${RD_REPAIR_ACCEPTANCE_ENABLED:true}
+      max-steps: ${RD_REPAIR_ACCEPTANCE_MAX_STEPS:20}
+      write-operations-enabled: ${RD_REPAIR_ACCEPTANCE_WRITE_OPERATIONS_ENABLED:true}
+      environment-allowlist:
+        - local
+        - sit
   rocketmq:
     repair:
       topic: RD_BOT_REPAIR_TICKET
@@ -75,13 +84,13 @@ rd:
       max-retry-attempts: 3
   executor:
     repository:
-      owner: ${RD_EXECUTOR_REPOSITORY_OWNER:local}
-      name: ${RD_EXECUTOR_REPOSITORY_NAME:repository}
-      url: ${RD_EXECUTOR_REPOSITORY_URL:}
+      owner: ${RD_EXECUTOR_REPOSITORY_OWNER:wanghehe123}
+      name: ${RD_EXECUTOR_REPOSITORY_NAME:rd-bot-waimai-acceptance-20260624-141045}
+      url: ${RD_EXECUTOR_REPOSITORY_URL:https://github.com/wanghehe123/rd-bot-waimai-acceptance-20260624-141045.git}
       base-branch: ${RD_EXECUTOR_REPOSITORY_BASE_BRANCH:main}
       work-branch-prefix: ${RD_EXECUTOR_REPOSITORY_WORK_BRANCH_PREFIX:repair/}
     docker:
-      enabled: false
+      enabled: ${RD_EXECUTOR_DOCKER_ENABLED:true}
       image: ${RD_EXECUTOR_DOCKER_IMAGE:rd-bot/claude-code:local}
       workspace-root: ${RD_EXECUTOR_DOCKER_WORKSPACE_ROOT:/tmp/rd-bot/repair-workspaces}
       command: claude
@@ -91,44 +100,54 @@ rd:
       remove-after-exit: true
       timeout-alert-millis: 1800000
       budget-alert-usd: 5.00
+      git:
+        enabled: ${RD_EXECUTOR_DOCKER_GIT_ENABLED:true}
+        user-name: ${RD_EXECUTOR_DOCKER_GIT_USER_NAME:RD-Bot}
+        user-email: ${RD_EXECUTOR_DOCKER_GIT_USER_EMAIL:rd-bot@example.local}
+        timeout-seconds: ${RD_EXECUTOR_DOCKER_GIT_TIMEOUT_SECONDS:120}
       providers:
-        - name: mimo
-          base-url: https://token-plan-cn.xiaomimimo.com/anthropic
-          api-key-env: MIMO_API_KEY
-          model: mimo-v2.5-pro
-          default-opus-model: mimo-v2.5-pro
-          default-sonnet-model: mimo-v2.5-pro
-          default-haiku-model: mimo-v2.5-pro
-          subagent-model: mimo-v2.5-pro
-          effort-level: max
-        - name: anthropic
-          api-key-env: ANTHROPIC_API_KEY
-          model: ${ANTHROPIC_MODEL:}
+        - name: deepseek
+          base-url: ${DEEPSEEK_ANTHROPIC_BASE_URL:https://api.deepseek.com/anthropic}
+          auth-token-env: ${RD_CLAUDE_AUTH_TOKEN_ENV:DEEPSEEK_API_KEY}
+          model: ${DEEPSEEK_CLAUDE_MODEL:deepseek-v4-pro[1m]}
+          default-opus-model: ${DEEPSEEK_CLAUDE_OPUS_MODEL:deepseek-v4-pro[1m]}
+          default-sonnet-model: ${DEEPSEEK_CLAUDE_SONNET_MODEL:deepseek-v4-pro[1m]}
+          default-haiku-model: ${DEEPSEEK_CLAUDE_HAIKU_MODEL:deepseek-v4-flash}
+          subagent-model: ${DEEPSEEK_CLAUDE_SUBAGENT_MODEL:deepseek-v4-flash}
+          effort-level: ${DEEPSEEK_CLAUDE_EFFORT_LEVEL:max}
   github:
     merge-sync:
-      enabled: ${RD_GITHUB_MERGE_SYNC_ENABLED:false}
+      enabled: ${RD_GITHUB_MERGE_SYNC_ENABLED:true}
       poll-interval-millis: ${RD_GITHUB_MERGE_SYNC_POLL_INTERVAL_MILLIS:30000}
     code-platform:
-      mode: mock
+      mode: ${RD_GITHUB_CODE_PLATFORM_MODE:real}
       allowed-repositories: []
-      auth-mode: GITHUB_APP
+      auth-mode: ${RD_GITHUB_CODE_PLATFORM_AUTH_MODE:PAT_LOCAL_SMOKE}
       app-id: ${GITHUB_APP_ID:}
       installation-id: ${GITHUB_INSTALLATION_ID:}
       private-key-ref: ${GITHUB_PRIVATE_KEY_REF:}
-      pat-token: ${GITHUB_PAT:}
+      pat-token: ${GITHUB_PAT:${GH_TOKEN:}}
   ticket:
     write-back:
-      enabled: ${RD_TICKET_WRITE_BACK_ENABLED:false}
-      mode: mock
+      enabled: ${RD_TICKET_WRITE_BACK_ENABLED:true}
+      mode: ${RD_TICKET_WRITE_BACK_MODE:feishu-im}
   feishu:
     im:
-      enabled: ${FEISHU_IM_ENABLED:false}
+      enabled: ${FEISHU_IM_ENABLED:true}
       base-url: ${FEISHU_BASE_URL:https://open.feishu.cn}
-      app-id: ${FEISHU_APP_ID:}
+      app-id: ${FEISHU_APP_ID:cli_aab17cbab0f85cce}
       app-secret: ${FEISHU_APP_SECRET:}
-      require-at-mention: ${FEISHU_IM_REQUIRE_AT_MENTION:true}
+      require-at-mention: ${FEISHU_IM_REQUIRE_AT_MENTION:false}
+      local-listener:
+        enabled: ${FEISHU_IM_LOCAL_LISTENER_ENABLED:true}
+        command: ${FEISHU_IM_LOCAL_LISTENER_COMMAND:lark-cli}
+        profile: ${FEISHU_IM_LOCAL_LISTENER_PROFILE:cli_aab17cbab0f85cce}
+        event-key: ${FEISHU_IM_LOCAL_LISTENER_EVENT_KEY:im.message.receive_v1}
+        identity: ${FEISHU_IM_LOCAL_LISTENER_IDENTITY:bot}
+        restart-delay-millis: ${FEISHU_IM_LOCAL_LISTENER_RESTART_DELAY_MILLIS:5000}
+        write-back-via-cli: ${FEISHU_IM_LOCAL_LISTENER_WRITE_BACK_VIA_CLI:true}
       write-back:
-        enabled: ${FEISHU_IM_WRITE_BACK_ENABLED:false}
+        enabled: ${FEISHU_IM_WRITE_BACK_ENABLED:true}
       http:
         connect-timeout-millis: 3000
         request-timeout-millis: 10000
@@ -153,15 +172,16 @@ rd:
         expectedResult: expectedResult
         actualResult: actualResult
   ai:
-    providers:
-      mock:
-        api-key: ""
+    provider:
+      name: ${RD_AI_PROVIDER_NAME:deepseek}
+      base-url: ${RD_AI_PROVIDER_BASE_URL:https://api.deepseek.com}
+      api-key: ${DEEPSEEK_API_KEY:}
     chat:
-      default-model: deterministic-repair-model
-      deep-thinking-model: deterministic-repair-model
+      default-model: ${RD_AI_CHAT_DEFAULT_MODEL:deepseek-chat}
+      deep-thinking-model: ${RD_AI_CHAT_DEEP_THINKING_MODEL:deepseek-reasoner}
     embedding:
-      default-model: deterministic-text-score
+      default-model: ${RD_AI_EMBEDDING_DEFAULT_MODEL:bge-m3}
     rerank:
-      default-model: deterministic-score-sort
+      default-model: ${RD_AI_RERANK_DEFAULT_MODEL:bge-reranker-v2-m3}
     stream:
       message-chunk-size: 256

@@ -20,7 +20,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "rag.rate-limit.global.enabled=true",
         "rag.rate-limit.global.max-concurrent=8",
         "rag.memory.history-keep-turns=6",
-        "rd.ai.providers.mock.api-key=abcdef1234567890"
+        "rd.ai.provider.name=deepseek",
+        "rd.ai.provider.base-url=https://api.deepseek.com",
+        "rd.ai.provider.api-key=abcdef1234567890"
 })
 @AutoConfigureMockMvc
 class RagSettingsControllerTest {
@@ -42,6 +44,7 @@ class RagSettingsControllerTest {
                 .andExpect(jsonPath("$.rag.rateLimit.global.maxConcurrent").value(8))
                 .andExpect(jsonPath("$.rag.memory.historyKeepTurns").value(6))
                 .andExpect(jsonPath("$.ai.chat.defaultModel", not(blankOrNullString())))
-                .andExpect(jsonPath("$.ai.providers.mock.apiKey").value("abcdef***7890"));
+                .andExpect(jsonPath("$.ai.providers.deepseek.apiKey").value("abcdef***7890"))
+                .andExpect(jsonPath("$.ai.chat.candidates[0].provider").value("deepseek"));
     }
 }
