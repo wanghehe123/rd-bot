@@ -2,8 +2,11 @@ package com.wish.rd.bootstrap;
 
 import com.wish.rd.bootstrap.user.controller.vo.UserVO;
 import com.wish.rd.bootstrap.user.service.UserAdminService;
+import com.wish.rd.exec.repair.CreateRepairAssetCommand;
 import com.wish.rd.exec.repair.CreateRepairRecordArtifactCommand;
 import com.wish.rd.exec.repair.CreateRepairRecordCommand;
+import com.wish.rd.exec.repair.RepairAsset;
+import com.wish.rd.exec.repair.RepairAssetType;
 import com.wish.rd.exec.repair.RepairRecord;
 import com.wish.rd.exec.repair.RepairRecordArtifact;
 import com.wish.rd.exec.repair.RepairRecordRepository;
@@ -45,6 +48,7 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
@@ -402,6 +406,24 @@ class PostgresPersistenceCrudIntegrationTest {
         RepairRecordArtifact ragArtifact = repairRecordRepository.addArtifact(new CreateRepairRecordArtifactCommand(
                 created.id(), "RAG_CONTEXT", "", "rag-" + marker
         ));
+        RepairAsset rootCauseAsset = repairRecordRepository.addAsset(new CreateRepairAssetCommand(
+                created.id(),
+                RepairAssetType.BUG_CAUSE,
+                "root-cause-" + marker,
+                "client/server field mismatch",
+                "{\"field\":\"address\",\"marker\":\"" + marker + "\"}",
+                ragArtifact.id(),
+                true
+        ));
+        RepairAsset planAsset = repairRecordRepository.addAsset(new CreateRepairAssetCommand(
+                created.id(),
+                RepairAssetType.ACCEPTANCE_PLAN,
+                "acceptance-plan-" + marker,
+                "planner output",
+                "{\"status\":\"READY\",\"marker\":\"" + marker + "\"}",
+                "",
+                false
+        ));
         repairRecordRepository.updateExecutorJson(created.id(), "{\"status\":\"SUCCESS\"}");
         repairRecordRepository.updateDockerJson(created.id(), "{\"image\":\"rd-bot/claude-code:local\"}");
         repairRecordRepository.updateGithubJson(created.id(),
@@ -411,11 +433,26 @@ class PostgresPersistenceCrudIntegrationTest {
         repairRecordRepository.updateErrorMessage(created.id(), "manual review note " + marker);
         RepairRecord metadata = repairRecordRepository.findById(created.id()).orElseThrow();
 
-        // 第二条记录用于验证分页查询
-        repairRecordRepository.create(new CreateRepairRecordCommand(
+        // 第二条记录用于验证分页查询和跨记录 source artifact 拒绝
+        RepairRecord otherRecord = repairRecordRepository.create(new CreateRepairRecordCommand(
                 marker + "-ticket-2", "", marker + "-repair-2",
                 Map.of("priority", "P0")
         ));
+        RepairRecordArtifact foreignArtifact = repairRecordRepository.addArtifact(new CreateRepairRecordArtifactCommand(
+                otherRecord.id(), "RAG_CONTEXT", "", "foreign-rag-" + marker
+        ));
+        IllegalArgumentException foreignArtifactException = assertThrows(
+                IllegalArgumentException.class,
+                () -> repairRecordRepository.addAsset(new CreateRepairAssetCommand(
+                        created.id(),
+                        RepairAssetType.ACCEPTANCE_PLAN,
+                        "foreign-asset-" + marker,
+                        "should fail",
+                        "{}",
+                        foreignArtifact.id(),
+                        false
+                ))
+        );
 
         assertAll(
                 () -> assertEquals(RepairRecordStatus.QUEUED, queued.status()),
@@ -425,6 +462,12 @@ class PostgresPersistenceCrudIntegrationTest {
                 () -> assertEquals(ready.id(), repairRecordRepository.findById(created.id()).orElseThrow().id()),
                 () -> assertEquals(ready.id(), repairRecordRepository.findByTicketId(marker + "-ticket").orElseThrow().id()),
                 () -> assertEquals(4, repairRecordRepository.listArtifacts(created.id()).size()),
+                () -> assertEquals(2, repairRecordRepository.listAssets(created.id()).size()),
+                () -> assertEquals(rootCauseAsset.id(), repairRecordRepository.listAssets(created.id()).getFirst().id()),
+                () -> assertEquals(planAsset.id(), repairRecordRepository.listAssets(created.id()).get(1).id()),
+                () -> assertEquals(RepairAssetType.BUG_CAUSE,
+                        repairRecordRepository.listAssets(created.id()).getFirst().assetType()),
+                () -> assertTrue(foreignArtifactException.getMessage().contains("source artifact must belong")),
                 () -> assertTrue(metadata.executorJson().contains("\"status\"")),
                 () -> assertTrue(metadata.executorJson().contains("SUCCESS")),
                 () -> assertTrue(metadata.dockerJson().contains("rd-bot/claude-code:local")),
@@ -459,6 +502,7 @@ class PostgresPersistenceCrudIntegrationTest {
         try (Connection connection = dataSource.getConnection();
              Statement statement = connection.createStatement()) {
             statement.executeUpdate("DELETE FROM repair_record_artifacts WHERE summary LIKE '%" + marker + "%'");
+            statement.executeUpdate("DELETE FROM repair_assets WHERE summary LIKE '%" + marker + "%'");
             statement.executeUpdate("DELETE FROM repair_records WHERE ticket_id LIKE '" + marker + "%'");
             statement.executeUpdate("DELETE FROM rd_tasks WHERE ticket_id LIKE '" + marker + "%'");
             statement.executeUpdate("DELETE FROM ingestion_task_nodes WHERE pipeline_id = 'pipeline-" + marker + "'");

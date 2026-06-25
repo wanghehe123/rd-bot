@@ -180,3 +180,19 @@ CREATE TABLE IF NOT EXISTS repair_record_artifacts (
 );
 
 CREATE INDEX IF NOT EXISTS idx_repair_record_artifacts_record ON repair_record_artifacts (repair_record_id);
+
+CREATE TABLE IF NOT EXISTS repair_assets (
+    id                 BIGINT PRIMARY KEY,
+    repair_record_id   BIGINT NOT NULL REFERENCES repair_records(id) ON DELETE CASCADE,
+    asset_type         VARCHAR(64) NOT NULL,
+    title              TEXT NOT NULL DEFAULT '',
+    summary            TEXT NOT NULL DEFAULT '',
+    content_json       JSONB NOT NULL DEFAULT '{}'::jsonb,
+    source_artifact_id BIGINT NULL REFERENCES repair_record_artifacts(id) ON DELETE SET NULL,
+    reusable           BOOLEAN NOT NULL DEFAULT false,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_repair_assets_record ON repair_assets (repair_record_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_repair_assets_type ON repair_assets (asset_type, created_at);
+CREATE INDEX IF NOT EXISTS idx_repair_assets_reusable ON repair_assets (reusable, asset_type);

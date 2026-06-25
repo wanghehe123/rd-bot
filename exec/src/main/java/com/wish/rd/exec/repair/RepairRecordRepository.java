@@ -39,4 +39,8 @@ public interface RepairRecordRepository {
     RepairRecordArtifact addArtifact(CreateRepairRecordArtifactCommand command);
 
     List<RepairRecordArtifact> listArtifacts(String repairRecordId);
+
+    RepairAsset addAsset(CreateRepairAssetCommand command);
+
+    List<RepairAsset> listAssets(String repairRecordId);
 }

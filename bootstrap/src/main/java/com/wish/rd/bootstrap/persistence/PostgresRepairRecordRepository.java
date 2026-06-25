@@ -3,12 +3,17 @@ package com.wish.rd.bootstrap.persistence;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.wish.rd.bootstrap.persistence.entity.RepairAssetRow;
 import com.wish.rd.bootstrap.persistence.entity.RepairRecordArtifactRow;
 import com.wish.rd.bootstrap.persistence.entity.RepairRecordRow;
+import com.wish.rd.bootstrap.persistence.mapper.RepairAssetMapper;
 import com.wish.rd.bootstrap.persistence.mapper.RepairRecordArtifactMapper;
 import com.wish.rd.bootstrap.persistence.mapper.RepairRecordMapper;
+import com.wish.rd.exec.repair.CreateRepairAssetCommand;
 import com.wish.rd.exec.repair.CreateRepairRecordArtifactCommand;
 import com.wish.rd.exec.repair.CreateRepairRecordCommand;
+import com.wish.rd.exec.repair.RepairAsset;
+import com.wish.rd.exec.repair.RepairAssetType;
 import com.wish.rd.exec.repair.RepairRecord;
 import com.wish.rd.exec.repair.RepairRecordArtifact;
 import com.wish.rd.exec.repair.RepairRecordJson;
@@ -38,17 +43,20 @@ public final class PostgresRepairRecordRepository implements RepairRecordReposit
 
     private final RepairRecordMapper recordMapper;
     private final RepairRecordArtifactMapper artifactMapper;
+    private final RepairAssetMapper assetMapper;
     private final ObjectMapper objectMapper;
     private final SnowflakeIdGenerator idGenerator;
 
     public PostgresRepairRecordRepository(
             RepairRecordMapper recordMapper,
             RepairRecordArtifactMapper artifactMapper,
+            RepairAssetMapper assetMapper,
             ObjectMapper objectMapper,
             SnowflakeIdGenerator idGenerator
     ) {
         this.recordMapper = recordMapper;
         this.artifactMapper = artifactMapper;
+        this.assetMapper = assetMapper;
         this.objectMapper = objectMapper;
         this.idGenerator = idGenerator;
     }
@@ -210,6 +218,51 @@ public final class PostgresRepairRecordRepository implements RepairRecordReposit
                 .toList();
     }
 
+    @Override
+    public RepairAsset addAsset(CreateRepairAssetCommand command) {
+        findById(command.repairRecordId())
+                .orElseThrow(() -> new IllegalArgumentException("repair record not found: " + command.repairRecordId()));
+        requireSourceArtifactBelongsToRecord(command.repairRecordId(), command.sourceArtifactId());
+        RepairAsset asset = new RepairAsset(
+                idGenerator.nextIdString(),
+                command.repairRecordId(),
+                command.assetType(),
+                command.title(),
+                command.summary(),
+                command.contentJson(),
+                command.sourceArtifactId(),
+                command.reusable(),
+                System.currentTimeMillis()
+        );
+        assetMapper.insertAsset(toRow(asset));
+        return asset;
+    }
+
+    private void requireSourceArtifactBelongsToRecord(String repairRecordId, String sourceArtifactId) {
+        if (sourceArtifactId == null || sourceArtifactId.isBlank()) {
+            return;
+        }
+        RepairRecordArtifactRow artifact = artifactMapper.selectById(
+                PostgresPersistenceSupport.parseId(sourceArtifactId)
+        );
+        long expectedRecordId = PostgresPersistenceSupport.parseId(repairRecordId);
+        if (artifact == null || artifact.repairRecordId == null || artifact.repairRecordId != expectedRecordId) {
+            throw new IllegalArgumentException("source artifact must belong to repair record: " + sourceArtifactId);
+        }
+    }
+
+    @Override
+    public List<RepairAsset> listAssets(String repairRecordId) {
+        return assetMapper.selectList(new QueryWrapper<RepairAssetRow>()
+                        .eq("repair_record_id", PostgresPersistenceSupport.parseId(repairRecordId)))
+                .stream()
+                .sorted(Comparator
+                        .comparing((RepairAssetRow row) -> row.createdAt)
+                        .thenComparing(row -> row.id))
+                .map(this::toAsset)
+                .toList();
+    }
+
     private RepairRecordRow toRow(RepairRecord record) {
         RepairRecordRow row = new RepairRecordRow();
         row.id = PostgresPersistenceSupport.parseId(record.id());
@@ -243,6 +296,22 @@ public final class PostgresRepairRecordRepository implements RepairRecordReposit
         return row;
     }
 
+    private RepairAssetRow toRow(RepairAsset asset) {
+        RepairAssetRow row = new RepairAssetRow();
+        row.id = PostgresPersistenceSupport.parseId(asset.id());
+        row.repairRecordId = PostgresPersistenceSupport.parseId(asset.repairRecordId());
+        row.assetType = asset.assetType().name();
+        row.title = asset.title();
+        row.summary = asset.summary();
+        row.contentJson = asset.contentJson();
+        row.sourceArtifactId = asset.sourceArtifactId().isBlank()
+                ? null
+                : PostgresPersistenceSupport.parseId(asset.sourceArtifactId());
+        row.reusable = asset.reusable();
+        row.createdAt = PostgresPersistenceSupport.toDateTime(asset.createdAtEpochMillis());
+        return row;
+    }
+
     private RepairRecord toRecord(RepairRecordRow row) {
         return new RepairRecord(
                 PostgresPersistenceSupport.idString(row.id),
@@ -270,6 +339,20 @@ public final class PostgresRepairRecordRepository implements RepairRecordReposit
                 row.artifactType,
                 row.artifactUri,
                 row.summary,
+                PostgresPersistenceSupport.toEpochMillis(row.createdAt)
+        );
+    }
+
+    private RepairAsset toAsset(RepairAssetRow row) {
+        return new RepairAsset(
+                PostgresPersistenceSupport.idString(row.id),
+                PostgresPersistenceSupport.idString(row.repairRecordId),
+                RepairAssetType.valueOf(row.assetType),
+                row.title,
+                row.summary,
+                row.contentJson,
+                PostgresPersistenceSupport.idString(row.sourceArtifactId),
+                Boolean.TRUE.equals(row.reusable),
                 PostgresPersistenceSupport.toEpochMillis(row.createdAt)
         );
     }

@@ -8,6 +8,10 @@ import com.wish.rd.framework.convention.RetrievedChunk;
 import com.wish.rd.rag.vector.VectorStore;
 
 import java.time.OffsetDateTime;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -66,7 +70,7 @@ public final class PostgresVectorStore implements VectorStore {
         if (chunkIds == null || chunkIds.isEmpty()) {
             return;
         }
-        mapper.deleteBatchIds(chunkIds.stream().map(Long::parseLong).toList());
+        mapper.deleteBatchIds(chunkIds.stream().map(this::storageId).toList());
     }
 
     @Override
@@ -98,7 +102,7 @@ public final class PostgresVectorStore implements VectorStore {
     private void upsert(RetrievedChunk chunk) {
         OffsetDateTime now = OffsetDateTime.now();
         KnowledgeVectorRow row = new KnowledgeVectorRow();
-        row.id = Long.parseLong(chunk.chunkId());
+        row.id = storageId(chunk.chunkId());
         row.content = chunk.content();
         row.metadataJson = toJson(metadata(chunk));
         row.embedding = toVectorLiteral(embed(searchableText(chunk)));
@@ -110,7 +114,7 @@ public final class PostgresVectorStore implements VectorStore {
     private RetrievedChunk toChunk(KnowledgeVectorRow row) {
         Map<String, String> metadata = fromJson(row.metadataJson);
         return new RetrievedChunk(
-                PostgresPersistenceSupport.idString(row.id),
+                metadata.getOrDefault("chunkId", PostgresPersistenceSupport.idString(row.id)),
                 row.content,
                 metadata.getOrDefault("knowledgeBaseId", ""),
                 metadata.getOrDefault("knowledgeType", "document"),
@@ -131,10 +135,29 @@ public final class PostgresVectorStore implements VectorStore {
 
     private Map<String, String> metadata(RetrievedChunk chunk) {
         LinkedHashMap<String, String> metadata = new LinkedHashMap<>(chunk.metadata());
+        metadata.put("chunkId", chunk.chunkId());
         metadata.put("knowledgeBaseId", chunk.knowledgeBaseId());
         metadata.put("knowledgeType", chunk.knowledgeType());
         metadata.put("sourceName", chunk.sourceName());
         return metadata;
+    }
+
+    private long storageId(String chunkId) {
+        try {
+            return Long.parseLong(chunkId);
+        } catch (NumberFormatException ignored) {
+            return stablePositiveLong(chunkId);
+        }
+    }
+
+    private long stablePositiveLong(String value) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(safe(value).getBytes(StandardCharsets.UTF_8));
+            return ByteBuffer.wrap(digest).getLong() & Long.MAX_VALUE;
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 algorithm unavailable", exception);
+        }
     }
 
     private float[] embed(String text) {

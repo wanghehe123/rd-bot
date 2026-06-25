@@ -129,6 +129,67 @@ class InMemoryRepairRecordRepositoryTest {
     }
 
     @Test
+    void shouldPersistRepairAssetsFocusedOnBugCauseAndProcess() {
+        InMemoryRepairRecordRepository repository = new InMemoryRepairRecordRepository(generatorWithMovingClock());
+        RepairRecord record = repository.create(new CreateRepairRecordCommand(
+                "FS-ASSET-1",
+                "",
+                "create order fails",
+                Map.of("priority", "P1")
+        ));
+
+        RepairAsset rootCause = repository.addAsset(new CreateRepairAssetCommand(
+                record.id(),
+                RepairAssetType.BUG_CAUSE,
+                "字段映射不一致",
+                "client sends delivery_address while server requires address",
+                "{\"field\":\"address\",\"source\":\"RAG_CONTEXT\"}",
+                "",
+                true
+        ));
+        RepairAsset script = repository.addAsset(new CreateRepairAssetCommand(
+                record.id(),
+                RepairAssetType.ACCEPTANCE_SCRIPT,
+                "外卖下单验收脚本",
+                "successful reusable local-http script",
+                "{\"scriptId\":\"waimai-create-order-basic\"}",
+                "",
+                true
+        ));
+
+        List<RepairAsset> assets = repository.listAssets(record.id());
+
+        assertEquals(2, assets.size());
+        assertEquals(rootCause.id(), assets.get(0).id());
+        assertEquals(script.id(), assets.get(1).id());
+        assertEquals(RepairAssetType.BUG_CAUSE, assets.get(0).assetType());
+        assertTrue(assets.get(0).reusable());
+    }
+
+    @Test
+    void shouldRejectAssetSourceArtifactFromAnotherRepairRecord() {
+        InMemoryRepairRecordRepository repository = new InMemoryRepairRecordRepository(generatorWithMovingClock());
+        RepairRecord first = repository.create(new CreateRepairRecordCommand("FS-A", "", "a", Map.of()));
+        RepairRecord second = repository.create(new CreateRepairRecordCommand("FS-B", "", "b", Map.of()));
+        RepairRecordArtifact otherArtifact = repository.addArtifact(new CreateRepairRecordArtifactCommand(
+                second.id(),
+                "RAG_CONTEXT",
+                "",
+                "ctx"
+        ));
+
+        assertThrows(IllegalArgumentException.class, () -> repository.addAsset(new CreateRepairAssetCommand(
+                first.id(),
+                RepairAssetType.BUG_CAUSE,
+                "wrong source",
+                "wrong source",
+                "{}",
+                otherArtifact.id(),
+                true
+        )));
+    }
+
+    @Test
     void shouldRejectInvalidJsonMetadataWithoutMutatingStoredRecord() {
         InMemoryRepairRecordRepository repository = new InMemoryRepairRecordRepository(generatorWithMovingClock());
         RepairRecord record = repository.create(new CreateRepairRecordCommand("FS-2002", "", "invalid json", Map.of()));

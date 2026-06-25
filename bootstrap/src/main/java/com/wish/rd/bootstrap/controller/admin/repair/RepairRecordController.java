@@ -1,5 +1,6 @@
 package com.wish.rd.bootstrap.controller.admin.repair;
 
+import com.wish.rd.exec.repair.RepairAsset;
 import com.wish.rd.exec.repair.RepairRecord;
 import com.wish.rd.exec.repair.RepairRecordArtifact;
 import com.wish.rd.exec.repair.RepairRecordPage;
@@ -102,6 +103,19 @@ public class RepairRecordController {
                 .toList();
     }
 
+    /**
+     * 查询修复记录沉淀出的可复用资产列表。
+     *
+     * @param id 修复记录 ID
+     * @return 资产视图列表
+     */
+    @GetMapping("/repair-records/{id}/assets")
+    public List<RepairAssetView> assets(@PathVariable("id") String id) {
+        return repository.listAssets(id).stream()
+                .map(RepairRecordController::toAssetView)
+                .toList();
+    }
+
     @ExceptionHandler(NoSuchElementException.class)
     public ResponseEntity<Map<String, String>> notFound(NoSuchElementException exception) {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("message", exception.getMessage()));
@@ -134,6 +148,20 @@ public class RepairRecordController {
                 artifact.artifactUri(),
                 artifact.summary(),
                 artifact.createdAtEpochMillis()
+        );
+    }
+
+    private static RepairAssetView toAssetView(RepairAsset asset) {
+        return new RepairAssetView(
+                asset.id(),
+                asset.repairRecordId(),
+                asset.assetType().name(),
+                asset.title(),
+                asset.summary(),
+                asset.contentJson(),
+                asset.sourceArtifactId(),
+                asset.reusable(),
+                asset.createdAtEpochMillis()
         );
     }
 
@@ -174,6 +202,20 @@ public class RepairRecordController {
             String artifactType,
             String artifactUri,
             String summary,
+            long createdAtEpochMillis
+    ) {
+    }
+
+    /** 修复资产视图。 */
+    public record RepairAssetView(
+            String id,
+            String repairRecordId,
+            String assetType,
+            String title,
+            String summary,
+            String contentJson,
+            String sourceArtifactId,
+            boolean reusable,
             long createdAtEpochMillis
     ) {
     }

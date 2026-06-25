@@ -19,6 +19,7 @@ public final class InMemoryRepairRecordRepository implements RepairRecordReposit
     private final SnowflakeIdGenerator idGenerator;
     private final LinkedHashMap<String, RepairRecord> records = new LinkedHashMap<>();
     private final LinkedHashMap<String, List<RepairRecordArtifact>> artifacts = new LinkedHashMap<>();
+    private final LinkedHashMap<String, List<RepairAsset>> assets = new LinkedHashMap<>();
 
     public InMemoryRepairRecordRepository(SnowflakeIdGenerator idGenerator) {
         this.idGenerator = idGenerator;
@@ -160,6 +161,42 @@ public final class InMemoryRepairRecordRepository implements RepairRecordReposit
     @Override
     public synchronized List<RepairRecordArtifact> listArtifacts(String repairRecordId) {
         return List.copyOf(artifacts.getOrDefault(repairRecordId, List.of()));
+    }
+
+    @Override
+    public synchronized RepairAsset addAsset(CreateRepairAssetCommand command) {
+        findById(command.repairRecordId())
+                .orElseThrow(() -> new IllegalArgumentException("repair record not found: " + command.repairRecordId()));
+        requireSourceArtifactBelongsToRecord(command.repairRecordId(), command.sourceArtifactId());
+        RepairAsset asset = new RepairAsset(
+                idGenerator.nextIdString(),
+                command.repairRecordId(),
+                command.assetType(),
+                command.title(),
+                command.summary(),
+                command.contentJson(),
+                command.sourceArtifactId(),
+                command.reusable(),
+                System.currentTimeMillis()
+        );
+        assets.computeIfAbsent(command.repairRecordId(), ignored -> new ArrayList<>()).add(asset);
+        return asset;
+    }
+
+    private void requireSourceArtifactBelongsToRecord(String repairRecordId, String sourceArtifactId) {
+        if (sourceArtifactId == null || sourceArtifactId.isBlank()) {
+            return;
+        }
+        boolean found = artifacts.getOrDefault(repairRecordId, List.of()).stream()
+                .anyMatch(artifact -> artifact.id().equals(sourceArtifactId));
+        if (!found) {
+            throw new IllegalArgumentException("source artifact must belong to repair record: " + sourceArtifactId);
+        }
+    }
+
+    @Override
+    public synchronized List<RepairAsset> listAssets(String repairRecordId) {
+        return List.copyOf(assets.getOrDefault(repairRecordId, List.of()));
     }
 
     private RepairRecord existingRecord(String repairRecordId) {

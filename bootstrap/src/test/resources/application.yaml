@@ -1,0 +1,30 @@
+rd:
+  knowledge:
+    store: memory
+  storage:
+    mode: memory
+  repair:
+    queue:
+      mode: memory
+    ticket:
+      auto-execute:
+        enabled: false
+    acceptance:
+      enabled: false
+  executor:
+    docker:
+      enabled: false
+      git:
+        enabled: false
+  github:
+    merge-sync:
+      enabled: false
+    code-platform:
+      mode: mock
+  ticket:
+    write-back:
+      mode: mock
+  feishu:
+    im:
+      local-listener:
+        enabled: false
