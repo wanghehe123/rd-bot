@@ -13,7 +13,14 @@ import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.stereotype.Component;
 
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 飞书 IM 工单适配器。
@@ -60,6 +67,9 @@ public class FeishuImTicketAdapter implements TicketProviderPort, TicketUpdatePo
         if (snapshot.isEmpty()) {
             return TicketUpdateResult.failure("TICKET_NOT_FOUND", "ticket not found: " + command.ticketId());
         }
+        if (properties.getLocalListener().isWriteBackViaCli()) {
+            return sendMessageViaCli(snapshot.get().chatId(), command);
+        }
         try {
             FeishuImClient.FeishuImSendResult result = client.sendTextMessage(snapshot.get().chatId(), command.content());
             if (result.success()) {
@@ -75,5 +85,82 @@ public class FeishuImTicketAdapter implements TicketProviderPort, TicketUpdatePo
     @Override
     public TicketUpdateResult updateTicket(TicketUpdateCommand command) {
         return TicketUpdateResult.failure("UNSUPPORTED", "feishu im local ticket update is not supported");
+    }
+
+    private TicketUpdateResult sendMessageViaCli(String chatId, TicketReplyCommand command) {
+        if (chatId == null || chatId.isBlank()) {
+            return TicketUpdateResult.failure("INVALID_CHAT_ID", "chatId must not be blank");
+        }
+        java.util.List<String> argv = buildSendMessageViaCliCommand(chatId, command);
+        try {
+            Process process = new ProcessBuilder(argv).start();
+            boolean finished = process.waitFor(Duration.ofSeconds(30).toMillis(), TimeUnit.MILLISECONDS);
+            if (!finished) {
+                process.destroy();
+                return TicketUpdateResult.failure("LARK_CLI_TIMEOUT", "lark-cli im message send timed out");
+            }
+            String stdout = readAll(process.getInputStream());
+            String stderr = readAll(process.getErrorStream());
+            if (process.exitValue() != 0) {
+                log.warn("feishu im cli write-back failed, ticketId={}, exitCode={}, stderr={}",
+                        command.ticketId(), process.exitValue(), stderr);
+                return TicketUpdateResult.failure("LARK_CLI_ERROR", stderr.isBlank() ? stdout : stderr);
+            }
+            return TicketUpdateResult.success(extractMessageId(stdout), "ok");
+        } catch (Exception exception) {
+            log.warn("feishu im cli write-back failed, ticketId={}, reason={}",
+                    command.ticketId(), exception.getMessage());
+            return TicketUpdateResult.failure("LARK_CLI_ERROR", exception.getMessage());
+        }
+    }
+
+    java.util.List<String> buildSendMessageViaCliCommand(String chatId, TicketReplyCommand command) {
+        java.util.List<String> argv = new ArrayList<>();
+        FeishuImProperties.LocalListener local = properties.getLocalListener();
+        argv.add(local.getCommand());
+        if (!local.getProfile().isBlank()) {
+            argv.add("--profile");
+            argv.add(local.getProfile());
+        }
+        argv.add("im");
+        argv.add("+messages-send");
+        argv.add("--as");
+        argv.add(local.getIdentity());
+        argv.add("--chat-id");
+        argv.add(chatId);
+        argv.add("--text");
+        argv.add(command.content() == null ? "" : command.content());
+        argv.add("--idempotency-key");
+        argv.add(idempotencyKey(command));
+        argv.add("--json");
+        return List.copyOf(argv);
+    }
+
+    private static String readAll(java.io.InputStream stream) throws java.io.IOException {
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(stream, StandardCharsets.UTF_8))) {
+            return reader.lines().reduce((left, right) -> left + "\n" + right).orElse("");
+        }
+    }
+
+    private static String idempotencyKey(TicketReplyCommand command) {
+        String seed = command.ticketId() + "|" + command.traceId() + "|" + command.repairRecordId() + "|"
+                + (command.content() == null ? "" : command.content());
+        return "rd-bot-" + Integer.toUnsignedString(seed.hashCode());
+    }
+
+    private String extractMessageId(String stdout) {
+        if (stdout == null || stdout.isBlank()) {
+            return "";
+        }
+        try {
+            com.fasterxml.jackson.databind.JsonNode node = new com.fasterxml.jackson.databind.ObjectMapper().readTree(stdout);
+            String value = node.path("data").path("message_id").asText("");
+            if (!value.isBlank()) {
+                return value;
+            }
+            return node.path("message_id").asText("");
+        } catch (Exception ignored) {
+            return "";
+        }
     }
 }

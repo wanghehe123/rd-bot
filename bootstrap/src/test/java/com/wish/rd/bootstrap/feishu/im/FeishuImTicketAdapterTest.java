@@ -71,6 +71,33 @@ class FeishuImTicketAdapterTest {
         assertFalse(body.contains("app-secret"));
     }
 
+    @Test
+    void shouldUseConfiguredLarkCliProfileWhenWritingBackViaCli() {
+        FeishuImTicketStore store = seedStore();
+        FeishuImProperties properties = properties(true);
+        properties.getLocalListener().setWriteBackViaCli(true);
+        properties.getLocalListener().setProfile("cli_aab17cbab0f85cce");
+        FeishuImTicketAdapter adapter = new FeishuImTicketAdapter(
+                store,
+                new FeishuImClient(properties, new ObjectMapper(), new StubTransport()),
+                properties
+        );
+
+        List<String> argv = adapter.buildSendMessageViaCliCommand(
+                "oc-chat",
+                new TicketReplyCommand("FI-om-1", "text", "RAG ready", List.of(), Map.of(), "trace-1", "rr-1")
+        );
+
+        assertEquals("lark-cli", argv.get(0));
+        assertEquals("--profile", argv.get(1));
+        assertEquals("cli_aab17cbab0f85cce", argv.get(2));
+        assertEquals("im", argv.get(3));
+        assertTrue(argv.contains("+messages-send"));
+        assertTrue(argv.contains("--chat-id"));
+        assertTrue(argv.contains("oc-chat"));
+        assertFalse(argv.contains("app-secret"));
+    }
+
     private static FeishuImTicketStore seedStore() {
         FeishuImTicketStore store = new FeishuImTicketStore();
         FeishuImTicketDraft draft = new FeishuImTicketParser().parse("""
@@ -92,6 +119,7 @@ class FeishuImTicketAdapterTest {
         properties.setAppId("cli-test");
         properties.setAppSecret("app-secret");
         properties.getWriteBack().setEnabled(writeBackEnabled);
+        properties.getLocalListener().setWriteBackViaCli(false);
         return properties;
     }
 

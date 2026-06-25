@@ -54,6 +54,28 @@ class FeishuImTicketParserTest {
     }
 
     @Test
+    void shouldParseWaimaiPaymentCallbackBugExample() {
+        FeishuImTicketDraft draft = parser.parse("""
+                问题: 外卖订单支付成功后状态仍为待支付
+                系统: waimai
+                优先级: P1
+                日志: java.lang.IllegalStateException: Payment callback handled but order status remains PENDING_PAYMENT at com.waimai.payment.PaymentCallbackService.handleSuccess(PaymentCallbackService.java:67)
+                实际: 用户支付成功后，订单详情仍显示待支付，商家无法接单
+                期望: 支付成功后订单状态更新为 PAID，并通知商家接单
+                """);
+
+        assertEquals("P1", draft.priority());
+        assertEquals("外卖订单支付成功后状态仍为待支付", draft.title());
+        assertEquals("waimai", draft.customFields().get("problemSystem"));
+        assertEquals(
+                "java.lang.IllegalStateException: Payment callback handled but order status remains PENDING_PAYMENT at com.waimai.payment.PaymentCallbackService.handleSuccess(PaymentCallbackService.java:67)",
+                draft.customFields().get("logs")
+        );
+        assertEquals("用户支付成功后，订单详情仍显示待支付，商家无法接单", draft.customFields().get("actualResult"));
+        assertEquals("支付成功后订单状态更新为 PAID，并通知商家接单", draft.customFields().get("expectedResult"));
+    }
+
+    @Test
     void shouldFallbackToRawTextWhenNoStructuredKeysExist() {
         FeishuImTicketDraft draft = parser.parse("waimai 下单接口 500，日志 NPE");
 

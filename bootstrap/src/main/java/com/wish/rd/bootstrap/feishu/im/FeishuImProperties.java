@@ -20,6 +20,7 @@ public class FeishuImProperties {
     private boolean requireAtMention = true;
     private Http http = new Http();
     private WriteBack writeBack = new WriteBack();
+    private LocalListener localListener = new LocalListener();
 
     public boolean isEnabled() {
         return enabled;
@@ -77,6 +78,14 @@ public class FeishuImProperties {
         this.writeBack = writeBack == null ? new WriteBack() : writeBack;
     }
 
+    public LocalListener getLocalListener() {
+        return localListener;
+    }
+
+    public void setLocalListener(LocalListener localListener) {
+        this.localListener = localListener == null ? new LocalListener() : localListener;
+    }
+
     private static String safe(String value, String defaultValue) {
         if (value == null || value.isBlank()) {
             return defaultValue;
@@ -120,6 +129,76 @@ public class FeishuImProperties {
 
         public void setEnabled(boolean enabled) {
             this.enabled = enabled;
+        }
+    }
+
+    /**
+     * 本地事件监听配置。通过 lark-cli event consume 主动订阅飞书事件，
+     * 适合本地开发环境，避免公网回调和内网穿透依赖。
+     */
+    public static class LocalListener {
+        private boolean enabled = false;
+        private String command = "lark-cli";
+        private String profile = "";
+        private String eventKey = "im.message.receive_v1";
+        private String identity = "bot";
+        private long restartDelayMillis = 5000;
+        private boolean writeBackViaCli = true;
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public String getCommand() {
+            return command;
+        }
+
+        public void setCommand(String command) {
+            this.command = safe(command, "lark-cli");
+        }
+
+        public String getProfile() {
+            return profile;
+        }
+
+        public void setProfile(String profile) {
+            this.profile = safe(profile, "");
+        }
+
+        public String getEventKey() {
+            return eventKey;
+        }
+
+        public void setEventKey(String eventKey) {
+            this.eventKey = safe(eventKey, "im.message.receive_v1");
+        }
+
+        public String getIdentity() {
+            return identity;
+        }
+
+        public void setIdentity(String identity) {
+            this.identity = safe(identity, "bot");
+        }
+
+        public long getRestartDelayMillis() {
+            return restartDelayMillis;
+        }
+
+        public void setRestartDelayMillis(long restartDelayMillis) {
+            this.restartDelayMillis = restartDelayMillis <= 0 ? 5000 : restartDelayMillis;
+        }
+
+        public boolean isWriteBackViaCli() {
+            return writeBackViaCli;
+        }
+
+        public void setWriteBackViaCli(boolean writeBackViaCli) {
+            this.writeBackViaCli = writeBackViaCli;
         }
     }
 }
