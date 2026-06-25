@@ -43,6 +43,7 @@ public class TicketRepairExecutionConsumer implements RepairQueueConsumer {
     private final boolean autoExecuteEnabled;
     private final TicketUpdatePort updatePort;
     private final boolean writeBackEnabled;
+    private final RepairRecordRepository recordRepository;
 
     /**
      * 创建正式修复队列消费者。
@@ -61,6 +62,7 @@ public class TicketRepairExecutionConsumer implements RepairQueueConsumer {
             ObjectProvider<TicketFieldMapping> fieldMapping,
             @Value("${rd.repair.ticket.auto-execute.enabled:false}") boolean autoExecuteEnabled,
             ObjectProvider<TicketUpdatePort> updatePort,
+            ObjectProvider<RepairRecordRepository> recordRepository,
             @Value("#{${rd.ticket.write-back.enabled:false} || ${rd.feishu.im.write-back.enabled:false} || "
                     + "${rd.feishu.helpdesk.write-back.enabled:false}}")
             boolean writeBackEnabled
@@ -72,6 +74,7 @@ public class TicketRepairExecutionConsumer implements RepairQueueConsumer {
                 fieldMapping.getIfAvailable(TicketFieldMapping::defaults),
                 autoExecuteEnabled,
                 updatePort.getIfAvailable(),
+                recordRepository.getIfAvailable(),
                 writeBackEnabled
         );
     }
@@ -83,7 +86,7 @@ public class TicketRepairExecutionConsumer implements RepairQueueConsumer {
             TicketFieldMapping fieldMapping,
             boolean autoExecuteEnabled
     ) {
-        this(ticketRepairEngine, providerPort, fixEngine, fieldMapping, autoExecuteEnabled, null, false);
+        this(ticketRepairEngine, providerPort, fixEngine, fieldMapping, autoExecuteEnabled, null, null, false);
     }
 
     public TicketRepairExecutionConsumer(
@@ -95,12 +98,26 @@ public class TicketRepairExecutionConsumer implements RepairQueueConsumer {
             TicketUpdatePort updatePort,
             boolean writeBackEnabled
     ) {
+        this(ticketRepairEngine, providerPort, fixEngine, fieldMapping, autoExecuteEnabled, updatePort, null, writeBackEnabled);
+    }
+
+    public TicketRepairExecutionConsumer(
+            TicketRepairEngine ticketRepairEngine,
+            TicketProviderPort providerPort,
+            RdBotFixEngine fixEngine,
+            TicketFieldMapping fieldMapping,
+            boolean autoExecuteEnabled,
+            TicketUpdatePort updatePort,
+            RepairRecordRepository recordRepository,
+            boolean writeBackEnabled
+    ) {
         this.ticketRepairEngine = ticketRepairEngine;
         this.providerPort = providerPort;
         this.fixEngine = fixEngine;
         this.fieldMapping = fieldMapping == null ? TicketFieldMapping.defaults() : fieldMapping;
         this.autoExecuteEnabled = autoExecuteEnabled;
         this.updatePort = updatePort;
+        this.recordRepository = recordRepository;
         this.writeBackEnabled = writeBackEnabled;
     }
 
@@ -139,8 +156,37 @@ public class TicketRepairExecutionConsumer implements RepairQueueConsumer {
                 result.status(),
                 result.rejected()
         );
+        syncRepairRecordStatus(outcome, result);
         writeBackExecutionResult(message, outcome, result);
         return !result.rejected();
+    }
+
+    private void syncRepairRecordStatus(TicketRepairEngine.RepairOutcome outcome, RdBotFixResult result) {
+        if (recordRepository == null || outcome == null || outcome.repairRecordId().isBlank() || result == null) {
+            return;
+        }
+        RepairRecordStatus status = switch (result.status()) {
+            case COMMITTED -> RepairRecordStatus.COMMITTED;
+            case MERGED -> RepairRecordStatus.MERGED;
+            case REJECTED -> RepairRecordStatus.FAILED;
+            default -> null;
+        };
+        if (status == null) {
+            return;
+        }
+        recordRepository.updateStatus(outcome.repairRecordId(), status, repairRecordSummary(status, result));
+    }
+
+    private String repairRecordSummary(RepairRecordStatus status, RdBotFixResult result) {
+        String pullRequestUrl = result.executionResult().pullRequestUrl();
+        return switch (status) {
+            case COMMITTED -> "auto repair committed: " + pullRequestUrl;
+            case MERGED -> "pull request merged: " + pullRequestUrl;
+            case FAILED -> result.executionResult().resultJson().isBlank()
+                    ? "auto repair failed: " + result.status().name()
+                    : result.executionResult().resultJson();
+            default -> result.status().name();
+        };
     }
 
     private void writeBackExecutionResult(

@@ -16,6 +16,7 @@ import com.wish.rd.engine.rag.ChatQueueLimiter;
 import com.wish.rd.engine.rag.RagBugFixEngine;
 import com.wish.rd.engine.ticket.InMemoryRepairRecordRepository;
 import com.wish.rd.engine.ticket.RepairRecordRepository;
+import com.wish.rd.engine.ticket.RepairRecordStatus;
 import com.wish.rd.engine.ticket.RepairTicketMessage;
 import com.wish.rd.engine.ticket.TicketFieldMapping;
 import com.wish.rd.engine.ticket.TicketRepairEngine;
@@ -67,7 +68,10 @@ class TicketRepairExecutionConsumerTest {
                 provider,
                 fixEngine,
                 TicketFieldMapping.defaults(),
-                true
+                true,
+                null,
+                repository,
+                false
         );
 
         boolean success = consumer.handle(message("FS-READY"));
@@ -76,6 +80,9 @@ class TicketRepairExecutionConsumerTest {
         assertEquals(1, executor.requests.size());
         assertEquals("FS-READY", executor.requests.getFirst().ragMessage().ticketId());
         assertTrue(executor.requests.getFirst().ragMessage().contextSummary().contains("OrderService.create"));
+        assertEquals(RepairRecordStatus.COMMITTED, repository.findByTicketId("FS-READY").orElseThrow().status());
+        assertTrue(repository.findByTicketId("FS-READY").orElseThrow().ragSummary()
+                .contains("https://github.example.local/acme/order/pull/1"));
     }
 
     @Test

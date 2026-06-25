@@ -20,6 +20,8 @@ public enum RepairRecordStatus {
     RAG_READY,
     EXECUTING,
     VALIDATING,
+    COMMITTED,
+    MERGED,
     COMPLETED,
     FAILED
 }
