@@ -122,8 +122,24 @@ public final class RagStreamTaskRegistry {
      * @return 新任务快照
      */
     public synchronized RdBugFixTask markRejected(String taskId, String errorMessage) {
+        return markRejected(taskId, errorMessage, "");
+    }
+
+    /**
+     * 将任务推进到 REJECTED，并保留执行器结构化结果。
+     *
+     * @param taskId              任务 ID
+     * @param errorMessage        错误或 RD 打回原因
+     * @param executionResultJson 执行器返回的结构化结果 JSON
+     * @return 新任务快照
+     */
+    public synchronized RdBugFixTask markRejected(
+            String taskId,
+            String errorMessage,
+            String executionResultJson
+    ) {
         RdBugFixTask existing = get(taskId);
-        return save(transition(existing, RdTaskStatus.REJECTED, "", "", "", "", "", errorMessage));
+        return save(transition(existing, RdTaskStatus.REJECTED, "", "", "", executionResultJson, "", errorMessage));
     }
 
     /**

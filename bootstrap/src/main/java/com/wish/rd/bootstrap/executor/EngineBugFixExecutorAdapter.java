@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wish.rd.engine.bugfix.BugFixExecutionRequest;
 import com.wish.rd.engine.bugfix.BugFixExecutionResult;
 import com.wish.rd.engine.bugfix.BugFixExecutor;
+import com.wish.rd.engine.bugfix.acceptance.AcceptancePlan;
 import com.wish.rd.engine.rag.BugFixMessage;
 import com.wish.rd.exec.repair.code.CodePlatformPort;
 import com.wish.rd.exec.repair.code.CreatePullRequestCommand;
@@ -98,7 +99,7 @@ public class EngineBugFixExecutorAdapter implements BugFixExecutor {
                 repositoryConfig.repoName(),
                 repositoryConfig.baseBranch(),
                 workBranch,
-                contextJson(message),
+                contextJson(request),
                 Map.of("bridge", "engine-bugfix-executor")
         );
     }
@@ -115,7 +116,9 @@ public class EngineBugFixExecutorAdapter implements BugFixExecutor {
                 Map.of(
                         "taskId", repairCommand.taskId(),
                         "repairRecordId", repairCommand.repairRecordId(),
-                        "executionStatus", repairResult.status().name()
+                        "executionStatus", repairResult.status().name(),
+                        "acceptancePlanStatus", repairCommand.contextJson().getOrDefault("acceptancePlanStatus", ""),
+                        "acceptancePlanJson", repairCommand.contextJson().getOrDefault("acceptancePlanJson", "")
                 )
         );
     }
@@ -131,6 +134,14 @@ public class EngineBugFixExecutorAdapter implements BugFixExecutor {
         context.put("contextSummary", message.contextSummary());
         context.put("evidenceChunkIds", String.join(",", message.evidenceChunkIds()));
         context.put("answer", message.answer());
+        return Map.copyOf(context);
+    }
+
+    private Map<String, String> contextJson(BugFixExecutionRequest request) {
+        Map<String, String> context = new LinkedHashMap<>(contextJson(request.ragMessage()));
+        AcceptancePlan plan = request.acceptancePlan();
+        context.put("acceptancePlanStatus", plan.status().name());
+        context.put("acceptancePlanJson", plan.toJson());
         return Map.copyOf(context);
     }
 

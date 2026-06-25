@@ -88,12 +88,16 @@ class P2RepairExecutionFlowTest {
         RdBugFixTask task = fixture.registry().get(result.taskId());
         JsonNode executionJson = OBJECT_MAPPER.readTree(task.executionResultJson());
 
-        assertEquals(RdTaskStatus.COMMITTED, result.status());
+        assertEquals(RdTaskStatus.REJECTED, result.status());
+        assertEquals(RdTaskStatus.REJECTED, task.status());
+        assertTrue(result.rejected());
         assertEquals("", task.pullRequestUrl());
         assertTrue(codePlatform.commands().isEmpty());
         assertEquals("FAILED_VALIDATION", executionJson.path("status").asText());
         assertEquals("", executionJson.path("pullRequestUrl").asText());
         assertTrue(executionJson.path("validationErrors").asText().contains("parse error"));
+        assertTrue(task.errorMessage().contains("status=FAILED_VALIDATION"));
+        assertTrue(task.errorMessage().contains("parse error"));
     }
 
     private FlowFixture flow(ContainerRunnerPort runner, RecordingCodePlatform codePlatform) {

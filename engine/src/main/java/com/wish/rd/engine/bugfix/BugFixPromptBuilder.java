@@ -1,5 +1,6 @@
 package com.wish.rd.engine.bugfix;
 
+import com.wish.rd.engine.bugfix.acceptance.AcceptancePlan;
 import com.wish.rd.engine.rag.BugFixMessage;
 import com.wish.rd.framework.convention.RetrievedChunk;
 
@@ -39,10 +40,32 @@ public final class BugFixPromptBuilder {
         BugFixMessage safeMessage = message == null
                 ? emptyMessage()
                 : message;
-        return render(template(), safeMessage);
+        return build(safeMessage, AcceptancePlan.disabled(
+                safeMessage.taskId(),
+                safeMessage.ticketId(),
+                "acceptance planner is not configured"
+        ));
     }
 
-    private String render(String template, BugFixMessage message) {
+    /**
+     * 构建带验收计划的 Bug 修复执行 Prompt。
+     *
+     * @param message        RAG 上下文消息
+     * @param acceptancePlan 已校验的验收计划
+     * @return 执行 Prompt
+     */
+    public String build(BugFixMessage message, AcceptancePlan acceptancePlan) {
+        BugFixMessage safeMessage = message == null
+                ? emptyMessage()
+                : message;
+        AcceptancePlan safePlan = acceptancePlan == null
+                ? AcceptancePlan.disabled(safeMessage.taskId(), safeMessage.ticketId(),
+                "acceptance planner is not configured")
+                : acceptancePlan;
+        return render(template(), safeMessage, safePlan);
+    }
+
+    private String render(String template, BugFixMessage message, AcceptancePlan acceptancePlan) {
         Map<String, String> values = Map.ofEntries(
                 Map.entry("taskId", message.taskId()),
                 Map.entry("ticketId", message.ticketId()),
@@ -57,6 +80,7 @@ public final class BugFixPromptBuilder {
                 Map.entry("searchChannels", String.join(",", message.searchChannels())),
                 Map.entry("contextSummary", message.contextSummary()),
                 Map.entry("evidence", evidence(message)),
+                Map.entry("acceptancePlan", acceptancePlan.toPromptSection()),
                 Map.entry("agentSystemMessage", message.agentSystemMessage()),
                 Map.entry("agentUserMessage", message.agentUserMessage())
         );
@@ -102,6 +126,8 @@ public final class BugFixPromptBuilder {
 
                 ## 检索证据
                 {{evidence}}
+
+                {{acceptancePlan}}
 
                 ## 执行边界
                 只修改与工单直接相关的代码，并输出可解析的 JSON 结果。

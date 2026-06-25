@@ -5,6 +5,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wish.rd.engine.bugfix.BugFixExecutionRequest;
 import com.wish.rd.engine.bugfix.BugFixExecutionResult;
 import com.wish.rd.engine.bugfix.BugFixExecutor;
+import com.wish.rd.engine.bugfix.acceptance.AcceptanceAssertion;
+import com.wish.rd.engine.bugfix.acceptance.AcceptancePlan;
+import com.wish.rd.engine.bugfix.acceptance.AcceptancePlanStatus;
+import com.wish.rd.engine.bugfix.acceptance.AcceptancePlanStep;
 import com.wish.rd.engine.rag.BugFixMessage;
 import com.wish.rd.bootstrap.executor.EngineBugFixExecutorAdapter;
 import com.wish.rd.bootstrap.executor.EngineBugFixExecutorConfiguration;
@@ -100,6 +104,38 @@ class EngineBugFixExecutorAdapterTest {
         assertEquals("LOW", resultJson.path("riskMetadata").path("riskLevel").asText());
         assertEquals("PATCH_DIFF", resultJson.path("artifacts").get(0).path("type").asText());
         assertEquals("file:///tmp/patch.diff", resultJson.path("artifacts").get(0).path("uri").asText());
+    }
+
+    @Test
+    void shouldPassAcceptancePlanIntoRepairCommandAndPullRequestMetadata() {
+        RecordingRepairExecutor repairExecutor = new RecordingRepairExecutor(new RepairExecutionResult(
+                RepairExecutionStatus.SUCCESS,
+                "patched",
+                "",
+                List.of(new RepairArtifact(
+                        RepairArtifactType.PATCH_DIFF,
+                        "patch.diff",
+                        "file:///tmp/patch.diff",
+                        "patch",
+                        Map.of()
+                )),
+                Map.of("status", "SUCCESS", "summary", "patched", "prBody", "body"),
+                Map.of(),
+                Map.of(),
+                Map.of(),
+                Map.of(),
+                ""
+        ));
+        RecordingCodePlatform codePlatform = new RecordingCodePlatform();
+        EngineBugFixExecutorAdapter adapter = adapter(repairExecutor, codePlatform);
+
+        adapter.execute(requestWithAcceptancePlan());
+
+        RepairJobCommand repairCommand = repairExecutor.commands().getFirst();
+        assertEquals("READY", repairCommand.contextJson().get("acceptancePlanStatus"));
+        assertTrue(repairCommand.contextJson().get("acceptancePlanJson").contains("POST /api/orders"));
+        assertEquals("READY", codePlatform.commands().getFirst().metadata().get("acceptancePlanStatus"));
+        assertTrue(codePlatform.commands().getFirst().metadata().get("acceptancePlanJson").contains("POST /api/orders"));
     }
 
     @Test
@@ -259,6 +295,20 @@ class EngineBugFixExecutorAdapterTest {
                 "answer",
                 false
         ));
+    }
+
+    private BugFixExecutionRequest requestWithAcceptancePlan() {
+        AcceptancePlan plan = new AcceptancePlan(
+                "task-1001",
+                "FS-1001",
+                AcceptancePlanStatus.READY,
+                "docker-claude-planner",
+                "",
+                List.of(new AcceptancePlanStep("execute", "http", "POST /api/orders", "{}")),
+                List.of(new AcceptanceAssertion("status", "http.status", "eq", "200")),
+                List.of("chunk-1")
+        );
+        return new BugFixExecutionRequest("task-1001", "Fix prompt", request().ragMessage(), plan);
     }
 
     private static final class RecordingRepairExecutor implements RepairExecutorPort {

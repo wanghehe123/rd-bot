@@ -4,6 +4,7 @@ import com.wish.rd.engine.bugfix.BugFixExecutionResult;
 import com.wish.rd.engine.bugfix.BugFixExecutor;
 import com.wish.rd.engine.bugfix.BugFixPromptBuilder;
 import com.wish.rd.engine.bugfix.RdBotFixEngine;
+import com.wish.rd.engine.bugfix.acceptance.RagEvidenceAcceptancePlanGenerator;
 import com.wish.rd.engine.rag.ChatQueueLimiter;
 import com.wish.rd.engine.rag.RagBugFixEngine;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
@@ -51,6 +52,9 @@ class BugFixExecutionTestChannelControllerTest {
                 .andExpect(jsonPath("$.rag.ticketId").value("FS-EXEC-1"))
                 .andExpect(jsonPath("$.rag.retrievedChunkCount", greaterThan(0)))
                 .andExpect(jsonPath("$.rag.contextSummary").exists())
+                .andExpect(jsonPath("$.acceptancePlan.status").value("READY"))
+                .andExpect(jsonPath("$.acceptancePlan.source").value("rd-bot-rag-evidence"))
+                .andExpect(jsonPath("$.acceptancePlan.planJson").exists())
                 .andExpect(jsonPath("$.execution.pullRequestUrl").value("https://github.example/rd/pr/exec-1"))
                 .andExpect(jsonPath("$.execution.solution").value("executor invoked"));
     }
@@ -68,7 +72,8 @@ class BugFixExecutionTestChannelControllerTest {
                 ),
                 registry,
                 BugFixPromptBuilder.defaultBuilder(),
-                executor()
+                executor(),
+                new RagEvidenceAcceptancePlanGenerator()
         );
     }
 

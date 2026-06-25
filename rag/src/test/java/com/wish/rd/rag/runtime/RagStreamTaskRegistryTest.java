@@ -57,6 +57,25 @@ class RagStreamTaskRegistryTest {
     }
 
     @Test
+    void shouldKeepExecutionResultJsonWhenRejectingFailedExecution() {
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(new InMemoryRdTaskStore(), generatorWithMovingClock());
+        RdBugFixTask created = registry.createBugFixTask(ticket(), "P1");
+        String executionResultJson = "{\"status\":\"FAILED\",\"errorMessage\":\"git clone failed\"}";
+
+        registry.markSearching(created.taskId(), "RAG 检索中");
+        registry.markExecuting(created.taskId(), "请修复 OrderService.create");
+        RdBugFixTask rejected = registry.markRejected(
+                created.taskId(),
+                "修复执行失败: status=FAILED, reason=git clone failed",
+                executionResultJson
+        );
+
+        assertEquals(RdTaskStatus.REJECTED, rejected.status());
+        assertEquals(executionResultJson, rejected.executionResultJson());
+        assertEquals("修复执行失败: status=FAILED, reason=git clone failed", rejected.errorMessage());
+    }
+
+    @Test
     void shouldRejectIllegalStateTransition() {
         RagStreamTaskRegistry registry = new RagStreamTaskRegistry(new InMemoryRdTaskStore(), generatorWithMovingClock());
         RdBugFixTask created = registry.createBugFixTask(ticket(), "P2");

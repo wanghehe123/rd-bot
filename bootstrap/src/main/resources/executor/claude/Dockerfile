@@ -1,10 +1,7 @@
 ARG NODE_BASE_IMAGE=node:22-bookworm-slim
 FROM ${NODE_BASE_IMAGE}
 
-ARG CLAUDE_CODE_VERSION
-
-RUN echo "${CLAUDE_CODE_VERSION}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
-    || (echo "CLAUDE_CODE_VERSION must be an exact semver version, not latest or a range" >&2; exit 64)
+ARG CLAUDE_CODE_VERSION=latest
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \

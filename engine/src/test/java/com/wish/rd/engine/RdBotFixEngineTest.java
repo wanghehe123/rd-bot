@@ -8,6 +8,13 @@ import com.wish.rd.engine.bugfix.BugFixPromptBuilder;
 import com.wish.rd.engine.bugfix.RdBotFixCommand;
 import com.wish.rd.engine.bugfix.RdBotFixEngine;
 import com.wish.rd.engine.bugfix.RdBotFixResult;
+import com.wish.rd.engine.bugfix.acceptance.AcceptanceAssertion;
+import com.wish.rd.engine.bugfix.acceptance.AcceptancePlan;
+import com.wish.rd.engine.bugfix.acceptance.AcceptancePlanGenerationCommand;
+import com.wish.rd.engine.bugfix.acceptance.AcceptancePlanGenerationResult;
+import com.wish.rd.engine.bugfix.acceptance.AcceptancePlanGeneratorPort;
+import com.wish.rd.engine.bugfix.acceptance.AcceptancePlanStatus;
+import com.wish.rd.engine.bugfix.acceptance.AcceptancePlanStep;
 import com.wish.rd.engine.rag.ChatQueueLimiter;
 import com.wish.rd.engine.rag.RagBugFixEngine;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
@@ -89,6 +96,152 @@ class RdBotFixEngineTest {
         assertEquals("https://github.example/rd/pr/200", task.pullRequestUrl());
         assertTrue(task.promptSnapshot().contains("研发修复任务"));
         assertFalse(result.ragMessage().retrievedChunks().isEmpty());
+    }
+
+    @Test
+    void shouldGenerateValidateAndPassAcceptancePlanToExecutor() {
+        AtomicReference<AcceptancePlanGenerationCommand> planCommand = new AtomicReference<>();
+        AtomicReference<BugFixExecutionRequest> executionRequest = new AtomicReference<>();
+        AcceptancePlan plan = new AcceptancePlan(
+                "placeholder",
+                "FS-2001",
+                AcceptancePlanStatus.READY,
+                "docker-claude-planner",
+                "",
+                List.of(new AcceptancePlanStep("execute", "http", "POST /api/orders", "{}")),
+                List.of(new AcceptanceAssertion("status", "http.status", "eq", "200")),
+                List.of("chunk-1")
+        );
+        AcceptancePlanGeneratorPort generator = command -> {
+            planCommand.set(command);
+            return new AcceptancePlanGenerationResult(new AcceptancePlan(
+                    command.taskId(),
+                    command.ticketId(),
+                    plan.status(),
+                    plan.source(),
+                    plan.reason(),
+                    plan.steps(),
+                    plan.assertions(),
+                    plan.evidenceChunkIds()
+            ));
+        };
+        BugFixExecutor executor = request -> {
+            executionRequest.set(request);
+            return new BugFixExecutionResult(
+                    request.taskId(),
+                    "bug",
+                    "solution",
+                    "https://github.example/rd/pr/201",
+                    "{\"status\":\"success\"}"
+            );
+        };
+        RagStreamTaskRegistry registry = registry();
+        RdBotFixEngine engine = new RdBotFixEngine(
+                ChatQueueLimiter.passThrough(),
+                ragEngine(registry),
+                registry,
+                BugFixPromptBuilder.defaultBuilder(),
+                executor,
+                generator
+        );
+
+        RdBotFixResult result = engine.runBugFix(new RdBotFixCommand(ticket(), List.of(), false, "P1"));
+
+        assertNotNull(planCommand.get());
+        assertEquals(result.taskId(), planCommand.get().taskId());
+        assertEquals("FS-2001", planCommand.get().ticketId());
+        assertNotNull(executionRequest.get());
+        assertEquals(AcceptancePlanStatus.READY, executionRequest.get().acceptancePlan().status());
+        assertTrue(executionRequest.get().prompt().contains("## 验收计划"));
+        assertTrue(executionRequest.get().prompt().contains("docker-claude-planner"));
+        assertTrue(executionRequest.get().prompt().contains("POST /api/orders"));
+        assertEquals(AcceptancePlanStatus.READY, result.acceptancePlan().status());
+    }
+
+    @Test
+    void shouldRejectTaskWhenExecutorReturnsFailedStatus() {
+        String failedResultJson = """
+                {"status":"FAILED","errorMessage":"git command failed exitCode=128"}
+                """.strip();
+        BugFixExecutor executor = request -> new BugFixExecutionResult(
+                request.taskId(),
+                "Docker Claude Code execution failed.",
+                "",
+                "",
+                failedResultJson
+        );
+        RagStreamTaskRegistry registry = registry();
+        RdBotFixEngine engine = new RdBotFixEngine(
+                ChatQueueLimiter.passThrough(),
+                ragEngine(registry),
+                registry,
+                BugFixPromptBuilder.defaultBuilder(),
+                executor
+        );
+
+        RdBotFixResult result = engine.runBugFix(new RdBotFixCommand(ticket(), List.of(), false, "P1"));
+
+        RdBugFixTask task = registry.get(result.taskId());
+        assertEquals(RdTaskStatus.REJECTED, result.status());
+        assertEquals(RdTaskStatus.REJECTED, task.status());
+        assertTrue(result.rejected());
+        assertEquals(failedResultJson, task.executionResultJson());
+        assertTrue(task.errorMessage().contains("status=FAILED"));
+        assertTrue(task.errorMessage().contains("git command failed exitCode=128"));
+        assertEquals("", task.pullRequestUrl());
+    }
+
+    @Test
+    void shouldRejectSuccessfulStatusWithoutPullRequestUrl() {
+        BugFixExecutor executor = request -> new BugFixExecutionResult(
+                request.taskId(),
+                "bug",
+                "solution",
+                "",
+                "{\"status\":\"SUCCESS\"}"
+        );
+        RagStreamTaskRegistry registry = registry();
+        RdBotFixEngine engine = new RdBotFixEngine(
+                ChatQueueLimiter.passThrough(),
+                ragEngine(registry),
+                registry,
+                BugFixPromptBuilder.defaultBuilder(),
+                executor
+        );
+
+        RdBotFixResult result = engine.runBugFix(new RdBotFixCommand(ticket(), List.of(), false, "P1"));
+
+        RdBugFixTask task = registry.get(result.taskId());
+        assertEquals(RdTaskStatus.REJECTED, result.status());
+        assertEquals(RdTaskStatus.REJECTED, task.status());
+        assertTrue(task.errorMessage().contains("未生成 PR 链接"));
+    }
+
+    @Test
+    void shouldAttachCurrentTaskAndTicketWhenPlannerReturnsNoPlan() {
+        BugFixExecutor executor = request -> new BugFixExecutionResult(
+                request.taskId(),
+                "bug",
+                "solution",
+                "https://github.example/rd/pr/202",
+                "{\"status\":\"success\"}"
+        );
+        RagStreamTaskRegistry registry = registry();
+        RdBotFixEngine engine = new RdBotFixEngine(
+                ChatQueueLimiter.passThrough(),
+                ragEngine(registry),
+                registry,
+                BugFixPromptBuilder.defaultBuilder(),
+                executor,
+                command -> new AcceptancePlanGenerationResult(null)
+        );
+
+        RdBotFixResult result = engine.runBugFix(new RdBotFixCommand(ticket(), List.of(), false, "P1"));
+
+        assertEquals(AcceptancePlanStatus.DISABLED, result.acceptancePlan().status());
+        assertEquals(result.taskId(), result.acceptancePlan().taskId());
+        assertEquals("FS-2001", result.acceptancePlan().ticketId());
+        assertTrue(result.promptSnapshot().contains("RD-Bot 是最终验收裁判"));
     }
 
     @Test

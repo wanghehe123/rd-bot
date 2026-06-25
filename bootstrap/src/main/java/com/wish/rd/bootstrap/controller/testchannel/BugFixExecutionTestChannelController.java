@@ -5,6 +5,7 @@ import com.wish.rd.engine.bugfix.BugFixExecutionResult;
 import com.wish.rd.engine.bugfix.RdBotFixCommand;
 import com.wish.rd.engine.bugfix.RdBotFixEngine;
 import com.wish.rd.engine.bugfix.RdBotFixResult;
+import com.wish.rd.engine.bugfix.acceptance.AcceptancePlan;
 import com.wish.rd.engine.rag.BugFixMessage;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -61,6 +62,7 @@ public class BugFixExecutionTestChannelController {
     private BugFixRunResponse toResponse(RdBotFixResult result) {
         BugFixMessage ragMessage = result.ragMessage();
         BugFixExecutionResult executionResult = result.executionResult();
+        AcceptancePlan acceptancePlan = result.acceptancePlan();
         return new BugFixRunResponse(
                 result.taskId(),
                 result.status().name(),
@@ -72,6 +74,11 @@ public class BugFixExecutionTestChannelController {
                         ragMessage.searchChannels(),
                         ragMessage.evidenceChunkIds(),
                         ragMessage.retrievedChunks().size()
+                ),
+                new AcceptancePlanView(
+                        acceptancePlan.status().name(),
+                        acceptancePlan.source(),
+                        acceptancePlan.toJson()
                 ),
                 new ExecutionView(
                         executionResult.bugDescription(),
@@ -155,12 +162,27 @@ public class BugFixExecutionTestChannelController {
         }
     }
 
+    /** 验收计划视图。 */
+    public record AcceptancePlanView(
+            String status,
+            String source,
+            String planJson
+    ) {
+
+        public AcceptancePlanView {
+            status = status == null ? "" : status;
+            source = source == null ? "" : source;
+            planJson = planJson == null ? "" : planJson;
+        }
+    }
+
     /** Bug 修复执行响应。 */
     public record BugFixRunResponse(
             String taskId,
             String status,
             boolean rejected,
             RagView rag,
+            AcceptancePlanView acceptancePlan,
             ExecutionView execution
     ) {
     }

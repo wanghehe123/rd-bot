@@ -36,7 +36,7 @@ class DockerAssetPolicyTest {
     }
 
     @Test
-    void dockerfileShouldUseNonRootUserAndPinnedConfigurableClaudeVersion() throws IOException {
+    void dockerfileShouldUseNonRootUserAndLatestConfigurableClaudeVersion() throws IOException {
         String dockerfile = readAsset("Dockerfile");
 
         assertFalse(dockerfile.startsWith("# syntax=docker/dockerfile:"));
@@ -51,15 +51,13 @@ class DockerAssetPolicyTest {
         assertTrue(dockerfile.contains("/etc/sudoers.d/rdbot-toolchain"));
         assertTrue(dockerfile.contains("rdbot ALL=(root) NOPASSWD: /usr/bin/apt-get, /usr/bin/apt"));
         assertTrue(dockerfile.contains("chmod 0440 /etc/sudoers.d/rdbot-toolchain"));
-        assertTrue(dockerfile.contains("ARG CLAUDE_CODE_VERSION"));
+        assertTrue(dockerfile.contains("ARG CLAUDE_CODE_VERSION=latest"));
         assertTrue(dockerfile.contains("@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"));
-        assertTrue(dockerfile.contains("latest"));
-        assertTrue(dockerfile.contains("grep -Eq"));
-        assertTrue(dockerfile.contains("'^[0-9]+\\.[0-9]+\\.[0-9]+$'"));
+        assertFalse(dockerfile.contains("must be an exact semver version"));
+        assertFalse(dockerfile.contains("grep -Eq"));
         assertTrue(dockerfile.contains("/home/rdbot/.claude.json"));
         assertTrue(dockerfile.contains("\"bypassPermissionsModeAccepted\":true"));
         assertTrue(dockerfile.contains("USER rdbot"));
-        assertFalse(dockerfile.contains("@latest"));
         assertFalse(containsCredentialCopy(dockerfile));
     }
 

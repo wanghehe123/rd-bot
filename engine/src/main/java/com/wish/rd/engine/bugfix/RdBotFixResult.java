@@ -1,5 +1,6 @@
 package com.wish.rd.engine.bugfix;
 
+import com.wish.rd.engine.bugfix.acceptance.AcceptancePlan;
 import com.wish.rd.engine.rag.BugFixMessage;
 import com.wish.rd.rag.runtime.RdTaskStatus;
 
@@ -13,6 +14,7 @@ import com.wish.rd.rag.runtime.RdTaskStatus;
  * @param ragMessage      RAG 上下文消息
  * @param promptSnapshot  Prompt 快照
  * @param executionResult 执行器结果
+ * @param acceptancePlan  已校验的验收计划
  * @param rejected        是否被限流或流程拒绝
  */
 public record RdBotFixResult(
@@ -21,13 +23,38 @@ public record RdBotFixResult(
         BugFixMessage ragMessage,
         String promptSnapshot,
         BugFixExecutionResult executionResult,
+        AcceptancePlan acceptancePlan,
         boolean rejected
 ) {
+
+    public RdBotFixResult(
+            String taskId,
+            RdTaskStatus status,
+            BugFixMessage ragMessage,
+            String promptSnapshot,
+            BugFixExecutionResult executionResult,
+            boolean rejected
+    ) {
+        this(
+                taskId,
+                status,
+                ragMessage,
+                promptSnapshot,
+                executionResult,
+                AcceptancePlan.disabled(taskId, ragMessage == null ? "" : ragMessage.ticketId(),
+                        "acceptance planner is not configured"),
+                rejected
+        );
+    }
 
     public RdBotFixResult {
         taskId = taskId == null ? "" : taskId.strip();
         status = status == null ? RdTaskStatus.REJECTED : status;
         promptSnapshot = promptSnapshot == null ? "" : promptSnapshot;
         executionResult = executionResult == null ? BugFixExecutionResult.empty(taskId) : executionResult;
+        acceptancePlan = acceptancePlan == null
+                ? AcceptancePlan.disabled(taskId, ragMessage == null ? "" : ragMessage.ticketId(),
+                "acceptance planner is not configured")
+                : acceptancePlan;
     }
 }
