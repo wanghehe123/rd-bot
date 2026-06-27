@@ -31,6 +31,12 @@ frontend/test-results/
 
 # ===== 文档（永不提交）=====
 docs/
+!docs/
+docs/*
+!docs/superpowers/
+docs/superpowers/*
+!docs/superpowers/plans/
+!docs/superpowers/plans/*.md
 
 # ===== 生成产物 / 本地输出 =====
 lark-output/
