@@ -86,15 +86,15 @@ class KnowledgeAdminControllerTest {
 
         mockMvc.perform(get("/knowledge-base/{knowledgeBaseId}/docs", knowledgeBaseId))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$", hasSize(1)))
-                .andExpect(jsonPath("$[0].sourceName", is("payment-api.md")));
+                .andExpect(jsonPath("$.records", hasSize(1)))
+                .andExpect(jsonPath("$.records[0].sourceName", is("payment-api.md")));
 
         MvcResult chunksResult = mockMvc.perform(get("/knowledge-base/docs/{documentId}/chunks", documentId))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$", hasSize(greaterThan(0))))
-                .andExpect(jsonPath("$[0].enabled", is(true)))
+                .andExpect(jsonPath("$.records", hasSize(greaterThan(0))))
+                .andExpect(jsonPath("$.records[0].enabled", is(true)))
                 .andReturn();
-        String firstChunkId = JsonPath.read(chunksResult.getResponse().getContentAsString(), "$[0].id");
+        String firstChunkId = JsonPath.read(chunksResult.getResponse().getContentAsString(), "$.records[0].id");
 
         mockMvc.perform(get("/knowledge-base/docs/{documentId}", documentId))
                 .andExpect(status().isOk())
@@ -114,11 +114,11 @@ class KnowledgeAdminControllerTest {
 
         mockMvc.perform(get("/knowledge-base/docs/{documentId}/chunk-logs", documentId))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$", hasSize(4)))
-                .andExpect(jsonPath("$[0].nodeType", is("FETCHER")))
-                .andExpect(jsonPath("$[1].nodeType", is("PARSER")))
-                .andExpect(jsonPath("$[2].nodeType", is("CHUNKER")))
-                .andExpect(jsonPath("$[3].nodeType", is("INDEXER")));
+                .andExpect(jsonPath("$.records", hasSize(4)))
+                .andExpect(jsonPath("$.records[0].nodeType", is("FETCHER")))
+                .andExpect(jsonPath("$.records[1].nodeType", is("PARSER")))
+                .andExpect(jsonPath("$.records[2].nodeType", is("CHUNKER")))
+                .andExpect(jsonPath("$.records[3].nodeType", is("INDEXER")));
 
         mockMvc.perform(patch("/knowledge-base/docs/chunks/{chunkId}/enabled", firstChunkId)
                         .param("enabled", "false"))
@@ -153,8 +153,8 @@ class KnowledgeAdminControllerTest {
 
         mockMvc.perform(get("/knowledge-base/docs/{documentId}/chunks", documentId))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$[?(@.id == 'manual-rest')].enabled").value(hasSize(1)))
-                .andExpect(jsonPath("$[?(@.id == 'manual-rest')].enabled").value(hasItem(false)));
+                .andExpect(jsonPath("$.records[?(@.id == 'manual-rest')].enabled").value(hasSize(1)))
+                .andExpect(jsonPath("$.records[?(@.id == 'manual-rest')].enabled").value(hasItem(false)));
 
         mockMvc.perform(delete("/knowledge-base/docs/{documentId}/chunks/manual-rest", documentId))
                 .andExpect(status().isOk())
@@ -182,7 +182,7 @@ class KnowledgeAdminControllerTest {
 
         mockMvc.perform(get("/knowledge-base/{knowledgeBaseId}/docs", knowledgeBaseId))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$", hasSize(0)));
+                .andExpect(jsonPath("$.records", hasSize(0)));
 
         mockMvc.perform(put("/knowledge-base/{knowledgeBaseId}", knowledgeBaseId)
                         .contentType(MediaType.APPLICATION_JSON)

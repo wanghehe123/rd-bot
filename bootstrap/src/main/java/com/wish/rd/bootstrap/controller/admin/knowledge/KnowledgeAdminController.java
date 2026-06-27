@@ -9,9 +9,12 @@ import com.wish.rd.rag.knowledge.FeishuDocKnowledgeImporter;
 import com.wish.rd.rag.knowledge.KnowledgeBase;
 import com.wish.rd.rag.knowledge.KnowledgeChunk;
 import com.wish.rd.rag.knowledge.KnowledgeDocument;
+import com.wish.rd.rag.knowledge.KnowledgeDocumentSource;
+import com.wish.rd.rag.knowledge.KnowledgeDocumentStatus;
 import com.wish.rd.rag.knowledge.KnowledgeWorkspace;
 import com.wish.rd.rag.knowledge.WriteKnowledgeDocumentCommand;
 import com.wish.rd.rag.ingestion.IngestionNodeLog;
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -20,10 +23,14 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
 
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 知识库管理 REST 控制器。
@@ -69,8 +76,8 @@ public final class KnowledgeAdminController {
     }
 
     @PostMapping("/knowledge-base")
-    public KnowledgeBase createKnowledgeBase(@RequestBody CreateKnowledgeBaseRequest request) {
-        return workspace.createBase(new CreateKnowledgeBaseCommand(request.name(), request.description()));
+    public KnowledgeBaseView createKnowledgeBase(@RequestBody CreateKnowledgeBaseRequest request) {
+        return toKnowledgeBaseView(workspace.createBase(new CreateKnowledgeBaseCommand(request.name(), request.description())));
     }
 
     @GetMapping("/knowledge-base/{knowledgeBaseId}")
@@ -124,8 +131,22 @@ public final class KnowledgeAdminController {
     }
 
     @GetMapping("/knowledge-base/{knowledgeBaseId}/docs")
-    public List<KnowledgeDocument> listDocuments(@PathVariable("knowledgeBaseId") String knowledgeBaseId) {
-        return workspace.listDocuments(knowledgeBaseId);
+    public PageResponse<KnowledgeDocument> listDocuments(
+            @PathVariable("knowledgeBaseId") String knowledgeBaseId,
+            @RequestParam(value = "current", defaultValue = "1") int current,
+            @RequestParam(value = "size", defaultValue = "10") int size,
+            @RequestParam(value = "status", required = false) String status,
+            @RequestParam(value = "keyword", required = false) String keyword
+    ) {
+        int page = Math.max(1, current);
+        int pageSize = Math.max(1, size);
+        KnowledgeDocumentStatus statusFilter = parseStatus(status);
+        List<KnowledgeDocument> all = workspace.searchDocuments(knowledgeBaseId, keyword, statusFilter);
+        int total = all.size();
+        int fromIndex = Math.min((page - 1) * pageSize, total);
+        int toIndex = Math.min(fromIndex + pageSize, total);
+        int pages = total == 0 ? 0 : (int) Math.ceil((double) total / pageSize);
+        return new PageResponse<>(all.subList(fromIndex, toIndex), total, pageSize, page, pages);
     }
 
     @GetMapping("/knowledge-base/docs/search")
@@ -156,8 +177,20 @@ public final class KnowledgeAdminController {
     }
 
     @GetMapping("/knowledge-base/docs/{documentId}/chunks")
-    public List<KnowledgeChunk> listChunks(@PathVariable("documentId") String documentId) {
-        return workspace.listChunks(documentId);
+    public PageResponse<KnowledgeChunk> listChunks(
+            @PathVariable("documentId") String documentId,
+            @RequestParam(value = "current", defaultValue = "1") int current,
+            @RequestParam(value = "size", defaultValue = "10") int size,
+            @RequestParam(value = "enabled", required = false) Boolean enabled
+    ) {
+        int page = Math.max(1, current);
+        int pageSize = Math.max(1, size);
+        List<KnowledgeChunk> all = workspace.listChunks(documentId, enabled);
+        int total = all.size();
+        int fromIndex = Math.min((page - 1) * pageSize, total);
+        int toIndex = Math.min(fromIndex + pageSize, total);
+        int pages = total == 0 ? 0 : (int) Math.ceil((double) total / pageSize);
+        return new PageResponse<>(all.subList(fromIndex, toIndex), total, pageSize, page, pages);
     }
 
     @PostMapping("/knowledge-base/docs/{documentId}/chunks")
@@ -192,8 +225,19 @@ public final class KnowledgeAdminController {
     }
 
     @GetMapping("/knowledge-base/docs/{documentId}/chunk-logs")
-    public List<IngestionNodeLog> chunkLogs(@PathVariable("documentId") String documentId) {
-        return workspace.listDocumentLogs(documentId);
+    public PageResponse<IngestionNodeLog> chunkLogs(
+            @PathVariable("documentId") String documentId,
+            @RequestParam(value = "current", defaultValue = "1") int current,
+            @RequestParam(value = "size", defaultValue = "10") int size
+    ) {
+        int page = Math.max(1, current);
+        int pageSize = Math.max(1, size);
+        List<IngestionNodeLog> all = workspace.listDocumentLogs(documentId);
+        int total = all.size();
+        int fromIndex = Math.min((page - 1) * pageSize, total);
+        int toIndex = Math.min(fromIndex + pageSize, total);
+        int pages = total == 0 ? 0 : (int) Math.ceil((double) total / pageSize);
+        return new PageResponse<>(all.subList(fromIndex, toIndex), total, pageSize, page, pages);
     }
 
     @PatchMapping("/knowledge-base/docs/{documentId}/enabled")
@@ -240,6 +284,74 @@ public final class KnowledgeAdminController {
         return new BatchUpdateResponse(workspace.batchSetChunksEnabled(documentId, chunkIds, enabled));
     }
 
+    /**
+     * 列出可选的分块策略及其默认参数，供前端上传/编辑文档时构造分块配置。
+     */
+    @GetMapping("/knowledge-base/chunk-strategies")
+    public List<ChunkStrategyOption> chunkStrategies() {
+        return List.of(
+                new ChunkStrategyOption(
+                        ChunkingMode.FIXED_SIZE.name(),
+                        "固定大小",
+                        Map.of("chunkSize", 512, "overlapSize", 64)
+                ),
+                new ChunkStrategyOption(
+                        ChunkingMode.STRUCTURE_AWARE.name(),
+                        "语义感知（Markdown友好）",
+                        Map.of("chunkSize", 1400, "overlapSize", 0)
+                )
+        );
+    }
+
+    /**
+     * 触发文档重新分块：清除既有分块与向量后，以原文重新生成。
+     */
+    @PostMapping("/knowledge-base/docs/{documentId}/chunk")
+    public KnowledgeDocument chunkDocument(
+            @PathVariable("documentId") String documentId,
+            @RequestBody(required = false) RechunkRequest request
+    ) {
+        ChunkingMode mode = request == null || request.chunkingMode() == null
+                ? ChunkingMode.STRUCTURE_AWARE
+                : request.chunkingMode();
+        int chunkSize = request == null ? 0 : request.chunkSize();
+        int overlapSize = request == null ? 0 : request.overlapSize();
+        return workspace.rechunkDocument(documentId, mode, chunkSize, overlapSize);
+    }
+
+    /**
+     * 直接在知识库下上传文档文件并立即分块索引，供知识库文档页使用。
+     * 与 /ingestion/tasks/upload 并存，本端点不经过任务编排，直接写知识工作区。
+     */
+    @PostMapping(value = "/knowledge-base/{knowledgeBaseId}/docs/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public KnowledgeDocument uploadDocument(
+            @PathVariable("knowledgeBaseId") String knowledgeBaseId,
+            @RequestParam(value = "knowledgeType", defaultValue = "document") String knowledgeType,
+            @RequestParam(value = "chunkingMode", required = false) ChunkingMode chunkingMode,
+            @RequestParam(value = "chunkSize", defaultValue = "512") int chunkSize,
+            @RequestParam(value = "overlapSize", defaultValue = "0") int overlapSize,
+            @RequestPart("file") MultipartFile file
+    ) throws IOException {
+        if (file == null || file.isEmpty()) {
+            throw new IllegalArgumentException("upload file must not be empty");
+        }
+        String sourceName = file.getOriginalFilename();
+        if (sourceName == null || sourceName.isBlank()) {
+            sourceName = "upload-" + System.currentTimeMillis();
+        }
+        WriteKnowledgeDocumentCommand command = new WriteKnowledgeDocumentCommand(
+                knowledgeBaseId,
+                sourceName,
+                knowledgeType,
+                file.getContentType(),
+                file.getBytes(),
+                chunkingMode == null ? ChunkingMode.STRUCTURE_AWARE : chunkingMode,
+                chunkSize,
+                overlapSize
+        );
+        return workspace.writeDocument(command, KnowledgeDocumentSource.local());
+    }
+
     @GetMapping("/admin/overview")
     public KnowledgeAdminOverview overview() {
         return adminEngine.overview();
@@ -260,6 +372,18 @@ public final class KnowledgeAdminController {
                 String.valueOf(base.createdAtEpochMillis()),
                 String.valueOf(base.createdAtEpochMillis())
         );
+    }
+
+    /** 解析文档状态过滤参数，空值或无法识别时返回 null（不过滤）。 */
+    private KnowledgeDocumentStatus parseStatus(String status) {
+        if (status == null || status.isBlank()) {
+            return null;
+        }
+        try {
+            return KnowledgeDocumentStatus.valueOf(status.trim().toUpperCase());
+        } catch (IllegalArgumentException ignored) {
+            return null;
+        }
     }
 
     public record CreateKnowledgeBaseRequest(String name, String description) {
@@ -329,5 +453,13 @@ public final class KnowledgeAdminController {
     }
 
     public record BatchUpdateResponse(int updated) {
+    }
+
+    /** 分块策略选项，附带默认参数供前端构造 chunkConfig。 */
+    public record ChunkStrategyOption(String value, String label, Map<String, Integer> defaultConfig) {
+    }
+
+    /** 重新分块请求参数。 */
+    public record RechunkRequest(ChunkingMode chunkingMode, Integer chunkSize, Integer overlapSize) {
     }
 }

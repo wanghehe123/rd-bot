@@ -2,6 +2,7 @@ package com.wish.rd.rag.knowledge;
 
 import com.wish.rd.framework.convention.RetrievedChunk;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
+import com.wish.rd.rag.core.chunk.ChunkingMode;
 import com.wish.rd.rag.ingestion.IngestionNodeLog;
 import com.wish.rd.rag.ingestion.IngestionTaskCommand;
 import com.wish.rd.rag.ingestion.IngestionTaskResult;
@@ -231,6 +232,20 @@ public final class KnowledgeWorkspace {
         return documentStore.listByKnowledgeBaseId(knowledgeBaseId);
     }
 
+    /** 在指定知识库范围内按关键词、状态过滤文档，任一条件为空则忽略该条件。 */
+    public synchronized List<KnowledgeDocument> searchDocuments(
+            String knowledgeBaseId, String keyword, KnowledgeDocumentStatus status
+    ) {
+        requireBase(knowledgeBaseId);
+        String normalizedKeyword = normalize(keyword);
+        String normalizedStatus = status == null ? "" : normalize(status.name());
+        return documentStore.listByKnowledgeBaseId(knowledgeBaseId).stream()
+                .filter(document -> normalizedKeyword.isBlank() || matchesDocument(document, normalizedKeyword))
+                .filter(document -> normalizedStatus.isBlank()
+                        || normalize(document.status().name()).equals(normalizedStatus))
+                .toList();
+    }
+
     /** 列出全部文档。 */
     public synchronized List<KnowledgeDocument> listAllDocuments() {
         return documentStore.listAll();
@@ -246,6 +261,58 @@ public final class KnowledgeWorkspace {
     public synchronized List<KnowledgeChunk> listChunks(String documentId) {
         getDocument(documentId);
         return chunkStore.listByDocumentId(documentId);
+    }
+
+    /** 列出指定文档下的分块，enabled 为 null 时不过滤启用状态。 */
+    public synchronized List<KnowledgeChunk> listChunks(String documentId, Boolean enabled) {
+        List<KnowledgeChunk> chunks = listChunks(documentId);
+        if (enabled == null) {
+            return chunks;
+        }
+        return chunks.stream().filter(chunk -> chunk.enabled() == enabled).toList();
+    }
+
+    /**
+     * 对文档重新分块：清除既有分块与向量，以原文重新走默认管线生成新分块。
+     *
+     * @param documentId 文档 ID
+     * @param mode       分块策略；null 时沿用文档已有知识类型对应的默认策略
+     * @param chunkSize  块大小；&lt;=0 时用默认值
+     * @param overlapSize 重叠大小
+     * @return 重新索引后的文档
+     */
+    public synchronized KnowledgeDocument rechunkDocument(
+            String documentId, ChunkingMode mode, int chunkSize, int overlapSize
+    ) {
+        KnowledgeDocument document = getDocument(documentId);
+        String rawContent = documentStore.rawContent(documentId);
+        // 清理旧分块与向量，避免重复
+        List<String> oldChunkIds = chunkStore.listByDocumentId(document.id()).stream()
+                .map(KnowledgeChunk::id)
+                .toList();
+        vectorStore.removeChunks(oldChunkIds);
+        chunkStore.deleteByDocumentId(document.id());
+
+        KnowledgeDocumentSource source = new KnowledgeDocumentSource(
+                document.sourceType(),
+                document.sourceToken(),
+                document.sourceUrl(),
+                document.revisionId(),
+                document.lastSyncedAtEpochMillis(),
+                document.nextRefreshAtEpochMillis()
+        );
+        ChunkingMode resolvedMode = mode == null ? ChunkingMode.STRUCTURE_AWARE : mode;
+        WriteKnowledgeDocumentCommand command = new WriteKnowledgeDocumentCommand(
+                document.knowledgeBaseId(),
+                document.sourceName(),
+                document.knowledgeType(),
+                document.mimeType(),
+                rawContent.getBytes(StandardCharsets.UTF_8),
+                resolvedMode,
+                chunkSize,
+                overlapSize
+        );
+        return writeDocument(command, source);
     }
 
     /** 列出全部分块。 */
