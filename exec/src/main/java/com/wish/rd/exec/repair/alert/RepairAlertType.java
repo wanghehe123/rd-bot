@@ -23,5 +23,35 @@ public enum RepairAlertType {
     /**
      * 执行结果未通过结构化校验。
      */
-    VALIDATION_FAILED
+    VALIDATION_FAILED,
+
+    /**
+     * 模型供应商熔断打开，执行会跳过该供应商。
+     */
+    MODEL_CIRCUIT_OPEN,
+
+    /**
+     * 队列消息超过重试上限后进入死信。
+     */
+    QUEUE_DEAD_LETTERED,
+
+    /**
+     * PR 创建失败。
+     */
+    PR_CREATE_FAILED,
+
+    /**
+     * 工单状态或评论回写失败。
+     */
+    TICKET_WRITE_BACK_FAILED,
+
+    /**
+     * 知识刷新失败。
+     */
+    KNOWLEDGE_REFRESH_FAILED,
+
+    /**
+     * 执行被安全策略拒绝。
+     */
+    SECURITY_POLICY_REJECTED
 }

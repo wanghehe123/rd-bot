@@ -11,7 +11,11 @@ import com.wish.rd.exec.repair.execution.RepairArtifactType;
 import com.wish.rd.exec.repair.execution.RepairExecutionResult;
 import com.wish.rd.exec.repair.execution.RepairExecutionStatus;
 import com.wish.rd.exec.repair.execution.RepairJobCommand;
+import com.wish.rd.exec.repair.model.ModelCircuitBreakerPolicy;
+import com.wish.rd.exec.repair.model.ModelHealthState;
+import com.wish.rd.exec.repair.model.ModelHealthStore;
 import com.wish.rd.exec.repair.result.StructuredResultValidator;
+import com.wish.rd.exec.repair.security.ExecutionAllowlistPolicy;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -132,6 +136,36 @@ class DockerClaudeCodeExecutorTest {
     }
 
     @Test
+    void shouldRejectExecutionBeforeContainerWhenAllowlistDoesNotMatch() {
+        CapturingRunner runner = CapturingRunner.withResult(validResultJson("SUCCESS"));
+        DockerClaudeCodeExecutor.Configuration configuration = new DockerClaudeCodeExecutor.Configuration(
+                "rd-bot/claude-code:test",
+                COMMAND,
+                "none",
+                true,
+                false
+        );
+        DockerClaudeCodeExecutor executor = new DockerClaudeCodeExecutor(
+                new RepairWorkspaceFactory(temporaryDirectory, RESULT_SCHEMA_JSON),
+                runner,
+                new StructuredResultValidator(),
+                configuration,
+                RepairWorkspaceRepositoryPort.noop(),
+                null,
+                new ModelHealthStore(ModelCircuitBreakerPolicy.disabled()),
+                DockerExecutionRegistry.noop(),
+                new ExecutionAllowlistPolicy(true, List.of(), List.of("example/allowed"), List.of("main"), List.of("repair/*"))
+        );
+
+        RepairExecutionResult result = executor.execute(command());
+
+        assertEquals(RepairExecutionStatus.UNSAFE, result.status());
+        assertTrue(result.errorMessage().contains("repository is not allowlisted"));
+        assertEquals("true", result.dockerMetadataJson().get("securityPolicyRejected"));
+        assertFalse(runner.wasCalled());
+    }
+
+    @Test
     void shouldFallbackToNextProviderWhenAttemptFailsValidation() {
         MultiAttemptRunner runner = new MultiAttemptRunner(List.of(
                 Attempt.missingResult(),
@@ -181,6 +215,119 @@ class DockerClaudeCodeExecutorTest {
         assertEquals("Need repository access", result.summary());
         assertEquals(1, runner.requests().size());
         assertEquals("deepseek", result.dockerMetadataJson().get("provider"));
+    }
+
+    @Test
+    void shouldSkipOpenProviderAndRunNextProvider() {
+        MultiAttemptRunner runner = new MultiAttemptRunner(List.of(Attempt.success()));
+        ModelHealthStore healthStore = enabledHealthStore(1);
+        healthStore.markFailure("deepseek");
+        DockerClaudeCodeExecutor executor = executor(
+                runner,
+                COMMAND,
+                List.of(
+                        provider("deepseek", Map.of("ANTHROPIC_BASE_URL", "https://api.deepseek.com/anthropic")),
+                        provider("anthropic", Map.of("ANTHROPIC_API_KEY", ""))
+                ),
+                healthStore
+        );
+
+        RepairExecutionResult result = executor.execute(command());
+
+        assertEquals(RepairExecutionStatus.SUCCESS, result.status());
+        assertEquals(1, runner.requests().size());
+        assertEquals("anthropic", runner.requests().getFirst().env().get("RD_CLAUDE_PROVIDER_NAME"));
+        assertEquals("anthropic", result.dockerMetadataJson().get("provider"));
+        assertTrue(result.dockerMetadataJson().get("providerAttemptsJson").contains("SKIPPED_CIRCUIT_OPEN"));
+        assertTrue(result.dockerMetadataJson().get("providerAttemptsJson").contains("\"deepseek\""));
+    }
+
+    @Test
+    void shouldFailWithoutRunningContainerWhenAllProvidersAreCircuitOpen() {
+        MultiAttemptRunner runner = new MultiAttemptRunner(List.of(Attempt.success()));
+        ModelHealthStore healthStore = enabledHealthStore(2);
+        open(healthStore, "deepseek", 2);
+        open(healthStore, "anthropic", 2);
+        DockerClaudeCodeExecutor executor = executor(
+                runner,
+                COMMAND,
+                List.of(
+                        provider("deepseek", Map.of("ANTHROPIC_BASE_URL", "https://api.deepseek.com/anthropic")),
+                        provider("anthropic", Map.of("ANTHROPIC_API_KEY", ""))
+                ),
+                healthStore
+        );
+
+        RepairExecutionResult result = executor.execute(command());
+
+        assertEquals(RepairExecutionStatus.FAILED, result.status());
+        assertTrue(result.errorMessage().contains("all Claude Code providers are unavailable by circuit breaker"));
+        assertEquals(0, runner.requests().size());
+        assertTrue(result.dockerMetadataJson().get("providerAttemptsJson").contains("SKIPPED_CIRCUIT_OPEN"));
+    }
+
+    @Test
+    void shouldOpenProviderCircuitAfterFallbackFailureThreshold() {
+        MultiAttemptRunner runner = new MultiAttemptRunner(List.of(
+                Attempt.missingResult(),
+                Attempt.success()
+        ));
+        ModelHealthStore healthStore = enabledHealthStore(1);
+        DockerClaudeCodeExecutor executor = executor(
+                runner,
+                COMMAND,
+                List.of(
+                        provider("deepseek", Map.of("ANTHROPIC_BASE_URL", "https://api.deepseek.com/anthropic")),
+                        provider("anthropic", Map.of("ANTHROPIC_API_KEY", ""))
+                ),
+                healthStore
+        );
+
+        RepairExecutionResult result = executor.execute(command());
+
+        assertEquals(RepairExecutionStatus.SUCCESS, result.status());
+        assertEquals(ModelHealthState.OPEN, healthStore.snapshot("deepseek").state());
+        assertEquals(ModelHealthState.CLOSED, healthStore.snapshot("anthropic").state());
+    }
+
+    @Test
+    void shouldNotOpenProviderCircuitForNeedInfo() {
+        MultiAttemptRunner runner = new MultiAttemptRunner(List.of(Attempt.needInfo()));
+        ModelHealthStore healthStore = enabledHealthStore(1);
+        DockerClaudeCodeExecutor executor = executor(
+                runner,
+                COMMAND,
+                List.of(provider("deepseek", Map.of("ANTHROPIC_BASE_URL", "https://api.deepseek.com/anthropic"))),
+                healthStore
+        );
+
+        RepairExecutionResult result = executor.execute(command());
+
+        assertEquals(RepairExecutionStatus.NEED_INFO, result.status());
+        assertEquals(ModelHealthState.CLOSED, healthStore.snapshot("deepseek").state());
+        assertEquals(1, runner.requests().size());
+    }
+
+    @Test
+    void shouldNotOpenProviderCircuitWhenRepositoryPublishFails() {
+        CapturingRunner runner = CapturingRunner.withResult(validResultJson("SUCCESS"));
+        RecordingRepositoryPort repositoryPort = new RecordingRepositoryPort(true);
+        ModelHealthStore healthStore = enabledHealthStore(1);
+        DockerClaudeCodeExecutor executor = executor(
+                new RepairWorkspaceFactory(temporaryDirectory, RESULT_SCHEMA_JSON),
+                runner,
+                COMMAND,
+                repositoryPort,
+                null,
+                healthStore
+        );
+
+        RepairExecutionResult result = executor.execute(command());
+
+        assertEquals(RepairExecutionStatus.FAILED, result.status());
+        assertEquals("Repository publish failed.", result.summary());
+        assertEquals(ModelHealthState.CLOSED, healthStore.snapshot("anthropic").state());
+        assertTrue(result.dockerMetadataJson().get("providerAttemptsJson").contains("\"status\":\"SUCCESS\""));
     }
 
     @Test
@@ -374,6 +521,15 @@ class DockerClaudeCodeExecutorTest {
             List<String> command,
             List<ClaudeCodeModelProvider> providers
     ) {
+        return executor(runner, command, providers, new ModelHealthStore(ModelCircuitBreakerPolicy.disabled()));
+    }
+
+    private DockerClaudeCodeExecutor executor(
+            ContainerRunnerPort runner,
+            List<String> command,
+            List<ClaudeCodeModelProvider> providers,
+            ModelHealthStore healthStore
+    ) {
         DockerClaudeCodeExecutor.Configuration configuration = new DockerClaudeCodeExecutor.Configuration(
                 "rd-bot/claude-code:test",
                 command,
@@ -386,7 +542,10 @@ class DockerClaudeCodeExecutorTest {
                 new RepairWorkspaceFactory(temporaryDirectory, RESULT_SCHEMA_JSON),
                 runner,
                 new StructuredResultValidator(),
-                configuration
+                configuration,
+                RepairWorkspaceRepositoryPort.noop(),
+                null,
+                healthStore
         );
     }
 
@@ -414,6 +573,18 @@ class DockerClaudeCodeExecutorTest {
             RepairWorkspaceRepositoryPort repositoryPort,
             RepairExecutionWatchdog watchdog
     ) {
+        return executor(workspaceFactory, runner, command, repositoryPort, watchdog,
+                new ModelHealthStore(ModelCircuitBreakerPolicy.disabled()));
+    }
+
+    private DockerClaudeCodeExecutor executor(
+            RepairWorkspaceFactory workspaceFactory,
+            ContainerRunnerPort runner,
+            List<String> command,
+            RepairWorkspaceRepositoryPort repositoryPort,
+            RepairExecutionWatchdog watchdog,
+            ModelHealthStore healthStore
+    ) {
         DockerClaudeCodeExecutor.Configuration configuration = new DockerClaudeCodeExecutor.Configuration(
                 "rd-bot/claude-code:test",
                 command,
@@ -427,7 +598,8 @@ class DockerClaudeCodeExecutorTest {
                 new StructuredResultValidator(),
                 configuration,
                 repositoryPort,
-                watchdog
+                watchdog,
+                healthStore
         );
     }
 
@@ -534,6 +706,16 @@ class DockerClaudeCodeExecutorTest {
         return new ClaudeCodeModelProvider(name, env);
     }
 
+    private static ModelHealthStore enabledHealthStore(int failureThreshold) {
+        return new ModelHealthStore(new ModelCircuitBreakerPolicy(true, failureThreshold, 60_000L));
+    }
+
+    private static void open(ModelHealthStore healthStore, String provider, int failureThreshold) {
+        for (int index = 0; index < failureThreshold; index++) {
+            healthStore.markFailure(provider);
+        }
+    }
+
     private static Path dockerSourceRoot() {
         Path currentDirectory = Path.of("").toAbsolutePath();
         Path moduleRelative = currentDirectory.resolve("src/main/java/com/wish/rd/exec/repair/docker");
@@ -606,6 +788,10 @@ class DockerClaudeCodeExecutorTest {
         ContainerRunRequest request() {
             assertNotNull(request);
             return request;
+        }
+
+        boolean wasCalled() {
+            return request != null;
         }
 
         @Override
