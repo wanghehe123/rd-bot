@@ -27,6 +27,7 @@ Thumbs.db
 # ===== 日志 =====
 *.log
 logs/
+frontend/test-results/
 
 # ===== 文档（永不提交）=====
 docs/

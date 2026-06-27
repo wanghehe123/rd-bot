@@ -2,6 +2,44 @@
 
 This file applies to the whole repository. Read it before changing code.
 
+## Product Positioning
+
+RD-Bot is an AI-native software delivery harness for R&D workflows. It is not a
+chatbot and not a direct code-generation demo. Treat the model as a replaceable
+worker inside a controlled platform.
+
+The project value lives in the harness around the model:
+
+- workflow orchestration,
+- task-scoped RAG context packaging,
+- tool and connector boundaries,
+- sandboxed execution,
+- validation and rollback evidence,
+- PR-based delivery,
+- audit trails,
+- policy gates,
+- human-in-the-loop recovery.
+
+The goal is to turn a Feishu ticket, mock ticket, or manually created
+engineering task into a governed repair workflow:
+
+`Ticket -> Context -> Plan -> Policy Gate -> Sandbox Execution -> Validation -> Pull Request -> Report -> Audit`
+
+## Harness Engineering Principles
+
+- Do not attribute product capability only to the model. Build the surrounding
+  tools, state, constraints, execution environment, feedback, and observability.
+- Keep the control plane separate from the execution plane. The platform
+  orchestrates; delegates execute.
+- External systems are replaceable connectors behind ports.
+- Every risky operation must be policy-checked before it changes code,
+  repositories, tickets, secrets, or production-adjacent state.
+- Agent output is not trusted until validation evidence is recorded.
+- Agent delivery is reviewable. Prefer PRs and reports over direct writes to
+  protected branches.
+- Human operators remain responsible for priority, acceptance, risk decisions,
+  and manual recovery.
+
 ## Project Shape
 
 RD-Bot is a Java 21 / Spring Boot 3.5 multi-module monolith. It is split by
@@ -13,18 +51,50 @@ layers, not by microservices.
   flows. Keep business orchestration here.
 - `bootstrap`: Spring Boot entrypoint, REST controllers, configuration, static
   admin frontend, and external adapter implementations.
-- `exec`: repair execution layer. Currently placeholder; future Docker Claude
-  Code execution, repair records, validation, and code platform ports belong
-  here.
-- `skill`: future reusable repair skills. Currently placeholder.
+- `exec`: execution-plane module. It owns the contract for sandboxed repair
+  execution, repair records, validation results, artifact persistence, and code
+  platform ports. The first production direction is Docker + Claude Code, but
+  domain contracts must not depend on Claude-specific APIs.
+- `skill`: reusable workflow-step module. It hosts composable repair,
+  validation, analysis, risk scoring, review, and reporting skills as they are
+  extracted from the main workflow.
 - `frontend`: frontend workspace if present. Do not assume it is part of Maven.
 
 Follow [RULE.md](RULE.md) for Java style, naming, comments, REST conventions,
 patterns, and tests.
 
+## Harness Concept Mapping
+
+RD-Bot intentionally separates the control plane, execution plane,
+knowledge/context plane, and integration plane.
+
+| RD-Bot module | Harness-style concept | Responsibility |
+| --- | --- | --- |
+| `bootstrap` | Adapter/API plane | REST, configuration, admin UI, and external adapter implementations. |
+| `engine` | Control plane / workflow orchestrator | Turns tickets or manual tasks into repair workflows and coordinates stages. |
+| `rag` | Knowledge/context plane | Produces task-scoped context packages, retrieval traces, and prompt plans. |
+| `exec` | Delegate/execution plane | Runs repair agents in sandboxed environments, records artifacts, and validates results. |
+| `skill` | Reusable workflow steps | Common repair, validation, analysis, policy, and reporting capabilities. |
+| `frontend` | Developer portal / operations UI | Shows task state, evidence, policy results, metrics, and manual recovery actions. |
+
+## Core Domain Vocabulary
+
+- `RepairWorkflow`: one end-to-end automated R&D task.
+- `RepairRecord`: durable audit record for one workflow execution.
+- `RepairArtifact`: large output produced by a workflow stage, such as logs,
+  patches, prompts, test results, and PR metadata.
+- `ContextPackage`: task-scoped RAG output used by the repair agent.
+- `ExecutionDelegate`: sandboxed worker that runs code repair and validation.
+- `PolicyGate`: programmable guardrail before risky operations.
+- `Connector`: replaceable adapter for ticket, code, model, queue, storage, and
+  notification systems.
+
 ## Current Product Direction
 
-The latest implementation plan lives in Feishu Wiki under the parent page:
+The public, recruiter-readable future direction lives in
+[docs/roadmap/public-roadmap.md](docs/roadmap/public-roadmap.md).
+
+The private implementation plan lives in Feishu Wiki under the parent page:
 
 - Parent: `https://my.feishu.cn/wiki/KN6dwQ48wic3OcktRghccUnnnng`
 - P0: `https://my.feishu.cn/wiki/W7bzwwbAciPkqZkECSXc146znfb`
@@ -34,6 +104,9 @@ The latest implementation plan lives in Feishu Wiki under the parent page:
 
 Do not invent a different roadmap. If the docs and code disagree, inspect both
 and ask the user before making a design-changing edit.
+
+Private Feishu planning pages are implementation references only and should not
+be required to understand the public project direction.
 
 ## Development Priority
 
@@ -65,6 +138,35 @@ Build in this order unless the user explicitly changes scope:
    - Audit, idempotency, dead-letter handling, manual recovery, alerting,
      allowlists, secret boundaries, log redaction, and operational views.
 
+Keep this engineering roadmap separate from the demo roadmap in
+[docs/roadmap/public-roadmap.md](docs/roadmap/public-roadmap.md). The demo
+roadmap should prioritize a runnable golden path for portfolio and interview
+review without requiring private Feishu, RocketMQ, or GitHub App credentials.
+
+## End-to-End Workflow
+
+RD-Bot should optimize for a durable, resumable workflow rather than a single
+agent RPC:
+
+`Ticket or Manual Task -> RepairWorkflow -> ContextPackage -> Repair Plan -> PolicyGate -> ExecutionDelegate -> Validation -> Pull Request or Artifact -> Report -> Audit`
+
+When a real external integration is unavailable, provide a mock or local adapter
+that exercises the same port contract.
+
+## Repair Workflow State Model
+
+A repair workflow is durable and resumable. Recommended state transitions:
+
+`CREATED -> CONTEXT_BUILDING -> CONTEXT_READY -> PLAN_GENERATED -> WAITING_POLICY -> WAITING_APPROVAL -> EXECUTING -> VALIDATING -> PR_CREATING -> PR_CREATED -> REPORTING -> COMPLETED`
+
+Failure and recovery states:
+
+- `FAILED_RETRYABLE`
+- `FAILED_NEEDS_HUMAN`
+- `CANCELLED`
+- `DEAD_LETTERED`
+- `RECOVERING`
+
 ## Architecture Rules
 
 - Preserve dependency direction: `bootstrap -> engine -> rag`.
@@ -76,6 +178,8 @@ Build in this order unless the user explicitly changes scope:
 - `rag` owns RAG domain behavior and context packaging.
 - `exec` owns repair execution models, repair record persistence interfaces,
   Docker execution, result validation, and code platform abstractions.
+- Treat model providers and repair executors as replaceable workers. Workflow
+  orchestration must depend on ports, not a concrete model SDK or CLI command.
 - Use records for immutable value objects and normalize null inputs in compact
   constructors.
 - Keep existing route shapes compatible unless a task explicitly changes them.
@@ -87,6 +191,22 @@ Build in this order unless the user explicitly changes scope:
   call `BugFixAgentEngine.submit` or otherwise trigger agent execution; upstream
   orchestration is responsible for taking the returned RAG result and invoking
   the agent.
+
+## Policy Gates
+
+Risky operations must pass explicit policy gates. Governance is not only a P3
+feature; every phase should preserve a minimal guardrail path.
+
+Examples:
+
+- The agent cannot push directly to protected branches.
+- The agent must create PRs instead of committing to `main`.
+- Any production-impacting change requires manual approval.
+- Secrets must never be included in prompts, logs, artifacts, or PR comments.
+- Docker execution must use allowlisted repositories, images, and commands.
+- High-risk patches require human review before PR creation.
+- Validation failures must preserve artifacts and stop before PR creation unless
+  the user explicitly chooses a different policy.
 
 ## External Integrations
 
@@ -115,6 +235,36 @@ security, or persistence, ask the user.
 - Preserve enough fields for audit: ticket, RAG context, executor, Docker,
   GitHub, test result, risk, errors, timestamps, and extension JSON.
 
+## Observability and Evaluation
+
+Every workflow stage should emit structured traces. Minimum trace dimensions:
+
+- ticket id,
+- task id,
+- knowledge base version,
+- retrieved document ids,
+- prompt plan id,
+- model/executor config,
+- Docker image and command,
+- validation command,
+- test result,
+- generated diff summary,
+- PR URL,
+- policy decision,
+- error category,
+- human intervention reason.
+
+Minimum product metrics:
+
+- context build latency,
+- repair success rate,
+- validation pass rate,
+- PR creation rate,
+- human intervention rate,
+- retry rate,
+- mean time to repair,
+- top failure categories.
+
 ## Testing
 
 Use focused tests first, then broader verification.
@@ -141,3 +291,6 @@ the focused tests that did run.
 - Do not commit, stage, push, or create PRs unless explicitly asked.
 - Update README/RULE/Feishu docs only when the task asks for docs or when an
   implementation changes documented behavior.
+- Local `docs/` artifacts are ignored by git in this repository. If a new doc is
+  meant to be reviewed or published, mention the path explicitly in the final
+  response and verify whether the user wants ignore rules changed.
