@@ -6,6 +6,10 @@ import com.wish.rd.engine.bugfix.BugFixExecutionRequest;
 import com.wish.rd.engine.bugfix.BugFixExecutionResult;
 import com.wish.rd.engine.bugfix.BugFixExecutor;
 import com.wish.rd.engine.bugfix.acceptance.AcceptancePlan;
+import com.wish.rd.engine.audit.NoopRepairAuditSink;
+import com.wish.rd.engine.audit.RepairAuditEvent;
+import com.wish.rd.engine.audit.RepairAuditEventType;
+import com.wish.rd.engine.audit.RepairAuditSinkPort;
 import com.wish.rd.engine.rag.BugFixMessage;
 import com.wish.rd.exec.repair.code.CodePlatformPort;
 import com.wish.rd.exec.repair.code.CreatePullRequestCommand;
@@ -31,6 +35,7 @@ public class EngineBugFixExecutorAdapter implements BugFixExecutor {
     private final RepairExecutorPort repairExecutor;
     private final CodePlatformPort codePlatform;
     private final RepositoryConfig repositoryConfig;
+    private final RepairAuditSinkPort auditSink;
 
     /**
      * 创建可直接测试的桥接适配器。
@@ -44,9 +49,27 @@ public class EngineBugFixExecutorAdapter implements BugFixExecutor {
             CodePlatformPort codePlatform,
             RepositoryConfig repositoryConfig
     ) {
+        this(repairExecutor, codePlatform, repositoryConfig, NoopRepairAuditSink.instance());
+    }
+
+    /**
+     * 创建可接入审计事件的桥接适配器。
+     *
+     * @param repairExecutor   修复执行端口
+     * @param codePlatform     代码平台端口
+     * @param repositoryConfig 仓库配置
+     * @param auditSink        修复审计事件 sink
+     */
+    public EngineBugFixExecutorAdapter(
+            RepairExecutorPort repairExecutor,
+            CodePlatformPort codePlatform,
+            RepositoryConfig repositoryConfig,
+            RepairAuditSinkPort auditSink
+    ) {
         this.repairExecutor = Objects.requireNonNull(repairExecutor, "repairExecutor must not be null");
         this.codePlatform = Objects.requireNonNull(codePlatform, "codePlatform must not be null");
         this.repositoryConfig = Objects.requireNonNull(repositoryConfig, "repositoryConfig must not be null");
+        this.auditSink = auditSink == null ? NoopRepairAuditSink.instance() : auditSink;
     }
 
     @Override
@@ -65,6 +88,15 @@ public class EngineBugFixExecutorAdapter implements BugFixExecutor {
                     toResultJson(failedResult("repair executor returned null"), "", null)
             );
         }
+        audit(
+                repairCommand.repairRecordId(),
+                repairCommand.taskId(),
+                repairCommand.ticketId(),
+                RepairAuditEventType.EXECUTION_FINISHED,
+                "Docker",
+                repairResult.summary(),
+                Map.of("executionStatus", repairResult.status().name())
+        );
 
         String pullRequestUrl = "";
         PullRequestResult pullRequest = null;
@@ -74,6 +106,15 @@ public class EngineBugFixExecutorAdapter implements BugFixExecutor {
                 throw new IllegalStateException("code platform returned blank pull request url");
             }
             pullRequestUrl = pullRequest.pullRequestUrl();
+            audit(
+                    repairCommand.repairRecordId(),
+                    repairCommand.taskId(),
+                    repairCommand.ticketId(),
+                    RepairAuditEventType.PR_CREATED,
+                    "GitHub",
+                    "pull request created",
+                    Map.of("pullRequestUrl", pullRequestUrl)
+            );
         }
 
         return new BugFixExecutionResult(
@@ -247,6 +288,26 @@ public class EngineBugFixExecutorAdapter implements BugFixExecutor {
 
     private String ticketTitle(BugFixMessage message) {
         return message == null ? "" : message.ticketTitle();
+    }
+
+    private void audit(
+            String repairRecordId,
+            String taskId,
+            String ticketId,
+            RepairAuditEventType type,
+            String externalSystem,
+            String summary,
+            Map<String, String> metadata
+    ) {
+        auditSink.publish(RepairAuditEvent.now(
+                repairRecordId,
+                taskId,
+                ticketId,
+                type,
+                externalSystem,
+                summary,
+                metadata
+        ));
     }
 
     /**

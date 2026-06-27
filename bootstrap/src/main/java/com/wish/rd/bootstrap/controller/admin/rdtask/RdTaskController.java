@@ -1,11 +1,20 @@
 package com.wish.rd.bootstrap.controller.admin.rdtask;
 
+import com.wish.rd.engine.audit.NoopRepairAuditSink;
+import com.wish.rd.engine.audit.RepairAuditEvent;
+import com.wish.rd.engine.audit.RepairAuditEventType;
+import com.wish.rd.engine.audit.RepairAuditSinkPort;
+import com.wish.rd.exec.repair.execution.RepairExecutionControlPort;
+import com.wish.rd.exec.repair.execution.RepairExecutionStopCommand;
+import com.wish.rd.exec.repair.execution.RepairExecutionStopResult;
 import com.wish.rd.rag.runtime.RdBugFixTask;
 import com.wish.rd.rag.runtime.RdTaskPage;
 import com.wish.rd.rag.runtime.RdTaskQuery;
 import com.wish.rd.rag.runtime.RdTaskStatus;
 import com.wish.rd.rag.runtime.RdTaskStatusEvent;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -39,9 +48,48 @@ public class RdTaskController {
     private static final int PREVIEW_MAX_CHARS = 120;
 
     private final RagStreamTaskRegistry registry;
+    private final RepairExecutionControlPort executionControlPort;
+    private final RepairAuditSinkPort auditSink;
 
     public RdTaskController(RagStreamTaskRegistry registry) {
+        this(
+                registry,
+                command -> new RepairExecutionStopResult(
+                        command.taskId(),
+                        command.containerName(),
+                        false,
+                        "execution control unavailable"
+                ),
+                NoopRepairAuditSink.instance()
+        );
+    }
+
+    @Autowired
+    public RdTaskController(
+            RagStreamTaskRegistry registry,
+            ObjectProvider<RepairExecutionControlPort> executionControlPortProvider,
+            ObjectProvider<RepairAuditSinkPort> auditSinkProvider
+    ) {
+        this(
+                registry,
+                executionControlPortProvider.getIfAvailable(() -> command -> new RepairExecutionStopResult(
+                        command.taskId(),
+                        command.containerName(),
+                        false,
+                        "execution control unavailable"
+                )),
+                auditSinkProvider.getIfAvailable(NoopRepairAuditSink::instance)
+        );
+    }
+
+    private RdTaskController(
+            RagStreamTaskRegistry registry,
+            RepairExecutionControlPort executionControlPort,
+            RepairAuditSinkPort auditSink
+    ) {
         this.registry = registry;
+        this.executionControlPort = executionControlPort;
+        this.auditSink = auditSink;
     }
 
     /**
@@ -152,6 +200,49 @@ public class RdTaskController {
     ) {
         String message = request == null ? "管理台恢复" : request.message();
         return toDetailView(registry.resume(taskId, message));
+    }
+
+    /**
+     * 手动停止正在执行的任务。
+     *
+     * @param taskId  任务 ID
+     * @param request 动作请求（可选 message）
+     * @return 停止结果
+     */
+    @PostMapping("/admin/rd-tasks/{taskId}/stop")
+    public StopRdTaskResponse stop(
+            @PathVariable("taskId") String taskId,
+            @RequestBody(required = false) RdTaskActionRequest request
+    ) {
+        String message = request == null || request.message().isBlank() ? "管理台停止任务" : request.message();
+        auditSink.publish(RepairAuditEvent.now(
+                "",
+                taskId,
+                "",
+                RepairAuditEventType.EXECUTION_STOP_REQUESTED,
+                "RD-Bot",
+                message,
+                Map.of()
+        ));
+        RepairExecutionStopResult stopResult = executionControlPort.stop(
+                new RepairExecutionStopCommand("", taskId, "", message)
+        );
+        RdBugFixTask task = stopResult.stopped() ? registry.cancel(taskId) : registry.get(taskId);
+        auditSink.publish(RepairAuditEvent.now(
+                "",
+                task.taskId(),
+                task.ticketId(),
+                RepairAuditEventType.EXECUTION_STOPPED,
+                "Docker",
+                stopResult.message(),
+                Map.of("stopped", String.valueOf(stopResult.stopped()), "containerName", stopResult.containerName())
+        ));
+        return new StopRdTaskResponse(
+                toDetailView(task),
+                stopResult.stopped(),
+                stopResult.containerName(),
+                stopResult.message()
+        );
     }
 
     /**
@@ -275,6 +366,18 @@ public class RdTaskController {
 
     /** 暂停 / 恢复动作请求体。 */
     public record RdTaskActionRequest(String message) {
+        public RdTaskActionRequest {
+            message = message == null ? "" : message;
+        }
+    }
+
+    /** 停止任务响应体。 */
+    public record StopRdTaskResponse(
+            RdTaskView task,
+            boolean stopped,
+            String containerName,
+            String message
+    ) {
     }
 
     /** 任务视图。 */

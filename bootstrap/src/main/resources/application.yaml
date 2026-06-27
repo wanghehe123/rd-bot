@@ -100,6 +100,20 @@ rd:
       remove-after-exit: true
       timeout-alert-millis: 1800000
       budget-alert-usd: 5.00
+      circuit-breaker:
+        enabled: ${RD_EXECUTOR_DOCKER_CIRCUIT_BREAKER_ENABLED:true}
+        failure-threshold: ${RD_EXECUTOR_DOCKER_CIRCUIT_BREAKER_FAILURE_THRESHOLD:3}
+        open-duration-millis: ${RD_EXECUTOR_DOCKER_CIRCUIT_BREAKER_OPEN_DURATION_MILLIS:60000}
+      security:
+        enabled: ${RD_EXECUTOR_DOCKER_SECURITY_ENABLED:true}
+        repository-urls:
+          - ${RD_EXECUTOR_DOCKER_ALLOWED_REPOSITORY_URL:https://github.com/wanghehe123/rd-bot-waimai-acceptance-20260624-141045.git}
+        repositories:
+          - ${RD_EXECUTOR_DOCKER_ALLOWED_REPOSITORY:wanghehe123/rd-bot-waimai-acceptance-20260624-141045}
+        base-branches:
+          - ${RD_EXECUTOR_DOCKER_ALLOWED_BASE_BRANCH:main}
+        work-branches:
+          - ${RD_EXECUTOR_DOCKER_ALLOWED_WORK_BRANCH:repair/*}
       git:
         enabled: ${RD_EXECUTOR_DOCKER_GIT_ENABLED:true}
         user-name: ${RD_EXECUTOR_DOCKER_GIT_USER_NAME:RD-Bot}

@@ -2,6 +2,8 @@ package com.wish.rd.bootstrap.executor;
 
 import com.wish.rd.exec.repair.docker.ClaudeCodeModelProvider;
 import com.wish.rd.exec.repair.docker.DockerClaudeCodeExecutor;
+import com.wish.rd.exec.repair.model.ModelCircuitBreakerPolicy;
+import com.wish.rd.exec.repair.security.ExecutionAllowlistPolicy;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
@@ -38,6 +40,10 @@ public class DockerExecutorProperties {
     public static final long DEFAULT_TIMEOUT_ALERT_MILLIS = 1_800_000L;
     /** 默认预算告警阈值，单位美元。 */
     public static final BigDecimal DEFAULT_BUDGET_ALERT_USD = new BigDecimal("5.00");
+    /** 默认模型熔断连续失败阈值。 */
+    public static final int DEFAULT_CIRCUIT_BREAKER_FAILURE_THRESHOLD = 3;
+    /** 默认模型熔断 OPEN 持续时间。 */
+    public static final long DEFAULT_CIRCUIT_BREAKER_OPEN_DURATION_MILLIS = 60_000L;
 
     private boolean enabled = false;
     private String image = DEFAULT_IMAGE;
@@ -50,6 +56,8 @@ public class DockerExecutorProperties {
     private long timeoutAlertMillis = DEFAULT_TIMEOUT_ALERT_MILLIS;
     private BigDecimal budgetAlertUsd = DEFAULT_BUDGET_ALERT_USD;
     private GitProperties git = new GitProperties();
+    private CircuitBreakerProperties circuitBreaker = new CircuitBreakerProperties();
+    private SecurityProperties security = new SecurityProperties();
     private List<ModelProviderProperties> providers = new ArrayList<>();
 
     public boolean isEnabled() {
@@ -140,6 +148,22 @@ public class DockerExecutorProperties {
         this.git = git == null ? new GitProperties() : git;
     }
 
+    public CircuitBreakerProperties getCircuitBreaker() {
+        return circuitBreaker;
+    }
+
+    public void setCircuitBreaker(CircuitBreakerProperties circuitBreaker) {
+        this.circuitBreaker = circuitBreaker == null ? new CircuitBreakerProperties() : circuitBreaker;
+    }
+
+    public SecurityProperties getSecurity() {
+        return security;
+    }
+
+    public void setSecurity(SecurityProperties security) {
+        this.security = security == null ? new SecurityProperties() : security;
+    }
+
     public List<ModelProviderProperties> getProviders() {
         return providers;
     }
@@ -162,6 +186,15 @@ public class DockerExecutorProperties {
                 false,
                 modelProviders()
         );
+    }
+
+    /**
+     * 生成执行目标安全 allowlist 策略。
+     *
+     * @return 执行目标 allowlist 策略
+     */
+    public ExecutionAllowlistPolicy toExecutionAllowlistPolicy() {
+        return security.toPolicy();
     }
 
     /**
@@ -240,6 +273,116 @@ public class DockerExecutorProperties {
 
         public void setTimeoutSeconds(long timeoutSeconds) {
             this.timeoutSeconds = Math.max(1L, timeoutSeconds);
+        }
+    }
+
+    /**
+     * Claude Code 模型供应商熔断配置。
+     */
+    public static class CircuitBreakerProperties {
+
+        private boolean enabled = true;
+        private int failureThreshold = DEFAULT_CIRCUIT_BREAKER_FAILURE_THRESHOLD;
+        private long openDurationMillis = DEFAULT_CIRCUIT_BREAKER_OPEN_DURATION_MILLIS;
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public int getFailureThreshold() {
+            return failureThreshold;
+        }
+
+        public void setFailureThreshold(int failureThreshold) {
+            this.failureThreshold = Math.max(1, failureThreshold);
+        }
+
+        public long getOpenDurationMillis() {
+            return openDurationMillis;
+        }
+
+        public void setOpenDurationMillis(long openDurationMillis) {
+            this.openDurationMillis = Math.max(1L, openDurationMillis);
+        }
+
+        /**
+         * 转换为 exec 层模型熔断策略。
+         *
+         * @return 模型熔断策略
+         */
+        public ModelCircuitBreakerPolicy toPolicy() {
+            return new ModelCircuitBreakerPolicy(enabled, failureThreshold, openDurationMillis);
+        }
+    }
+
+    /**
+     * Docker 修复执行安全治理配置。
+     */
+    public static class SecurityProperties {
+
+        private boolean enabled = true;
+        private List<String> repositoryUrls = new ArrayList<>();
+        private List<String> repositories = new ArrayList<>();
+        private List<String> baseBranches = new ArrayList<>();
+        private List<String> workBranches = new ArrayList<>();
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public List<String> getRepositoryUrls() {
+            return repositoryUrls;
+        }
+
+        public void setRepositoryUrls(List<String> repositoryUrls) {
+            this.repositoryUrls = repositoryUrls == null ? new ArrayList<>() : new ArrayList<>(repositoryUrls);
+        }
+
+        public List<String> getRepositories() {
+            return repositories;
+        }
+
+        public void setRepositories(List<String> repositories) {
+            this.repositories = repositories == null ? new ArrayList<>() : new ArrayList<>(repositories);
+        }
+
+        public List<String> getBaseBranches() {
+            return baseBranches;
+        }
+
+        public void setBaseBranches(List<String> baseBranches) {
+            this.baseBranches = baseBranches == null ? new ArrayList<>() : new ArrayList<>(baseBranches);
+        }
+
+        public List<String> getWorkBranches() {
+            return workBranches;
+        }
+
+        public void setWorkBranches(List<String> workBranches) {
+            this.workBranches = workBranches == null ? new ArrayList<>() : new ArrayList<>(workBranches);
+        }
+
+        /**
+         * 转换为 exec 层 allowlist 策略。
+         *
+         * @return allowlist 策略
+         */
+        public ExecutionAllowlistPolicy toPolicy() {
+            return new ExecutionAllowlistPolicy(
+                    enabled,
+                    repositoryUrls,
+                    repositories,
+                    baseBranches,
+                    workBranches
+            );
         }
     }
 

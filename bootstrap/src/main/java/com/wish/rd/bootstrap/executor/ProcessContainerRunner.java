@@ -1,9 +1,12 @@
 package com.wish.rd.bootstrap.executor;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.wish.rd.exec.repair.docker.ContainerControlPort;
 import com.wish.rd.exec.repair.docker.ContainerRunRequest;
 import com.wish.rd.exec.repair.docker.ContainerRunResult;
 import com.wish.rd.exec.repair.docker.ContainerRunnerPort;
+import com.wish.rd.exec.repair.execution.RepairExecutionStopCommand;
+import com.wish.rd.exec.repair.execution.RepairExecutionStopResult;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
@@ -33,7 +36,7 @@ import java.util.concurrent.CompletionException;
  */
 @Component
 @ConditionalOnProperty(prefix = "rd.executor.docker", name = "enabled", havingValue = "true")
-public class ProcessContainerRunner implements ContainerRunnerPort {
+public class ProcessContainerRunner implements ContainerRunnerPort, ContainerControlPort {
 
     private static final String DOCKER_BINARY = "docker";
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
@@ -83,6 +86,26 @@ public class ProcessContainerRunner implements ContainerRunnerPort {
                 artifactIfExists(request.outputDirectory(), "docker-meta.json"),
                 metadata(request, argv, commandResult)
         );
+    }
+
+    @Override
+    public RepairExecutionStopResult stop(RepairExecutionStopCommand command) {
+        if (command == null || command.containerName().isBlank()) {
+            return new RepairExecutionStopResult("", "", false, "containerName must not be blank");
+        }
+        try {
+            CommandResult result = launch(List.of(DOCKER_BINARY, "stop", command.containerName()));
+            boolean stopped = result.exitCode() == 0;
+            String message = stopped ? "container stopped" : result.stderr();
+            return new RepairExecutionStopResult(command.taskId(), command.containerName(), stopped, message);
+        } catch (IOException exception) {
+            return new RepairExecutionStopResult(
+                    command.taskId(),
+                    command.containerName(),
+                    false,
+                    exception.getMessage()
+            );
+        }
     }
 
     /**

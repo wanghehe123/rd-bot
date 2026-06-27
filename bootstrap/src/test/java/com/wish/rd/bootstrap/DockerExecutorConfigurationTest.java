@@ -11,6 +11,8 @@ import com.wish.rd.exec.repair.alert.RepairAlertType;
 import com.wish.rd.exec.repair.docker.DockerClaudeCodeExecutor;
 import com.wish.rd.exec.repair.docker.RepairWorkspaceRepositoryPort;
 import com.wish.rd.exec.repair.execution.RepairExecutorPort;
+import com.wish.rd.exec.repair.model.ModelHealthStore;
+import com.wish.rd.exec.repair.security.ExecutionAllowlistPolicy;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.autoconfigure.context.ConfigurationPropertiesAutoConfiguration;
@@ -49,6 +51,10 @@ class DockerExecutorConfigurationTest {
         assertTrue(properties.isRemoveAfterExit());
         assertEquals(1_800_000L, properties.getTimeoutAlertMillis());
         assertEquals(0, new BigDecimal("5.00").compareTo(properties.getBudgetAlertUsd()));
+        assertTrue(properties.getCircuitBreaker().isEnabled());
+        assertEquals(3, properties.getCircuitBreaker().getFailureThreshold());
+        assertEquals(60_000L, properties.getCircuitBreaker().getOpenDurationMillis());
+        assertTrue(properties.getSecurity().isEnabled());
         assertFalse(properties.getGit().isEnabled());
         assertEquals("RD-Bot", properties.getGit().getUserName());
         assertEquals("rd-bot@example.local", properties.getGit().getUserEmail());
@@ -62,6 +68,55 @@ class DockerExecutorConfigurationTest {
         assertEquals(1, configuration.providers().size());
         assertEquals("anthropic", configuration.providers().getFirst().name());
         assertEquals("", configuration.providers().getFirst().env().get("ANTHROPIC_API_KEY"));
+    }
+
+    @Test
+    void shouldBindDockerCircuitBreakerProperties() {
+        ApplicationContextRunner contextRunner = new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(ConfigurationPropertiesAutoConfiguration.class))
+                .withUserConfiguration(DockerConfigurationContext.class)
+                .withPropertyValues(
+                        "rd.executor.docker.circuit-breaker.enabled=false",
+                        "rd.executor.docker.circuit-breaker.failure-threshold=7",
+                        "rd.executor.docker.circuit-breaker.open-duration-millis=45000"
+                );
+
+        contextRunner.run(context -> {
+            DockerExecutorProperties properties = context.getBean(DockerExecutorProperties.class);
+            ModelHealthStore healthStore = context.getBean(ModelHealthStore.class);
+
+            assertFalse(properties.getCircuitBreaker().isEnabled());
+            assertEquals(7, properties.getCircuitBreaker().getFailureThreshold());
+            assertEquals(45_000L, properties.getCircuitBreaker().getOpenDurationMillis());
+            assertFalse(healthStore.policy().enabled());
+            assertEquals(7, healthStore.policy().failureThreshold());
+            assertEquals(45_000L, healthStore.policy().openDurationMillis());
+        });
+    }
+
+    @Test
+    void shouldBindDockerSecurityAllowlistProperties() {
+        ApplicationContextRunner contextRunner = new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(ConfigurationPropertiesAutoConfiguration.class))
+                .withUserConfiguration(DockerConfigurationContext.class)
+                .withPropertyValues(
+                        "rd.executor.docker.security.enabled=true",
+                        "rd.executor.docker.security.repository-urls[0]=https://github.com/example/*",
+                        "rd.executor.docker.security.repositories[0]=example/order",
+                        "rd.executor.docker.security.base-branches[0]=main",
+                        "rd.executor.docker.security.work-branches[0]=repair/*"
+                );
+
+        contextRunner.run(context -> {
+            DockerExecutorProperties properties = context.getBean(DockerExecutorProperties.class);
+            ExecutionAllowlistPolicy policy = context.getBean(ExecutionAllowlistPolicy.class);
+
+            assertTrue(properties.getSecurity().isEnabled());
+            assertEquals(List.of("example/order"), properties.getSecurity().getRepositories());
+            assertTrue(policy.enabled());
+            assertEquals(List.of("https://github.com/example/*"), policy.repositoryUrls());
+            assertEquals(List.of("repair/*"), policy.workBranches());
+        });
     }
 
     @Test
@@ -148,6 +203,7 @@ class DockerExecutorConfigurationTest {
                 .run(context -> {
                     assertEquals(1, context.getBeanNamesForType(RepairExecutorPort.class).length);
                     assertTrue(context.getBean(RepairExecutorPort.class) instanceof DockerClaudeCodeExecutor);
+                    assertTrue(context.getBean(ModelHealthStore.class).policy().enabled());
                 });
     }
 

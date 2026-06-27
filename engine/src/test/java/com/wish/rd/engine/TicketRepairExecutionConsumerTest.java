@@ -15,6 +15,8 @@ import com.wish.rd.engine.bugfix.RdBotFixEngine;
 import com.wish.rd.engine.rag.ChatQueueLimiter;
 import com.wish.rd.engine.rag.RagBugFixEngine;
 import com.wish.rd.engine.ticket.InMemoryRepairRecordRepository;
+import com.wish.rd.engine.ticket.RepairQueueDeadLetter;
+import com.wish.rd.engine.ticket.RepairQueueDeadLetterRepository;
 import com.wish.rd.engine.ticket.RepairRecordRepository;
 import com.wish.rd.engine.ticket.RepairRecordStatus;
 import com.wish.rd.engine.ticket.RepairTicketMessage;
@@ -32,6 +34,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.NoSuchElementException;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -160,6 +163,49 @@ class TicketRepairExecutionConsumerTest {
         assertTrue(executor.requests.isEmpty());
     }
 
+    @Test
+    void shouldMoveMessageToDeadLetterWhenRetryLimitExceeded() {
+        ReadyProvider provider = new ReadyProvider();
+        TicketRepairEngine ticketRepairEngine = TicketRepairEngine.forTesting(
+                provider,
+                null,
+                InMemoryRepairRecordRepository.inMemory(),
+                ragEngine(),
+                TicketFieldMapping.defaults(),
+                false
+        );
+        RecordingBugFixExecutor executor = new RecordingBugFixExecutor();
+        RecordingDeadLetterRepository deadLetters = new RecordingDeadLetterRepository();
+        RdBotFixEngine fixEngine = new RdBotFixEngine(
+                ChatQueueLimiter.passThrough(),
+                ragEngine(),
+                taskRegistry(),
+                com.wish.rd.engine.bugfix.BugFixPromptBuilder.defaultBuilder(),
+                executor
+        );
+        TicketRepairExecutionConsumer consumer = new TicketRepairExecutionConsumer(
+                ticketRepairEngine,
+                provider,
+                fixEngine,
+                TicketFieldMapping.defaults(),
+                true,
+                null,
+                null,
+                false,
+                null,
+                deadLetters,
+                3
+        );
+
+        boolean consumed = consumer.handle(message("FS-READY", 4));
+
+        assertTrue(consumed);
+        assertEquals(1, deadLetters.list().size());
+        assertEquals(4, deadLetters.list().getFirst().originalAttempt());
+        assertTrue(deadLetters.list().getFirst().reason().contains("retry attempts exceeded"));
+        assertTrue(executor.requests.isEmpty());
+    }
+
     private static RagBugFixEngine ragEngine() {
         return new RagBugFixEngine(
                 QueryTermMappingRegistry.withDefaults(),
@@ -179,16 +225,60 @@ class TicketRepairExecutionConsumerTest {
     }
 
     private static RepairTicketMessage message(String ticketId) {
+        return message(ticketId, 1);
+    }
+
+    private static RepairTicketMessage message(String ticketId, int attempt) {
         return new RepairTicketMessage(
                 ticketId,
                 "P1",
                 "trace-" + ticketId,
-                1,
+                attempt,
                 "feishu",
                 "evt-" + ticketId,
                 "helpdesk.ticket.created_v1",
                 Instant.parse("2026-06-21T00:00:00Z")
         );
+    }
+
+    private static final class RecordingDeadLetterRepository implements RepairQueueDeadLetterRepository {
+
+        private final List<RepairQueueDeadLetter> records = new ArrayList<>();
+
+        @Override
+        public RepairQueueDeadLetter save(RepairTicketMessage message, String reason) {
+            RepairQueueDeadLetter deadLetter = new RepairQueueDeadLetter(
+                    "dead-letter-" + (records.size() + 1),
+                    message.ticketId(),
+                    message.traceId(),
+                    message.source(),
+                    message.eventId(),
+                    message.eventType(),
+                    message.attempt(),
+                    reason,
+                    Map.of("priority", message.priority()),
+                    false,
+                    1_780_000_000_000L,
+                    0L
+            );
+            records.add(deadLetter);
+            return deadLetter;
+        }
+
+        @Override
+        public List<RepairQueueDeadLetter> list() {
+            return List.copyOf(records);
+        }
+
+        @Override
+        public Optional<RepairQueueDeadLetter> findById(String id) {
+            return records.stream().filter(record -> record.id().equals(id)).findFirst();
+        }
+
+        @Override
+        public RepairQueueDeadLetter markReplayed(String id) {
+            throw new NoSuchElementException("dead letter not found: " + id);
+        }
     }
 
     private static final class ReadyProvider implements TicketProviderPort {

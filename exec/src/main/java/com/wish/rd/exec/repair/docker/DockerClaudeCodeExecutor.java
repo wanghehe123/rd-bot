@@ -9,9 +9,14 @@ import com.wish.rd.exec.repair.execution.RepairExecutionResult;
 import com.wish.rd.exec.repair.execution.RepairExecutionStatus;
 import com.wish.rd.exec.repair.execution.RepairExecutorPort;
 import com.wish.rd.exec.repair.execution.RepairJobCommand;
+import com.wish.rd.exec.repair.model.ModelCircuitBreakerPolicy;
+import com.wish.rd.exec.repair.model.ModelHealthSnapshot;
+import com.wish.rd.exec.repair.model.ModelHealthStore;
 import com.wish.rd.exec.repair.result.StructuredRepairResult;
 import com.wish.rd.exec.repair.result.StructuredResultValidation;
 import com.wish.rd.exec.repair.result.StructuredResultValidator;
+import com.wish.rd.exec.repair.security.ExecutionAllowlistPolicy;
+import com.wish.rd.exec.repair.security.SecretRedactor;
 
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -41,6 +46,9 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
     private final Configuration configuration;
     private final RepairWorkspaceRepositoryPort workspaceRepository;
     private final RepairExecutionWatchdog watchdog;
+    private final ModelHealthStore modelHealthStore;
+    private final DockerExecutionRegistry executionRegistry;
+    private final ExecutionAllowlistPolicy executionAllowlistPolicy;
 
     /**
      * 创建 Docker Claude Code 执行器。
@@ -103,6 +111,108 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
             RepairWorkspaceRepositoryPort workspaceRepository,
             RepairExecutionWatchdog watchdog
     ) {
+        this(
+                workspaceFactory,
+                containerRunner,
+                resultValidator,
+                configuration,
+                workspaceRepository,
+                watchdog,
+                new ModelHealthStore(ModelCircuitBreakerPolicy.disabled())
+        );
+    }
+
+    /**
+     * 创建可接入仓库、告警观察器和模型健康熔断器的 Docker Claude Code 执行器。
+     *
+     * @param workspaceFactory    工作区工厂
+     * @param containerRunner     容器执行端口
+     * @param resultValidator     结构化结果校验器
+     * @param configuration       Docker 与 Claude Code 命令配置
+     * @param workspaceRepository 修复工作区仓库端口
+     * @param watchdog            超时和预算告警观察器，可为空
+     * @param modelHealthStore    模型供应商健康状态存储器
+     */
+    public DockerClaudeCodeExecutor(
+            RepairWorkspaceFactory workspaceFactory,
+            ContainerRunnerPort containerRunner,
+            StructuredResultValidator resultValidator,
+            Configuration configuration,
+            RepairWorkspaceRepositoryPort workspaceRepository,
+            RepairExecutionWatchdog watchdog,
+            ModelHealthStore modelHealthStore
+    ) {
+        this(
+                workspaceFactory,
+                containerRunner,
+                resultValidator,
+                configuration,
+                workspaceRepository,
+                watchdog,
+                modelHealthStore,
+                DockerExecutionRegistry.noop()
+        );
+    }
+
+    /**
+     * 创建可接入仓库、告警观察器、模型熔断器和执行控制注册表的 Docker Claude Code 执行器。
+     *
+     * @param workspaceFactory    工作区工厂
+     * @param containerRunner     容器执行端口
+     * @param resultValidator     结构化结果校验器
+     * @param configuration       Docker 与 Claude Code 命令配置
+     * @param workspaceRepository 修复工作区仓库端口
+     * @param watchdog            超时和预算告警观察器，可为空
+     * @param modelHealthStore    模型供应商健康状态存储器
+     * @param executionRegistry   Docker 执行运行态注册表
+     */
+    public DockerClaudeCodeExecutor(
+            RepairWorkspaceFactory workspaceFactory,
+            ContainerRunnerPort containerRunner,
+            StructuredResultValidator resultValidator,
+            Configuration configuration,
+            RepairWorkspaceRepositoryPort workspaceRepository,
+            RepairExecutionWatchdog watchdog,
+            ModelHealthStore modelHealthStore,
+            DockerExecutionRegistry executionRegistry
+    ) {
+        this(
+                workspaceFactory,
+                containerRunner,
+                resultValidator,
+                configuration,
+                workspaceRepository,
+                watchdog,
+                modelHealthStore,
+                executionRegistry,
+                ExecutionAllowlistPolicy.disabled()
+        );
+    }
+
+    /**
+     * 创建可接入仓库、告警观察器、模型熔断器、执行控制注册表和安全 allowlist 的 Docker Claude Code 执行器。
+     *
+     * @param workspaceFactory         工作区工厂
+     * @param containerRunner          容器执行端口
+     * @param resultValidator          结构化结果校验器
+     * @param configuration            Docker 与 Claude Code 命令配置
+     * @param workspaceRepository      修复工作区仓库端口
+     * @param watchdog                 超时和预算告警观察器，可为空
+     * @param modelHealthStore         模型供应商健康状态存储器
+     * @param executionRegistry        Docker 执行运行态注册表
+     * @param executionAllowlistPolicy 执行目标 allowlist 策略
+     */
+    public DockerClaudeCodeExecutor(
+            RepairWorkspaceFactory workspaceFactory,
+            ContainerRunnerPort containerRunner,
+            StructuredResultValidator resultValidator,
+            Configuration configuration,
+            RepairWorkspaceRepositoryPort workspaceRepository,
+            RepairExecutionWatchdog watchdog,
+            ModelHealthStore modelHealthStore,
+            DockerExecutionRegistry executionRegistry,
+            ExecutionAllowlistPolicy executionAllowlistPolicy
+    ) {
         if (workspaceFactory == null) {
             throw new IllegalArgumentException("workspaceFactory must not be null");
         }
@@ -117,6 +227,13 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
                 ? RepairWorkspaceRepositoryPort.noop()
                 : workspaceRepository;
         this.watchdog = watchdog;
+        this.modelHealthStore = modelHealthStore == null
+                ? new ModelHealthStore(ModelCircuitBreakerPolicy.disabled())
+                : modelHealthStore;
+        this.executionRegistry = executionRegistry == null ? DockerExecutionRegistry.noop() : executionRegistry;
+        this.executionAllowlistPolicy = executionAllowlistPolicy == null
+                ? ExecutionAllowlistPolicy.disabled()
+                : executionAllowlistPolicy;
     }
 
     /**
@@ -130,6 +247,10 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
         if (command == null) {
             throw new IllegalArgumentException("command must not be null");
         }
+        ExecutionAllowlistPolicy.Decision securityDecision = executionAllowlistPolicy.evaluate(command);
+        if (!securityDecision.allowed()) {
+            return rejectedBySecurityPolicy(securityDecision.reason());
+        }
         List<Map<String, String>> providerAttempts = new ArrayList<>();
         RepairExecutionResult lastResult = null;
         try {
@@ -138,22 +259,29 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
                     workspaceRepository.prepare(command, workspace).metadataJson()
             );
             List<ClaudeCodeModelProvider> providers = configuration.providers();
-            //TODO 模型降级链迁移 先探测模型是否可用，再真实的去运行
             for (int index = 0; index < providers.size(); index++) {
                 ClaudeCodeModelProvider provider = providers.get(index);
+                if (!modelHealthStore.allowCall(provider.name())) {
+                    providerAttempts.add(skippedAttemptMetadata(provider, index + 1));
+                    continue;
+                }
                 cleanOutputDirectory(workspace.outputDirectory());
                 AttemptOutcome outcome = runProvider(command, workspace, provider, index + 1, providers.size());
-                lastResult = withRepositoryMetadata(outcome.result(), repositoryMetadata);
-                if (lastResult.status() == RepairExecutionStatus.SUCCESS) {
-                    lastResult = publishRepository(command, workspace, lastResult);
+                RepairExecutionResult providerResult = withRepositoryMetadata(outcome.result(), repositoryMetadata);
+                markProviderHealth(provider, providerResult);
+                lastResult = providerResult;
+                if (providerResult.status() == RepairExecutionStatus.SUCCESS) {
+                    lastResult = publishRepository(command, workspace, providerResult);
                 }
-                providerAttempts.add(attemptMetadata(provider, index + 1, lastResult));
+                providerAttempts.add(attemptMetadata(provider, index + 1, providerResult));
                 if (!shouldFallback(lastResult) || index == providers.size() - 1) {
                     return withProviderMetadata(lastResult, provider, providerAttempts);
                 }
             }
             return withProviderAttempts(
-                    lastResult == null ? failedExecution("no Claude Code provider configured") : lastResult,
+                    lastResult == null
+                            ? failedExecution("all Claude Code providers are unavailable by circuit breaker")
+                            : lastResult,
                     providerAttempts
             );
         } catch (IOException e) {
@@ -184,7 +312,13 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
     ) {
         try {
             ContainerRunRequest request = toRunRequest(command, workspace, provider, attempt, providerCount);
-            ContainerRunResult runResult = containerRunner.run(request);
+            executionRegistry.register(command, provider.name(), request);
+            ContainerRunResult runResult;
+            try {
+                runResult = containerRunner.run(request);
+            } finally {
+                executionRegistry.unregister(command.taskId());
+            }
             if (runResult == null) {
                 return new AttemptOutcome(failedExecution("container runner returned null result"));
             }
@@ -257,6 +391,22 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
         return false;
     }
 
+    private void markProviderHealth(ClaudeCodeModelProvider provider, RepairExecutionResult result) {
+        if (provider == null || result == null) {
+            return;
+        }
+        if (result.status() == RepairExecutionStatus.SUCCESS
+                || result.status() == RepairExecutionStatus.NEED_INFO
+                || result.status() == RepairExecutionStatus.UNSAFE) {
+            modelHealthStore.markSuccess(provider.name());
+            return;
+        }
+        if (result.status() == RepairExecutionStatus.FAILED_VALIDATION
+                || result.status() == RepairExecutionStatus.FAILED && shouldFallback(result)) {
+            modelHealthStore.markFailure(provider.name());
+        }
+    }
+
     private static RepairExecutionResult withProviderMetadata(
             RepairExecutionResult result,
             ClaudeCodeModelProvider provider,
@@ -322,7 +472,7 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
         );
     }
 
-    private static Map<String, String> attemptMetadata(
+    private Map<String, String> attemptMetadata(
             ClaudeCodeModelProvider provider,
             int attempt,
             RepairExecutionResult result
@@ -331,8 +481,33 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
         metadata.put("provider", provider.name());
         metadata.put("attempt", String.valueOf(attempt));
         metadata.put("status", result == null ? "FAILED" : result.status().name());
-        metadata.put("errorMessage", result == null ? "" : result.errorMessage());
+        metadata.put("errorMessage", result == null ? "" : SecretRedactor.redactFreeform(result.errorMessage()));
+        putHealthMetadata(metadata, provider.name(), modelHealthStore.snapshot(provider.name()));
         return Map.copyOf(metadata);
+    }
+
+    private Map<String, String> skippedAttemptMetadata(ClaudeCodeModelProvider provider, int attempt) {
+        Map<String, String> metadata = new LinkedHashMap<>();
+        metadata.put("provider", provider.name());
+        metadata.put("attempt", String.valueOf(attempt));
+        metadata.put("status", "SKIPPED_CIRCUIT_OPEN");
+        metadata.put("errorMessage", "provider is unavailable by circuit breaker");
+        putHealthMetadata(metadata, provider.name(), modelHealthStore.snapshot(provider.name()));
+        return Map.copyOf(metadata);
+    }
+
+    private static void putHealthMetadata(
+            Map<String, String> metadata,
+            String providerName,
+            ModelHealthSnapshot healthSnapshot
+    ) {
+        ModelHealthSnapshot snapshot = healthSnapshot == null
+                ? new ModelHealthSnapshot(providerName, null, 0, 0L, false)
+                : healthSnapshot;
+        metadata.put("circuitState", snapshot.state().name());
+        metadata.put("consecutiveFailures", String.valueOf(snapshot.consecutiveFailures()));
+        metadata.put("openUntilEpochMillis", String.valueOf(snapshot.openUntilEpochMillis()));
+        metadata.put("halfOpenInFlight", String.valueOf(snapshot.halfOpenInFlight()));
     }
 
     private static void cleanOutputDirectory(Path outputDirectory) throws IOException {
@@ -417,6 +592,28 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
                 result.testMetadataJson(),
                 result.riskMetadataJson(),
                 errorMessage == null ? "" : errorMessage
+        );
+    }
+
+    private RepairExecutionResult rejectedBySecurityPolicy(String reason) {
+        String message = reason == null || reason.isBlank()
+                ? "execution rejected by security policy"
+                : reason;
+        return new RepairExecutionResult(
+                RepairExecutionStatus.UNSAFE,
+                "Repair execution rejected by security policy.",
+                "",
+                List.of(),
+                Map.of(),
+                Map.of("securityPolicyRejected", "true"),
+                Map.of(),
+                Map.of(),
+                Map.of(
+                        "securityPolicy", "executionAllowlist",
+                        "rejected", "true",
+                        "reason", SecretRedactor.redactFreeform(message)
+                ),
+                SecretRedactor.redactFreeform(message)
         );
     }
 
@@ -528,7 +725,7 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
         metadata.put("removeAfterExit", String.valueOf(request.removeAfterExit()));
         metadata.put("allowPrivileged", String.valueOf(request.allowPrivileged()));
         metadata.put("outputArtifactPaths", outputArtifactPaths(artifacts));
-        result.metadata().forEach((key, value) -> metadata.put("runner." + key, value));
+        result.metadata().forEach((key, value) -> metadata.put("runner." + key, SecretRedactor.redactValue(key, value)));
         return metadata;
     }
 

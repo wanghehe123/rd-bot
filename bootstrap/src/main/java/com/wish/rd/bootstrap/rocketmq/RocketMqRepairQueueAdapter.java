@@ -175,7 +175,7 @@ public class RocketMqRepairQueueAdapter implements RepairQueuePublisher {
     }
 
     /** RocketMQ 消息监听器：把 MQ 消息还原成 {@link RepairTicketMessage} 后回调消费端口。 */
-    private static final class RepairMessageListener implements MessageListenerConcurrently {
+    static final class RepairMessageListener implements MessageListenerConcurrently {
 
         private final RepairQueueConsumer consumer;
         private final ObjectMapper objectMapper;
@@ -204,8 +204,7 @@ public class RocketMqRepairQueueAdapter implements RepairQueuePublisher {
             return ConsumeConcurrentlyStatus.CONSUME_SUCCESS;
         }
 
-        @SuppressWarnings("unchecked")
-        private RepairTicketMessage fromMqMessage(MessageExt msg) throws Exception {
+        RepairTicketMessage fromMqMessage(MessageExt msg) throws Exception {
             String json = new String(msg.getBody(), StandardCharsets.UTF_8);
             Map<String, Object> map = objectMapper.readValue(json, MAP_TYPE);
             int attempt = 1;
@@ -213,6 +212,7 @@ public class RocketMqRepairQueueAdapter implements RepairQueuePublisher {
             if (attemptValue instanceof Number number) {
                 attempt = number.intValue();
             }
+            attempt = Math.max(attempt, Math.max(0, msg.getReconsumeTimes()) + 1);
             return new RepairTicketMessage(
                     (String) map.getOrDefault("ticketId", ""),
                     (String) map.getOrDefault("priority", "P2"),

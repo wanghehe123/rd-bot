@@ -3,11 +3,16 @@ package com.wish.rd.bootstrap.executor;
 import com.wish.rd.exec.repair.alert.RepairAlertSinkPort;
 import com.wish.rd.exec.repair.alert.RepairExecutionWatchdog;
 import com.wish.rd.exec.repair.docker.ContainerRunnerPort;
+import com.wish.rd.exec.repair.docker.ContainerControlPort;
+import com.wish.rd.exec.repair.docker.DockerExecutionRegistry;
 import com.wish.rd.exec.repair.docker.DockerClaudeCodeExecutor;
 import com.wish.rd.exec.repair.docker.RepairWorkspaceFactory;
 import com.wish.rd.exec.repair.docker.RepairWorkspaceRepositoryPort;
+import com.wish.rd.exec.repair.execution.RepairExecutionControlPort;
 import com.wish.rd.exec.repair.execution.RepairExecutorPort;
+import com.wish.rd.exec.repair.model.ModelHealthStore;
 import com.wish.rd.exec.repair.result.StructuredResultValidator;
+import com.wish.rd.exec.repair.security.ExecutionAllowlistPolicy;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -61,6 +66,42 @@ public class DockerExecutorConfiguration {
     }
 
     /**
+     * Provides the model-provider circuit breaker state store used by Docker execution.
+     *
+     * @param properties docker executor properties
+     * @return model health store
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public ModelHealthStore modelHealthStore(DockerExecutorProperties properties) {
+        return new ModelHealthStore(properties.getCircuitBreaker().toPolicy());
+    }
+
+    /**
+     * Provides Docker repair execution target allowlist policy.
+     *
+     * @param properties docker executor properties
+     * @return execution allowlist policy
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public ExecutionAllowlistPolicy executionAllowlistPolicy(DockerExecutorProperties properties) {
+        return properties.toExecutionAllowlistPolicy();
+    }
+
+    /**
+     * Provides running Docker execution registry and manual stop control.
+     *
+     * @param controlPortProvider container control provider
+     * @return Docker execution registry
+     */
+    @Bean
+    @ConditionalOnMissingBean(RepairExecutionControlPort.class)
+    public DockerExecutionRegistry dockerExecutionRegistry(ObjectProvider<ContainerControlPort> controlPortProvider) {
+        return new DockerExecutionRegistry(controlPortProvider.getIfAvailable());
+    }
+
+    /**
      * Provides the standard workspace factory once a container runner is enabled.
      *
      * @param properties docker executor properties
@@ -82,6 +123,8 @@ public class DockerExecutorConfiguration {
      * @param resultValidator  structured result validator
      * @param properties       docker executor properties
      * @param watchdog         timeout and budget watchdog
+     * @param modelHealthStore model provider health store
+     * @param executionRegistry running execution registry
      * @param repositoryPortProvider workspace repository port provider
      * @return repair executor port
      */
@@ -94,6 +137,9 @@ public class DockerExecutorConfiguration {
             StructuredResultValidator resultValidator,
             DockerExecutorProperties properties,
             RepairExecutionWatchdog watchdog,
+            ModelHealthStore modelHealthStore,
+            DockerExecutionRegistry executionRegistry,
+            ExecutionAllowlistPolicy executionAllowlistPolicy,
             ObjectProvider<RepairWorkspaceRepositoryPort> repositoryPortProvider
     ) {
         return new DockerClaudeCodeExecutor(
@@ -102,7 +148,10 @@ public class DockerExecutorConfiguration {
                 resultValidator,
                 properties.toExecutorConfiguration(),
                 repositoryPortProvider.getIfAvailable(RepairWorkspaceRepositoryPort::noop),
-                watchdog
+                watchdog,
+                modelHealthStore,
+                executionRegistry,
+                executionAllowlistPolicy
         );
     }
 
