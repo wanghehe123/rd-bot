@@ -1,14 +1,21 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { fileURLToPath, URL } from "node:url";
 
 export default defineConfig({
   base: "/admin/",
   plugins: [react()],
+  resolve: {
+    alias: {
+      "@": fileURLToPath(new URL("./src", import.meta.url))
+    }
+  },
   server: {
     port: 5173,
     proxy: {
       "/knowledge-base": "http://127.0.0.1:18080",
       "/admin/overview": "http://127.0.0.1:18080",
+      "/admin/rd-tasks": "http://127.0.0.1:18080",
       "/intent-tree": "http://127.0.0.1:18080",
       "/users": "http://127.0.0.1:18080",
       "/user": "http://127.0.0.1:18080",

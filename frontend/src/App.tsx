@@ -3,7 +3,11 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { AdminLayout } from "./components/AdminLayout";
 import { ToastHost } from "./components/ToastHost";
 import { DashboardPage } from "./pages/DashboardPage";
-import { KnowledgeChunksPage, KnowledgeDocumentsPage, KnowledgeListPage } from "./pages/KnowledgePages";
+import { KnowledgeListPage } from "@/pages/admin/knowledge/KnowledgeListPage";
+import { KnowledgeDocumentsPage } from "@/pages/admin/knowledge/KnowledgeDocumentsPage";
+import { KnowledgeChunksPage } from "@/pages/admin/knowledge/KnowledgeChunksPage";
+import { RdTaskListPage } from "@/pages/admin/rdtask/RdTaskListPage";
+import { RdTaskDetailPage } from "@/pages/admin/rdtask/RdTaskDetailPage";
 import { IntentListPage, IntentTreePage } from "./pages/IntentPages";
 import {
   IngestionPage,
@@ -26,6 +30,8 @@ export function App() {
           <Route path="knowledge" element={<KnowledgeListPage />} />
           <Route path="knowledge/:kbId" element={<KnowledgeDocumentsPage />} />
           <Route path="knowledge/:kbId/docs/:docId" element={<KnowledgeChunksPage />} />
+          <Route path="rd-tasks" element={<RdTaskListPage />} />
+          <Route path="rd-tasks/:taskId" element={<RdTaskDetailPage />} />
           <Route path="intent-tree" element={<IntentTreePage />} />
           <Route path="intent-list" element={<IntentListPage />} />
           <Route path="users" element={<UserListPage />} />

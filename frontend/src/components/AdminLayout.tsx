@@ -12,6 +12,7 @@ import {
   KeyRound,
   Layers,
   LayoutDashboard,
+  ListChecks,
   Menu,
   MessageSquare,
   Search,
@@ -58,6 +59,7 @@ const menuGroups: Array<{ title: string; items: MenuItem[] }> = [
         ]
       },
       { path: "/admin/ingestion", label: "数据通道", icon: Upload },
+      { path: "/admin/rd-tasks", label: "任务管理", icon: ListChecks },
       { path: "/admin/mappings", label: "关键词映射", icon: KeyRound },
       { path: "/admin/traces", label: "链路追踪", icon: Workflow }
     ]
@@ -78,6 +80,7 @@ const breadcrumbMap: Record<string, string> = {
   "intent-tree": "意图树配置",
   "intent-list": "意图列表",
   ingestion: "数据通道",
+  "rd-tasks": "任务管理",
   mappings: "关键词映射",
   traces: "链路追踪",
   users: "用户管理",
@@ -116,6 +119,7 @@ export function AdminLayout() {
     if (section === "knowledge" && parts.length > 2) items.push({ label: "文档管理" });
     if (section === "knowledge" && parts.includes("docs")) items.push({ label: "分块管理" });
     if (section === "traces" && parts.length > 2) items.push({ label: "链路详情" });
+    if (section === "rd-tasks" && parts.length > 2) items.push({ label: "任务详情" });
     return items;
   }, [location.pathname]);
 
