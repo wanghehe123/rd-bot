@@ -10,6 +10,10 @@ import com.wish.rd.adapter.TicketUpdateResult;
 import com.wish.rd.engine.bugfix.RdBotFixCommand;
 import com.wish.rd.engine.bugfix.RdBotFixEngine;
 import com.wish.rd.engine.bugfix.RdBotFixResult;
+import com.wish.rd.engine.audit.NoopRepairAuditSink;
+import com.wish.rd.engine.audit.RepairAuditEvent;
+import com.wish.rd.engine.audit.RepairAuditEventType;
+import com.wish.rd.engine.audit.RepairAuditSinkPort;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
@@ -44,6 +48,9 @@ public class TicketRepairExecutionConsumer implements RepairQueueConsumer {
     private final TicketUpdatePort updatePort;
     private final boolean writeBackEnabled;
     private final RepairRecordRepository recordRepository;
+    private final RepairAuditSinkPort auditSink;
+    private final RepairQueueDeadLetterRepository deadLetterRepository;
+    private final int maxRetryAttempts;
 
     /**
      * 创建正式修复队列消费者。
@@ -63,6 +70,9 @@ public class TicketRepairExecutionConsumer implements RepairQueueConsumer {
             @Value("${rd.repair.ticket.auto-execute.enabled:false}") boolean autoExecuteEnabled,
             ObjectProvider<TicketUpdatePort> updatePort,
             ObjectProvider<RepairRecordRepository> recordRepository,
+            ObjectProvider<RepairAuditSinkPort> auditSinkProvider,
+            ObjectProvider<RepairQueueDeadLetterRepository> deadLetterRepositoryProvider,
+            @Value("${rd.rocketmq.repair.max-retry-attempts:3}") int maxRetryAttempts,
             @Value("#{${rd.ticket.write-back.enabled:false} || ${rd.feishu.im.write-back.enabled:false} || "
                     + "${rd.feishu.helpdesk.write-back.enabled:false}}")
             boolean writeBackEnabled
@@ -75,7 +85,10 @@ public class TicketRepairExecutionConsumer implements RepairQueueConsumer {
                 autoExecuteEnabled,
                 updatePort.getIfAvailable(),
                 recordRepository.getIfAvailable(),
-                writeBackEnabled
+                writeBackEnabled,
+                auditSinkProvider.getIfAvailable(NoopRepairAuditSink::instance),
+                deadLetterRepositoryProvider.getIfAvailable(RepairQueueDeadLetterRepository::noop),
+                maxRetryAttempts
         );
     }
 
@@ -111,6 +124,34 @@ public class TicketRepairExecutionConsumer implements RepairQueueConsumer {
             RepairRecordRepository recordRepository,
             boolean writeBackEnabled
     ) {
+        this(
+                ticketRepairEngine,
+                providerPort,
+                fixEngine,
+                fieldMapping,
+                autoExecuteEnabled,
+                updatePort,
+                recordRepository,
+                writeBackEnabled,
+                NoopRepairAuditSink.instance(),
+                RepairQueueDeadLetterRepository.noop(),
+                3
+        );
+    }
+
+    public TicketRepairExecutionConsumer(
+            TicketRepairEngine ticketRepairEngine,
+            TicketProviderPort providerPort,
+            RdBotFixEngine fixEngine,
+            TicketFieldMapping fieldMapping,
+            boolean autoExecuteEnabled,
+            TicketUpdatePort updatePort,
+            RepairRecordRepository recordRepository,
+            boolean writeBackEnabled,
+            RepairAuditSinkPort auditSink,
+            RepairQueueDeadLetterRepository deadLetterRepository,
+            int maxRetryAttempts
+    ) {
         this.ticketRepairEngine = ticketRepairEngine;
         this.providerPort = providerPort;
         this.fixEngine = fixEngine;
@@ -119,12 +160,33 @@ public class TicketRepairExecutionConsumer implements RepairQueueConsumer {
         this.updatePort = updatePort;
         this.recordRepository = recordRepository;
         this.writeBackEnabled = writeBackEnabled;
+        this.auditSink = auditSink == null ? NoopRepairAuditSink.instance() : auditSink;
+        this.deadLetterRepository = deadLetterRepository == null
+                ? RepairQueueDeadLetterRepository.noop()
+                : deadLetterRepository;
+        this.maxRetryAttempts = Math.max(1, maxRetryAttempts);
     }
 
     @Override
     public boolean handle(RepairTicketMessage message) {
         if (message == null) {
             return false;
+        }
+        if (message.attempt() > maxRetryAttempts) {
+            RepairQueueDeadLetter deadLetter = deadLetterRepository.save(
+                    message,
+                    "repair queue retry attempts exceeded: " + maxRetryAttempts
+            );
+            audit(
+                    "",
+                    "",
+                    message.ticketId(),
+                    RepairAuditEventType.QUEUE_DEAD_LETTERED,
+                    "RocketMQ",
+                    "repair queue message moved to dead letter",
+                    Map.of("deadLetterId", deadLetter.id(), "attempt", Integer.toString(message.attempt()))
+            );
+            return true;
         }
         TicketRepairEngine.RepairOutcome outcome = ticketRepairEngine.process(message);
         if (outcome.decision() == TicketRepairDecision.FAILED) {
@@ -143,6 +205,15 @@ public class TicketRepairExecutionConsumer implements RepairQueueConsumer {
             return false;
         }
         TicketSnapshot snapshot = snapshotOpt.get();
+        audit(
+                outcome.repairRecordId(),
+                "",
+                message.ticketId(),
+                RepairAuditEventType.EXECUTION_STARTED,
+                "Docker",
+                "auto repair execution started",
+                Map.of("priority", message.priority())
+        );
         RdBotFixResult result = fixEngine.runBugFix(new RdBotFixCommand(
                 snapshot,
                 extractLogs(snapshot),
@@ -155,6 +226,15 @@ public class TicketRepairExecutionConsumer implements RepairQueueConsumer {
                 result.taskId(),
                 result.status(),
                 result.rejected()
+        );
+        audit(
+                outcome.repairRecordId(),
+                result.taskId(),
+                message.ticketId(),
+                RepairAuditEventType.EXECUTION_FINISHED,
+                "Docker",
+                "auto repair execution finished",
+                Map.of("status", result.status().name(), "rejected", String.valueOf(result.rejected()))
         );
         syncRepairRecordStatus(outcome, result);
         writeBackExecutionResult(message, outcome, result);
@@ -223,6 +303,15 @@ public class TicketRepairExecutionConsumer implements RepairQueueConsumer {
         TicketUpdateResult updateResult = updatePort.sendMessage(reply);
         log.info("wrote back auto repair result, ticketId={}, taskId={}, success={}",
                 message.ticketId(), result.taskId(), updateResult.success());
+        audit(
+                outcome.repairRecordId(),
+                result.taskId(),
+                message.ticketId(),
+                RepairAuditEventType.TICKET_WRITE_BACK_FINISHED,
+                "Feishu",
+                "wrote back auto repair execution result",
+                Map.of("success", String.valueOf(updateResult.success()), "executionStatus", result.status().name())
+        );
     }
 
     private List<String> extractLogs(TicketSnapshot snapshot) {
@@ -238,5 +327,25 @@ public class TicketRepairExecutionConsumer implements RepairQueueConsumer {
                 .filter(content -> !content.isBlank())
                 .forEach(logs::add);
         return List.copyOf(logs);
+    }
+
+    private void audit(
+            String repairRecordId,
+            String taskId,
+            String ticketId,
+            RepairAuditEventType type,
+            String externalSystem,
+            String summary,
+            Map<String, String> metadata
+    ) {
+        auditSink.publish(RepairAuditEvent.now(
+                repairRecordId,
+                taskId,
+                ticketId,
+                type,
+                externalSystem,
+                summary,
+                metadata
+        ));
     }
 }

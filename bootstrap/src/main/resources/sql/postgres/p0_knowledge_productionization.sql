@@ -213,3 +213,58 @@ CREATE TABLE IF NOT EXISTS repair_assets (
 CREATE INDEX IF NOT EXISTS idx_repair_assets_record ON repair_assets (repair_record_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_repair_assets_type ON repair_assets (asset_type, created_at);
 CREATE INDEX IF NOT EXISTS idx_repair_assets_reusable ON repair_assets (reusable, asset_type);
+
+-- P3 governance: append-only audit events for ticket, queue, RAG, execution, PR and manual recovery steps.
+CREATE TABLE IF NOT EXISTS repair_audit_events (
+    id               BIGSERIAL PRIMARY KEY,
+    repair_record_id VARCHAR(128) NOT NULL DEFAULT '',
+    task_id          VARCHAR(128) NOT NULL DEFAULT '',
+    ticket_id        VARCHAR(256) NOT NULL DEFAULT '',
+    event_type       VARCHAR(64) NOT NULL,
+    external_system  VARCHAR(64) NOT NULL DEFAULT '',
+    summary          TEXT NOT NULL DEFAULT '',
+    metadata_json    JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_repair_audit_events_record ON repair_audit_events (repair_record_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_repair_audit_events_ticket ON repair_audit_events (ticket_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_repair_audit_events_type ON repair_audit_events (event_type, created_at);
+
+-- P3 governance: capped queue retry failures and manual replay state.
+CREATE TABLE IF NOT EXISTS repair_queue_dead_letters (
+    id                VARCHAR(128) PRIMARY KEY,
+    ticket_id         VARCHAR(256) NOT NULL,
+    trace_id          VARCHAR(128) NOT NULL DEFAULT '',
+    source            VARCHAR(64) NOT NULL DEFAULT '',
+    event_id          VARCHAR(256) NOT NULL DEFAULT '',
+    event_type        VARCHAR(128) NOT NULL DEFAULT '',
+    original_attempt  INTEGER NOT NULL DEFAULT 0,
+    reason            TEXT NOT NULL DEFAULT '',
+    message_json      JSONB NOT NULL DEFAULT '{}'::jsonb,
+    replayed          BOOLEAN NOT NULL DEFAULT false,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    replayed_at       TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_repair_queue_dead_letters_ticket ON repair_queue_dead_letters (ticket_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_repair_queue_dead_letters_replayed ON repair_queue_dead_letters (replayed, created_at);
+
+-- P3 governance: knowledge refresh health metrics for operations views.
+CREATE TABLE IF NOT EXISTS knowledge_refresh_metrics (
+    id                  BIGSERIAL PRIMARY KEY,
+    document_id          VARCHAR(128) NOT NULL DEFAULT '',
+    knowledge_base_id    VARCHAR(128) NOT NULL DEFAULT '',
+    source_type          VARCHAR(64) NOT NULL DEFAULT '',
+    source_name          TEXT NOT NULL DEFAULT '',
+    success              BOOLEAN NOT NULL,
+    old_chunk_count      INTEGER NOT NULL DEFAULT 0,
+    new_chunk_count      INTEGER NOT NULL DEFAULT 0,
+    duration_ms          BIGINT NOT NULL DEFAULT 0,
+    error_message        TEXT NOT NULL DEFAULT '',
+    metadata_json        JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_knowledge_refresh_metrics_doc ON knowledge_refresh_metrics (document_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_knowledge_refresh_metrics_success ON knowledge_refresh_metrics (success, created_at);

@@ -172,6 +172,22 @@ class RdTaskControllerTest {
                 .andExpect(jsonPath("$.records[0].taskId", is(searching)));
     }
 
+    @Test
+    void shouldNotCancelTaskWhenExecutionStopFails() throws Exception {
+        String taskId = createTask("FS-3009", "待停止任务", "P1");
+
+        mockMvc.perform(post("/admin/rd-tasks/{taskId}/stop", taskId)
+                        .contentType(APPLICATION_JSON)
+                        .content("{\"message\":\"停止\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.stopped", is(false)))
+                .andExpect(jsonPath("$.task.status", is("CREATED")));
+
+        mockMvc.perform(get("/admin/rd-tasks/{taskId}", taskId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status", is("CREATED")));
+    }
+
     private String createTask(String ticketId, String title, String priority) throws Exception {
         String body = objectMapper.writeValueAsString(Map.of(
                 "ticketId", ticketId,

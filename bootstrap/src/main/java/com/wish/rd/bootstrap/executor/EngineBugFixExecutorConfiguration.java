@@ -1,6 +1,8 @@
 package com.wish.rd.bootstrap.executor;
 
 import com.wish.rd.engine.bugfix.BugFixExecutor;
+import com.wish.rd.engine.audit.NoopRepairAuditSink;
+import com.wish.rd.engine.audit.RepairAuditSinkPort;
 import com.wish.rd.exec.repair.code.CodePlatformPort;
 import com.wish.rd.exec.repair.execution.RepairExecutorPort;
 import org.springframework.beans.factory.ObjectProvider;
@@ -20,6 +22,7 @@ public class EngineBugFixExecutorConfiguration {
      *
      * @param repairExecutorProvider repair execution port provider
      * @param codePlatformProvider   code-platform port provider
+     * @param auditSinkProvider      repair audit sink provider
      * @param repoOwner        repository owner, defaults to a local mock value
      * @param repoName         repository name, defaults to a local mock value
      * @param repositoryUrl    repository clone URL
@@ -32,6 +35,7 @@ public class EngineBugFixExecutorConfiguration {
     public BugFixExecutor bugFixExecutor(
             ObjectProvider<RepairExecutorPort> repairExecutorProvider,
             ObjectProvider<CodePlatformPort> codePlatformProvider,
+            ObjectProvider<RepairAuditSinkPort> auditSinkProvider,
             @Value("${rd.executor.repository.owner:local}") String repoOwner,
             @Value("${rd.executor.repository.name:repository}") String repoName,
             @Value("${rd.executor.repository.url:}") String repositoryUrl,
@@ -52,7 +56,8 @@ public class EngineBugFixExecutorConfiguration {
                         repositoryUrl,
                         baseBranch,
                         workBranchPrefix
-                )
+                ),
+                auditSinkProvider.getIfAvailable(NoopRepairAuditSink::instance)
         );
     }
 }
