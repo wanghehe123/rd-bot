@@ -19,6 +19,7 @@ package com.wish.rd.rag.runtime;
  * @param errorMessage          错误或 RD 打回原因
  * @param createTimeEpochMillis 创建时间
  * @param updateTimeEpochMillis 更新时间
+ * @param paused                是否被管理台暂停（仅标记，不改变状态机合法性）
  */
 public record RdBugFixTask(
         String taskId,
@@ -34,7 +35,8 @@ public record RdBugFixTask(
         String pullRequestUrl,
         String errorMessage,
         long createTimeEpochMillis,
-        long updateTimeEpochMillis
+        long updateTimeEpochMillis,
+        boolean paused
 ) implements RdTask {
 
     public static final String TASK_TYPE = "BUG_FIX";
@@ -85,12 +87,13 @@ public record RdBugFixTask(
                 "",
                 "",
                 createTimeEpochMillis,
-                createTimeEpochMillis
+                createTimeEpochMillis,
+                false
         );
     }
 
     /**
-     * 返回替换状态与运行时字段后的新快照。
+     * 返回替换状态与运行时字段后的新快照（paused 保持不变）。
      *
      * @param newStatus           新状态
      * @param newMessageId        消息 ID
@@ -126,7 +129,90 @@ public record RdBugFixTask(
                 keepOrReplace(pullRequestUrl, newPullRequestUrl),
                 safe(newErrorMessage),
                 createTimeEpochMillis,
-                updateTimeEpochMillis
+                updateTimeEpochMillis,
+                paused
+        );
+    }
+
+    /**
+     * 返回替换编辑字段（标题/优先级/工单标题）后的新快照，状态与暂停标记不变。
+     *
+     * @param newTitle      展示标题
+     * @param newPriority   优先级
+     * @param newTicketTitle 工单标题
+     * @param updateTimeEpochMillis 更新时间
+     * @return 新任务快照
+     */
+    public RdBugFixTask withEditedFields(
+            String newTitle,
+            String newPriority,
+            String newTicketTitle,
+            long updateTimeEpochMillis
+    ) {
+        return new RdBugFixTask(
+                taskId,
+                taskType,
+                ticketId,
+                newTicketTitle == null || newTicketTitle.isBlank() ? ticketTitle : newTicketTitle.strip(),
+                newPriority == null || newPriority.isBlank() ? priority : newPriority.strip().toUpperCase(),
+                status,
+                messageId,
+                newTitle == null || newTitle.isBlank() ? title : newTitle.strip(),
+                promptSnapshot,
+                executionResultJson,
+                pullRequestUrl,
+                errorMessage,
+                createTimeEpochMillis,
+                updateTimeEpochMillis,
+                paused
+        );
+    }
+
+    /**
+     * 返回切换暂停标记后的新快照。
+     *
+     * @param newPaused 新暂停标记
+     * @param updateTimeEpochMillis 更新时间
+     * @return 新任务快照
+     */
+    public RdBugFixTask withPaused(boolean newPaused, long updateTimeEpochMillis) {
+        return new RdBugFixTask(
+                taskId,
+                taskType,
+                ticketId,
+                ticketTitle,
+                priority,
+                status,
+                messageId,
+                title,
+                promptSnapshot,
+                executionResultJson,
+                pullRequestUrl,
+                errorMessage,
+                createTimeEpochMillis,
+                updateTimeEpochMillis,
+                newPaused
+        );
+    }
+
+    /** 返回将状态置为 DELETED 逻辑删后的快照（沿用 DELETED 字符串语义，状态机外）。 */
+    public RdBugFixTask deleted(long updateTimeEpochMillis) {
+        return new RdBugFixTask(
+                taskId,
+                taskType,
+                ticketId,
+                ticketTitle,
+                priority,
+                RdTaskStatus.DELETED,
+                messageId,
+                title,
+                promptSnapshot,
+                executionResultJson,
+                pullRequestUrl,
+                errorMessage,
+                createTimeEpochMillis,
+                updateTimeEpochMillis,
+                paused
         );
     }
 

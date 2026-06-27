@@ -22,12 +22,12 @@ public interface RdTaskMapper extends BaseMapper<RdTaskRow> {
             INSERT INTO rd_tasks (
                 id, task_type, ticket_id, ticket_title, priority, status,
                 message_id, title, prompt_snapshot, execution_result_json,
-                pull_request_url, error_message, created_at, updated_at
+                pull_request_url, error_message, paused, created_at, updated_at
             )
             VALUES (
                 #{id}, #{taskType}, #{ticketId}, #{ticketTitle}, #{priority}, #{status},
                 #{messageId}, #{title}, #{promptSnapshot}, #{executionResultJson}::jsonb,
-                #{pullRequestUrl}, #{errorMessage}, #{createdAt}, #{updatedAt}
+                #{pullRequestUrl}, #{errorMessage}, COALESCE(#{paused}, FALSE), #{createdAt}, #{updatedAt}
             )
             ON CONFLICT (id) DO UPDATE SET
                 task_type = EXCLUDED.task_type,
@@ -41,6 +41,7 @@ public interface RdTaskMapper extends BaseMapper<RdTaskRow> {
                 execution_result_json = EXCLUDED.execution_result_json,
                 pull_request_url = EXCLUDED.pull_request_url,
                 error_message = EXCLUDED.error_message,
+                paused = EXCLUDED.paused,
                 updated_at = EXCLUDED.updated_at
             """)
     void upsertTask(RdTaskRow row);

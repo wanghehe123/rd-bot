@@ -16,7 +16,7 @@ class RagStreamTaskRegistryTest {
     @Test
     void shouldPersistAndReloadBugFixTaskStateMachine() {
         InMemoryRdTaskStore store = new InMemoryRdTaskStore();
-        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(store, generatorWithMovingClock());
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(store, new InMemoryRdTaskStatusEventStore(), generatorWithMovingClock());
 
         RdBugFixTask created = registry.createBugFixTask(ticket(), "P0");
         RdBugFixTask searching = registry.markSearching(created.taskId(), "RAG 检索中");
@@ -27,7 +27,7 @@ class RagStreamTaskRegistryTest {
                 "{\"taskId\":\"" + created.taskId() + "\"}"
         );
 
-        RagStreamTaskRegistry reloaded = new RagStreamTaskRegistry(store, generatorWithMovingClock());
+        RagStreamTaskRegistry reloaded = new RagStreamTaskRegistry(store, new InMemoryRdTaskStatusEventStore(), generatorWithMovingClock());
         RdBugFixTask found = reloaded.get(created.taskId());
 
         assertEquals(RdTaskStatus.CREATED, created.status());
@@ -42,7 +42,7 @@ class RagStreamTaskRegistryTest {
 
     @Test
     void shouldAllowRejectedTaskToReturnToExecutingForRdReviewChanges() {
-        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(new InMemoryRdTaskStore(), generatorWithMovingClock());
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(new InMemoryRdTaskStore(), new InMemoryRdTaskStatusEventStore(), generatorWithMovingClock());
         RdBugFixTask created = registry.createBugFixTask(ticket(), "P1");
 
         registry.markSearching(created.taskId(), "RAG 检索中");
@@ -58,7 +58,7 @@ class RagStreamTaskRegistryTest {
 
     @Test
     void shouldKeepExecutionResultJsonWhenRejectingFailedExecution() {
-        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(new InMemoryRdTaskStore(), generatorWithMovingClock());
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(new InMemoryRdTaskStore(), new InMemoryRdTaskStatusEventStore(), generatorWithMovingClock());
         RdBugFixTask created = registry.createBugFixTask(ticket(), "P1");
         String executionResultJson = "{\"status\":\"FAILED\",\"errorMessage\":\"git clone failed\"}";
 
@@ -77,7 +77,7 @@ class RagStreamTaskRegistryTest {
 
     @Test
     void shouldRejectIllegalStateTransition() {
-        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(new InMemoryRdTaskStore(), generatorWithMovingClock());
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(new InMemoryRdTaskStore(), new InMemoryRdTaskStatusEventStore(), generatorWithMovingClock());
         RdBugFixTask created = registry.createBugFixTask(ticket(), "P2");
 
         IllegalStateException exception = assertThrows(

@@ -147,6 +147,23 @@ CREATE TABLE IF NOT EXISTS rd_tasks (
 CREATE INDEX IF NOT EXISTS idx_rd_tasks_type_status ON rd_tasks (task_type, status, updated_at);
 CREATE INDEX IF NOT EXISTS idx_rd_tasks_ticket ON rd_tasks (ticket_id);
 
+-- 任务管理：新增 paused 列承载管理台暂停标记（逻辑删复用 status='DELETED'，不新增列）。
+ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS paused BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- 任务管理：状态事件 append-only 表，承载全链路时间线（含耗时与触发来源）。
+CREATE TABLE IF NOT EXISTS rd_task_status_events (
+    id            BIGINT PRIMARY KEY,
+    task_id       BIGINT NOT NULL,
+    status        VARCHAR(32)  NOT NULL,
+    title         TEXT         NOT NULL DEFAULT '',
+    message       TEXT         NOT NULL DEFAULT '',
+    entered_at    TIMESTAMPTZ  NOT NULL,
+    duration_ms   BIGINT       NOT NULL DEFAULT 0,
+    trigger       VARCHAR(16)  NOT NULL DEFAULT 'SYSTEM'
+);
+
+CREATE INDEX IF NOT EXISTS idx_rd_task_events_task ON rd_task_status_events (task_id, entered_at);
+
 CREATE TABLE IF NOT EXISTS repair_records (
     id             BIGINT PRIMARY KEY,
     ticket_id      VARCHAR(256) NOT NULL,

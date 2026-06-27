@@ -27,6 +27,7 @@ public class RdTaskRow {
     public String executionResultJson;
     public String pullRequestUrl;
     public String errorMessage;
+    public Boolean paused;
     public OffsetDateTime createdAt;
     public OffsetDateTime updatedAt;
 }

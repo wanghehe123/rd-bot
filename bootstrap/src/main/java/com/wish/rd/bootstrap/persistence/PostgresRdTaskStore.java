@@ -68,6 +68,7 @@ public final class PostgresRdTaskStore implements RdTaskStore {
         row.errorMessage = task.errorMessage();
         row.createdAt = PostgresPersistenceSupport.toDateTime(task.createTimeEpochMillis());
         row.updatedAt = PostgresPersistenceSupport.toDateTime(task.updateTimeEpochMillis());
+        row.paused = task.paused();
         return row;
     }
 
@@ -86,7 +87,8 @@ public final class PostgresRdTaskStore implements RdTaskStore {
                 row.pullRequestUrl,
                 row.errorMessage,
                 PostgresPersistenceSupport.toEpochMillis(row.createdAt),
-                PostgresPersistenceSupport.toEpochMillis(row.updatedAt)
+                PostgresPersistenceSupport.toEpochMillis(row.updatedAt),
+                row.paused != null && row.paused
         );
     }
 }
