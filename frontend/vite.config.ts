@@ -1,6 +1,15 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import type { IncomingMessage } from "node:http";
 import { fileURLToPath, URL } from "node:url";
+
+const backendTarget = "http://127.0.0.1:18080";
+
+export function isHtmlNavigation(request: IncomingMessage): boolean {
+  const acceptHeader = request.headers.accept;
+  const accept = Array.isArray(acceptHeader) ? acceptHeader.join(",") : acceptHeader || "";
+  return request.method === "GET" && accept.includes("text/html");
+}
 
 export default defineConfig({
   base: "/admin/",
@@ -13,18 +22,21 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      "/knowledge-base": "http://127.0.0.1:18080",
-      "/admin/overview": "http://127.0.0.1:18080",
-      "/admin/rd-tasks": "http://127.0.0.1:18080",
-      "/intent-tree": "http://127.0.0.1:18080",
-      "/users": "http://127.0.0.1:18080",
-      "/user": "http://127.0.0.1:18080",
-      "/ingestion": "http://127.0.0.1:18080",
-      "/mappings": "http://127.0.0.1:18080",
-      "/sample-questions": "http://127.0.0.1:18080",
-      "/rag": "http://127.0.0.1:18080",
-      "/conversations": "http://127.0.0.1:18080",
-      "/test": "http://127.0.0.1:18080"
+      "/knowledge-base": backendTarget,
+      "/admin/overview": backendTarget,
+      "/admin/rd-tasks": {
+        target: backendTarget,
+        bypass: (request) => isHtmlNavigation(request) ? request.url : undefined
+      },
+      "/intent-tree": backendTarget,
+      "/users": backendTarget,
+      "/user": backendTarget,
+      "/ingestion": backendTarget,
+      "/mappings": backendTarget,
+      "/sample-questions": backendTarget,
+      "/rag": backendTarget,
+      "/conversations": backendTarget,
+      "/test": backendTarget
     }
   },
   build: {

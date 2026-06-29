@@ -82,7 +82,7 @@ public class FeishuImMessageController {
 
         JsonNode event = envelope.path("event");
         JsonNode message = event.path("message");
-        if (!"text".equals(message.path("message_type").asText(""))) {
+        if (!isTextLikeMessage(message.path("message_type").asText(""))) {
             return ResponseEntity.ok(Map.of("accepted", true, "ignored", true, "reason", "non-text message"));
         }
 
@@ -130,10 +130,50 @@ public class FeishuImMessageController {
             return "";
         }
         try {
-            return objectMapper.readTree(content).path("text").asText("");
+            JsonNode node = objectMapper.readTree(content);
+            String text = node.path("text").asText("");
+            return text.isBlank() ? collectText(node).strip() : text;
         } catch (Exception exception) {
             return content;
         }
+    }
+
+    private static boolean isTextLikeMessage(String messageType) {
+        return "text".equals(messageType) || "post".equals(messageType);
+    }
+
+    private static String collectText(JsonNode node) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return "";
+        }
+        if (node.isObject()) {
+            StringBuilder builder = new StringBuilder();
+            if (node.has("text")) {
+                builder.append(node.path("text").asText(""));
+            }
+            node.fields().forEachRemaining(entry -> {
+                if (!"text".equals(entry.getKey())) {
+                    appendText(builder, collectText(entry.getValue()));
+                }
+            });
+            return builder.toString();
+        }
+        if (node.isArray()) {
+            StringBuilder builder = new StringBuilder();
+            node.forEach(child -> appendText(builder, collectText(child)));
+            return builder.toString();
+        }
+        return "";
+    }
+
+    private static void appendText(StringBuilder builder, String text) {
+        if (text == null || text.isBlank()) {
+            return;
+        }
+        if (!builder.isEmpty()) {
+            builder.append('\n');
+        }
+        builder.append(text.strip());
     }
 
     private static String cleanText(String text, JsonNode mentions) {

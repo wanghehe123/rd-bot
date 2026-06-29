@@ -65,6 +65,51 @@ class FeishuImLocalEventListenerTest {
     }
 
     @Test
+    void shouldConvertFlatLarkCliPostMessageEventAndPublishRepairTicket() {
+        ObjectMapper objectMapper = new ObjectMapper();
+        FeishuImProperties properties = new FeishuImProperties();
+        properties.setEnabled(true);
+        properties.setRequireAtMention(false);
+        properties.getLocalListener().setEnabled(true);
+        FeishuImTicketStore store = new FeishuImTicketStore();
+        CapturingPublisher publisher = new CapturingPublisher();
+        TicketEventIngestionEngine ingestionEngine = TicketEventIngestionEngine.forTesting(
+                publisher,
+                new TicketEventIngestionEngine.InMemoryDeduplicationStore(),
+                "feishu-im"
+        );
+        FeishuImMessageController controller = new FeishuImMessageController(
+                objectMapper,
+                properties,
+                new FeishuImTicketParser(),
+                store,
+                ingestionEngine
+        );
+        FeishuImLocalEventListener listener = new FeishuImLocalEventListener(objectMapper, properties, controller);
+
+        listener.handleEventLine("""
+                {
+                  "type": "im.message.receive_v1",
+                  "event_id": "evt-local-post",
+                  "message_id": "om_local_post",
+                  "chat_id": "oc_local",
+                  "chat_type": "p2p",
+                  "message_type": "post",
+                  "sender_id": "ou_local",
+                  "timestamp": "1782298004000",
+                  "content": "问题: 外卖后端在 Node ESM 环境下启动失败\\n系统: waimai\\n优先级: P0\\n日志: ReferenceError: __dirname is not defined in ES module scope"
+                }
+                """);
+
+        assertEquals(1, publisher.published.size());
+        RepairTicketMessage message = publisher.published.get(0);
+        assertEquals("FI-om-local-post", message.ticketId());
+        assertEquals("P0", message.priority());
+        assertEquals("feishu.im.message.created_v1", message.eventType());
+        assertTrue(store.findTicket("FI-om-local-post").isPresent());
+    }
+
+    @Test
     void shouldBuildHttpEnvelopeFromLarkCliFlatEvent() throws Exception {
         ObjectMapper objectMapper = new ObjectMapper();
         FeishuImProperties properties = new FeishuImProperties();

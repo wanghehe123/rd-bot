@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
 import static org.hamcrest.Matchers.containsString;
@@ -78,5 +79,20 @@ class AdminFrontendControllerTest {
         mockMvc.perform(get("/admin/admin-knowledge.js"))
                 .andExpect(status().isOk())
                 .andExpect(content().string(containsString("createRoot")));
+    }
+
+    @Test
+    void servesRdTaskFrontendRoutesForBrowserNavigation() throws Exception {
+        for (String route : new String[]{
+                "/admin/rd-tasks",
+                "/admin/rd-tasks/7477053417710555136"
+        }) {
+            mockMvc.perform(get(route).accept(MediaType.TEXT_HTML))
+                    .andExpect(status().isOk())
+                    .andExpect(content().string(containsString("Ragent 管理后台")))
+                    .andExpect(content().string(containsString("id=\"root\"")))
+                    .andExpect(content().string(containsString("admin-knowledge.css")))
+                    .andExpect(content().string(containsString("admin-knowledge.js")));
+        }
     }
 }
