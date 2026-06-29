@@ -27,7 +27,8 @@ public class GitHubCodePlatformProperties {
     /** GitHub 认证模式。 */
     public enum AuthMode {
         GITHUB_APP,
-        PAT_LOCAL_SMOKE
+        PAT_LOCAL_SMOKE,
+        GH_CLI_LOCAL_SMOKE
     }
 
     private Mode mode = Mode.MOCK;
@@ -39,6 +40,7 @@ public class GitHubCodePlatformProperties {
     private String appId = "";
     private String installationId = "";
     private String privateKeyRef = "";
+    private String ghCliCommand = "gh";
 
     public Mode getMode() {
         return mode;
@@ -123,6 +125,14 @@ public class GitHubCodePlatformProperties {
         this.privateKeyRef = normalize(privateKeyRef);
     }
 
+    public String getGhCliCommand() {
+        return ghCliCommand;
+    }
+
+    public void setGhCliCommand(String ghCliCommand) {
+        this.ghCliCommand = defaultWhenBlank(ghCliCommand, "gh");
+    }
+
     boolean isRepositoryAllowed(String owner, String repo) {
         if (allowedRepositories.isEmpty()) {
             return true;
@@ -134,6 +144,12 @@ public class GitHubCodePlatformProperties {
         if (authMode == AuthMode.PAT_LOCAL_SMOKE) {
             if (patToken.isBlank()) {
                 throw new IllegalStateException("GitHub PAT local smoke fallback requires patToken");
+            }
+            return;
+        }
+        if (authMode == AuthMode.GH_CLI_LOCAL_SMOKE) {
+            if (ghCliCommand.isBlank()) {
+                throw new IllegalStateException("GitHub gh CLI local smoke fallback requires ghCliCommand");
             }
             return;
         }

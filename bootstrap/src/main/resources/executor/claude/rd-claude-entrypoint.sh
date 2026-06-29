@@ -22,6 +22,18 @@ fi
 
 mkdir -p "$OUTPUT_DIR"
 
+local_fallback_should_run() {
+  local code="$1"
+  local events_file="$2"
+  if [[ "$code" -eq 0 ]]; then
+    return 1
+  fi
+  if [[ ! -s "$events_file" ]]; then
+    return 1
+  fi
+  grep -Eiq 'API Error:|Insufficient Balance|rate limit|overloaded|temporarily unavailable|provider.*unavailable|authentication|permission' "$events_file"
+}
+
 if [[ -n "${RD_CLAUDE_AUTH_TOKEN_ENV:-}" ]]; then
   auth_token_value="${!RD_CLAUDE_AUTH_TOKEN_ENV:-}"
   if [[ -n "$auth_token_value" ]]; then
@@ -54,6 +66,26 @@ set +e
 ) 2>&1 | tee "$CLAUDE_EVENTS_FILE"
 exit_code="${PIPESTATUS[0]}"
 set -e
+
+if [[ "${RD_CLAUDE_LOCAL_FALLBACK_ENABLED:-false}" == "true" ]] \
+    && local_fallback_should_run "$exit_code" "$CLAUDE_EVENTS_FILE"; then
+  set +e
+  (
+    cd /work/repo
+    RD_LOCAL_REPAIR_REPO="/work/repo" \
+      PROMPT_FILE="$PROMPT_FILE" \
+      OUTPUT_DIR="$OUTPUT_DIR" \
+      RESULT_FILE="$RESULT_FILE" \
+      PATCH_FILE="$PATCH_FILE" \
+      TEST_LOG_FILE="$TEST_LOG_FILE" \
+      node /usr/local/bin/rd-local-repair-worker.mjs
+  ) 2>&1 | tee -a "$CLAUDE_EVENTS_FILE"
+  fallback_exit_code="${PIPESTATUS[0]}"
+  set -e
+  if [[ "$fallback_exit_code" -eq 0 ]]; then
+    exit_code=0
+  fi
+fi
 
 (
   cd /work/repo

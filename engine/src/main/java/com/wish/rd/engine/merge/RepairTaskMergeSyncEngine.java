@@ -5,10 +5,13 @@ import com.wish.rd.engine.ticket.RepairRecordStatus;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
 import com.wish.rd.rag.runtime.RdBugFixTask;
 import com.wish.rd.rag.runtime.RdTaskStatus;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
@@ -20,6 +23,8 @@ import java.util.Objects;
  */
 @Service
 public class RepairTaskMergeSyncEngine {
+
+    private static final Logger log = LoggerFactory.getLogger(RepairTaskMergeSyncEngine.class);
 
     private final RagStreamTaskRegistry taskRegistry;
     private final PullRequestMergeStatusPort pullRequestStatusPort;
@@ -91,10 +96,24 @@ public class RepairTaskMergeSyncEngine {
      * @return 被检查并返回的任务快照列表
      */
     public List<RdBugFixTask> syncAllCommitted() {
-        return taskRegistry.listBugFixTasks().stream()
-                .filter(task -> task.status() == RdTaskStatus.COMMITTED || task.status() == RdTaskStatus.MERGED)
-                .map(task -> syncTask(task.taskId()))
-                .toList();
+        List<RdBugFixTask> synced = new ArrayList<>();
+        for (RdBugFixTask task : taskRegistry.listBugFixTasks()) {
+            if (task.status() != RdTaskStatus.COMMITTED && task.status() != RdTaskStatus.MERGED) {
+                continue;
+            }
+            try {
+                synced.add(syncTask(task.taskId()));
+            } catch (RuntimeException exception) {
+                log.warn(
+                        "skipped repair task merge status sync, taskId={}, pullRequestUrl={}, reason={}",
+                        task.taskId(),
+                        task.pullRequestUrl(),
+                        exception.getMessage()
+                );
+                synced.add(taskRegistry.get(task.taskId()));
+            }
+        }
+        return List.copyOf(synced);
     }
 
     private void syncRepairRecord(RdBugFixTask task, RepairRecordStatus status, String summary) {

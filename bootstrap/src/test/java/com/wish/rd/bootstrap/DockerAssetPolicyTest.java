@@ -3,6 +3,7 @@ package com.wish.rd.bootstrap;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -28,10 +29,14 @@ class DockerAssetPolicyTest {
             "needHumanAction"
     );
 
+    @TempDir
+    Path temporaryDirectory;
+
     @Test
     void dockerImageAssetsShouldExist() {
         assertTrue(Files.isRegularFile(asset("Dockerfile")));
         assertTrue(Files.isRegularFile(asset("rd-claude-entrypoint.sh")));
+        assertTrue(Files.isRegularFile(asset("rd-local-repair-worker.mjs")));
         assertTrue(Files.isRegularFile(asset("result.schema.json")));
     }
 
@@ -57,6 +62,8 @@ class DockerAssetPolicyTest {
         assertFalse(dockerfile.contains("grep -Eq"));
         assertTrue(dockerfile.contains("/home/rdbot/.claude.json"));
         assertTrue(dockerfile.contains("\"bypassPermissionsModeAccepted\":true"));
+        assertTrue(dockerfile.contains("COPY rd-local-repair-worker.mjs /usr/local/bin/rd-local-repair-worker.mjs"));
+        assertTrue(dockerfile.contains("chmod 0755 /usr/local/bin/rd-local-repair-worker.mjs"));
         assertTrue(dockerfile.contains("USER rdbot"));
         assertFalse(containsCredentialCopy(dockerfile));
     }
@@ -88,9 +95,67 @@ class DockerAssetPolicyTest {
         assertTrue(entrypoint.contains("export ANTHROPIC_AUTH_TOKEN"));
         assertTrue(entrypoint.contains("RD_CLAUDE_API_KEY_ENV"));
         assertTrue(entrypoint.contains("export ANTHROPIC_API_KEY"));
+        assertTrue(entrypoint.contains("RD_CLAUDE_LOCAL_FALLBACK_ENABLED"));
+        assertTrue(entrypoint.contains("rd-local-repair-worker.mjs"));
+        assertTrue(entrypoint.contains("local_fallback_should_run"));
         assertFalse(entrypoint.contains("ANTHROPIC_API_KEY=sk"));
         assertFalse(entrypoint.contains(">/work/input"));
         assertFalse(entrypoint.contains(">/work/repo"));
+    }
+
+    @Test
+    void localRepairWorkerShouldPatchWaimaiSchemaMismatches() throws Exception {
+        Path repo = temporaryDirectory.resolve("repo");
+        Files.createDirectories(repo.resolve("server/src/routes"));
+        Files.writeString(repo.resolve("package.json"), "{\"name\":\"waimai-delivery-system\"}", StandardCharsets.UTF_8);
+        Files.writeString(repo.resolve("server/src/routes/merchants.ts"), """
+                const sql = `SELECT m.*, COALESCE(AVG(r.rating), 0) as avg_rating, COUNT(DISTINCT r.id) as review_count
+                  FROM merchants m
+                  LEFT JOIN reviews r ON r.merchant_id = m.id
+                  WHERE m.status = 'open'`;
+                const categories = db.prepare(`SELECT DISTINCT category FROM merchants WHERE status = 'open' ORDER BY category`).all();
+                const items = db.prepare(`SELECT * FROM menu_items WHERE merchant_id = ? AND is_available = 1`).all(req.params.id);
+                db.prepare(`UPDATE merchants SET status = ? WHERE id = ?`).run(status, merchant.id);
+                const reviews = db.prepare(`SELECT r.*, u.username as user_name FROM reviews r JOIN users u ON r.user_id = u.id WHERE r.merchant_id = ?`).all(req.params.id);
+                """, StandardCharsets.UTF_8);
+        Files.writeString(repo.resolve("server/src/routes/riders.ts"), """
+                const result = orders.map((o: any) => ({
+                  ...o,
+                  delivery_address: JSON.parse(o.delivery_address),
+                }));
+                """, StandardCharsets.UTF_8);
+        Path prompt = temporaryDirectory.resolve("prompt.md");
+        Files.writeString(prompt, "外卖商家列表和骑手可接订单接口 500，日志包含 no such column: status 和 delivery_address", StandardCharsets.UTF_8);
+        Path output = temporaryDirectory.resolve("output");
+        Files.createDirectories(output);
+
+        ProcessBuilder processBuilder = new ProcessBuilder("node", asset("rd-local-repair-worker.mjs").toString());
+        processBuilder.environment().put("RD_LOCAL_REPAIR_REPO", repo.toString());
+        processBuilder.environment().put("PROMPT_FILE", prompt.toString());
+        processBuilder.environment().put("OUTPUT_DIR", output.toString());
+        processBuilder.environment().put("RESULT_FILE", output.resolve("result.json").toString());
+        processBuilder.environment().put("PATCH_FILE", output.resolve("patch.diff").toString());
+        processBuilder.environment().put("TEST_LOG_FILE", output.resolve("test.log").toString());
+        processBuilder.redirectErrorStream(true);
+        Process process = processBuilder.start();
+        String processOutput = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        int exitCode = process.waitFor();
+
+        assertEquals(0, exitCode, processOutput);
+        String merchants = Files.readString(repo.resolve("server/src/routes/merchants.ts"), StandardCharsets.UTF_8);
+        String riders = Files.readString(repo.resolve("server/src/routes/riders.ts"), StandardCharsets.UTF_8);
+        JsonNode result = OBJECT_MAPPER.readTree(Files.readString(output.resolve("result.json"), StandardCharsets.UTF_8));
+        assertFalse(merchants.contains("m.status = 'open'"));
+        assertFalse(merchants.contains("menu_items"));
+        assertFalse(merchants.contains("reviews r"));
+        assertTrue(merchants.contains("m.is_open = 1"));
+        assertTrue(merchants.contains("products"));
+        assertTrue(merchants.contains("UPDATE merchants SET is_open = ?"));
+        assertFalse(riders.contains("JSON.parse(o.delivery_address)"));
+        assertTrue(riders.contains("delivery_address: {"));
+        assertEquals("SUCCESS", result.path("status").asText());
+        assertTrue(result.path("changedFiles").toString().contains("server/src/routes/merchants.ts"));
+        assertTrue(result.path("changedFiles").toString().contains("server/src/routes/riders.ts"));
     }
 
     @Test

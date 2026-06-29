@@ -126,6 +126,24 @@ class DockerClaudeCodeExecutorTest {
     }
 
     @Test
+    void shouldSurfaceClaudeApiErrorFromEventStreamWhenContainerExits() {
+        CapturingRunner runner = CapturingRunner.withExitCodeAndResult(1, validResultJson("FAILED"))
+                .withExtraArtifact(
+                        "claude-events.jsonl",
+                        """
+                                {"type":"assistant","message":{"content":[{"type":"text","text":"API Error: 402 {\\"error\\":{\\"message\\":\\"Insufficient Balance\\",\\"type\\":\\"unknown_error\\"}}"}]}}
+                                """
+                );
+        DockerClaudeCodeExecutor executor = executor(runner);
+
+        RepairExecutionResult result = executor.execute(command());
+
+        assertEquals(RepairExecutionStatus.FAILED, result.status());
+        assertTrue(result.errorMessage().contains("Claude Code API error 402: Insufficient Balance"));
+        assertTrue(result.errorMessage().contains("container exited with code 1"));
+    }
+
+    @Test
     void shouldReturnFailedWhenRunnerReturnsNullResult() {
         DockerClaudeCodeExecutor executor = executor(request -> null);
 
@@ -166,6 +184,57 @@ class DockerClaudeCodeExecutorTest {
     }
 
     @Test
+    void shouldReturnFailedValidationBeforeContainerWhenRoutedAuthTokenEnvIsMissing() {
+        String missingEnvName = "RD_BOT_TEST_MISSING_AUTH_TOKEN_7476858891402350592";
+        CapturingRunner runner = CapturingRunner.withResult(validResultJson("SUCCESS"));
+        DockerClaudeCodeExecutor executor = executor(
+                runner,
+                COMMAND,
+                List.of(provider("deepseek", Map.of(
+                        "ANTHROPIC_BASE_URL", "https://api.deepseek.com/anthropic",
+                        "RD_CLAUDE_AUTH_TOKEN_ENV", missingEnvName,
+                        missingEnvName, ""
+                )))
+        );
+
+        RepairExecutionResult result = executor.execute(command());
+
+        assertEquals(RepairExecutionStatus.FAILED_VALIDATION, result.status());
+        assertTrue(result.errorMessage().contains("deepseek"));
+        assertTrue(result.errorMessage().contains(missingEnvName));
+        assertFalse(runner.wasCalled());
+        assertEquals("deepseek", result.dockerMetadataJson().get("provider"));
+        assertTrue(result.dockerMetadataJson().get("providerAttemptsJson").contains("\"FAILED_VALIDATION\""));
+    }
+
+    @Test
+    void shouldNotOpenProviderCircuitWhenRoutedAuthTokenEnvIsMissing() {
+        String missingEnvName = "RD_BOT_TEST_MISSING_AUTH_TOKEN_7477228820605571072";
+        CapturingRunner runner = CapturingRunner.withResult(validResultJson("SUCCESS"));
+        ModelHealthStore healthStore = enabledHealthStore(1);
+        DockerClaudeCodeExecutor executor = executor(
+                runner,
+                COMMAND,
+                List.of(provider("deepseek", Map.of(
+                        "ANTHROPIC_BASE_URL", "https://api.deepseek.com/anthropic",
+                        "RD_CLAUDE_AUTH_TOKEN_ENV", missingEnvName,
+                        missingEnvName, ""
+                ))),
+                healthStore
+        );
+
+        RepairExecutionResult first = executor.execute(command());
+        RepairExecutionResult second = executor.execute(command("task-1001-second"));
+
+        assertEquals(RepairExecutionStatus.FAILED_VALIDATION, first.status());
+        assertEquals(RepairExecutionStatus.FAILED_VALIDATION, second.status());
+        assertTrue(second.errorMessage().contains(missingEnvName));
+        assertFalse(second.errorMessage().contains("all Claude Code providers are unavailable by circuit breaker"));
+        assertEquals(ModelHealthState.CLOSED, healthStore.snapshot("deepseek").state());
+        assertFalse(runner.wasCalled());
+    }
+
+    @Test
     void shouldFallbackToNextProviderWhenAttemptFailsValidation() {
         MultiAttemptRunner runner = new MultiAttemptRunner(List.of(
                 Attempt.missingResult(),
@@ -175,11 +244,7 @@ class DockerClaudeCodeExecutorTest {
                 runner,
                 COMMAND,
                 List.of(
-                        provider("deepseek", Map.of(
-                                "ANTHROPIC_BASE_URL", "https://api.deepseek.com/anthropic",
-                                "RD_CLAUDE_AUTH_TOKEN_ENV", "DEEPSEEK_API_KEY",
-                                "DEEPSEEK_API_KEY", ""
-                        )),
+                        provider("deepseek", Map.of("ANTHROPIC_BASE_URL", "https://api.deepseek.com/anthropic")),
                         provider("anthropic", Map.of("ANTHROPIC_API_KEY", ""))
                 )
         );
@@ -243,7 +308,7 @@ class DockerClaudeCodeExecutorTest {
     }
 
     @Test
-    void shouldFailWithoutRunningContainerWhenAllProvidersAreCircuitOpen() {
+    void shouldProbeFirstProviderWhenAllProvidersAreCircuitOpen() {
         MultiAttemptRunner runner = new MultiAttemptRunner(List.of(Attempt.success()));
         ModelHealthStore healthStore = enabledHealthStore(2);
         open(healthStore, "deepseek", 2);
@@ -260,10 +325,12 @@ class DockerClaudeCodeExecutorTest {
 
         RepairExecutionResult result = executor.execute(command());
 
-        assertEquals(RepairExecutionStatus.FAILED, result.status());
-        assertTrue(result.errorMessage().contains("all Claude Code providers are unavailable by circuit breaker"));
-        assertEquals(0, runner.requests().size());
+        assertEquals(RepairExecutionStatus.SUCCESS, result.status());
+        assertEquals(1, runner.requests().size());
+        assertEquals("deepseek", runner.requests().getFirst().env().get("RD_CLAUDE_PROVIDER_NAME"));
+        assertFalse(result.errorMessage().contains("all Claude Code providers are unavailable by circuit breaker"));
         assertTrue(result.dockerMetadataJson().get("providerAttemptsJson").contains("SKIPPED_CIRCUIT_OPEN"));
+        assertTrue(result.dockerMetadataJson().get("providerAttemptsJson").contains("\"SUCCESS\""));
     }
 
     @Test

@@ -29,8 +29,11 @@ import java.security.spec.PKCS8EncodedKeySpec;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * GitHub REST code-platform adapter. HTTP is isolated behind {@link GitHubRequestSender}
@@ -42,10 +45,13 @@ public class GitHubCodePlatformAdapter implements CodePlatformPort, PullRequestM
 
     private static final String API_VERSION = "2022-11-28";
     private static final Base64.Encoder BASE64_URL = Base64.getUrlEncoder().withoutPadding();
+    private static final Pattern MARKDOWN_LINK_PATTERN = Pattern.compile("\\[[^]]*]\\((https?://[^)\\s]+)\\)");
+    private static final Pattern HTTP_URL_PATTERN = Pattern.compile("https?://[^\\s)]+");
 
     private final GitHubCodePlatformProperties properties;
     private final ObjectMapper objectMapper;
     private final GitHubRequestSender sender;
+    private final GitHubCliRunner cliRunner;
 
     /**
      * 创建真实 GitHub 适配器。
@@ -58,7 +64,7 @@ public class GitHubCodePlatformAdapter implements CodePlatformPort, PullRequestM
             GitHubCodePlatformProperties properties,
             ObjectMapper objectMapper
     ) {
-        this(properties, objectMapper, new JavaHttpGitHubRequestSender());
+        this(properties, objectMapper, new JavaHttpGitHubRequestSender(), new ProcessGitHubCliRunner());
     }
 
     /**
@@ -73,9 +79,27 @@ public class GitHubCodePlatformAdapter implements CodePlatformPort, PullRequestM
             ObjectMapper objectMapper,
             GitHubRequestSender sender
     ) {
+        this(properties, objectMapper, sender, new ProcessGitHubCliRunner());
+    }
+
+    /**
+     * 创建可注入 sender 与 gh CLI runner 的 GitHub 适配器，供单元测试避免真实网络和进程调用。
+     *
+     * @param properties   GitHub 代码平台配置
+     * @param objectMapper JSON 解析器
+     * @param sender       HTTP sender
+     * @param cliRunner    gh CLI runner
+     */
+    public GitHubCodePlatformAdapter(
+            GitHubCodePlatformProperties properties,
+            ObjectMapper objectMapper,
+            GitHubRequestSender sender,
+            GitHubCliRunner cliRunner
+    ) {
         this.properties = Objects.requireNonNull(properties, "properties must not be null");
         this.objectMapper = objectMapper == null ? new ObjectMapper() : objectMapper;
         this.sender = Objects.requireNonNull(sender, "sender must not be null");
+        this.cliRunner = Objects.requireNonNull(cliRunner, "cliRunner must not be null");
     }
 
     @Override
@@ -88,6 +112,9 @@ public class GitHubCodePlatformAdapter implements CodePlatformPort, PullRequestM
         }
         properties.validateForRealAdapter();
 
+        if (properties.getAuthMode() == GitHubCodePlatformProperties.AuthMode.GH_CLI_LOCAL_SMOKE) {
+            return createPullRequestWithGhCli(command);
+        }
         GitHubHttpRequest request = createPullRequestHttpRequest(command, authorizationHeader());
         GitHubHttpResponse response = sender.send(request);
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
@@ -104,6 +131,9 @@ public class GitHubCodePlatformAdapter implements CodePlatformPort, PullRequestM
         }
         properties.validateForRealAdapter();
 
+        if (properties.getAuthMode() == GitHubCodePlatformProperties.AuthMode.GH_CLI_LOCAL_SMOKE) {
+            return findByUrlWithGhCli(pullRequestUrl, parsed);
+        }
         GitHubHttpRequest request = new GitHubHttpRequest(
                 "GET",
                 apiUrl("/repos/%s/%s/pulls/%s".formatted(
@@ -133,6 +163,45 @@ public class GitHubCodePlatformAdapter implements CodePlatformPort, PullRequestM
                 headers(authorizationHeader),
                 json(body)
         );
+    }
+
+    private PullRequestResult createPullRequestWithGhCli(CreatePullRequestCommand command) {
+        GitHubCliResult result = cliRunner.run(List.of(
+                properties.getGhCliCommand(),
+                "api",
+                "repos/%s/%s/pulls".formatted(command.repoOwner(), command.repoName()),
+                "--method",
+                "POST",
+                "-f",
+                "title=" + command.title(),
+                "-f",
+                "head=" + command.workBranch(),
+                "-f",
+                "base=" + command.baseBranch(),
+                "-f",
+                "body=" + command.prBody()
+        ));
+        ensureSuccessfulCliResult("create pull request", result);
+        return toPullRequestResult(command, result.stdout());
+    }
+
+    private PullRequestMergeStatus findByUrlWithGhCli(String pullRequestUrl, ParsedPullRequestUrl parsed) {
+        GitHubCliResult result = cliRunner.run(List.of(
+                properties.getGhCliCommand(),
+                "api",
+                "repos/%s/%s/pulls/%s".formatted(parsed.owner(), parsed.repo(), parsed.number())
+        ));
+        ensureSuccessfulCliResult("get pull request", result);
+        return toPullRequestMergeStatus(pullRequestUrl, parsed, result.stdout());
+    }
+
+    private static void ensureSuccessfulCliResult(String action, GitHubCliResult result) {
+        if (result.exitCode() == 0) {
+            return;
+        }
+        String stderr = result.stderr().isBlank() ? "" : ": " + result.stderr();
+        throw new IllegalStateException("GitHub gh api " + action + " failed with exit code "
+                + result.exitCode() + stderr);
     }
 
     private String authorizationHeader() {
@@ -247,11 +316,16 @@ public class GitHubCodePlatformAdapter implements CodePlatformPort, PullRequestM
     }
 
     private static ParsedPullRequestUrl parsePullRequestUrl(String pullRequestUrl) {
-        String normalized = normalize(pullRequestUrl);
+        String normalized = extractPullRequestUrl(pullRequestUrl);
         if (normalized.isBlank()) {
             throw new IllegalArgumentException("pullRequestUrl must not be blank");
         }
-        URI uri = URI.create(normalized);
+        URI uri;
+        try {
+            uri = URI.create(normalized);
+        } catch (IllegalArgumentException exception) {
+            throw new IllegalArgumentException("pullRequestUrl must be an http(s) URL matching /{owner}/{repo}/pull/{number}", exception);
+        }
         String[] rawParts = normalize(uri.getPath()).split("/");
         java.util.ArrayList<String> parts = new java.util.ArrayList<>();
         for (String rawPart : rawParts) {
@@ -259,10 +333,23 @@ public class GitHubCodePlatformAdapter implements CodePlatformPort, PullRequestM
                 parts.add(rawPart);
             }
         }
-        if (parts.size() != 4 || !"pull".equals(parts.get(2)) || parts.get(3).isBlank()) {
+        if (parts.size() != 4 || !"pull".equals(parts.get(2)) || !parts.get(3).matches("\\d+")) {
             throw new IllegalArgumentException("pullRequestUrl must match /{owner}/{repo}/pull/{number}");
         }
         return new ParsedPullRequestUrl(parts.get(0), parts.get(1), parts.get(3));
+    }
+
+    private static String extractPullRequestUrl(String pullRequestUrl) {
+        String normalized = normalize(pullRequestUrl);
+        Matcher markdownLink = MARKDOWN_LINK_PATTERN.matcher(normalized);
+        if (markdownLink.find()) {
+            return normalize(markdownLink.group(1));
+        }
+        Matcher httpUrl = HTTP_URL_PATTERN.matcher(normalized);
+        if (httpUrl.find()) {
+            return normalize(httpUrl.group());
+        }
+        return normalized;
     }
 
     private Map<String, String> headers(String authorizationHeader) {
@@ -352,6 +439,36 @@ public class GitHubCodePlatformAdapter implements CodePlatformPort, PullRequestM
         }
     }
 
+    /**
+     * gh CLI runner abstraction for token-free local smoke execution.
+     */
+    @FunctionalInterface
+    public interface GitHubCliRunner {
+
+        /**
+         * Runs a gh CLI command without shell interpolation.
+         *
+         * @param command command argv
+         * @return CLI result
+         */
+        GitHubCliResult run(List<String> command);
+    }
+
+    /**
+     * gh CLI process result.
+     *
+     * @param exitCode process exit code
+     * @param stdout   standard output
+     * @param stderr   standard error
+     */
+    public record GitHubCliResult(int exitCode, String stdout, String stderr) {
+
+        public GitHubCliResult {
+            stdout = normalize(stdout);
+            stderr = normalize(stderr);
+        }
+    }
+
     private static final class JavaHttpGitHubRequestSender implements GitHubRequestSender {
 
         private final HttpClient httpClient = HttpClient.newHttpClient();
@@ -373,6 +490,25 @@ public class GitHubCodePlatformAdapter implements CodePlatformPort, PullRequestM
             } catch (InterruptedException exception) {
                 Thread.currentThread().interrupt();
                 throw new IllegalStateException("GitHub HTTP request interrupted", exception);
+            }
+        }
+    }
+
+    private static final class ProcessGitHubCliRunner implements GitHubCliRunner {
+
+        @Override
+        public GitHubCliResult run(List<String> command) {
+            try {
+                Process process = new ProcessBuilder(command).start();
+                String stdout = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+                String stderr = new String(process.getErrorStream().readAllBytes(), StandardCharsets.UTF_8);
+                int exitCode = process.waitFor();
+                return new GitHubCliResult(exitCode, stdout, stderr);
+            } catch (IOException exception) {
+                throw new IllegalStateException("GitHub gh CLI command failed to start", exception);
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("GitHub gh CLI command interrupted", exception);
             }
         }
     }

@@ -70,6 +70,30 @@ class RepairTaskMergeSyncEngineTest {
     }
 
     @Test
+    void shouldContinueSyncingOtherTasksWhenOnePullRequestUrlIsInvalid() {
+        RagStreamTaskRegistry registry = newRegistry();
+        RdBugFixTask invalid = committedTask(
+                registry,
+                "FS-INVALID-URL",
+                "https://github.example/rd-bot/pull/mock-7477247467243835392"
+        );
+        RdBugFixTask valid = committedTask(registry, "FS-VALID-URL", "https://github.com/acme/order/pull/46");
+        PullRequestMergeStatusPort statusPort = pullRequestUrl -> {
+            if (pullRequestUrl.contains("mock-")) {
+                throw new IllegalArgumentException("pullRequestUrl must match /{owner}/{repo}/pull/{number}");
+            }
+            return new PullRequestMergeStatus(pullRequestUrl, "acme/order", "46", "closed", true);
+        };
+        RepairTaskMergeSyncEngine engine = new RepairTaskMergeSyncEngine(registry, statusPort);
+
+        List<RdBugFixTask> synced = engine.syncAllCommitted();
+
+        assertEquals(2, synced.size());
+        assertEquals(RdTaskStatus.COMMITTED, registry.get(invalid.taskId()).status());
+        assertEquals(RdTaskStatus.MERGED, registry.get(valid.taskId()).status());
+    }
+
+    @Test
     void shouldRepairRecordStatusForAlreadyMergedTask() {
         RagStreamTaskRegistry registry = newRegistry();
         RdBugFixTask committed = committedTask(registry, "https://github.com/acme/order/pull/45");
@@ -87,7 +111,11 @@ class RepairTaskMergeSyncEngineTest {
     }
 
     private static RdBugFixTask committedTask(RagStreamTaskRegistry registry, String pullRequestUrl) {
-        RdBugFixTask created = registry.createBugFixTask(ticket("FS-2001"), "P1");
+        return committedTask(registry, "FS-2001", pullRequestUrl);
+    }
+
+    private static RdBugFixTask committedTask(RagStreamTaskRegistry registry, String ticketId, String pullRequestUrl) {
+        RdBugFixTask created = registry.createBugFixTask(ticket(ticketId), "P1");
         registry.markSearching(created.taskId(), "RAG 检索中");
         registry.markExecuting(created.taskId(), "执行修复");
         return registry.markCommitted(created.taskId(), pullRequestUrl, "{\"status\":\"SUCCESS\"}");

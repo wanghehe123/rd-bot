@@ -1,6 +1,7 @@
 package com.wish.rd.exec.repair.docker;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wish.rd.exec.repair.alert.RepairExecutionWatchdog;
 import com.wish.rd.exec.repair.execution.RepairArtifact;
@@ -38,6 +39,8 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
     private static final String CONTAINER_REPO_DIRECTORY = "/work/repo";
     private static final String CONTAINER_INPUT_DIRECTORY = "/work/input";
     private static final String CONTAINER_OUTPUT_DIRECTORY = "/work/output";
+    private static final String AUTH_TOKEN_ENV_ROUTER = "RD_CLAUDE_AUTH_TOKEN_ENV";
+    private static final String API_KEY_ENV_ROUTER = "RD_CLAUDE_API_KEY_ENV";
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     private final RepairWorkspaceFactory workspaceFactory;
@@ -278,6 +281,20 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
                     return withProviderMetadata(lastResult, provider, providerAttempts);
                 }
             }
+            if (lastResult == null && !providerAttempts.isEmpty()) {
+                ClaudeCodeModelProvider provider = providers.getFirst();
+                int attempt = providerAttempts.size() + 1;
+                cleanOutputDirectory(workspace.outputDirectory());
+                AttemptOutcome outcome = runProvider(command, workspace, provider, attempt, providers.size());
+                RepairExecutionResult providerResult = withRepositoryMetadata(outcome.result(), repositoryMetadata);
+                markProviderHealth(provider, providerResult);
+                lastResult = providerResult;
+                if (providerResult.status() == RepairExecutionStatus.SUCCESS) {
+                    lastResult = publishRepository(command, workspace, providerResult);
+                }
+                providerAttempts.add(attemptMetadata(provider, attempt, providerResult));
+                return withProviderMetadata(lastResult, provider, providerAttempts);
+            }
             return withProviderAttempts(
                     lastResult == null
                             ? failedExecution("all Claude Code providers are unavailable by circuit breaker")
@@ -310,6 +327,10 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
             int attempt,
             int providerCount
     ) {
+        RepairExecutionResult validationResult = validateProviderRuntimeEnvironment(provider);
+        if (validationResult != null) {
+            return new AttemptOutcome(validationResult);
+        }
         try {
             ContainerRunRequest request = toRunRequest(command, workspace, provider, attempt, providerCount);
             executionRegistry.register(command, provider.name(), request);
@@ -329,6 +350,44 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
         } catch (IOException exception) {
             return new AttemptOutcome(failedExecution(exception.getMessage()));
         }
+    }
+
+    private RepairExecutionResult validateProviderRuntimeEnvironment(ClaudeCodeModelProvider provider) {
+        List<String> missingEnvNames = missingRoutedAuthEnvNames(provider.env());
+        if (missingEnvNames.isEmpty()) {
+            return null;
+        }
+        String message = "provider " + provider.name()
+                + " is missing required auth environment variable(s): "
+                + String.join(", ", missingEnvNames)
+                + ". Set them on the RD-Bot process and restart before running Docker Claude Code.";
+        return failedProviderValidation(message, missingEnvNames);
+    }
+
+    private static List<String> missingRoutedAuthEnvNames(Map<String, String> env) {
+        List<String> missingEnvNames = new ArrayList<>();
+        collectMissingRoutedAuthEnvName(missingEnvNames, env, AUTH_TOKEN_ENV_ROUTER);
+        collectMissingRoutedAuthEnvName(missingEnvNames, env, API_KEY_ENV_ROUTER);
+        return List.copyOf(missingEnvNames);
+    }
+
+    private static void collectMissingRoutedAuthEnvName(
+            List<String> missingEnvNames,
+            Map<String, String> env,
+            String routerKey
+    ) {
+        String routedEnvName = normalizeEnvText(env.get(routerKey));
+        if (routedEnvName.isBlank()) {
+            return;
+        }
+        String hostValue = normalizeEnvText(System.getenv(routedEnvName));
+        if (hostValue.isBlank() && !missingEnvNames.contains(routedEnvName)) {
+            missingEnvNames.add(routedEnvName);
+        }
+    }
+
+    private static String normalizeEnvText(String value) {
+        return value == null ? "" : value.strip();
     }
 
     private void evaluateWatchdog(RepairJobCommand command, ContainerRunResult runResult) {
@@ -402,9 +461,17 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
             return;
         }
         if (result.status() == RepairExecutionStatus.FAILED_VALIDATION
-                || result.status() == RepairExecutionStatus.FAILED && shouldFallback(result)) {
+                && !isProviderRuntimeConfigurationFailure(result)) {
+            modelHealthStore.markFailure(provider.name());
+            return;
+        }
+        if (result.status() == RepairExecutionStatus.FAILED && shouldFallback(result)) {
             modelHealthStore.markFailure(provider.name());
         }
+    }
+
+    private static boolean isProviderRuntimeConfigurationFailure(RepairExecutionResult result) {
+        return "failed".equals(result.dockerMetadataJson().get("providerAuthPrecheck"));
     }
 
     private static RepairExecutionResult withProviderMetadata(
@@ -548,7 +615,7 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
         String errorMessage = "";
         if (runResult.exitCode() != 0 && status != RepairExecutionStatus.NEED_INFO) {
             status = RepairExecutionStatus.FAILED;
-            errorMessage = "container exited with code " + runResult.exitCode();
+            errorMessage = containerFailureMessage(runResult);
         }
 
         return new RepairExecutionResult(
@@ -565,6 +632,111 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
         );
     }
 
+    private static String containerFailureMessage(ContainerRunResult runResult) {
+        String providerError = claudeApiError(runResult.claudeEventsJsonl());
+        String containerExit = "container exited with code " + runResult.exitCode();
+        if (providerError.isBlank()) {
+            return containerExit;
+        }
+        return providerError + " (" + containerExit + ")";
+    }
+
+    private static String claudeApiError(Path claudeEventsJsonl) {
+        if (claudeEventsJsonl == null || !Files.isRegularFile(claudeEventsJsonl)) {
+            return "";
+        }
+        String lastError = "";
+        try {
+            List<String> lines = Files.readAllLines(claudeEventsJsonl, StandardCharsets.UTF_8);
+            for (String line : lines) {
+                String error = apiErrorFromEventLine(line);
+                if (!error.isBlank()) {
+                    lastError = error;
+                }
+            }
+        } catch (IOException exception) {
+            return "";
+        }
+        return lastError;
+    }
+
+    private static String apiErrorFromEventLine(String line) {
+        String normalized = line == null ? "" : line.strip();
+        if (normalized.isBlank() || !normalized.contains("API Error:")) {
+            return "";
+        }
+        try {
+            JsonNode root = OBJECT_MAPPER.readTree(normalized);
+            return formatClaudeApiError(firstTextContainingApiError(root));
+        } catch (JsonProcessingException exception) {
+            return formatClaudeApiError(normalized);
+        }
+    }
+
+    private static String firstTextContainingApiError(JsonNode node) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return "";
+        }
+        if (node.isTextual()) {
+            String text = node.asText("");
+            return text.contains("API Error:") ? text : "";
+        }
+        if (node.isArray()) {
+            for (JsonNode child : node) {
+                String result = firstTextContainingApiError(child);
+                if (!result.isBlank()) {
+                    return result;
+                }
+            }
+            return "";
+        }
+        if (node.isObject()) {
+            var fields = node.fields();
+            while (fields.hasNext()) {
+                String result = firstTextContainingApiError(fields.next().getValue());
+                if (!result.isBlank()) {
+                    return result;
+                }
+            }
+        }
+        return "";
+    }
+
+    private static String formatClaudeApiError(String text) {
+        String normalized = text == null ? "" : text.strip();
+        int marker = normalized.indexOf("API Error:");
+        if (marker < 0) {
+            return "";
+        }
+        String apiError = normalized.substring(marker + "API Error:".length()).strip();
+        if (apiError.isBlank()) {
+            return "";
+        }
+        int jsonStart = apiError.indexOf('{');
+        String statusCode = jsonStart < 0 ? "" : apiError.substring(0, jsonStart).strip();
+        String message = jsonStart < 0 ? "" : apiErrorMessage(apiError.substring(jsonStart));
+        if (!statusCode.isBlank() && !message.isBlank()) {
+            return SecretRedactor.redactFreeform("Claude Code API error " + statusCode + ": " + message);
+        }
+        return SecretRedactor.redactFreeform(limitErrorText("Claude Code API error: " + apiError));
+    }
+
+    private static String apiErrorMessage(String json) {
+        try {
+            return OBJECT_MAPPER.readTree(json).path("error").path("message").asText("");
+        } catch (JsonProcessingException exception) {
+            return "";
+        }
+    }
+
+    private static String limitErrorText(String text) {
+        String normalized = text == null ? "" : text.strip();
+        if (normalized.length() <= 500) {
+            return normalized;
+        }
+        return normalized.substring(0, 500) + "...";
+    }
+
     private RepairExecutionResult failedExecution(String errorMessage) {
         return new RepairExecutionResult(
                 RepairExecutionStatus.FAILED,
@@ -577,6 +749,25 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
                 Map.of(),
                 Map.of(),
                 errorMessage == null ? "" : errorMessage
+        );
+    }
+
+    private RepairExecutionResult failedProviderValidation(String errorMessage, List<String> missingEnvNames) {
+        String safeErrorMessage = errorMessage == null ? "" : errorMessage;
+        return new RepairExecutionResult(
+                RepairExecutionStatus.FAILED_VALIDATION,
+                "Docker Claude Code provider validation failed.",
+                "",
+                List.of(),
+                Map.of("validationErrors", safeErrorMessage),
+                Map.of(
+                        "providerAuthPrecheck", "failed",
+                        "missingAuthEnvNames", String.join(",", missingEnvNames == null ? List.of() : missingEnvNames)
+                ),
+                Map.of(),
+                Map.of(),
+                Map.of(),
+                safeErrorMessage
         );
     }
 

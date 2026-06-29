@@ -214,10 +214,12 @@ export ANTHROPIC_API_KEY=...
 
 本地 smoke fallback：
 
+- `rd.github.code-platform.auth-mode=GH_CLI_LOCAL_SMOKE`: 默认本地真实 PR 路径，复用宿主机 `gh auth login` 的 keyring 登录态，不要求把 PAT 写入 RD-Bot 配置。
+- `rd.github.code-platform.gh-cli-command`: 默认 `gh`
 - `rd.github.code-platform.auth-mode=PAT_LOCAL_SMOKE`
 - `rd.github.code-platform.pat-token`
 
-PAT 只用于本地 smoke 或临时 fallback，不作为生产默认。
+PAT 只用于显式本地 smoke 或临时 fallback，不作为生产默认，也不作为本地默认。
 
 ## Feishu 写回限制
 

@@ -129,6 +129,8 @@ rd:
           default-haiku-model: ${DEEPSEEK_CLAUDE_HAIKU_MODEL:deepseek-v4-flash}
           subagent-model: ${DEEPSEEK_CLAUDE_SUBAGENT_MODEL:deepseek-v4-flash}
           effort-level: ${DEEPSEEK_CLAUDE_EFFORT_LEVEL:max}
+          extra-env:
+            RD_CLAUDE_LOCAL_FALLBACK_ENABLED: ${RD_CLAUDE_LOCAL_FALLBACK_ENABLED:true}
   github:
     merge-sync:
       enabled: ${RD_GITHUB_MERGE_SYNC_ENABLED:true}
@@ -136,7 +138,8 @@ rd:
     code-platform:
       mode: ${RD_GITHUB_CODE_PLATFORM_MODE:real}
       allowed-repositories: []
-      auth-mode: ${RD_GITHUB_CODE_PLATFORM_AUTH_MODE:PAT_LOCAL_SMOKE}
+      auth-mode: ${RD_GITHUB_CODE_PLATFORM_AUTH_MODE:GH_CLI_LOCAL_SMOKE}
+      gh-cli-command: ${RD_GITHUB_CODE_PLATFORM_GH_CLI_COMMAND:gh}
       app-id: ${GITHUB_APP_ID:}
       installation-id: ${GITHUB_INSTALLATION_ID:}
       private-key-ref: ${GITHUB_PRIVATE_KEY_REF:}

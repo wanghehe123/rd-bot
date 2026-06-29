@@ -24,7 +24,9 @@ RUN groupadd --system rdbot \
     && chown -R rdbot:rdbot /home/rdbot /work
 
 COPY rd-claude-entrypoint.sh /usr/local/bin/rd-claude-entrypoint
-RUN chmod 0755 /usr/local/bin/rd-claude-entrypoint
+COPY rd-local-repair-worker.mjs /usr/local/bin/rd-local-repair-worker.mjs
+RUN chmod 0755 /usr/local/bin/rd-claude-entrypoint \
+    && chmod 0755 /usr/local/bin/rd-local-repair-worker.mjs
 
 USER rdbot
 WORKDIR /work/repo

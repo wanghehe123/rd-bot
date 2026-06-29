@@ -133,7 +133,8 @@ Build in this order unless the user explicitly changes scope:
    - Do not hard-kill for resource or timeout limits by default. Add timeout and
      budget alerts; RD decides whether to stop the task.
    - Code platform must be a port. This project implements GitHub first. Prefer
-     GitHub App for production and PAT only for local smoke/fallback.
+     GitHub App for production, `gh` CLI for local real-PR smoke, and PAT only
+     as an explicit local fallback.
 4. **P3: Production governance**
    - Audit, idempotency, dead-letter handling, manual recovery, alerting,
      allowlists, secret boundaries, log redaction, and operational views.
