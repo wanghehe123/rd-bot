@@ -7,6 +7,7 @@ import java.time.Instant;
 import java.util.Comparator;
 import java.util.List;
 import java.util.NoSuchElementException;
+import java.util.Optional;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
@@ -75,6 +76,24 @@ public final class RagStreamTaskRegistry {
         RdBugFixTask saved = taskStore.saveBugFixTask(task);
         recordEvent(saved, RdTaskStatus.CREATED.name(), saved.title(), "任务创建", RdTaskEventTrigger.SYSTEM);
         return saved;
+    }
+
+    /**
+     * 创建或复用 Bug 修复任务。用于 MQ 重试/重复投递时保持同一工单只占用一个 RD 任务。
+     *
+     * @param ticket   工单快照
+     * @param priority 优先级
+     * @return 已存在任务或新任务快照
+     */
+    public synchronized RdBugFixTask createOrReuseBugFixTask(TicketSnapshot ticket, String priority) {
+        TicketSnapshot safeTicket = normalizeTicket(ticket);
+        if (!safeTicket.ticketId().isBlank()) {
+            Optional<RdBugFixTask> existing = taskStore.findLatestBugFixTaskByTicketId(safeTicket.ticketId());
+            if (existing.isPresent()) {
+                return existing.get();
+            }
+        }
+        return createBugFixTask(safeTicket, priority);
     }
 
     /**
@@ -410,7 +429,7 @@ public final class RagStreamTaskRegistry {
             case SEARCHING -> target == RdTaskStatus.EXECUTING || target == RdTaskStatus.REJECTED;
             case EXECUTING -> target == RdTaskStatus.COMMITTED || target == RdTaskStatus.REJECTED;
             case COMMITTED -> target == RdTaskStatus.MERGED || target == RdTaskStatus.REJECTED;
-            case REJECTED -> target == RdTaskStatus.EXECUTING;
+            case REJECTED -> target == RdTaskStatus.SEARCHING || target == RdTaskStatus.EXECUTING;
             case MERGED -> false;
             case DELETED -> false;
         };

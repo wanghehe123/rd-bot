@@ -192,6 +192,48 @@ class RdBotFixEngineTest {
     }
 
     @Test
+    void shouldReuseRejectedTaskForSameTicketRetry() {
+        AtomicLong executions = new AtomicLong();
+        BugFixExecutor executor = request -> {
+            long attempt = executions.incrementAndGet();
+            if (attempt == 1) {
+                return new BugFixExecutionResult(
+                        request.taskId(),
+                        "Docker Claude Code execution failed.",
+                        "",
+                        "",
+                        "{\"status\":\"FAILED\",\"errorMessage\":\"git clone failed\"}"
+                );
+            }
+            return new BugFixExecutionResult(
+                    request.taskId(),
+                    "OrderService.create 缺少金额校验",
+                    "fixed",
+                    "https://github.example/rd/pr/203",
+                    "{\"status\":\"SUCCESS\"}"
+            );
+        };
+        RagStreamTaskRegistry registry = registry();
+        RdBotFixEngine engine = new RdBotFixEngine(
+                ChatQueueLimiter.passThrough(),
+                ragEngine(registry),
+                registry,
+                BugFixPromptBuilder.defaultBuilder(),
+                executor
+        );
+        RdBotFixCommand command = new RdBotFixCommand(ticket(), List.of(), false, "P1");
+
+        RdBotFixResult first = engine.runBugFix(command);
+        RdBotFixResult retry = engine.runBugFix(command);
+
+        assertEquals(first.taskId(), retry.taskId());
+        assertEquals(1, registry.listBugFixTasks().size());
+        assertEquals(RdTaskStatus.COMMITTED, retry.status());
+        assertEquals("https://github.example/rd/pr/203", registry.get(retry.taskId()).pullRequestUrl());
+        assertEquals(2, executions.get());
+    }
+
+    @Test
     void shouldRejectSuccessfulStatusWithoutPullRequestUrl() {
         BugFixExecutor executor = request -> new BugFixExecutionResult(
                 request.taskId(),

@@ -41,6 +41,22 @@ public final class PostgresRdTaskStore implements RdTaskStore {
     }
 
     @Override
+    public Optional<RdBugFixTask> findLatestBugFixTaskByTicketId(String ticketId) {
+        String safeTicketId = ticketId == null ? "" : ticketId.strip();
+        if (safeTicketId.isBlank()) {
+            return Optional.empty();
+        }
+        return Optional.ofNullable(taskMapper.selectOne(new QueryWrapper<RdTaskRow>()
+                        .eq("task_type", RdBugFixTask.TASK_TYPE)
+                        .eq("ticket_id", safeTicketId)
+                        .ne("status", RdTaskStatus.DELETED.name())
+                        .orderByDesc("updated_at")
+                        .orderByDesc("id")
+                        .last("LIMIT 1")))
+                .map(this::toTask);
+    }
+
+    @Override
     public List<RdBugFixTask> listBugFixTasks() {
         return taskMapper.selectList(new QueryWrapper<RdTaskRow>()
                         .eq("task_type", RdBugFixTask.TASK_TYPE))

@@ -1,5 +1,6 @@
 package com.wish.rd.rag.runtime;
 
+import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 
@@ -25,6 +26,24 @@ public interface RdTaskStore {
      * @return 任务快照
      */
     Optional<RdBugFixTask> findBugFixTask(String taskId);
+
+    /**
+     * 按工单 ID 查询最近一个未删除的 Bug 修复任务。
+     *
+     * @param ticketId 工单 ID
+     * @return 最近任务快照
+     */
+    default Optional<RdBugFixTask> findLatestBugFixTaskByTicketId(String ticketId) {
+        String safeTicketId = ticketId == null ? "" : ticketId.strip();
+        if (safeTicketId.isBlank()) {
+            return Optional.empty();
+        }
+        return listBugFixTasks().stream()
+                .filter(task -> task.status() != RdTaskStatus.DELETED)
+                .filter(task -> safeTicketId.equals(task.ticketId()))
+                .max(Comparator.comparingLong(RdBugFixTask::updateTimeEpochMillis)
+                        .thenComparing(RdBugFixTask::taskId));
+    }
 
     /**
      * 查询所有 Bug 修复任务快照。

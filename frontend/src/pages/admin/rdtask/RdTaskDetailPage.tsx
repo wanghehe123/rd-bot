@@ -74,7 +74,7 @@ export function RdTaskDetailPage() {
         ? await resumeRdTask(task.taskId)
         : await pauseRdTask(task.taskId);
       setTask(updated);
-      toast.success(updated.paused ? "已暂停" : "已恢复");
+      toast.success(updated.paused ? "已暂停" : "已恢复并重新触发");
       const timeline = await getRdTaskTimeline(task.taskId);
       setEvents(timeline || []);
     } catch (error) {
@@ -114,7 +114,7 @@ export function RdTaskDetailPage() {
               {task.paused ? (
                 <>
                   <Play className="mr-2 h-4 w-4" />
-                  恢复
+                  重启
                 </>
               ) : (
                 <>

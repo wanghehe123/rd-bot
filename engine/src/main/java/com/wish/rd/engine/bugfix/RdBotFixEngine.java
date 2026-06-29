@@ -13,6 +13,7 @@ import com.wish.rd.engine.rag.ChatQueueLimiter;
 import com.wish.rd.engine.rag.RagBugFixEngine;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
 import com.wish.rd.rag.runtime.RdBugFixTask;
+import com.wish.rd.rag.runtime.RdTaskStatus;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -113,7 +114,10 @@ public class RdBotFixEngine {
         RdBotFixCommand safeCommand = command == null
                 ? new RdBotFixCommand(mockTicket(), List.of(), false, "P2")
                 : command;
-        RdBugFixTask created = taskRegistry.createBugFixTask(safeCommand.ticket(), safeCommand.priority());
+        RdBugFixTask created = taskRegistry.createOrReuseBugFixTask(safeCommand.ticket(), safeCommand.priority());
+        if (shouldReturnExisting(created)) {
+            return toExistingResult(created);
+        }
         ChatQueueLimiter.ChatQueueRequest queueRequest = new ChatQueueLimiter.ChatQueueRequest(
                 userQuestion(safeCommand.ticket()),
                 created.taskId(),
@@ -123,6 +127,30 @@ public class RdBotFixEngine {
                 queueRequest,
                 () -> runAfterAcquire(created.taskId(), safeCommand),
                 () -> reject(created.taskId())
+        );
+    }
+
+    private boolean shouldReturnExisting(RdBugFixTask task) {
+        return task.status() == RdTaskStatus.SEARCHING
+                || task.status() == RdTaskStatus.EXECUTING
+                || task.status() == RdTaskStatus.COMMITTED
+                || task.status() == RdTaskStatus.MERGED;
+    }
+
+    private RdBotFixResult toExistingResult(RdBugFixTask task) {
+        return new RdBotFixResult(
+                task.taskId(),
+                task.status(),
+                null,
+                task.promptSnapshot(),
+                new BugFixExecutionResult(
+                        task.taskId(),
+                        task.ticketTitle(),
+                        "",
+                        task.pullRequestUrl(),
+                        task.executionResultJson()
+                ),
+                false
         );
     }
 

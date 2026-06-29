@@ -4,6 +4,7 @@ import com.wish.rd.engine.audit.NoopRepairAuditSink;
 import com.wish.rd.engine.audit.RepairAuditEvent;
 import com.wish.rd.engine.audit.RepairAuditEventType;
 import com.wish.rd.engine.audit.RepairAuditSinkPort;
+import com.wish.rd.engine.ticket.RdTaskRestartEngine;
 import com.wish.rd.exec.repair.execution.RepairExecutionControlPort;
 import com.wish.rd.exec.repair.execution.RepairExecutionStopCommand;
 import com.wish.rd.exec.repair.execution.RepairExecutionStopResult;
@@ -16,6 +17,7 @@ import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -50,6 +52,7 @@ public class RdTaskController {
     private final RagStreamTaskRegistry registry;
     private final RepairExecutionControlPort executionControlPort;
     private final RepairAuditSinkPort auditSink;
+    private final RdTaskRestartEngine restartEngine;
 
     public RdTaskController(RagStreamTaskRegistry registry) {
         this(
@@ -60,7 +63,22 @@ public class RdTaskController {
                         false,
                         "execution control unavailable"
                 ),
-                NoopRepairAuditSink.instance()
+                NoopRepairAuditSink.instance(),
+                null
+        );
+    }
+
+    public RdTaskController(RagStreamTaskRegistry registry, RdTaskRestartEngine restartEngine) {
+        this(
+                registry,
+                command -> new RepairExecutionStopResult(
+                        command.taskId(),
+                        command.containerName(),
+                        false,
+                        "execution control unavailable"
+                ),
+                NoopRepairAuditSink.instance(),
+                restartEngine
         );
     }
 
@@ -68,7 +86,8 @@ public class RdTaskController {
     public RdTaskController(
             RagStreamTaskRegistry registry,
             ObjectProvider<RepairExecutionControlPort> executionControlPortProvider,
-            ObjectProvider<RepairAuditSinkPort> auditSinkProvider
+            ObjectProvider<RepairAuditSinkPort> auditSinkProvider,
+            ObjectProvider<RdTaskRestartEngine> restartEngineProvider
     ) {
         this(
                 registry,
@@ -78,18 +97,21 @@ public class RdTaskController {
                         false,
                         "execution control unavailable"
                 )),
-                auditSinkProvider.getIfAvailable(NoopRepairAuditSink::instance)
+                auditSinkProvider.getIfAvailable(NoopRepairAuditSink::instance),
+                restartEngineProvider.getIfAvailable()
         );
     }
 
     private RdTaskController(
             RagStreamTaskRegistry registry,
             RepairExecutionControlPort executionControlPort,
-            RepairAuditSinkPort auditSink
+            RepairAuditSinkPort auditSink,
+            RdTaskRestartEngine restartEngine
     ) {
         this.registry = registry;
         this.executionControlPort = executionControlPort;
         this.auditSink = auditSink;
+        this.restartEngine = restartEngine;
     }
 
     /**
@@ -103,7 +125,7 @@ public class RdTaskController {
      * @param pageSize 每页大小（默认 20）
      * @return 分页结果
      */
-    @GetMapping("/admin/rd-tasks")
+    @GetMapping(value = "/admin/rd-tasks", produces = MediaType.APPLICATION_JSON_VALUE)
     public RdTaskPageView list(
             @RequestParam(value = "status", required = false) String status,
             @RequestParam(value = "priority", required = false) String priority,
@@ -126,7 +148,7 @@ public class RdTaskController {
      * @param taskId 任务 ID
      * @return 任务视图
      */
-    @GetMapping("/admin/rd-tasks/{taskId}")
+    @GetMapping(value = "/admin/rd-tasks/{taskId}", produces = MediaType.APPLICATION_JSON_VALUE)
     public RdTaskView get(@PathVariable("taskId") String taskId) {
         return toDetailView(registry.get(taskId));
     }
@@ -187,7 +209,7 @@ public class RdTaskController {
     }
 
     /**
-     * 恢复任务。
+     * 恢复任务，并在装配了重启用例时重新发布修复队列消息。
      *
      * @param taskId  任务 ID
      * @param request 动作请求（可选 message）
@@ -199,6 +221,9 @@ public class RdTaskController {
             @RequestBody(required = false) RdTaskActionRequest request
     ) {
         String message = request == null ? "管理台恢复" : request.message();
+        if (restartEngine != null) {
+            return toDetailView(restartEngine.resumeAndRestart(taskId, message));
+        }
         return toDetailView(registry.resume(taskId, message));
     }
 
@@ -262,7 +287,7 @@ public class RdTaskController {
      * @param taskId 任务 ID
      * @return 状态事件视图列表（升序）
      */
-    @GetMapping("/admin/rd-tasks/{taskId}/timeline")
+    @GetMapping(value = "/admin/rd-tasks/{taskId}/timeline", produces = MediaType.APPLICATION_JSON_VALUE)
     public List<RdTaskStatusEventView> timeline(@PathVariable("taskId") String taskId) {
         return registry.timeline(taskId).stream()
                 .map(RdTaskController::toEventView)

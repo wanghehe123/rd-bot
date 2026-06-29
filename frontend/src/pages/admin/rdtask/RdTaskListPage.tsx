@@ -144,7 +144,7 @@ export function RdTaskListPage() {
     try {
       if (task.paused) {
         await resumeRdTask(task.taskId);
-        toast.success("已恢复");
+        toast.success("已恢复并重新触发");
       } else {
         await pauseRdTask(task.taskId);
         toast.success("已暂停");
@@ -297,7 +297,7 @@ export function RdTaskListPage() {
                             {task.paused ? (
                               <>
                                 <Play className="mr-1 h-4 w-4" />
-                                恢复
+                                重启
                               </>
                             ) : (
                               <>

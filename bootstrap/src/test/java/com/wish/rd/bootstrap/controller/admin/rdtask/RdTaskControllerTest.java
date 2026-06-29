@@ -1,6 +1,9 @@
 package com.wish.rd.bootstrap.controller.admin.rdtask;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.wish.rd.engine.ticket.RdTaskRestartEngine;
+import com.wish.rd.engine.ticket.RepairQueuePublishResult;
+import com.wish.rd.engine.ticket.RepairTicketMessage;
 import com.wish.rd.rag.runtime.InMemoryRdTaskStatusEventStore;
 import com.wish.rd.rag.runtime.InMemoryRdTaskStore;
 import com.wish.rd.rag.runtime.RdBugFixTask;
@@ -13,7 +16,9 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.is;
 import static org.springframework.http.MediaType.APPLICATION_JSON;
@@ -102,6 +107,34 @@ class RdTaskControllerTest {
                 .andExpect(jsonPath("$[1].status", is("PAUSED")))
                 .andExpect(jsonPath("$[1].trigger", is("API")))
                 .andExpect(jsonPath("$[2].status", is("RESUMED")));
+    }
+
+    @Test
+    void shouldResumeAndPublishRestartMessageWhenRestartEngineAvailable() throws Exception {
+        AtomicReference<RepairTicketMessage> published = new AtomicReference<>();
+        RdTaskRestartEngine restartEngine = new RdTaskRestartEngine(
+                registry,
+                message -> {
+                    published.set(message);
+                    return RepairQueuePublishResult.success("msg-1", "topic", message.tag());
+                }
+        );
+        mockMvc = MockMvcBuilders.standaloneSetup(new RdTaskController(registry, restartEngine)).build();
+        String taskId = createTask("FS-3010", "待重启任务", "P0");
+        registry.markSearching(taskId, "RAG 检索中");
+        registry.markExecuting(taskId, "prompt");
+        registry.pause(taskId, "人工暂停");
+
+        mockMvc.perform(post("/admin/rd-tasks/{taskId}/resume", taskId)
+                        .contentType(APPLICATION_JSON)
+                        .content("{\"message\":\"恢复并重启\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.taskId", is(taskId)))
+                .andExpect(jsonPath("$.paused", is(false)))
+                .andExpect(jsonPath("$.status", is("REJECTED")));
+
+        assertEquals("FS-3010", published.get().ticketId());
+        assertEquals("P0", published.get().priority());
     }
 
     @Test

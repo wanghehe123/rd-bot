@@ -28,7 +28,7 @@ public class InMemoryRepairQueueAdapter implements RepairQueuePublisher {
 
     private static final String TOPIC = "in-memory://RD_BOT_REPAIR_TICKET";
 
-    private final List<RepairTicketMessage> published = new ArrayList<>();
+    private final List<QueuedMessage> published = new ArrayList<>();
     private final AtomicLong idSequence = new AtomicLong(0);
     private volatile RepairQueueConsumer consumer;
 
@@ -43,11 +43,18 @@ public class InMemoryRepairQueueAdapter implements RepairQueuePublisher {
 
     @Override
     public synchronized RepairQueuePublishResult publish(RepairTicketMessage message) {
+        QueuedMessage queued = publishInternal(message);
+        dispatch(queued);
+        return RepairQueuePublishResult.success("mem-" + queued.id(), TOPIC, message.tag());
+    }
+
+    private QueuedMessage publishInternal(RepairTicketMessage message) {
         long id = idSequence.incrementAndGet();
-        published.add(message);
+        QueuedMessage queued = new QueuedMessage(id, message);
+        published.add(queued);
         log.info("in-memory queue published, ticketId={}, tag={}, seq={}",
                 message.ticketId(), message.tag(), id);
-        return RepairQueuePublishResult.success("mem-" + id, TOPIC, message.tag());
+        return queued;
     }
 
     /**
@@ -59,17 +66,38 @@ public class InMemoryRepairQueueAdapter implements RepairQueuePublisher {
      * @return 消费是否成功；未找到消息返回 empty
      */
     public synchronized Optional<Boolean> drainOne(String ticketId) {
-        Optional<RepairTicketMessage> found = published.stream()
-                .filter(message -> message.ticketId().equals(ticketId))
+        Optional<QueuedMessage> found = published.stream()
+                .filter(message -> !message.consumed())
+                .filter(message -> message.message().ticketId().equals(ticketId))
                 .reduce((first, second) -> second);
         if (found.isEmpty()) {
             return Optional.empty();
         }
-        if (consumer == null) {
-            log.warn("in-memory queue has no consumer bound, ticketId={}", ticketId);
+        return dispatch(found.get());
+    }
+
+    private Optional<Boolean> dispatch(QueuedMessage queued) {
+        if (queued.consumed()) {
             return Optional.empty();
         }
-        return Optional.of(consumer.handle(found.get()));
+        RepairQueueConsumer currentConsumer = consumer;
+        if (currentConsumer == null) {
+            log.warn("in-memory queue has no consumer bound, ticketId={}", queued.message().ticketId());
+            return Optional.empty();
+        }
+        try {
+            boolean handled = currentConsumer.handle(queued.message());
+            queued.markConsumed();
+            if (!handled) {
+                log.warn("in-memory queue consumer returned failure, ticketId={}, seq={}",
+                        queued.message().ticketId(), queued.id());
+            }
+            return Optional.of(handled);
+        } catch (RuntimeException ex) {
+            log.error("in-memory queue consumer threw exception, ticketId={}, seq={}",
+                    queued.message().ticketId(), queued.id(), ex);
+            return Optional.of(false);
+        }
     }
 
     /**
@@ -79,11 +107,8 @@ public class InMemoryRepairQueueAdapter implements RepairQueuePublisher {
      * @return 消费是否成功
      */
     public synchronized boolean publishAndDrain(RepairTicketMessage message) {
-        publish(message);
-        if (consumer == null) {
-            return false;
-        }
-        return consumer.handle(message);
+        QueuedMessage queued = publishInternal(message);
+        return dispatch(queued).orElse(false);
     }
 
     /**
@@ -92,6 +117,35 @@ public class InMemoryRepairQueueAdapter implements RepairQueuePublisher {
      * @return 不可变消息列表
      */
     public synchronized List<RepairTicketMessage> snapshot() {
-        return List.copyOf(published);
+        return published.stream()
+                .map(QueuedMessage::message)
+                .toList();
+    }
+
+    private static final class QueuedMessage {
+        private final long id;
+        private final RepairTicketMessage message;
+        private boolean consumed;
+
+        private QueuedMessage(long id, RepairTicketMessage message) {
+            this.id = id;
+            this.message = message;
+        }
+
+        private long id() {
+            return id;
+        }
+
+        private RepairTicketMessage message() {
+            return message;
+        }
+
+        private boolean consumed() {
+            return consumed;
+        }
+
+        private void markConsumed() {
+            this.consumed = true;
+        }
     }
 }
