@@ -26,6 +26,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * 正式修复队列消费者：先复用工单 RAG 编排，再按配置触发完整 BugFix 执行链路。
@@ -277,20 +279,7 @@ public class TicketRepairExecutionConsumer implements RepairQueueConsumer {
         if (!writeBackEnabled || updatePort == null) {
             return;
         }
-        String pullRequestUrl = result.executionResult().pullRequestUrl();
-        String content = """
-                RD-Bot 自动修复已完成
-                内部工单：%s
-                RAG 状态：CONTEXT_READY
-                执行状态：%s
-                任务ID：%s
-                PR：%s
-                """.formatted(
-                message.ticketId(),
-                result.status().name(),
-                result.taskId(),
-                pullRequestUrl.isBlank() ? "未生成" : pullRequestUrl
-        ).strip();
+        String content = executionWriteBackContent(message, result);
         TicketReplyCommand reply = new TicketReplyCommand(
                 message.ticketId(),
                 "text",
@@ -312,6 +301,109 @@ public class TicketRepairExecutionConsumer implements RepairQueueConsumer {
                 "wrote back auto repair execution result",
                 Map.of("success", String.valueOf(updateResult.success()), "executionStatus", result.status().name())
         );
+    }
+
+    private String executionWriteBackContent(RepairTicketMessage message, RdBotFixResult result) {
+        String pullRequestUrl = result.executionResult().pullRequestUrl();
+        StringBuilder content = new StringBuilder()
+                .append(executionWriteBackTitle(result)).append('\n')
+                .append("内部工单：").append(message.ticketId()).append('\n')
+                .append("RAG 状态：CONTEXT_READY").append('\n')
+                .append("执行状态：").append(result.status().name()).append('\n')
+                .append("任务ID：").append(result.taskId()).append('\n');
+        if (result.rejected()) {
+            content.append("异常原因：").append(executionFailureReason(result)).append('\n')
+                    .append("处理建议：请人工检查执行环境后重试").append('\n');
+        }
+        content.append("PR：").append(pullRequestUrl.isBlank() ? "未生成" : pullRequestUrl);
+        return content.toString().strip();
+    }
+
+    private String executionWriteBackTitle(RdBotFixResult result) {
+        if (result.rejected()) {
+            return "RD-Bot 自动修复失败（需人工处理）";
+        }
+        return switch (result.status()) {
+            case COMMITTED -> "RD-Bot 自动修复已完成";
+            case MERGED -> "RD-Bot 自动修复已合并";
+            default -> "RD-Bot 自动修复状态更新";
+        };
+    }
+
+    private String executionFailureReason(RdBotFixResult result) {
+        var executionResult = result.executionResult();
+        String reason = firstNonBlank(
+                jsonTextField(executionResult.resultJson(), "errorMessage"),
+                jsonTextField(executionResult.resultJson(), "blockingReason"),
+                jsonTextField(executionResult.resultJson(), "summary"),
+                executionResult.solution(),
+                executionResult.bugDescription(),
+                result.status().name()
+        );
+        return limit(reason, 1_000);
+    }
+
+    private static String jsonTextField(String json, String fieldName) {
+        if (json == null || json.isBlank() || fieldName == null || fieldName.isBlank()) {
+            return "";
+        }
+        Pattern pattern = Pattern.compile("\"" + Pattern.quote(fieldName)
+                + "\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"");
+        Matcher matcher = pattern.matcher(json);
+        if (!matcher.find()) {
+            return "";
+        }
+        return unescapeJsonText(matcher.group(1));
+    }
+
+    private static String unescapeJsonText(String value) {
+        if (value == null || value.isEmpty()) {
+            return "";
+        }
+        StringBuilder result = new StringBuilder(value.length());
+        for (int index = 0; index < value.length(); index++) {
+            char current = value.charAt(index);
+            if (current != '\\' || index + 1 >= value.length()) {
+                result.append(current);
+                continue;
+            }
+            char escaped = value.charAt(++index);
+            switch (escaped) {
+                case '"' -> result.append('"');
+                case '\\' -> result.append('\\');
+                case '/' -> result.append('/');
+                case 'b' -> result.append('\b');
+                case 'f' -> result.append('\f');
+                case 'n' -> result.append('\n');
+                case 'r' -> result.append('\r');
+                case 't' -> result.append('\t');
+                default -> {
+                    result.append('\\');
+                    result.append(escaped);
+                }
+            }
+        }
+        return result.toString();
+    }
+
+    private static String firstNonBlank(String... values) {
+        if (values == null) {
+            return "";
+        }
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value.strip();
+            }
+        }
+        return "";
+    }
+
+    private static String limit(String value, int maxLength) {
+        String normalized = value == null ? "" : value.strip();
+        if (normalized.length() <= maxLength) {
+            return normalized;
+        }
+        return normalized.substring(0, Math.max(0, maxLength - 3)) + "...";
     }
 
     private List<String> extractLogs(TicketSnapshot snapshot) {

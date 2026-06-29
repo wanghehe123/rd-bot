@@ -131,6 +131,96 @@ class TicketRepairExecutionConsumerTest {
     }
 
     @Test
+    void rejectedExecutionShouldWriteBackFailureResultClearly() {
+        ReadyProvider provider = new ReadyProvider();
+        RepairRecordRepository repository = InMemoryRepairRecordRepository.inMemory();
+        TicketRepairEngine ticketRepairEngine = TicketRepairEngine.forTesting(
+                provider,
+                null,
+                repository,
+                ragEngine(),
+                TicketFieldMapping.defaults(),
+                false
+        );
+        FailingBugFixExecutor executor = new FailingBugFixExecutor();
+        RecordingUpdater updater = new RecordingUpdater();
+        RdBotFixEngine fixEngine = new RdBotFixEngine(
+                ChatQueueLimiter.passThrough(),
+                ragEngine(),
+                taskRegistry(),
+                com.wish.rd.engine.bugfix.BugFixPromptBuilder.defaultBuilder(),
+                executor
+        );
+        TicketRepairExecutionConsumer consumer = new TicketRepairExecutionConsumer(
+                ticketRepairEngine,
+                provider,
+                fixEngine,
+                TicketFieldMapping.defaults(),
+                true,
+                updater,
+                true
+        );
+
+        boolean success = consumer.handle(message("FS-READY"));
+
+        assertTrue(!success);
+        assertEquals(1, updater.replies.size());
+        String content = updater.replies.getFirst().content();
+        assertTrue(content.contains("RD-Bot 自动修复失败"));
+        assertTrue(content.contains("执行状态：REJECTED"));
+        assertTrue(content.contains("异常原因：git command failed exitCode=128"));
+        assertTrue(content.contains("处理建议：请人工检查执行环境后重试"));
+        assertTrue(!content.contains("RD-Bot 自动修复已完成"));
+        assertTrue(content.contains("PR：未生成"));
+    }
+
+    @Test
+    void mqRetryShouldReuseExistingBugFixTaskInsteadOfCreatingAnotherTask() {
+        ReadyProvider provider = new ReadyProvider();
+        RepairRecordRepository repository = InMemoryRepairRecordRepository.inMemory();
+        TicketRepairEngine ticketRepairEngine = TicketRepairEngine.forTesting(
+                provider,
+                null,
+                repository,
+                ragEngine(),
+                TicketFieldMapping.defaults(),
+                false
+        );
+        FailThenSucceedBugFixExecutor executor = new FailThenSucceedBugFixExecutor();
+        RagStreamTaskRegistry registry = taskRegistry();
+        RdBotFixEngine fixEngine = new RdBotFixEngine(
+                ChatQueueLimiter.passThrough(),
+                ragEngine(registry),
+                registry,
+                com.wish.rd.engine.bugfix.BugFixPromptBuilder.defaultBuilder(),
+                executor
+        );
+        TicketRepairExecutionConsumer consumer = new TicketRepairExecutionConsumer(
+                ticketRepairEngine,
+                provider,
+                fixEngine,
+                TicketFieldMapping.defaults(),
+                true,
+                null,
+                repository,
+                false
+        );
+
+        boolean first = consumer.handle(message("FS-READY", 1));
+        boolean retry = consumer.handle(message("FS-READY", 2));
+
+        assertTrue(!first);
+        assertTrue(retry);
+        assertEquals(1, registry.listBugFixTasks().size());
+        assertEquals(
+                executor.requests.getFirst().taskId(),
+                executor.requests.get(1).taskId(),
+                "RocketMQ retry must continue the same RD task"
+        );
+        assertEquals(RepairRecordStatus.COMMITTED, repository.findByTicketId("FS-READY").orElseThrow().status());
+    }
+
+    @Test
     void readyTicketShouldOnlyPrepareRagWhenAutoExecuteDisabled() {
         ReadyProvider provider = new ReadyProvider();
         TicketRepairEngine ticketRepairEngine = TicketRepairEngine.forTesting(
@@ -207,11 +297,15 @@ class TicketRepairExecutionConsumerTest {
     }
 
     private static RagBugFixEngine ragEngine() {
+        return ragEngine(RagStreamTaskRegistry.inMemory());
+    }
+
+    private static RagBugFixEngine ragEngine(RagStreamTaskRegistry registry) {
         return new RagBugFixEngine(
                 QueryTermMappingRegistry.withDefaults(),
                 IntentTreeRegistry.withDefaults(),
                 null,
-                RagStreamTaskRegistry.inMemory(),
+                registry,
                 ChatQueueLimiter.passThrough()
         );
     }
@@ -328,6 +422,47 @@ class TicketRepairExecutionConsumerTest {
                     request.ragMessage().ticketTitle(),
                     "executed",
                     "https://github.example.local/acme/order/pull/1",
+                    "{\"status\":\"SUCCESS\"}"
+            );
+        }
+    }
+
+    private static final class FailingBugFixExecutor implements BugFixExecutor {
+        private final List<com.wish.rd.engine.bugfix.BugFixExecutionRequest> requests = new ArrayList<>();
+
+        @Override
+        public BugFixExecutionResult execute(com.wish.rd.engine.bugfix.BugFixExecutionRequest request) {
+            requests.add(request);
+            return new BugFixExecutionResult(
+                    request.taskId(),
+                    request.ragMessage().ticketTitle(),
+                    "git command failed exitCode=128",
+                    "",
+                    "{\"status\":\"FAILED\",\"errorMessage\":\"git command failed exitCode=128\"}"
+            );
+        }
+    }
+
+    private static final class FailThenSucceedBugFixExecutor implements BugFixExecutor {
+        private final List<com.wish.rd.engine.bugfix.BugFixExecutionRequest> requests = new ArrayList<>();
+
+        @Override
+        public BugFixExecutionResult execute(com.wish.rd.engine.bugfix.BugFixExecutionRequest request) {
+            requests.add(request);
+            if (requests.size() == 1) {
+                return new BugFixExecutionResult(
+                        request.taskId(),
+                        request.ragMessage().ticketTitle(),
+                        "git clone failed",
+                        "",
+                        "{\"status\":\"FAILED\",\"errorMessage\":\"git clone failed\"}"
+                );
+            }
+            return new BugFixExecutionResult(
+                    request.taskId(),
+                    request.ragMessage().ticketTitle(),
+                    "executed",
+                    "https://github.example.local/acme/order/pull/2",
                     "{\"status\":\"SUCCESS\"}"
             );
         }
