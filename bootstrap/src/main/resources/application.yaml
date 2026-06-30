@@ -50,6 +50,8 @@ rustfs:
   secret-access-key: ${RUSTFS_SECRET_ACCESS_KEY:rustfsadmin}
 
 rd:
+  distributed-lock:
+    mode: ${RD_DISTRIBUTED_LOCK_MODE:redisson}
   rag:
     retrieval-log:
       enabled: ${RD_RAG_RETRIEVAL_LOG_ENABLED:true}
@@ -83,6 +85,8 @@ rd:
       send-message-timeout-millis: 2000
       max-retry-attempts: 3
   executor:
+    mock:
+      enabled: ${RD_EXECUTOR_MOCK_ENABLED:false}
     repository:
       owner: ${RD_EXECUTOR_REPOSITORY_OWNER:wanghehe123}
       name: ${RD_EXECUTOR_REPOSITORY_NAME:rd-bot-waimai-acceptance-20260624-141045}
@@ -114,6 +118,7 @@ rd:
           - ${RD_EXECUTOR_DOCKER_ALLOWED_BASE_BRANCH:main}
         work-branches:
           - ${RD_EXECUTOR_DOCKER_ALLOWED_WORK_BRANCH:repair/*}
+          - ${RD_EXECUTOR_DOCKER_ALLOWED_REQUIREMENT_BRANCH:requirement/*}
       git:
         enabled: ${RD_EXECUTOR_DOCKER_GIT_ENABLED:true}
         user-name: ${RD_EXECUTOR_DOCKER_GIT_USER_NAME:RD-Bot}

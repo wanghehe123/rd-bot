@@ -155,8 +155,8 @@ public RepairContextPackage prepareContext(RepairRagRequest request) {
 
 MVP 阶段无数据库，所有内存仓储统一用 `*Registry` 模式：
 
-- 特征：`synchronized` 保护写、`LinkedHashMap` 保持插入顺序、自增 ID 序列、`inMemory()`/`withDefaults()` 静态工厂、对外返回不可变快照（`List.copyOf`）。
-- 【强制】写操作加 `synchronized`；读操作返回 `List.copyOf` / `Map.copyOf` 快照，禁止把内部集合引用泄露出去。
+- 特征：`DistributedLockExecutor` 保护跨实例状态推进、`LinkedHashMap` 保持插入顺序、自增 ID 序列、`inMemory()`/`withDefaults()` 静态工厂、对外返回不可变快照（`List.copyOf`）。
+- 【强制】生产路径的共享可变状态不得依赖 JVM 级 `synchronized`；多实例部署需要通过锁端口接入 Redisson 等分布式锁，读操作返回 `List.copyOf` / `Map.copyOf` 快照，禁止把内部集合引用泄露出去。
 
 ### 3.6 聚合根（Aggregate Root）【强制用于"强一致实体群"】
 
@@ -208,7 +208,8 @@ MVP 阶段无数据库，所有内存仓储统一用 `*Registry` 模式：
 
 ### 4.4 并发【强制】
 
-- 【强制】共享可变状态用 `synchronized`（Registry 模式）或 `java.util.concurrent` 原子类（如限流的 `AtomicInteger` + CAS）。
+- 【强制】会被多实例同时访问的共享可变状态必须通过端口接入分布式锁或数据库原子约束；`synchronized` 只允许用于单进程私有资源保护（如本地文件 append、生命周期关闭保护、测试桩快照）。
+- 【强制】进程内高频局部计数可使用 `java.util.concurrent` 原子类（如限流的 `AtomicInteger` + CAS）。
 - 【强制】并发检索用 `Executors.newVirtualThreadPerTaskExecutor()`（Java 21 虚拟线程），每个通道一个线程，`try-with-resources` 关闭。
 - 【强制】`CompletableFuture` 聚合多任务时用 `join` 等待，异常会在此抛出，需在调用方处理。
 - 【推荐】耗时操作（记忆加载）用虚拟线程异步化，`.exceptionally(ignored -> List.of()).join()` 做兜底降级。
@@ -321,7 +322,7 @@ MVP 阶段无数据库，所有内存仓储统一用 `*Registry` 模式：
 - [ ] 每个公开类/方法是否有 JavaDoc？关键步骤是否有行内注释？
 - [ ] 外部入参是否做了 null 归一与校验？
 - [ ] 集合返回值是否永不为 null？内部集合是否未泄露？
-- [ ] 共享状态是否 `synchronized` 或用并发原语保护？
+- [ ] 生产共享状态是否通过分布式锁、数据库原子约束或并发原语保护，且未依赖 JVM 级 `synchronized`？
 - [ ] 新增算法分支是否走了策略/工厂，而非 `if/else`？
 - [ ] 外部系统是否走端口抽象，未在领域层 `new` SDK？
 - [ ] 异常是否分类清晰、消息可定位、Controller 统一处理？

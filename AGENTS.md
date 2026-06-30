@@ -88,6 +88,8 @@ knowledge/context plane, and integration plane.
 - `PolicyGate`: programmable guardrail before risky operations.
 - `Connector`: replaceable adapter for ticket, code, model, queue, storage, and
   notification systems.
+- `DistributedLockExecutor`: domain-level lock port used when a runtime state
+  transition must be mutually exclusive across deployed instances.
 
 ## Current Product Direction
 
@@ -181,6 +183,15 @@ Failure and recovery states:
   Docker execution, result validation, and code platform abstractions.
 - Treat model providers and repair executors as replaceable workers. Workflow
   orchestration must depend on ports, not a concrete model SDK or CLI command.
+- Production shared mutable state must not rely on JVM-level `synchronized`.
+  Use database atomic constraints/transactions, queue idempotency, or a lock
+  port such as `DistributedLockExecutor` for cross-instance mutual exclusion.
+- Keep distributed lock SDKs out of core domains. `rag`, `engine`, and `exec`
+  may depend on lock ports; Redisson-specific implementation and configuration
+  belong in `bootstrap`.
+- JVM-level `synchronized` is acceptable only for process-local resource
+  protection such as local file append, lifecycle close guards, token-cache
+  refresh guards, Snowflake sequence internals, or test/mock snapshots.
 - Use records for immutable value objects and normalize null inputs in compact
   constructors.
 - Keep existing route shapes compatible unless a task explicitly changes them.
@@ -219,6 +230,9 @@ Do not guess external API details.
 - Docker image name, Claude Code command, and yolo flags should be configurable.
 - GitHub auth should be designed by the project; document the choice and keep it
   replaceable.
+- Redisson is the first distributed lock implementation. Keep Redis address,
+  password, and lock mode configurable; local fallback is only for single-node
+  development or tests, not production multi-instance correctness.
 
 When information is missing and affects public contracts, schema, queues,
 security, or persistence, ask the user.
@@ -287,6 +301,9 @@ the focused tests that did run.
 
 - Inspect current code and docs before editing. Prefer `rg` for search.
 - Keep edits scoped to the requested phase.
+- Before adding `synchronized` to production code, classify the state being
+  protected. If it can be touched by multiple application instances, use a
+  database/queue guarantee or `DistributedLockExecutor` instead.
 - Do not revert user changes or unrelated untracked files.
 - Do not make destructive git or filesystem changes unless explicitly asked.
 - Do not commit, stage, push, or create PRs unless explicitly asked.
