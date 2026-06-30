@@ -22,6 +22,7 @@ try {
     process.exit(1);
   }
 
+  patchReadmeRequirementSmoke();
   patchDatabaseEsmDirname();
   patchClientCreateOrderPayload();
   patchMerchantSchemaMismatches();
@@ -67,6 +68,27 @@ function isWaimaiRepository() {
     return true;
   }
   return exists("server/src/routes/orders.ts") && exists("client/src/api.ts");
+}
+
+function patchReadmeRequirementSmoke() {
+  if (!mentions(["readme.md", "rd-bot", "需求交付验收记录", "不修改业务代码", "只修改"])) {
+    return;
+  }
+  updateFile("README.md", (source) => {
+    if (source.includes("RD-Bot 需求交付验收记录")) {
+      return source;
+    }
+    const section = [
+      "",
+      "",
+      "## RD-Bot 需求交付验收记录",
+      "",
+      "- 来源：RD-Bot 需求任务自动执行链路。",
+      "- 范围：只修改 README.md，不修改业务代码。",
+      "- 验证：执行 `git diff --check` 通过。"
+    ].join("\n");
+    return `${source.trimEnd()}${section}\n`;
+  }, "README.md: add RD-Bot requirement delivery smoke record.");
 }
 
 function patchDatabaseEsmDirname() {

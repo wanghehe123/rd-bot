@@ -104,7 +104,8 @@ class DockerExecutorConfigurationTest {
                         "rd.executor.docker.security.repository-urls[0]=https://github.com/example/*",
                         "rd.executor.docker.security.repositories[0]=example/order",
                         "rd.executor.docker.security.base-branches[0]=main",
-                        "rd.executor.docker.security.work-branches[0]=repair/*"
+                        "rd.executor.docker.security.work-branches[0]=repair/*",
+                        "rd.executor.docker.security.work-branches[1]=requirement/*"
                 );
 
         contextRunner.run(context -> {
@@ -115,7 +116,7 @@ class DockerExecutorConfigurationTest {
             assertEquals(List.of("example/order"), properties.getSecurity().getRepositories());
             assertTrue(policy.enabled());
             assertEquals(List.of("https://github.com/example/*"), policy.repositoryUrls());
-            assertEquals(List.of("repair/*"), policy.workBranches());
+            assertEquals(List.of("repair/*", "requirement/*"), policy.workBranches());
         });
     }
 

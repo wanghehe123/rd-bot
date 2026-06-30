@@ -1,27 +1,35 @@
 package com.wish.rd.bootstrap.controller.admin.rdtask;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.wish.rd.engine.requirement.RequirementDeliveryEngine;
+import com.wish.rd.engine.requirement.RequirementExecutionResult;
 import com.wish.rd.engine.ticket.RdTaskRestartEngine;
 import com.wish.rd.engine.ticket.RepairQueuePublishResult;
 import com.wish.rd.engine.ticket.RepairTicketMessage;
 import com.wish.rd.rag.runtime.InMemoryRdTaskStatusEventStore;
 import com.wish.rd.rag.runtime.InMemoryRdTaskStore;
+import com.wish.rd.rag.runtime.InMemoryTaskMaterialStore;
 import com.wish.rd.rag.runtime.RdBugFixTask;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
+import org.springframework.mock.web.MockMultipartFile;
+import org.springframework.beans.factory.support.StaticListableBeanFactory;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import java.util.Map;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.hamcrest.Matchers.hasSize;
+import static org.hamcrest.Matchers.startsWith;
 import static org.hamcrest.Matchers.is;
 import static org.springframework.http.MediaType.APPLICATION_JSON;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -206,6 +214,200 @@ class RdTaskControllerTest {
     }
 
     @Test
+    void shouldCreateRequirementTaskAndListMaterials() throws Exception {
+        String body = objectMapper.writeValueAsString(Map.of(
+                "title", "增加订单催单功能",
+                "priority", "P1",
+                "repositoryUrl", "https://github.com/example/waimai.git",
+                "baseBranch", "main",
+                "expectedResult", "用户可在订单详情页催单，商家端收到提醒",
+                "acceptanceCriteria", List.of("前端构建通过", "新增接口测试通过"),
+                "materials", List.of(Map.of(
+                        "sourceType", "MANUAL_TEXT",
+                        "title", "需求正文",
+                        "content", "用户可以在订单详情页点击催单。"
+                )),
+                "autoExecute", false
+        ));
+
+        String response = mockMvc.perform(post("/admin/rd-tasks/requirements")
+                        .contentType(APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.taskType", is("REQUIREMENT")))
+                .andExpect(jsonPath("$.title", is("增加订单催单功能")))
+                .andExpect(jsonPath("$.repositoryUrl", is("https://github.com/example/waimai.git")))
+                .andExpect(jsonPath("$.baseBranch", is("main")))
+                .andExpect(jsonPath("$.expectedResult", is("用户可在订单详情页催单，商家端收到提醒")))
+                .andReturn().getResponse().getContentAsString();
+        String taskId = com.jayway.jsonpath.JsonPath.read(response, "$.taskId");
+
+        mockMvc.perform(get("/admin/rd-tasks").param("taskType", "REQUIREMENT"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.records", hasSize(1)))
+                .andExpect(jsonPath("$.records[0].taskId", is(taskId)))
+                .andExpect(jsonPath("$.records[0].taskType", is("REQUIREMENT")));
+
+        mockMvc.perform(get("/admin/rd-tasks/{taskId}/materials", taskId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(1)))
+                .andExpect(jsonPath("$[0].taskId", is(taskId)))
+                .andExpect(jsonPath("$[0].sourceType", is("MANUAL_TEXT")))
+                .andExpect(jsonPath("$[0].contentPreview", is("用户可以在订单详情页点击催单。")));
+    }
+
+    @Test
+    void shouldRejectRequirementTaskWhenRequiredFieldsMissing() throws Exception {
+        String body = objectMapper.writeValueAsString(Map.of(
+                "title", "增加订单催单功能",
+                "priority", "P1",
+                "baseBranch", "main",
+                "materials", List.of(Map.of(
+                        "sourceType", "MANUAL_TEXT",
+                        "title", "需求正文",
+                        "content", "用户可以在订单详情页点击催单。"
+                )),
+                "autoExecute", false
+        ));
+
+        mockMvc.perform(post("/admin/rd-tasks/requirements")
+                        .contentType(APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("repositoryUrl")));
+
+        mockMvc.perform(get("/admin/rd-tasks").param("taskType", "REQUIREMENT"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.total", is(0)));
+    }
+
+    @Test
+    void shouldAppendTextMaterialAndPreviewIt() throws Exception {
+        String taskId = createRequirementTask(false);
+        String body = objectMapper.writeValueAsString(Map.of(
+                "title", "补充验收细节",
+                "materialType", "ACCEPTANCE_CRITERIA",
+                "content", "催单按钮在已完成订单不可见。",
+                "mimeType", "text/plain"
+        ));
+
+        String response = mockMvc.perform(post("/admin/rd-tasks/{taskId}/materials/text", taskId)
+                        .contentType(APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.taskId", is(taskId)))
+                .andExpect(jsonPath("$.sourceType", is("MANUAL_TEXT")))
+                .andExpect(jsonPath("$.materialType", is("ACCEPTANCE_CRITERIA")))
+                .andExpect(jsonPath("$.contentHash", startsWith("sha256:")))
+                .andExpect(jsonPath("$.contentPreview", is("催单按钮在已完成订单不可见。")))
+                .andReturn().getResponse().getContentAsString();
+        String materialId = com.jayway.jsonpath.JsonPath.read(response, "$.materialId");
+
+        mockMvc.perform(get("/admin/rd-tasks/{taskId}/materials/{materialId}/preview", taskId, materialId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.materialId", is(materialId)))
+                .andExpect(jsonPath("$.contentPreview", is("催单按钮在已完成订单不可见。")));
+    }
+
+    @Test
+    void shouldUploadLocalRequirementMaterial() throws Exception {
+        String taskId = createRequirementTask(false);
+        MockMultipartFile file = new MockMultipartFile(
+                "file",
+                "requirement.md",
+                "text/markdown",
+                "# 催单需求\n用户可在待接单时催单。".getBytes(java.nio.charset.StandardCharsets.UTF_8)
+        );
+
+        mockMvc.perform(multipart("/admin/rd-tasks/{taskId}/materials/upload", taskId)
+                        .file(file)
+                        .param("title", "本地需求文档")
+                        .param("materialType", "REQUIREMENT_DOC"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.taskId", is(taskId)))
+                .andExpect(jsonPath("$.sourceType", is("LOCAL_UPLOAD")))
+                .andExpect(jsonPath("$.title", is("本地需求文档")))
+                .andExpect(jsonPath("$.sourceUri", is("local-upload://requirement.md")))
+                .andExpect(jsonPath("$.mimeType", is("text/markdown")))
+                .andExpect(jsonPath("$.contentPreview").value(org.hamcrest.Matchers.containsString("用户可在待接单时催单")));
+    }
+
+    @Test
+    void shouldRegisterFeishuRequirementMaterialWithoutMockingContent() throws Exception {
+        String taskId = createRequirementTask(false);
+        String feishuUrl = "https://my.feishu.cn/docx/ABCdEfGhIjKl";
+        String body = objectMapper.writeValueAsString(Map.of(
+                "title", "飞书 PRD",
+                "sourceUri", feishuUrl,
+                "revisionId", "rev-20260629"
+        ));
+
+        mockMvc.perform(post("/admin/rd-tasks/{taskId}/materials/feishu", taskId)
+                        .contentType(APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.taskId", is(taskId)))
+                .andExpect(jsonPath("$.sourceType", is("FEISHU_DOC")))
+                .andExpect(jsonPath("$.sourceUri", is(feishuUrl)))
+                .andExpect(jsonPath("$.revisionId", is("rev-20260629")))
+                .andExpect(jsonPath("$.contentPreview", is("Feishu 文档来源: " + feishuUrl)));
+    }
+
+    @Test
+    void shouldExposeRequirementExecutionEvidenceAfterAutoExecute() throws Exception {
+        InMemoryTaskMaterialStore materialStore = new InMemoryTaskMaterialStore();
+        RequirementDeliveryEngine deliveryEngine = new RequirementDeliveryEngine(
+                registry,
+                materialStore,
+                request -> RequirementExecutionResult.success(
+                        request.taskId(),
+                        "已完成催单入口和接口联调",
+                        "https://github.com/example/waimai/pull/42",
+                        """
+                                {
+                                  "status": "SUCCESS",
+                                  "summary": "已完成催单入口和接口联调",
+                                  "prBody": "## 改动介绍\\n- 新增订单详情催单按钮\\n- 新增催单 API 调用",
+                                  "changedFiles": ["client/src/pages/OrderDetail.tsx", "server/src/routes/reminders.ts"],
+                                  "testCommands": ["npm run build", "npm test"],
+                                  "testStatus": "PASSED",
+                                  "riskLevel": "LOW"
+                                }
+                                """
+                )
+        );
+        mockMvc = MockMvcBuilders.standaloneSetup(controllerWithRequirementEngine(materialStore, deliveryEngine))
+                .build();
+        String body = objectMapper.writeValueAsString(Map.of(
+                "title", "增加订单催单功能",
+                "priority", "P1",
+                "repositoryUrl", "https://github.com/example/waimai.git",
+                "baseBranch", "main",
+                "expectedResult", "用户可在订单详情页催单",
+                "acceptanceCriteria", List.of("前端构建通过", "新增接口测试通过"),
+                "materials", List.of(Map.of(
+                        "sourceType", "MANUAL_TEXT",
+                        "title", "需求正文",
+                        "content", "用户可以在订单详情页点击催单。"
+                )),
+                "autoExecute", true
+        ));
+
+        mockMvc.perform(post("/admin/rd-tasks/requirements")
+                        .contentType(APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status", is("COMMITTED")))
+                .andExpect(jsonPath("$.pullRequestUrl", is("https://github.com/example/waimai/pull/42")))
+                .andExpect(jsonPath("$.executionEvidence.summary", is("已完成催单入口和接口联调")))
+                .andExpect(jsonPath("$.executionEvidence.prBody").value(org.hamcrest.Matchers.containsString("新增订单详情催单按钮")))
+                .andExpect(jsonPath("$.executionEvidence.changedFiles[0]", is("client/src/pages/OrderDetail.tsx")))
+                .andExpect(jsonPath("$.executionEvidence.testCommands[0]", is("npm run build")))
+                .andExpect(jsonPath("$.executionEvidence.testStatus", is("PASSED")))
+                .andExpect(jsonPath("$.executionEvidence.riskLevel", is("LOW")));
+    }
+
+    @Test
     void shouldNotCancelTaskWhenExecutionStopFails() throws Exception {
         String taskId = createTask("FS-3009", "待停止任务", "P1");
 
@@ -235,8 +437,51 @@ class RdTaskControllerTest {
         return com.jayway.jsonpath.JsonPath.read(response, "$.taskId");
     }
 
+    private String createRequirementTask(boolean autoExecute) throws Exception {
+        String body = objectMapper.writeValueAsString(Map.of(
+                "title", "增加订单催单功能",
+                "priority", "P1",
+                "repositoryUrl", "https://github.com/example/waimai.git",
+                "baseBranch", "main",
+                "expectedResult", "用户可在订单详情页催单",
+                "acceptanceCriteria", List.of("前端构建通过"),
+                "materials", List.of(Map.of(
+                        "sourceType", "MANUAL_TEXT",
+                        "title", "需求正文",
+                        "content", "用户可以在订单详情页点击催单。"
+                )),
+                "autoExecute", autoExecute
+        ));
+        String response = mockMvc.perform(post("/admin/rd-tasks/requirements")
+                        .contentType(APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.taskId").exists())
+                .andReturn().getResponse().getContentAsString();
+        return com.jayway.jsonpath.JsonPath.read(response, "$.taskId");
+    }
+
     private SnowflakeIdGenerator generator() {
         AtomicLong now = new AtomicLong(1_781_000_000_000L);
         return new SnowflakeIdGenerator(1, 1, now::getAndIncrement);
+    }
+
+    private RdTaskController controllerWithRequirementEngine(
+            InMemoryTaskMaterialStore materialStore,
+            RequirementDeliveryEngine deliveryEngine
+    ) {
+        StaticListableBeanFactory beans = new StaticListableBeanFactory();
+        beans.addBean("materialStore", materialStore);
+        beans.addBean("idGenerator", generator());
+        beans.addBean("requirementDeliveryEngine", deliveryEngine);
+        return new RdTaskController(
+                registry,
+                beans.getBeanProvider(com.wish.rd.exec.repair.execution.RepairExecutionControlPort.class),
+                beans.getBeanProvider(com.wish.rd.engine.audit.RepairAuditSinkPort.class),
+                beans.getBeanProvider(RdTaskRestartEngine.class),
+                beans.getBeanProvider(com.wish.rd.rag.runtime.TaskMaterialStore.class),
+                beans.getBeanProvider(SnowflakeIdGenerator.class),
+                beans.getBeanProvider(RequirementDeliveryEngine.class)
+        );
     }
 }

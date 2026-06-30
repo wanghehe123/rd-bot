@@ -2,20 +2,38 @@ package com.wish.rd.bootstrap.feishu.im;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.wish.rd.engine.requirement.RequirementDeliveryResult;
 import com.wish.rd.adapter.TicketSnapshot;
+import com.wish.rd.engine.requirement.RequirementDeliveryEngine;
 import com.wish.rd.engine.ticket.RepairQueuePublishResult;
 import com.wish.rd.engine.ticket.TicketEventIngestionEngine;
 import com.wish.rd.engine.ticket.TicketEventInput;
+import com.wish.rd.framework.id.SnowflakeIdGenerator;
+import com.wish.rd.rag.runtime.CreateRequirementTaskCommand;
+import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
+import com.wish.rd.rag.runtime.RdRequirementTask;
+import com.wish.rd.rag.runtime.TaskMaterial;
+import com.wish.rd.rag.runtime.TaskMaterialSourceType;
+import com.wish.rd.rag.runtime.TaskMaterialStore;
+import com.wish.rd.rag.runtime.TaskMaterialType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -37,6 +55,10 @@ public class FeishuImMessageController {
     private final FeishuImTicketParser parser;
     private final FeishuImTicketStore store;
     private final TicketEventIngestionEngine ingestionEngine;
+    private final RagStreamTaskRegistry taskRegistry;
+    private final TaskMaterialStore materialStore;
+    private final RequirementDeliveryEngine requirementDeliveryEngine;
+    private final SnowflakeIdGenerator idGenerator;
 
     public FeishuImMessageController(
             ObjectMapper objectMapper,
@@ -45,11 +67,54 @@ public class FeishuImMessageController {
             FeishuImTicketStore store,
             TicketEventIngestionEngine ingestionEngine
     ) {
+        this(objectMapper, properties, parser, store, ingestionEngine, null, null, null, SnowflakeIdGenerator.defaultGenerator());
+    }
+
+    @Autowired
+    public FeishuImMessageController(
+            ObjectMapper objectMapper,
+            FeishuImProperties properties,
+            FeishuImTicketParser parser,
+            FeishuImTicketStore store,
+            TicketEventIngestionEngine ingestionEngine,
+            ObjectProvider<RagStreamTaskRegistry> taskRegistryProvider,
+            ObjectProvider<TaskMaterialStore> materialStoreProvider,
+            ObjectProvider<RequirementDeliveryEngine> requirementDeliveryEngineProvider,
+            ObjectProvider<SnowflakeIdGenerator> idGeneratorProvider
+    ) {
+        this(
+                objectMapper,
+                properties,
+                parser,
+                store,
+                ingestionEngine,
+                taskRegistryProvider.getIfAvailable(),
+                materialStoreProvider.getIfAvailable(),
+                requirementDeliveryEngineProvider.getIfAvailable(),
+                idGeneratorProvider.getIfAvailable(SnowflakeIdGenerator::defaultGenerator)
+        );
+    }
+
+    FeishuImMessageController(
+            ObjectMapper objectMapper,
+            FeishuImProperties properties,
+            FeishuImTicketParser parser,
+            FeishuImTicketStore store,
+            TicketEventIngestionEngine ingestionEngine,
+            RagStreamTaskRegistry taskRegistry,
+            TaskMaterialStore materialStore,
+            RequirementDeliveryEngine requirementDeliveryEngine,
+            SnowflakeIdGenerator idGenerator
+    ) {
         this.objectMapper = objectMapper;
         this.properties = properties;
         this.parser = parser;
         this.store = store;
         this.ingestionEngine = ingestionEngine;
+        this.taskRegistry = taskRegistry;
+        this.materialStore = materialStore;
+        this.requirementDeliveryEngine = requirementDeliveryEngine;
+        this.idGenerator = idGenerator == null ? SnowflakeIdGenerator.defaultGenerator() : idGenerator;
     }
 
     /**
@@ -98,6 +163,10 @@ public class FeishuImMessageController {
         }
 
         String messageId = message.path("message_id").asText("");
+        RequirementDraft requirementDraft = parseRequirement(text);
+        if (requirementDraft.requirement()) {
+            return handleRequirement(requirementDraft, messageId);
+        }
         String ticketId = toTicketId(messageId);
         String chatId = message.path("chat_id").asText("");
         String senderOpenId = event.path("sender").path("sender_id").path("open_id").asText("");
@@ -122,6 +191,139 @@ public class FeishuImMessageController {
                 "messageId", result.messageId(),
                 "ticketId", snapshot.ticketId()
         ));
+    }
+
+    private ResponseEntity<Object> handleRequirement(RequirementDraft draft, String messageId) {
+        if (taskRegistry == null || materialStore == null || requirementDeliveryEngine == null) {
+            return ResponseEntity.status(409).body(Map.of("message", "requirement delivery is unavailable"));
+        }
+        List<String> missingFields = missingRequirementFields(draft);
+        if (!missingFields.isEmpty()) {
+            Map<String, Object> response = new LinkedHashMap<>();
+            response.put("accepted", true);
+            response.put("taskType", "REQUIREMENT");
+            response.put("status", "NEED_INFO");
+            response.put("messageId", messageId == null ? "" : messageId);
+            response.put("missingFields", missingFields);
+            response.put("message", "需求任务缺少必填字段: " + String.join(", ", missingFields));
+            return ResponseEntity.ok(response);
+        }
+        RdRequirementTask task = taskRegistry.createRequirementTask(new CreateRequirementTaskCommand(
+                draft.title(),
+                draft.priority(),
+                "FEISHU_IM",
+                messageId,
+                "",
+                draft.repositoryUrl(),
+                "",
+                "",
+                draft.baseBranch(),
+                draft.expectedResult(),
+                draft.acceptanceCriteria(),
+                true
+        ));
+        materialStore.save(new TaskMaterial(
+                idGenerator.nextIdString(),
+                task.taskId(),
+                TaskMaterialType.REQUIREMENT_DOC,
+                draft.sourceType(),
+                draft.materialTitle(),
+                draft.sourceUri(),
+                draft.sourceType() == TaskMaterialSourceType.FEISHU_DOC ? "text/uri-list" : "text/markdown",
+                sha256(draft.materialContent().isBlank() ? draft.sourceUri() : draft.materialContent()),
+                preview(draft.materialContent().isBlank() ? draft.sourceUri() : draft.materialContent(), 2000),
+                "",
+                "",
+                "",
+                "{\"source\":\"feishu-im\",\"messageId\":\"%s\"}".formatted(messageId == null ? "" : messageId),
+                System.currentTimeMillis(),
+                System.currentTimeMillis()
+        ));
+        RequirementDeliveryResult result = requirementDeliveryEngine.submit(task.taskId());
+        RdRequirementTask latest = taskRegistry.getRequirementTask(task.taskId());
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("accepted", true);
+        response.put("taskType", latest.taskType());
+        response.put("taskId", latest.taskId());
+        response.put("status", latest.status().name());
+        response.put("pullRequestUrl", latest.pullRequestUrl());
+        response.putAll(executionEvidence(result.resultJson()));
+        return ResponseEntity.ok(response);
+    }
+
+    private Map<String, Object> executionEvidence(String resultJson) {
+        JsonNode root = readExecutionResult(resultJson);
+        Map<String, Object> evidence = new LinkedHashMap<>();
+        evidence.put("summary", text(root, "summary"));
+        evidence.put("prBody", text(root, "prBody"));
+        evidence.put("changedFiles", list(root.path("changedFiles")));
+        evidence.put("testCommands", list(firstNode(root, "testCommands", "testMetadata", "testCommands")));
+        evidence.put("testStatus", firstText(root, "testStatus", "testMetadata", "testStatus"));
+        evidence.put("riskLevel", firstText(root, "riskLevel", "riskMetadata", "riskLevel"));
+        return evidence;
+    }
+
+    private JsonNode readExecutionResult(String resultJson) {
+        if (resultJson == null || resultJson.isBlank()) {
+            return objectMapper.createObjectNode();
+        }
+        try {
+            return objectMapper.readTree(resultJson);
+        } catch (Exception ignored) {
+            return objectMapper.createObjectNode();
+        }
+    }
+
+    private static String text(JsonNode node, String fieldName) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return "";
+        }
+        JsonNode value = node.path(fieldName);
+        return value.isTextual() ? value.asText("").strip() : "";
+    }
+
+    private static String firstText(JsonNode root, String directField, String objectField, String nestedField) {
+        String direct = text(root, directField);
+        if (!direct.isBlank()) {
+            return direct;
+        }
+        JsonNode nested = root == null ? null : root.path(objectField).path(nestedField);
+        return nested != null && nested.isTextual() ? nested.asText("").strip() : "";
+    }
+
+    private static JsonNode firstNode(JsonNode root, String directField, String objectField, String nestedField) {
+        JsonNode direct = root == null ? null : root.path(directField);
+        if (direct != null && !direct.isMissingNode() && !direct.isNull()) {
+            return direct;
+        }
+        return root == null ? null : root.path(objectField).path(nestedField);
+    }
+
+    private static List<String> list(JsonNode node) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return List.of();
+        }
+        if (node.isArray()) {
+            List<String> values = new java.util.ArrayList<>();
+            node.forEach(item -> {
+                String value = item.isTextual() ? item.asText("").strip() : item.toString().strip();
+                if (!value.isBlank()) {
+                    values.add(value);
+                }
+            });
+            return List.copyOf(values);
+        }
+        if (node.isTextual()) {
+            String value = node.asText("").strip();
+            if (value.isBlank()) {
+                return List.of();
+            }
+            return java.util.Arrays.stream(value.split("[,\\n]"))
+                    .map(String::strip)
+                    .filter(item -> !item.isBlank())
+                    .toList();
+        }
+        return List.of();
     }
 
     private String extractText(JsonNode contentNode) {
@@ -219,5 +421,169 @@ public class FeishuImMessageController {
         metadata.put("chatId", chatId == null ? "" : chatId);
         metadata.put("messageId", messageId == null ? "" : messageId);
         return Map.copyOf(metadata);
+    }
+
+    private static RequirementDraft parseRequirement(String text) {
+        String raw = text == null ? "" : text.strip();
+        if (raw.isBlank()) {
+            return RequirementDraft.notRequirement();
+        }
+        Map<String, String> fields = new LinkedHashMap<>();
+        boolean requirement = false;
+        for (String line : raw.lines().map(String::strip).filter(value -> !value.isBlank()).toList()) {
+            if (line.equalsIgnoreCase("requirement") || line.contains("做需求") || line.contains("需求任务")) {
+                requirement = true;
+            }
+            ParsedLine parsed = parseLine(line);
+            if (!parsed.key().isBlank()) {
+                fields.put(normalizeRequirementKey(parsed.key()), parsed.value());
+            }
+        }
+        requirement = requirement || fields.containsKey("requirementDoc") || fields.containsKey("requirementText");
+        if (!requirement) {
+            return RequirementDraft.notRequirement();
+        }
+        String title = firstNonBlank(fields.get("title"), fallbackTitle(raw));
+        String repositoryUrl = firstNonBlank(fields.get("repositoryUrl"), fields.get("repository"));
+        String baseBranch = firstNonBlank(fields.get("baseBranch"), fields.get("branch"), "main");
+        String expectedResult = firstNonBlank(fields.get("expectedResult"));
+        String priority = firstNonBlank(fields.get("priority"), "P2");
+        String requirementDoc = firstNonBlank(fields.get("requirementDoc"), fields.get("sourceUri"));
+        String requirementText = firstNonBlank(fields.get("requirementText"), raw);
+        TaskMaterialSourceType sourceType = requirementDoc.isBlank()
+                ? TaskMaterialSourceType.MANUAL_TEXT
+                : TaskMaterialSourceType.FEISHU_DOC;
+        String materialTitle = sourceType == TaskMaterialSourceType.FEISHU_DOC ? "飞书需求文档" : "飞书需求正文";
+        return new RequirementDraft(
+                true,
+                title,
+                priority,
+                repositoryUrl,
+                baseBranch,
+                expectedResult,
+                acceptanceCriteria(fields.get("acceptance")),
+                sourceType,
+                materialTitle,
+                requirementDoc,
+                sourceType == TaskMaterialSourceType.FEISHU_DOC ? "" : requirementText
+        );
+    }
+
+    private static List<String> missingRequirementFields(RequirementDraft draft) {
+        List<String> missing = new ArrayList<>();
+        if (draft.title().isBlank()) {
+            missing.add("title");
+        }
+        if (draft.repositoryUrl().isBlank()) {
+            missing.add("repositoryUrl");
+        }
+        if (draft.baseBranch().isBlank()) {
+            missing.add("baseBranch");
+        }
+        if (draft.expectedResult().isBlank()) {
+            missing.add("expectedResult");
+        }
+        if (draft.sourceUri().isBlank() && draft.materialContent().isBlank()) {
+            missing.add("requirementMaterial");
+        }
+        return missing;
+    }
+
+    private static ParsedLine parseLine(String line) {
+        int colon = line.indexOf(':');
+        int chineseColon = line.indexOf('：');
+        int index;
+        if (colon < 0) {
+            index = chineseColon;
+        } else if (chineseColon < 0) {
+            index = colon;
+        } else {
+            index = Math.min(colon, chineseColon);
+        }
+        if (index <= 0 || index >= line.length() - 1) {
+            return new ParsedLine("", line);
+        }
+        return new ParsedLine(line.substring(0, index).strip(), line.substring(index + 1).strip());
+    }
+
+    private static String normalizeRequirementKey(String key) {
+        return switch (key.strip()) {
+            case "标题", "title" -> "title";
+            case "仓库", "代码仓库", "repository", "repositoryUrl" -> "repositoryUrl";
+            case "分支", "基准分支", "branch", "baseBranch" -> "baseBranch";
+            case "优先级", "priority" -> "priority";
+            case "需求文档", "飞书文档", "requirementDoc", "sourceUri" -> "requirementDoc";
+            case "需求", "需求正文", "requirement", "requirementText" -> "requirementText";
+            case "预期", "预期结果", "expectedResult" -> "expectedResult";
+            case "验收", "验收标准", "acceptance", "acceptanceCriteria" -> "acceptance";
+            default -> key.strip();
+        };
+    }
+
+    private static List<String> acceptanceCriteria(String text) {
+        if (text == null || text.isBlank()) {
+            return List.of();
+        }
+        return List.of(text.split("[;；\\n]")).stream()
+                .map(String::strip)
+                .filter(value -> !value.isBlank())
+                .toList();
+    }
+
+    private static String fallbackTitle(String raw) {
+        return raw.lines()
+                .map(String::strip)
+                .filter(value -> !value.isBlank() && !value.contains("做需求"))
+                .findFirst()
+                .orElse("飞书需求任务");
+    }
+
+    private static String firstNonBlank(String... values) {
+        if (values == null) {
+            return "";
+        }
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value.strip();
+            }
+        }
+        return "";
+    }
+
+    private static String preview(String value, int maxChars) {
+        String safe = value == null ? "" : value.strip();
+        return safe.length() <= maxChars ? safe : safe.substring(0, maxChars) + "...";
+    }
+
+    private static String sha256(String value) {
+        try {
+            byte[] hash = MessageDigest.getInstance("SHA-256")
+                    .digest((value == null ? "" : value).getBytes(StandardCharsets.UTF_8));
+            return "sha256:" + HexFormat.of().formatHex(hash);
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 unavailable", exception);
+        }
+    }
+
+    private record ParsedLine(String key, String value) {
+    }
+
+    private record RequirementDraft(
+            boolean requirement,
+            String title,
+            String priority,
+            String repositoryUrl,
+            String baseBranch,
+            String expectedResult,
+            List<String> acceptanceCriteria,
+            TaskMaterialSourceType sourceType,
+            String materialTitle,
+            String sourceUri,
+            String materialContent
+    ) {
+        private static RequirementDraft notRequirement() {
+            return new RequirementDraft(false, "", "P2", "", "main", "", List.of(),
+                    TaskMaterialSourceType.MANUAL_TEXT, "", "", "");
+        }
     }
 }

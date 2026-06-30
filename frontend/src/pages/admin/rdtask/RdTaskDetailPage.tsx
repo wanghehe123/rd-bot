@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { ChevronLeft, Pause, Play } from "lucide-react";
+import { ChevronLeft, GitPullRequest, Pause, Play } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -12,11 +12,14 @@ import { cn } from "@/lib/utils";
 
 import {
   getRdTask,
+  getRdTaskMaterials,
   getRdTaskTimeline,
   pauseRdTask,
   resumeRdTask,
   STATUS_BADGE_CLASS,
+  submitRdTask,
   type RdTask,
+  type TaskMaterial,
   type RdTaskStatusEvent
 } from "@/services/rdTaskService";
 
@@ -30,11 +33,28 @@ const formatDuration = (ms?: number) => {
 
 const EVENT_DOT_TONE: Record<string, string> = {
   CREATED: "bg-blue-500",
+  MATERIAL_COLLECTING: "bg-sky-500",
+  MATERIAL_READY: "bg-teal-500",
+  CONTEXT_BUILDING: "bg-cyan-500",
+  CONTEXT_READY: "bg-teal-500",
+  PLAN_GENERATING: "bg-violet-500",
+  PLAN_GENERATED: "bg-purple-500",
+  WAITING_POLICY: "bg-amber-500",
+  WAITING_APPROVAL: "bg-orange-500",
   SEARCHING: "bg-amber-500",
   EXECUTING: "bg-indigo-500",
+  VALIDATING: "bg-fuchsia-500",
+  PR_CREATING: "bg-emerald-500",
   COMMITTED: "bg-emerald-500",
   MERGED: "bg-green-600",
+  REPORTING: "bg-slate-500",
+  COMPLETED: "bg-green-600",
   REJECTED: "bg-red-500",
+  FAILED_RETRYABLE: "bg-rose-500",
+  FAILED_NEEDS_HUMAN: "bg-orange-500",
+  CANCELLED: "bg-slate-500",
+  DEAD_LETTERED: "bg-red-700",
+  RECOVERING: "bg-cyan-500",
   PAUSED: "bg-slate-400",
   RESUMED: "bg-cyan-500",
   DELETED: "bg-slate-400"
@@ -45,17 +65,21 @@ export function RdTaskDetailPage() {
   const navigate = useNavigate();
   const [task, setTask] = useState<RdTask | null>(null);
   const [events, setEvents] = useState<RdTaskStatusEvent[]>([]);
+  const [materials, setMaterials] = useState<TaskMaterial[]>([]);
   const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
 
   const load = async () => {
     setLoading(true);
     try {
-      const [detail, timeline] = await Promise.all([
+      const [detail, timeline, materialList] = await Promise.all([
         getRdTask(taskId),
-        getRdTaskTimeline(taskId)
+        getRdTaskTimeline(taskId),
+        getRdTaskMaterials(taskId)
       ]);
       setTask(detail);
       setEvents(timeline || []);
+      setMaterials(materialList || []);
     } catch (error) {
       toast.error(getErrorMessage(error, "加载任务详情失败"));
     } finally {
@@ -79,6 +103,26 @@ export function RdTaskDetailPage() {
       setEvents(timeline || []);
     } catch (error) {
       toast.error(getErrorMessage(error, "操作失败"));
+    }
+  };
+
+  const handleSubmitRequirement = async () => {
+    if (!task) return;
+    setSubmitting(true);
+    try {
+      const updated = await submitRdTask(task.taskId);
+      setTask(updated);
+      const [timeline, materialList] = await Promise.all([
+        getRdTaskTimeline(task.taskId),
+        getRdTaskMaterials(task.taskId)
+      ]);
+      setEvents(timeline || []);
+      setMaterials(materialList || []);
+      toast.success(updated.pullRequestUrl ? "需求执行完成，已生成 PR" : "需求执行已提交");
+    } catch (error) {
+      toast.error(getErrorMessage(error, "需求执行失败"));
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -123,6 +167,12 @@ export function RdTaskDetailPage() {
                 </>
               )}
             </Button>
+            {task.taskType === "REQUIREMENT" && canSubmitRequirement(task) ? (
+              <Button onClick={handleSubmitRequirement} disabled={submitting}>
+                <Play className="mr-2 h-4 w-4" />
+                {submitting ? "执行中..." : "执行需求"}
+              </Button>
+            ) : null}
           </div>
         </div>
 
@@ -182,6 +232,154 @@ export function RdTaskDetailPage() {
           </CardContent>
         </Card>
 
+        {task.taskType === "REQUIREMENT" ? (
+          <Card>
+            <CardHeader>
+              <CardTitle>需求交付信息</CardTitle>
+              <CardDescription>需求任务的仓库、分支与验收输入</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid grid-cols-1 gap-4 text-sm md:grid-cols-2">
+                <InfoField
+                  label="仓库"
+                  value={
+                    task.repositoryUrl ? (
+                      <a
+                        href={task.repositoryUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="break-all text-primary underline"
+                      >
+                        {task.repositoryUrl}
+                      </a>
+                    ) : (
+                      "-"
+                    )
+                  }
+                />
+                <InfoField label="基准分支" value={task.baseBranch || "-"} mono />
+                <InfoField label="工作分支" value={task.workBranch || "-"} mono />
+                <InfoField label="来源" value={task.sourceType || "ADMIN"} />
+              </div>
+              <div>
+                <div className="mb-1 text-xs text-muted-foreground">预期结果</div>
+                <div className="whitespace-pre-wrap rounded-lg bg-slate-50 p-3 text-sm text-slate-700">
+                  {task.expectedResult || "-"}
+                </div>
+              </div>
+              <div>
+                <div className="mb-1 text-xs text-muted-foreground">验收标准</div>
+                <div className="space-y-2 rounded-lg bg-slate-50 p-3 text-sm text-slate-700">
+                  {parseCriteria(task.acceptanceCriteriaJson).length > 0 ? (
+                    parseCriteria(task.acceptanceCriteriaJson).map((item, index) => (
+                      <div key={`${item}-${index}`}>{index + 1}. {item}</div>
+                    ))
+                  ) : (
+                    "-"
+                  )}
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        ) : null}
+
+        {hasExecutionEvidence(task) ? (
+          <Card>
+            <CardHeader>
+              <CardTitle>执行结果与 PR</CardTitle>
+              <CardDescription>自动编码、验证和代码评审请求的输出摘要</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid grid-cols-1 gap-4 text-sm md:grid-cols-3">
+                <InfoField label="执行摘要" value={task.executionEvidence?.summary || "-"} />
+                <InfoField label="测试状态" value={task.executionEvidence?.testStatus || "-"} />
+                <InfoField label="风险等级" value={task.executionEvidence?.riskLevel || "-"} />
+              </div>
+              {task.pullRequestUrl || task.executionEvidence?.pullRequestUrl ? (
+                <a
+                  href={task.pullRequestUrl || task.executionEvidence?.pullRequestUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-2 text-sm font-medium text-primary underline"
+                >
+                  <GitPullRequest className="h-4 w-4" />
+                  打开 PR
+                </a>
+              ) : null}
+              {task.executionEvidence?.prBody ? (
+                <div>
+                  <div className="mb-1 text-xs text-muted-foreground">改动介绍</div>
+                  <pre className="max-h-[260px] overflow-auto whitespace-pre-wrap rounded-lg bg-slate-50 p-3 text-xs leading-relaxed text-slate-700">
+                    {task.executionEvidence.prBody}
+                  </pre>
+                </div>
+              ) : null}
+              {task.executionEvidence?.changedFiles?.length ? (
+                <div>
+                  <div className="mb-1 text-xs text-muted-foreground">变更文件</div>
+                  <div className="flex flex-wrap gap-2">
+                    {task.executionEvidence.changedFiles.map((file) => (
+                      <code key={file} className="rounded-md bg-slate-100 px-2 py-1 text-xs text-slate-700">
+                        {file}
+                      </code>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+              {task.executionEvidence?.testCommands?.length ? (
+                <div>
+                  <div className="mb-1 text-xs text-muted-foreground">测试命令</div>
+                  <div className="space-y-2">
+                    {task.executionEvidence.testCommands.map((command) => (
+                      <code key={command} className="block rounded-md bg-slate-950 px-3 py-2 text-xs text-slate-100">
+                        {command}
+                      </code>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </CardContent>
+          </Card>
+        ) : null}
+
+        {materials.length > 0 ? (
+          <Card>
+            <CardHeader>
+              <CardTitle>需求材料</CardTitle>
+              <CardDescription>任务输入文档与内容预览</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {materials.map((material) => (
+                <div key={material.materialId} className="rounded-lg border border-slate-200 p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-medium text-slate-800">{material.title || material.materialId}</div>
+                      <div className="mt-1 flex flex-wrap gap-2 text-xs text-muted-foreground">
+                        <span>{material.sourceType}</span>
+                        <span>{material.materialType}</span>
+                        <span className="break-all">{material.contentHash}</span>
+                      </div>
+                    </div>
+                    {material.sourceUri ? (
+                      <a
+                        href={material.sourceUri}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-sm text-primary underline"
+                      >
+                        打开来源
+                      </a>
+                    ) : null}
+                  </div>
+                  <pre className="mt-3 max-h-[220px] overflow-auto whitespace-pre-wrap rounded-md bg-slate-50 p-3 text-xs leading-relaxed text-slate-600">
+                    {material.contentPreview || "-"}
+                  </pre>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+        ) : null}
+
         <Card>
           <CardHeader>
             <CardTitle>全链路时间线</CardTitle>
@@ -238,6 +436,42 @@ export function RdTaskDetailPage() {
         ) : null}
       </div>
   );
+}
+
+function parseCriteria(value?: string) {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.map((item) => String(item)).filter(Boolean) : [];
+  } catch {
+    return value.split("\n").map((line) => line.trim()).filter(Boolean);
+  }
+}
+
+function hasExecutionEvidence(task: RdTask) {
+  const evidence = task.executionEvidence;
+  return Boolean(
+    task.pullRequestUrl ||
+      evidence?.summary ||
+      evidence?.prBody ||
+      evidence?.changedFiles?.length ||
+      evidence?.testCommands?.length ||
+      evidence?.testStatus ||
+      evidence?.riskLevel
+  );
+}
+
+function canSubmitRequirement(task: RdTask) {
+  return !task.paused && ![
+    "EXECUTING",
+    "VALIDATING",
+    "PR_CREATING",
+    "WAITING_APPROVAL",
+    "COMMITTED",
+    "MERGED",
+    "COMPLETED",
+    "DELETED"
+  ].includes(task.status);
 }
 
 function InfoField({

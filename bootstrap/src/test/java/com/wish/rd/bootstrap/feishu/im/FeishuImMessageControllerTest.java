@@ -1,10 +1,18 @@
 package com.wish.rd.bootstrap.feishu.im;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.wish.rd.engine.requirement.RequirementDeliveryEngine;
+import com.wish.rd.framework.id.SnowflakeIdGenerator;
 import com.wish.rd.engine.ticket.RepairQueuePublishResult;
 import com.wish.rd.engine.ticket.RepairQueuePublisher;
 import com.wish.rd.engine.ticket.RepairTicketMessage;
 import com.wish.rd.engine.ticket.TicketEventIngestionEngine;
+import com.wish.rd.rag.runtime.InMemoryRdTaskStatusEventStore;
+import com.wish.rd.rag.runtime.InMemoryRdTaskStore;
+import com.wish.rd.rag.runtime.InMemoryTaskMaterialStore;
+import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
+import com.wish.rd.rag.runtime.RdRequirementTask;
+import com.wish.rd.rag.runtime.RdTaskStatus;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.web.servlet.MockMvc;
@@ -12,6 +20,7 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -91,6 +100,148 @@ class FeishuImMessageControllerTest {
         assertEquals("oc-chat", store.findTicket("FI-om-123").orElseThrow().chatId());
     }
 
+    @Test
+    void shouldCreateRequirementTaskFromMentionedTextWithoutBugFixQueue() throws Exception {
+        FeishuImProperties properties = new FeishuImProperties();
+        properties.setEnabled(true);
+        properties.setRequireAtMention(true);
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(),
+                new InMemoryRdTaskStatusEventStore(),
+                generator());
+        InMemoryTaskMaterialStore materialStore = new InMemoryTaskMaterialStore();
+        RequirementDeliveryEngine deliveryEngine = new RequirementDeliveryEngine(
+                registry,
+                materialStore,
+                request -> com.wish.rd.engine.requirement.RequirementExecutionResult.success(
+                        request.taskId(),
+                        "实现完成",
+                        "https://github.com/example/waimai/pull/22",
+                        """
+                                {
+                                  "status": "SUCCESS",
+                                  "summary": "实现完成",
+                                  "prBody": "## 改动介绍\\n- 新增订单催单按钮",
+                                  "changedFiles": ["client/src/pages/OrderDetail.tsx"],
+                                  "testCommands": ["npm run build"],
+                                  "testStatus": "PASSED"
+                                }
+                                """
+                )
+        );
+        FeishuImMessageController controller = new FeishuImMessageController(
+                new ObjectMapper(),
+                properties,
+                new FeishuImTicketParser(),
+                store,
+                TicketEventIngestionEngine.forTesting(
+                        publisher,
+                        new TicketEventIngestionEngine.InMemoryDeduplicationStore(),
+                        "feishu-im"
+                ),
+                registry,
+                materialStore,
+                deliveryEngine,
+                generator()
+        );
+        MockMvc localMockMvc = MockMvcBuilders.standaloneSetup(controller).build();
+        String text = """
+                @_user_1 做需求
+                标题: 增加订单催单功能
+                仓库: https://github.com/example/waimai.git
+                分支: main
+                优先级: P1
+                需求: 用户可以在订单详情页点击催单。
+                预期结果: 订单详情页可以催单
+                验收: 前端构建通过
+                """;
+
+        String response = localMockMvc.perform(post("/feishu/im/events")
+                        .contentType("application/json")
+                        .content(eventJsonWithText("evt-req", "om_req_1", text, List.of("@_user_1"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.accepted").value(true))
+                .andExpect(jsonPath("$.taskType").value("REQUIREMENT"))
+                .andExpect(jsonPath("$.status").value("COMMITTED"))
+                .andExpect(jsonPath("$.pullRequestUrl").value("https://github.com/example/waimai/pull/22"))
+                .andExpect(jsonPath("$.summary").value("实现完成"))
+                .andExpect(jsonPath("$.prBody").value(org.hamcrest.Matchers.containsString("新增订单催单按钮")))
+                .andExpect(jsonPath("$.changedFiles[0]").value("client/src/pages/OrderDetail.tsx"))
+                .andExpect(jsonPath("$.testCommands[0]").value("npm run build"))
+                .andReturn().getResponse().getContentAsString();
+        String taskId = com.jayway.jsonpath.JsonPath.read(response, "$.taskId");
+
+        assertTrue(publisher.published.isEmpty());
+        assertEquals(RdTaskStatus.COMMITTED, registry.getTask(taskId).status());
+        RdRequirementTask saved = registry.getRequirementTask(taskId);
+        assertEquals("FEISHU_IM", saved.sourceType());
+        assertEquals("om_req_1", saved.sourceId());
+        assertEquals(1, materialStore.listByTask(taskId).size());
+    }
+
+    @Test
+    void shouldAskForMissingRequirementFieldsWithoutCreatingTask() throws Exception {
+        FeishuImProperties properties = new FeishuImProperties();
+        properties.setEnabled(true);
+        properties.setRequireAtMention(true);
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(),
+                new InMemoryRdTaskStatusEventStore(),
+                generator());
+        InMemoryTaskMaterialStore materialStore = new InMemoryTaskMaterialStore();
+        RequirementDeliveryEngine deliveryEngine = new RequirementDeliveryEngine(
+                registry,
+                materialStore,
+                request -> {
+                    throw new AssertionError("missing fields must not trigger requirement execution");
+                }
+        );
+        FeishuImMessageController controller = new FeishuImMessageController(
+                new ObjectMapper(),
+                properties,
+                new FeishuImTicketParser(),
+                store,
+                TicketEventIngestionEngine.forTesting(
+                        publisher,
+                        new TicketEventIngestionEngine.InMemoryDeduplicationStore(),
+                        "feishu-im"
+                ),
+                registry,
+                materialStore,
+                deliveryEngine,
+                generator()
+        );
+        MockMvc localMockMvc = MockMvcBuilders.standaloneSetup(controller).build();
+        String text = """
+                @_user_1 做需求
+                标题: 增加订单催单功能
+                分支: main
+                需求: 用户可以在订单详情页点击催单。
+                验收: 前端构建通过
+                """;
+
+        localMockMvc.perform(post("/feishu/im/events")
+                        .contentType("application/json")
+                        .content(eventJsonWithText("evt-req-missing", "om_req_missing", text, List.of("@_user_1"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.accepted").value(true))
+                .andExpect(jsonPath("$.taskType").value("REQUIREMENT"))
+                .andExpect(jsonPath("$.status").value("NEED_INFO"))
+                .andExpect(jsonPath("$.missingFields[0]").value("repositoryUrl"))
+                .andExpect(jsonPath("$.missingFields[1]").value("expectedResult"));
+
+        assertTrue(publisher.published.isEmpty());
+        assertEquals(0, registry.queryTasks(new com.wish.rd.rag.runtime.RdTaskQuery(
+                "REQUIREMENT",
+                "",
+                "",
+                "",
+                "",
+                1,
+                20
+        )).total());
+    }
+
     private static String eventJson(String eventId, String messageId, String prefix, List<String> mentionKeys) {
         String mentions = mentionKeys.stream()
                 .map(key -> "{\"key\":\"" + key + "\",\"id\":{\"open_id\":\"ou-bot\"}}")
@@ -119,6 +270,43 @@ class FeishuImMessageControllerTest {
                   }
                 }
                 """.formatted(eventId, messageId, escapedTextJson, mentions);
+    }
+
+    private static String eventJsonWithText(String eventId, String messageId, String text, List<String> mentionKeys) {
+        String mentions = mentionKeys.stream()
+                .map(key -> "{\"key\":\"" + key + "\",\"id\":{\"open_id\":\"ou-bot\"}}")
+                .reduce((left, right) -> left + "," + right)
+                .orElse("");
+        String escapedText = text.replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n");
+        String escapedTextJson = "{\\\"text\\\":\\\"" + escapedText + "\\\"}";
+        return """
+                {
+                  "schema": "2.0",
+                  "header": {
+                    "event_id": "%s",
+                    "event_type": "im.message.receive_v1",
+                    "create_time": "1782190000000"
+                  },
+                  "event": {
+                    "sender": {"sender_id": {"open_id": "ou-user"}},
+                    "message": {
+                      "message_id": "%s",
+                      "chat_id": "oc-chat",
+                      "chat_type": "group",
+                      "message_type": "text",
+                      "content": "%s",
+                      "mentions": [%s]
+                    }
+                  }
+                }
+                """.formatted(eventId, messageId, escapedTextJson, mentions);
+    }
+
+    private static SnowflakeIdGenerator generator() {
+        AtomicLong now = new AtomicLong(1_784_000_000_000L);
+        return new SnowflakeIdGenerator(1, 1, now::getAndIncrement);
     }
 
     private static final class CapturingPublisher implements RepairQueuePublisher {

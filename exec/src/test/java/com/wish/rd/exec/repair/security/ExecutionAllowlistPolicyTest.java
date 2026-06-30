@@ -25,12 +25,14 @@ class ExecutionAllowlistPolicyTest {
                 List.of("https://github.com/example/*"),
                 List.of("example/order"),
                 List.of("main"),
-                List.of("repair/*")
+                List.of("repair/*", "requirement/*")
         );
 
         assertTrue(policy.evaluate(command("example", "order", "main", "repair/FS-1001")).allowed());
+        assertTrue(policy.evaluate(command("example", "order", "main", "requirement/task-1001")).allowed());
         assertFalse(policy.evaluate(command("example", "order", "dev", "repair/FS-1001")).allowed());
         assertFalse(policy.evaluate(command("other", "order", "main", "repair/FS-1001")).allowed());
+        assertFalse(policy.evaluate(command("example", "order", "main", "feature/free-form")).allowed());
     }
 
     @Test

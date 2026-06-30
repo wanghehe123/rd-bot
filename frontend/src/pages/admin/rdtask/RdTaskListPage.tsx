@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
   SelectContent,
@@ -44,6 +45,7 @@ import { RelativeTime } from "@/components/RelativeTime";
 import { getErrorMessage } from "@/utils/error";
 
 import {
+  createRequirementTask,
   createRdTask,
   deleteRdTask,
   getRdTasksPage,
@@ -51,21 +53,44 @@ import {
   resumeRdTask,
   updateRdTask,
   STATUS_BADGE_CLASS,
-  type RdTask
+  type RdTask,
+  type RequirementMaterialPayload
 } from "@/services/rdTaskService";
 
 const PAGE_SIZE = 10;
 
 const STATUS_OPTIONS = [
   { value: "CREATED", label: "已创建" },
+  { value: "MATERIAL_COLLECTING", label: "收集材料" },
+  { value: "MATERIAL_READY", label: "材料就绪" },
+  { value: "CONTEXT_BUILDING", label: "构建上下文" },
+  { value: "CONTEXT_READY", label: "上下文就绪" },
+  { value: "PLAN_GENERATING", label: "生成计划" },
+  { value: "PLAN_GENERATED", label: "计划就绪" },
+  { value: "WAITING_POLICY", label: "策略检查" },
+  { value: "WAITING_APPROVAL", label: "等待审批" },
   { value: "SEARCHING", label: "检索中" },
   { value: "EXECUTING", label: "执行中" },
+  { value: "VALIDATING", label: "验证中" },
+  { value: "PR_CREATING", label: "创建 PR" },
   { value: "COMMITTED", label: "已提交" },
   { value: "MERGED", label: "已合并" },
-  { value: "REJECTED", label: "已打回" }
+  { value: "REPORTING", label: "报告中" },
+  { value: "COMPLETED", label: "已完成" },
+  { value: "REJECTED", label: "已打回" },
+  { value: "FAILED_RETRYABLE", label: "可重试失败" },
+  { value: "FAILED_NEEDS_HUMAN", label: "需人工处理" },
+  { value: "CANCELLED", label: "已取消" },
+  { value: "DEAD_LETTERED", label: "死信" },
+  { value: "RECOVERING", label: "恢复中" }
 ];
 
 const PRIORITY_OPTIONS = ["P0", "P1", "P2"];
+
+const TASK_TYPE_OPTIONS = [
+  { value: "BUG_FIX", label: "修 Bug" },
+  { value: "REQUIREMENT", label: "做需求" }
+];
 
 const formatDuration = (ms?: number) => {
   if (!ms || ms <= 0) return "-";
@@ -89,6 +114,7 @@ export function RdTaskListPage() {
   const [loading, setLoading] = useState(false);
 
   const [statusFilter, setStatusFilter] = useState<string | undefined>();
+  const [taskTypeFilter, setTaskTypeFilter] = useState<string | undefined>();
   const [keyword, setKeyword] = useState("");
   const [searchInput, setSearchInput] = useState("");
 
@@ -99,11 +125,13 @@ export function RdTaskListPage() {
   const loadTasks = async (
     nextPage = page,
     nextStatus = statusFilter,
-    nextKeyword = keyword
+    nextKeyword = keyword,
+    nextTaskType = taskTypeFilter
   ) => {
     setLoading(true);
     try {
       const data = await getRdTasksPage({
+        taskType: nextTaskType,
         status: nextStatus,
         keyword: nextKeyword,
         page: nextPage,
@@ -126,18 +154,25 @@ export function RdTaskListPage() {
 
   const handleSearch = () => {
     setKeyword(searchInput.trim());
-    loadTasks(1, statusFilter, searchInput.trim());
+    loadTasks(1, statusFilter, searchInput.trim(), taskTypeFilter);
   };
 
   const handleStatusChange = (value: string) => {
     const next = value === "all" ? undefined : value;
     setStatusFilter(next);
     setPage(1);
-    loadTasks(1, next, keyword);
+    loadTasks(1, next, keyword, taskTypeFilter);
+  };
+
+  const handleTaskTypeChange = (value: string) => {
+    const next = value === "all" ? undefined : value;
+    setTaskTypeFilter(next);
+    setPage(1);
+    loadTasks(1, statusFilter, keyword, next);
   };
 
   const handleRefresh = () => {
-    loadTasks(1, statusFilter, keyword);
+    loadTasks(1, statusFilter, keyword, taskTypeFilter);
   };
 
   const handleTogglePause = async (task: RdTask) => {
@@ -149,7 +184,7 @@ export function RdTaskListPage() {
         await pauseRdTask(task.taskId);
         toast.success("已暂停");
       }
-      loadTasks(page, statusFilter, keyword);
+      loadTasks(page, statusFilter, keyword, taskTypeFilter);
     } catch (error) {
       toast.error(getErrorMessage(error, "操作失败"));
     }
@@ -161,7 +196,7 @@ export function RdTaskListPage() {
       await deleteRdTask(deleteTarget.taskId);
       toast.success("已删除");
       setDeleteTarget(null);
-      loadTasks(page, statusFilter, keyword);
+      loadTasks(page, statusFilter, keyword, taskTypeFilter);
     } catch (error) {
       toast.error(getErrorMessage(error, "删除失败"));
     }
@@ -198,6 +233,22 @@ export function RdTaskListPage() {
                 ))}
               </SelectContent>
             </Select>
+            <Select
+              value={taskTypeFilter || "all"}
+              onValueChange={handleTaskTypeChange}
+            >
+              <SelectTrigger className="w-[140px]">
+                <SelectValue placeholder="类型" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">全部类型</SelectItem>
+                {TASK_TYPE_OPTIONS.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <Button variant="outline" onClick={handleRefresh}>
               <RefreshCw className="mr-2 h-4 w-4" />
               刷新
@@ -210,7 +261,7 @@ export function RdTaskListPage() {
         </div>
 
         <Card>
-          <CardContent className="pt-6">
+          <CardContent className="min-w-0 pt-6">
             {loading ? (
               <div className="py-8 text-center text-muted-foreground">加载中...</div>
             ) : records.length === 0 ? (
@@ -218,16 +269,17 @@ export function RdTaskListPage() {
                 暂无任务，点击「新建任务」创建
               </div>
             ) : (
-              <Table className="min-w-[960px]">
+              <Table className="min-w-[980px] table-fixed">
                 <TableHeader>
                   <TableRow>
-                    <TableHead className="w-[220px]">标题</TableHead>
-                    <TableHead className="w-[120px]">工单</TableHead>
-                    <TableHead className="w-[80px]">优先级</TableHead>
+                    <TableHead className="w-[230px]">标题</TableHead>
+                    <TableHead className="w-[80px]">类型</TableHead>
+                    <TableHead className="w-[130px]">工单</TableHead>
+                    <TableHead className="w-[72px]">优先级</TableHead>
                     <TableHead className="w-[110px]">状态</TableHead>
-                    <TableHead className="w-[70px]">暂停</TableHead>
-                    <TableHead className="w-[150px]">更新时间</TableHead>
-                    <TableHead className="w-[200px] text-left">操作</TableHead>
+                    <TableHead className="w-[64px]">暂停</TableHead>
+                    <TableHead className="w-[118px]">更新时间</TableHead>
+                    <TableHead className="w-[176px] text-left">操作</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -236,7 +288,7 @@ export function RdTaskListPage() {
                       <TableCell className="font-medium">
                         <button
                           type="button"
-                          className="admin-link max-w-[220px] truncate"
+                          className="admin-link block max-w-full truncate"
                           title={task.title}
                           onClick={() => navigate(`/admin/rd-tasks/${task.taskId}`)}
                         >
@@ -248,8 +300,15 @@ export function RdTaskListPage() {
                           </div>
                         ) : null}
                       </TableCell>
-                      <TableCell className="text-sm text-muted-foreground">
-                        {task.ticketId || "-"}
+                      <TableCell>
+                        <Badge variant="outline">
+                          {task.taskType === "REQUIREMENT" ? "做需求" : "修 Bug"}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="truncate text-sm text-muted-foreground">
+                        <span title={task.taskType === "REQUIREMENT" ? (task.baseBranch || "-") : (task.ticketId || "-")}>
+                          {task.taskType === "REQUIREMENT" ? (task.baseBranch || "-") : (task.ticketId || "-")}
+                        </span>
                       </TableCell>
                       <TableCell>
                         <Badge variant="outline">{task.priority}</Badge>
@@ -272,7 +331,7 @@ export function RdTaskListPage() {
                         <RelativeTime value={new Date(task.updateTimeEpochMillis).toISOString()} />
                       </TableCell>
                       <TableCell>
-                        <div className="flex flex-wrap gap-2">
+                        <div className="grid grid-cols-2 gap-2">
                           <Button
                             size="sm"
                             variant="outline"
@@ -329,7 +388,7 @@ export function RdTaskListPage() {
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => loadTasks(Math.max(1, page - 1), statusFilter, keyword)}
+                  onClick={() => loadTasks(Math.max(1, page - 1), statusFilter, keyword, taskTypeFilter)}
                   disabled={page <= 1}
                 >
                   上一页
@@ -340,7 +399,7 @@ export function RdTaskListPage() {
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => loadTasks(Math.min(pages || 1, page + 1), statusFilter, keyword)}
+                  onClick={() => loadTasks(Math.min(pages || 1, page + 1), statusFilter, keyword, taskTypeFilter)}
                   disabled={page >= pages}
                 >
                   下一页
@@ -354,14 +413,14 @@ export function RdTaskListPage() {
           open={createOpen}
           mode="create"
           onOpenChange={setCreateOpen}
-          onSuccess={() => loadTasks(1, statusFilter, keyword)}
+          onSuccess={() => loadTasks(1, statusFilter, keyword, taskTypeFilter)}
         />
         <RdTaskEditDialog
           open={!!editTarget}
           mode="edit"
           task={editTarget}
           onOpenChange={(open) => setEditTarget(open ? editTarget : null)}
-          onSuccess={() => loadTasks(page, statusFilter, keyword)}
+          onSuccess={() => loadTasks(page, statusFilter, keyword, taskTypeFilter)}
         />
 
         <AlertDialog open={!!deleteTarget} onOpenChange={() => setDeleteTarget(null)}>
@@ -396,11 +455,21 @@ interface RdTaskEditDialogProps {
 }
 
 function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskEditDialogProps) {
+  const [taskKind, setTaskKind] = useState<"BUG_FIX" | "REQUIREMENT">("BUG_FIX");
   const [title, setTitle] = useState("");
   const [ticketId, setTicketId] = useState("");
   const [ticketTitle, setTicketTitle] = useState("");
   const [priority, setPriority] = useState("P2");
   const [promptSnapshot, setPromptSnapshot] = useState("");
+  const [repositoryUrl, setRepositoryUrl] = useState("");
+  const [baseBranch, setBaseBranch] = useState("main");
+  const [expectedResult, setExpectedResult] = useState("");
+  const [acceptanceCriteriaText, setAcceptanceCriteriaText] = useState("");
+  const [materialSourceType, setMaterialSourceType] = useState<"MANUAL_TEXT" | "FEISHU_DOC" | "LOCAL_UPLOAD">("MANUAL_TEXT");
+  const [manualRequirementText, setManualRequirementText] = useState("");
+  const [feishuDocumentUrl, setFeishuDocumentUrl] = useState("");
+  const [localRequirementFile, setLocalRequirementFile] = useState<File | null>(null);
+  const [autoExecute, setAutoExecute] = useState(true);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -411,12 +480,23 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
       setTicketTitle(task.ticketTitle || "");
       setPriority(task.priority || "P2");
       setPromptSnapshot("");
+      setTaskKind("BUG_FIX");
     } else {
+      setTaskKind("BUG_FIX");
       setTitle("");
       setTicketId("");
       setTicketTitle("");
       setPriority("P2");
       setPromptSnapshot("");
+      setRepositoryUrl("");
+      setBaseBranch("main");
+      setExpectedResult("");
+      setAcceptanceCriteriaText("");
+      setMaterialSourceType("MANUAL_TEXT");
+      setManualRequirementText("");
+      setFeishuDocumentUrl("");
+      setLocalRequirementFile(null);
+      setAutoExecute(true);
     }
   }, [open, mode, task]);
 
@@ -428,7 +508,80 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
     }
     setSaving(true);
     try {
-      if (mode === "create") {
+      if (mode === "create" && taskKind === "REQUIREMENT") {
+        const materialContent = manualRequirementText.trim();
+        const materialUrl = feishuDocumentUrl.trim();
+        const localFile = localRequirementFile;
+        if (!repositoryUrl.trim()) {
+          toast.error("请输入仓库地址");
+          return;
+        }
+        if (!baseBranch.trim()) {
+          toast.error("请输入基准分支");
+          return;
+        }
+        if (!expectedResult.trim()) {
+          toast.error("请输入预期结果");
+          return;
+        }
+        if (materialSourceType === "MANUAL_TEXT" && !materialContent) {
+          toast.error("请输入需求正文");
+          return;
+        }
+        if (materialSourceType === "FEISHU_DOC" && !materialUrl) {
+          toast.error("请输入飞书文档 URL");
+          return;
+        }
+        if (materialSourceType === "LOCAL_UPLOAD" && !localFile) {
+          toast.error("请选择需求文件");
+          return;
+        }
+        let material: RequirementMaterialPayload;
+        if (materialSourceType === "MANUAL_TEXT") {
+          material = {
+            sourceType: "MANUAL_TEXT",
+            materialType: "REQUIREMENT_DOC",
+            title: "需求正文",
+            content: materialContent,
+            mimeType: "text/markdown"
+          };
+        } else if (materialSourceType === "FEISHU_DOC") {
+          material = {
+            sourceType: "FEISHU_DOC",
+            materialType: "REQUIREMENT_DOC",
+            title: "飞书需求文档",
+            sourceUri: materialUrl
+          };
+        } else {
+          const fileContent = await localFile!.text();
+          if (!fileContent.trim()) {
+            toast.error("需求文件内容为空");
+            return;
+          }
+          material = {
+            sourceType: "LOCAL_UPLOAD",
+            materialType: "REQUIREMENT_DOC",
+            title: localFile!.name || "本地需求文件",
+            sourceUri: `local-upload://${localFile!.name || "requirement"}`,
+            content: fileContent,
+            mimeType: localFile!.type || "text/plain"
+          };
+        }
+        await createRequirementTask({
+          title: trimmed,
+          priority,
+          repositoryUrl: repositoryUrl.trim(),
+          baseBranch: baseBranch.trim(),
+          expectedResult: expectedResult.trim(),
+          acceptanceCriteria: acceptanceCriteriaText
+            .split("\n")
+            .map((line) => line.trim())
+            .filter(Boolean),
+          materials: [material],
+          autoExecute
+        });
+        toast.success("需求任务创建成功");
+      } else if (mode === "create") {
         await createRdTask({
           title: trimmed,
           ticketId: ticketId.trim(),
@@ -456,7 +609,7 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[520px]" onOpenAutoFocus={(event) => event.preventDefault()}>
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-[640px]" onOpenAutoFocus={(event) => event.preventDefault()}>
         <DialogHeader>
           <DialogTitle>{mode === "create" ? "新建任务" : "编辑任务"}</DialogTitle>
           <DialogDescription>
@@ -464,24 +617,52 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
+          {mode === "create" ? (
+            <div>
+              <label className="mb-2 block text-sm font-medium">任务类型</label>
+              <Select value={taskKind} onValueChange={(value) => setTaskKind(value as "BUG_FIX" | "REQUIREMENT")}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {TASK_TYPE_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          ) : null}
           <div>
             <label className="mb-2 block text-sm font-medium">标题</label>
             <Input
               value={title}
               onChange={(event) => setTitle(event.target.value)}
-              placeholder="例如：支付下单接口 500 修复"
+              placeholder={taskKind === "REQUIREMENT" ? "例如：增加订单催单功能" : "例如：支付下单接口 500 修复"}
             />
           </div>
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="mb-2 block text-sm font-medium">工单 ID</label>
-              <Input
-                value={ticketId}
-                onChange={(event) => setTicketId(event.target.value)}
-                placeholder="FS-1001"
-                disabled={mode === "edit"}
-              />
-            </div>
+          <div className="grid gap-4 sm:grid-cols-2">
+            {mode === "create" && taskKind === "REQUIREMENT" ? (
+              <div>
+                <label className="mb-2 block text-sm font-medium">基准分支</label>
+                <Input
+                  value={baseBranch}
+                  onChange={(event) => setBaseBranch(event.target.value)}
+                  placeholder="main"
+                />
+              </div>
+            ) : (
+              <div>
+                <label className="mb-2 block text-sm font-medium">工单 ID</label>
+                <Input
+                  value={ticketId}
+                  onChange={(event) => setTicketId(event.target.value)}
+                  placeholder="FS-1001"
+                  disabled={mode === "edit"}
+                />
+              </div>
+            )}
             <div>
               <label className="mb-2 block text-sm font-medium">优先级</label>
               <Select value={priority} onValueChange={setPriority}>
@@ -498,24 +679,116 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
               </Select>
             </div>
           </div>
-          <div>
-            <label className="mb-2 block text-sm font-medium">工单标题</label>
-            <Input
-              value={ticketTitle}
-              onChange={(event) => setTicketTitle(event.target.value)}
-              placeholder="工单摘要"
-            />
-          </div>
-          {mode === "create" ? (
-            <div>
-              <label className="mb-2 block text-sm font-medium">Prompt 快照（可选）</label>
-              <Input
-                value={promptSnapshot}
-                onChange={(event) => setPromptSnapshot(event.target.value)}
-                placeholder="发送给执行器的初始 Prompt"
-              />
-            </div>
-          ) : null}
+          {mode === "create" && taskKind === "REQUIREMENT" ? (
+            <>
+              <div>
+                <label className="mb-2 block text-sm font-medium">仓库地址</label>
+                <Input
+                  value={repositoryUrl}
+                  onChange={(event) => setRepositoryUrl(event.target.value)}
+                  placeholder="https://github.com/example/waimai.git"
+                />
+              </div>
+              <div>
+                <label className="mb-2 block text-sm font-medium">需求材料</label>
+                <Select
+                  value={materialSourceType}
+                  onValueChange={(value) => setMaterialSourceType(value as "MANUAL_TEXT" | "FEISHU_DOC" | "LOCAL_UPLOAD")}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="MANUAL_TEXT">手填正文</SelectItem>
+                    <SelectItem value="LOCAL_UPLOAD">本地文件</SelectItem>
+                    <SelectItem value="FEISHU_DOC">飞书文档</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              {materialSourceType === "MANUAL_TEXT" ? (
+                <div>
+                  <label className="mb-2 block text-sm font-medium">需求正文</label>
+                  <Textarea
+                    value={manualRequirementText}
+                    onChange={(event) => setManualRequirementText(event.target.value)}
+                    className="min-h-[120px] resize-y"
+                    placeholder="写入需求背景、页面/API 改动、边界条件"
+                  />
+                </div>
+              ) : materialSourceType === "FEISHU_DOC" ? (
+                <div>
+                  <label className="mb-2 block text-sm font-medium">飞书文档 URL</label>
+                  <Input
+                    value={feishuDocumentUrl}
+                    onChange={(event) => setFeishuDocumentUrl(event.target.value)}
+                    placeholder="https://example.feishu.cn/docx/..."
+                  />
+                </div>
+              ) : (
+                <div>
+                  <label className="mb-2 block text-sm font-medium">需求文件</label>
+                  <Input
+                    type="file"
+                    accept=".md,.markdown,.txt,.json,.yaml,.yml"
+                    onChange={(event) => setLocalRequirementFile(event.target.files?.[0] ?? null)}
+                  />
+                  {localRequirementFile ? (
+                    <div className="mt-2 truncate text-xs text-muted-foreground">
+                      {localRequirementFile.name}
+                    </div>
+                  ) : null}
+                </div>
+              )}
+              <div>
+                <label className="mb-2 block text-sm font-medium">预期结果</label>
+                <Textarea
+                  value={expectedResult}
+                  onChange={(event) => setExpectedResult(event.target.value)}
+                  className="min-h-[90px] resize-y"
+                  placeholder="描述完成后的用户可见结果和交付边界"
+                />
+              </div>
+              <div>
+                <label className="mb-2 block text-sm font-medium">验收标准</label>
+                <Textarea
+                  value={acceptanceCriteriaText}
+                  onChange={(event) => setAcceptanceCriteriaText(event.target.value)}
+                  className="min-h-[90px] resize-y"
+                  placeholder="每行一条，例如：前端构建通过"
+                />
+              </div>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={autoExecute}
+                  onChange={(event) => setAutoExecute(event.target.checked)}
+                  className="h-4 w-4 rounded border-slate-300"
+                />
+                创建后自动执行
+              </label>
+            </>
+          ) : (
+            <>
+              <div>
+                <label className="mb-2 block text-sm font-medium">工单标题</label>
+                <Input
+                  value={ticketTitle}
+                  onChange={(event) => setTicketTitle(event.target.value)}
+                  placeholder="工单摘要"
+                />
+              </div>
+              {mode === "create" ? (
+                <div>
+                  <label className="mb-2 block text-sm font-medium">Prompt 快照（可选）</label>
+                  <Input
+                    value={promptSnapshot}
+                    onChange={(event) => setPromptSnapshot(event.target.value)}
+                    placeholder="发送给执行器的初始 Prompt"
+                  />
+                </div>
+              ) : null}
+            </>
+          )}
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
