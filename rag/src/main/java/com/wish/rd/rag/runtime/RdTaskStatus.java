@@ -9,11 +9,28 @@ package com.wish.rd.rag.runtime;
  */
 public enum RdTaskStatus {
     CREATED,
+    MATERIAL_COLLECTING,
+    MATERIAL_READY,
+    CONTEXT_BUILDING,
+    CONTEXT_READY,
+    PLAN_GENERATING,
+    PLAN_GENERATED,
+    WAITING_POLICY,
+    WAITING_APPROVAL,
     SEARCHING,
     EXECUTING,
+    VALIDATING,
+    PR_CREATING,
     COMMITTED,
     MERGED,
+    REPORTING,
+    COMPLETED,
     REJECTED,
+    FAILED_RETRYABLE,
+    FAILED_NEEDS_HUMAN,
+    CANCELLED,
+    DEAD_LETTERED,
+    RECOVERING,
     /** 管理台逻辑删除标记，不参与状态机流转。 */
     DELETED
 }

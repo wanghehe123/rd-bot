@@ -149,6 +149,16 @@ CREATE INDEX IF NOT EXISTS idx_rd_tasks_ticket ON rd_tasks (ticket_id);
 
 -- 任务管理：新增 paused 列承载管理台暂停标记（逻辑删复用 status='DELETED'，不新增列）。
 ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS paused BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS source_type VARCHAR(32) NOT NULL DEFAULT '';
+ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS source_id VARCHAR(256) NOT NULL DEFAULT '';
+ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS source_url TEXT NOT NULL DEFAULT '';
+ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS repository_url TEXT NOT NULL DEFAULT '';
+ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS repo_owner VARCHAR(256) NOT NULL DEFAULT '';
+ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS repo_name VARCHAR(256) NOT NULL DEFAULT '';
+ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS base_branch VARCHAR(256) NOT NULL DEFAULT '';
+ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS work_branch VARCHAR(256) NOT NULL DEFAULT '';
+ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS expected_result TEXT NOT NULL DEFAULT '';
+ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS acceptance_criteria_json JSONB NOT NULL DEFAULT '[]'::jsonb;
 
 -- 任务管理：状态事件 append-only 表，承载全链路时间线（含耗时与触发来源）。
 CREATE TABLE IF NOT EXISTS rd_task_status_events (
@@ -163,6 +173,28 @@ CREATE TABLE IF NOT EXISTS rd_task_status_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_rd_task_events_task ON rd_task_status_events (task_id, entered_at);
+
+-- 任务管理：需求文档、本地上传和 Feishu 文档等输入材料。
+CREATE TABLE IF NOT EXISTS rd_task_materials (
+    id                    BIGINT PRIMARY KEY,
+    task_id               BIGINT NOT NULL,
+    material_type         VARCHAR(64) NOT NULL,
+    source_type           VARCHAR(32) NOT NULL,
+    title                 TEXT NOT NULL DEFAULT '',
+    source_uri            TEXT NOT NULL DEFAULT '',
+    mime_type             VARCHAR(128) NOT NULL DEFAULT '',
+    content_hash          VARCHAR(128) NOT NULL DEFAULT '',
+    content_preview       TEXT NOT NULL DEFAULT '',
+    artifact_uri          TEXT NOT NULL DEFAULT '',
+    knowledge_document_id VARCHAR(64) NOT NULL DEFAULT '',
+    revision_id           VARCHAR(256) NOT NULL DEFAULT '',
+    metadata_json         JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_rd_task_materials_task ON rd_task_materials (task_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_rd_task_materials_source ON rd_task_materials (source_type, source_uri);
 
 CREATE TABLE IF NOT EXISTS repair_records (
     id             BIGINT PRIMARY KEY,

@@ -1,6 +1,7 @@
 package com.wish.rd.rag.runtime;
 
 import java.util.Comparator;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
@@ -28,6 +29,26 @@ public interface RdTaskStore {
     Optional<RdBugFixTask> findBugFixTask(String taskId);
 
     /**
+     * 保存需求交付任务快照。
+     *
+     * @param task 任务快照
+     * @return 保存后的任务快照
+     */
+    default RdRequirementTask saveRequirementTask(RdRequirementTask task) {
+        throw new UnsupportedOperationException("requirement task store is unavailable");
+    }
+
+    /**
+     * 按任务 ID 查询需求交付任务。
+     *
+     * @param taskId 任务 ID
+     * @return 任务快照
+     */
+    default Optional<RdRequirementTask> findRequirementTask(String taskId) {
+        return Optional.empty();
+    }
+
+    /**
      * 按工单 ID 查询最近一个未删除的 Bug 修复任务。
      *
      * @param ticketId 工单 ID
@@ -51,4 +72,40 @@ public interface RdTaskStore {
      * @return 任务快照列表
      */
     List<RdBugFixTask> listBugFixTasks();
+
+    /**
+     * 查询所有需求交付任务快照。
+     *
+     * @return 任务快照列表
+     */
+    default List<RdRequirementTask> listRequirementTasks() {
+        return List.of();
+    }
+
+    /**
+     * 按任务 ID 查询任意 RD 任务。
+     *
+     * @param taskId 任务 ID
+     * @return 任务快照
+     */
+    default Optional<RdTask> findTask(String taskId) {
+        Optional<? extends RdTask> bugFix = findBugFixTask(taskId);
+        if (bugFix.isPresent()) {
+            return Optional.of(bugFix.get());
+        }
+        Optional<? extends RdTask> requirement = findRequirementTask(taskId);
+        return requirement.map(task -> task);
+    }
+
+    /**
+     * 查询所有 RD 任务快照。
+     *
+     * @return 任务快照列表
+     */
+    default List<RdTask> listTasks() {
+        List<RdTask> tasks = new ArrayList<>();
+        tasks.addAll(listBugFixTasks());
+        tasks.addAll(listRequirementTasks());
+        return List.copyOf(tasks);
+    }
 }

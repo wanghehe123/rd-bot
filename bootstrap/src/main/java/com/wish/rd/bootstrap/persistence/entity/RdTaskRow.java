@@ -28,6 +28,16 @@ public class RdTaskRow {
     public String pullRequestUrl;
     public String errorMessage;
     public Boolean paused;
+    public String sourceType;
+    public String sourceId;
+    public String sourceUrl;
+    public String repositoryUrl;
+    public String repoOwner;
+    public String repoName;
+    public String baseBranch;
+    public String workBranch;
+    public String expectedResult;
+    public String acceptanceCriteriaJson;
     public OffsetDateTime createdAt;
     public OffsetDateTime updatedAt;
 }

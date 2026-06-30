@@ -29,6 +29,13 @@ public interface RdTask {
     RdTaskStatus status();
 
     /**
+     * 返回优先级。
+     *
+     * @return P0/P1/P2 等优先级
+     */
+    String priority();
+
+    /**
      * 返回任务标题。
      *
      * @return 展示标题

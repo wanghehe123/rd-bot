@@ -7,6 +7,7 @@ import java.util.Optional;
  *
  * <p>所有过滤字段均可空（表示不过滤）；{@code page} 从 1 开始。
  *
+ * @param taskType 任务类型过滤（BUG_FIX/REQUIREMENT/QNA），空表示不过滤
  * @param status   状态过滤（{@link RdTaskStatus} 名），空表示不过滤
  * @param priority 优先级过滤（P0/P1/P2），空表示不过滤
  * @param ticketId 工单 ID 子串
@@ -15,6 +16,7 @@ import java.util.Optional;
  * @param pageSize 每页大小
  */
 public record RdTaskQuery(
+        String taskType,
         String status,
         String priority,
         String ticketId,
@@ -24,8 +26,21 @@ public record RdTaskQuery(
 ) {
 
     public RdTaskQuery {
+        taskType = taskType == null ? null : taskType.strip();
         page = Math.max(1, page);
         pageSize = pageSize <= 0 ? 20 : pageSize;
+    }
+
+    /**
+     * 兼容旧调用方：默认不过滤任务类型。
+     */
+    public RdTaskQuery(String status, String priority, String ticketId, String keyword, int page, int pageSize) {
+        this(null, status, priority, ticketId, keyword, page, pageSize);
+    }
+
+    /** 是否要求任务类型等于给定值。 */
+    public boolean matchesTaskType(String candidate) {
+        return taskType == null || taskType.isBlank() || taskType.equalsIgnoreCase(candidate);
     }
 
     /** 是否要求状态等于给定值。 */

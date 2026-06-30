@@ -13,7 +13,7 @@ import java.util.List;
  * @param pages   总页数
  */
 public record RdTaskPage(
-        List<RdBugFixTask> records,
+        List<RdTask> records,
         long total,
         int page,
         int pageSize,
