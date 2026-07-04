@@ -121,19 +121,19 @@ class DockerExecutorConfigurationTest {
     }
 
     @Test
-    void shouldBindDeepSeekAndAnthropicProviderChainFromProperties() {
+    void shouldBindLongCatAndAnthropicProviderChainFromProperties() {
         ApplicationContextRunner contextRunner = new ApplicationContextRunner()
                 .withConfiguration(AutoConfigurations.of(ConfigurationPropertiesAutoConfiguration.class))
                 .withUserConfiguration(DockerConfigurationContext.class)
                 .withPropertyValues(
-                        "rd.executor.docker.providers[0].name=deepseek",
-                        "rd.executor.docker.providers[0].base-url=https://api.deepseek.com/anthropic",
-                        "rd.executor.docker.providers[0].auth-token-env=DEEPSEEK_API_KEY",
-                        "rd.executor.docker.providers[0].model=deepseek-v4-pro[1m]",
-                        "rd.executor.docker.providers[0].default-opus-model=deepseek-v4-pro[1m]",
-                        "rd.executor.docker.providers[0].default-sonnet-model=deepseek-v4-pro[1m]",
-                        "rd.executor.docker.providers[0].default-haiku-model=deepseek-v4-flash",
-                        "rd.executor.docker.providers[0].subagent-model=deepseek-v4-flash",
+                        "rd.executor.docker.providers[0].name=long-cat",
+                        "rd.executor.docker.providers[0].base-url=https://api.longcat.chat/anthropic",
+                        "rd.executor.docker.providers[0].auth-token-env=LONGCAT_API_KEY",
+                        "rd.executor.docker.providers[0].model=LongCat-2.0",
+                        "rd.executor.docker.providers[0].default-opus-model=LongCat-2.0",
+                        "rd.executor.docker.providers[0].default-sonnet-model=LongCat-2.0",
+                        "rd.executor.docker.providers[0].default-haiku-model=LongCat-2.0",
+                        "rd.executor.docker.providers[0].subagent-model=LongCat-2.0",
                         "rd.executor.docker.providers[0].effort-level=max",
                         "rd.executor.docker.providers[1].name=anthropic",
                         "rd.executor.docker.providers[1].api-key-env=ANTHROPIC_API_KEY",
@@ -144,16 +144,69 @@ class DockerExecutorConfigurationTest {
             DockerExecutorProperties properties = context.getBean(DockerExecutorProperties.class);
 
             assertEquals(2, properties.toExecutorConfiguration().providers().size());
-            Map<String, String> deepseekEnv = properties.toExecutorConfiguration().providers().get(0).env();
-            assertEquals("https://api.deepseek.com/anthropic", deepseekEnv.get("ANTHROPIC_BASE_URL"));
-            assertEquals("DEEPSEEK_API_KEY", deepseekEnv.get("RD_CLAUDE_AUTH_TOKEN_ENV"));
-            assertEquals("", deepseekEnv.get("DEEPSEEK_API_KEY"));
-            assertEquals("deepseek-v4-pro[1m]", deepseekEnv.get("ANTHROPIC_MODEL"));
-            assertEquals("deepseek-v4-flash", deepseekEnv.get("CLAUDE_CODE_SUBAGENT_MODEL"));
-            assertEquals("max", deepseekEnv.get("CLAUDE_CODE_EFFORT_LEVEL"));
+            Map<String, String> longCatEnv = properties.toExecutorConfiguration().providers().get(0).env();
+            assertEquals("https://api.longcat.chat/anthropic", longCatEnv.get("ANTHROPIC_BASE_URL"));
+            assertEquals("LONGCAT_API_KEY", longCatEnv.get("RD_CLAUDE_AUTH_TOKEN_ENV"));
+            assertEquals("", longCatEnv.get("LONGCAT_API_KEY"));
+            assertEquals("LongCat-2.0", longCatEnv.get("ANTHROPIC_MODEL"));
+            assertEquals("LongCat-2.0", longCatEnv.get("CLAUDE_CODE_SUBAGENT_MODEL"));
+            assertEquals("max", longCatEnv.get("CLAUDE_CODE_EFFORT_LEVEL"));
             assertEquals("ANTHROPIC_API_KEY", properties.toExecutorConfiguration().providers().get(1).env()
                     .get("RD_CLAUDE_API_KEY_ENV"));
             assertEquals("", properties.toExecutorConfiguration().providers().get(1).env().get("ANTHROPIC_API_KEY"));
+        });
+    }
+
+    @Test
+    void shouldNotRouteOpenAiCompatibleProvidersThroughDockerClaudeCode() {
+        ApplicationContextRunner contextRunner = new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(ConfigurationPropertiesAutoConfiguration.class))
+                .withUserConfiguration(DockerConfigurationContext.class)
+                .withPropertyValues(
+                        "rd.executor.docker.providers[0].name=long-cat",
+                        "rd.executor.docker.providers[0].protocol=anthropic-compatible",
+                        "rd.executor.docker.providers[0].base-url=https://api.longcat.chat/anthropic",
+                        "rd.executor.docker.providers[0].auth-token-env=LONGCAT_API_KEY",
+                        "rd.executor.docker.providers[0].model=LongCat-2.0",
+                        "rd.executor.docker.providers[1].name=minimax",
+                        "rd.executor.docker.providers[1].protocol=openai-chat-completions",
+                        "rd.executor.docker.providers[1].base-url=https://api.minimaxi.com/v1",
+                        "rd.executor.docker.providers[1].api-key-env=MINIMAX_API_KEY",
+                        "rd.executor.docker.providers[1].model=MiniMax-M2.7"
+                );
+
+        contextRunner.run(context -> {
+            DockerExecutorProperties properties = context.getBean(DockerExecutorProperties.class);
+
+            List<?> providers = properties.toExecutorConfiguration().providers();
+            assertEquals(1, providers.size());
+            assertEquals("long-cat", properties.toExecutorConfiguration().providers().getFirst().name());
+            assertFalse(properties.toExecutorConfiguration().providers().getFirst().env().containsKey("MINIMAX_API_KEY"));
+        });
+    }
+
+    @Test
+    void shouldRejectDockerClaudeCodeConfigurationWhenOnlyOpenAiProvidersAreConfigured() {
+        ApplicationContextRunner contextRunner = new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(ConfigurationPropertiesAutoConfiguration.class))
+                .withUserConfiguration(DockerConfigurationContext.class)
+                .withPropertyValues(
+                        "rd.executor.docker.providers[0].name=minimax",
+                        "rd.executor.docker.providers[0].protocol=openai-chat-completions",
+                        "rd.executor.docker.providers[0].base-url=https://api.minimaxi.com/v1",
+                        "rd.executor.docker.providers[0].api-key-env=MINIMAX_API_KEY",
+                        "rd.executor.docker.providers[0].model=MiniMax-M2.7"
+                );
+
+        contextRunner.run(context -> {
+            DockerExecutorProperties properties = context.getBean(DockerExecutorProperties.class);
+
+            IllegalStateException error = assertThrows(
+                    IllegalStateException.class,
+                    properties::toExecutorConfiguration
+            );
+            assertTrue(error.getMessage().contains("anthropic-compatible"));
+            assertTrue(error.getMessage().contains("minimax"));
         });
     }
 

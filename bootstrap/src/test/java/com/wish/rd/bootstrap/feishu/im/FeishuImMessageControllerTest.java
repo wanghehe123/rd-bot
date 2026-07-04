@@ -1,7 +1,10 @@
 package com.wish.rd.bootstrap.feishu.im;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.wish.rd.engine.agent.AgentRole;
 import com.wish.rd.engine.requirement.RequirementDeliveryEngine;
+import com.wish.rd.engine.requirement.RequirementExecutionResult;
+import com.wish.rd.engine.requirement.RequirementPullRequestPublication;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
 import com.wish.rd.engine.ticket.RepairQueuePublishResult;
 import com.wish.rd.engine.ticket.RepairQueuePublisher;
@@ -113,20 +116,44 @@ class FeishuImMessageControllerTest {
         RequirementDeliveryEngine deliveryEngine = new RequirementDeliveryEngine(
                 registry,
                 materialStore,
-                request -> com.wish.rd.engine.requirement.RequirementExecutionResult.success(
-                        request.taskId(),
-                        "实现完成",
-                        "https://github.com/example/waimai/pull/22",
-                        """
-                                {
-                                  "status": "SUCCESS",
-                                  "summary": "实现完成",
-                                  "prBody": "## 改动介绍\\n- 新增订单催单按钮",
-                                  "changedFiles": ["client/src/pages/OrderDetail.tsx"],
-                                  "testCommands": ["npm run build"],
-                                  "testStatus": "PASSED"
-                                }
+                request -> {
+                    if (request.role() == AgentRole.QA_AGENT) {
+                        return RequirementExecutionResult.success(
+                                request.taskId(),
+                                "QA 验收通过",
+                                "",
                                 """
+                                        {
+                                          "status": "PASSED",
+                                          "summary": "QA 验收通过",
+                                          "acceptanceResults": [
+                                            {"criteria":"前端构建通过","command":"npm run build","status":"PASSED","logArtifactId":"qa-log-1"}
+                                          ]
+                                        }
+                                        """
+                        );
+                    }
+                    return RequirementExecutionResult.success(
+                            request.taskId(),
+                            "实现完成",
+                            "",
+                            """
+                                    {
+                                      "status": "SUCCESS",
+                                      "summary": "实现完成",
+                                      "prBody": "## 改动介绍\\n- 新增订单催单按钮",
+                                      "changedFiles": ["client/src/pages/OrderDetail.tsx"],
+                                      "testCommands": ["npm run build"],
+                                      "testStatus": "PASSED"
+                                    }
+                                    """
+                    );
+                },
+                command -> RequirementPullRequestPublication.success(
+                        command.taskId(),
+                        "https://github.com/example/waimai/pull/22",
+                        "22",
+                        "{\"provider\":\"feishu-im-test\"}"
                 )
         );
         FeishuImMessageController controller = new FeishuImMessageController(
@@ -162,7 +189,7 @@ class FeishuImMessageControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.accepted").value(true))
                 .andExpect(jsonPath("$.taskType").value("REQUIREMENT"))
-                .andExpect(jsonPath("$.status").value("COMMITTED"))
+                .andExpect(jsonPath("$.status").value("COMPLETED"))
                 .andExpect(jsonPath("$.pullRequestUrl").value("https://github.com/example/waimai/pull/22"))
                 .andExpect(jsonPath("$.summary").value("实现完成"))
                 .andExpect(jsonPath("$.prBody").value(org.hamcrest.Matchers.containsString("新增订单催单按钮")))
@@ -172,7 +199,23 @@ class FeishuImMessageControllerTest {
         String taskId = com.jayway.jsonpath.JsonPath.read(response, "$.taskId");
 
         assertTrue(publisher.published.isEmpty());
-        assertEquals(RdTaskStatus.COMMITTED, registry.getTask(taskId).status());
+        assertEquals(RdTaskStatus.COMPLETED, registry.getTask(taskId).status());
+        assertEquals(List.of(
+                RdTaskStatus.CREATED.name(),
+                RdTaskStatus.MATERIAL_COLLECTING.name(),
+                RdTaskStatus.MATERIAL_READY.name(),
+                RdTaskStatus.CONTEXT_BUILDING.name(),
+                RdTaskStatus.CONTEXT_READY.name(),
+                RdTaskStatus.PLAN_GENERATING.name(),
+                RdTaskStatus.PLAN_GENERATED.name(),
+                RdTaskStatus.WAITING_POLICY.name(),
+                RdTaskStatus.EXECUTING.name(),
+                RdTaskStatus.VALIDATING.name(),
+                RdTaskStatus.PR_CREATING.name(),
+                RdTaskStatus.COMMITTED.name(),
+                RdTaskStatus.REPORTING.name(),
+                RdTaskStatus.COMPLETED.name()
+        ), registry.timeline(taskId).stream().map(event -> event.status()).toList());
         RdRequirementTask saved = registry.getRequirementTask(taskId);
         assertEquals("FEISHU_IM", saved.sourceType());
         assertEquals("om_req_1", saved.sourceId());

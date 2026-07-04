@@ -131,7 +131,7 @@ public class DockerExecutorConfiguration {
     @Bean
     @ConditionalOnBean({RepairWorkspaceFactory.class, ContainerRunnerPort.class, RepairExecutionWatchdog.class})
     @ConditionalOnMissingBean(RepairExecutorPort.class)
-    public RepairExecutorPort repairExecutorPort(
+    public DockerClaudeCodeExecutor repairExecutorPort(
             RepairWorkspaceFactory workspaceFactory,
             ContainerRunnerPort containerRunner,
             StructuredResultValidator resultValidator,

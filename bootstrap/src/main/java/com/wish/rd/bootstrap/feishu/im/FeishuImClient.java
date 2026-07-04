@@ -3,7 +3,7 @@ package com.wish.rd.bootstrap.feishu.im;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import java.net.URI;
@@ -22,7 +22,7 @@ import java.util.Map;
  * 适配层使用，错误消息不包含 app secret 或 tenant token。
  */
 @Component
-@ConditionalOnExpression("'${rd.repair.ticket.provider:mock}' == 'feishu-im' && '${rd.feishu.im.enabled:false}' == 'true'")
+@ConditionalOnProperty(prefix = "rd.feishu.im", name = "enabled", havingValue = "true")
 public class FeishuImClient {
 
     private final FeishuImProperties properties;

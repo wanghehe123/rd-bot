@@ -51,16 +51,25 @@ public class ProcessGitRepairWorkspaceRepository implements RepairWorkspaceRepos
         Path repoDirectory = requireRepoDirectory(workspace);
         Files.createDirectories(repoDirectory);
 
+        boolean workBranchFetched;
         if (Files.isDirectory(repoDirectory.resolve(".git"))) {
             runGit(List.of(GIT_BINARY, "-C", repoDirectory.toString(), "fetch", "origin", command.baseBranch()));
-            runGit(List.of(GIT_BINARY, "-C", repoDirectory.toString(), "checkout", "-B",
-                    command.workBranch(), "origin/" + command.baseBranch()));
+            workBranchFetched = fetchRemoteWorkBranch(repoDirectory, command.workBranch());
         } else {
             requireEmptyDirectory(repoDirectory);
             runGit(List.of(GIT_BINARY, "clone", "--branch", command.baseBranch(), "--single-branch",
                     command.repositoryUrl(), repoDirectory.toString()));
-            runGit(List.of(GIT_BINARY, "-C", repoDirectory.toString(), "checkout", "-B", command.workBranch()));
+            workBranchFetched = fetchRemoteWorkBranch(repoDirectory, command.workBranch());
         }
+        runGit(List.of(
+                GIT_BINARY,
+                "-C",
+                repoDirectory.toString(),
+                "checkout",
+                "-B",
+                command.workBranch(),
+                workBranchFetched ? "FETCH_HEAD" : "origin/" + command.baseBranch()
+        ));
 
         runGit(List.of(GIT_BINARY, "-C", repoDirectory.toString(), "config", "user.name", properties.getUserName()));
         runGit(List.of(GIT_BINARY, "-C", repoDirectory.toString(), "config", "user.email", properties.getUserEmail()));
@@ -68,6 +77,7 @@ public class ProcessGitRepairWorkspaceRepository implements RepairWorkspaceRepos
                 "prepared", "true",
                 "baseBranch", command.baseBranch(),
                 "workBranch", command.workBranch(),
+                "checkoutSource", workBranchFetched ? "origin-work-branch" : "origin-base-branch",
                 "repository", repositoryName(command)
         ));
     }
@@ -124,6 +134,20 @@ public class ProcessGitRepairWorkspaceRepository implements RepairWorkspaceRepos
     }
 
     private CommandResult runGit(List<String> argv) throws IOException {
+        CommandResult result = executeGit(argv);
+        if (result.exitCode() != 0) {
+            throw new IOException("git command failed exitCode=" + result.exitCode()
+                    + " command=" + sanitizedArgv(argv)
+                    + " stderr=" + limit(result.stderr()));
+        }
+        return result;
+    }
+
+    private CommandResult tryRunGit(List<String> argv) throws IOException {
+        return executeGit(argv);
+    }
+
+    private CommandResult executeGit(List<String> argv) throws IOException {
         Process process = new ProcessBuilder(argv).start();
         CompletableFuture<String> stdout = readAsync(process.getInputStream());
         CompletableFuture<String> stderr = readAsync(process.getErrorStream());
@@ -134,17 +158,23 @@ public class ProcessGitRepairWorkspaceRepository implements RepairWorkspaceRepos
                 throw new IOException("git command timed out after " + properties.getTimeoutSeconds()
                         + "s: " + sanitizedArgv(argv));
             }
-            CommandResult result = new CommandResult(process.exitValue(), await(stdout), await(stderr));
-            if (result.exitCode() != 0) {
-                throw new IOException("git command failed exitCode=" + result.exitCode()
-                        + " command=" + sanitizedArgv(argv)
-                        + " stderr=" + limit(result.stderr()));
-            }
-            return result;
+            return new CommandResult(process.exitValue(), await(stdout), await(stderr));
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             throw new IOException("git command interrupted: " + sanitizedArgv(argv), exception);
         }
+    }
+
+    private boolean fetchRemoteWorkBranch(Path repoDirectory, String workBranch) throws IOException {
+        CommandResult result = tryRunGit(List.of(
+                GIT_BINARY,
+                "-C",
+                repoDirectory.toString(),
+                "fetch",
+                "origin",
+                workBranch
+        ));
+        return result.exitCode() == 0;
     }
 
     private static CompletableFuture<String> readAsync(InputStream inputStream) {

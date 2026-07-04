@@ -68,6 +68,61 @@ class DockerClaudeCodeExecutorTest {
     }
 
     @Test
+    void shouldValidateQaAgentResultWithQaProtocolInsteadOfCodingSchema() {
+        CapturingRunner runner = CapturingRunner.withResult(validQaResultJson("PASSED"));
+        DockerClaudeCodeExecutor executor = executor(runner);
+
+        RepairExecutionResult result = executor.execute(command(
+                "task-qa-passed",
+                Map.of("repositoryPublishRequired", "false"),
+                Map.of("agentRole", "QA_AGENT")
+        ));
+
+        assertEquals(RepairExecutionStatus.SUCCESS, result.status());
+        assertEquals("QA PASSED with real command evidence", result.summary());
+        assertEquals(validQaResultJson("PASSED").strip(), result.rawResultJson().get("__agentResultJson").strip());
+    }
+
+    @Test
+    void shouldReturnFailedWhenQaAgentReportsFailedAcceptance() {
+        CapturingRunner runner = CapturingRunner.withResult(validQaResultJson("FAILED"));
+        DockerClaudeCodeExecutor executor = executor(runner);
+
+        RepairExecutionResult result = executor.execute(command(
+                "task-qa-failed",
+                Map.of("repositoryPublishRequired", "false"),
+                Map.of("agentRole", "QA_AGENT")
+        ));
+
+        assertEquals(RepairExecutionStatus.FAILED, result.status());
+        assertTrue(result.errorMessage().contains("QA_AGENT failed acceptance"));
+        assertEquals(validQaResultJson("FAILED").strip(), result.rawResultJson().get("__agentResultJson").strip());
+    }
+
+    @Test
+    void shouldSkipRepositoryPublishWhenPolicyDisablesPublication() {
+        CapturingRunner runner = CapturingRunner.withResult(validResultJson("SUCCESS"));
+        RecordingRepositoryPort repositoryPort = new RecordingRepositoryPort();
+        DockerClaudeCodeExecutor executor = executor(
+                new RepairWorkspaceFactory(temporaryDirectory, RESULT_SCHEMA_JSON),
+                runner,
+                COMMAND,
+                repositoryPort,
+                null
+        );
+
+        RepairExecutionResult result = executor.execute(command(
+                "task-1001-review",
+                Map.of("repositoryPublishRequired", "false")
+        ));
+
+        assertEquals(RepairExecutionStatus.SUCCESS, result.status());
+        assertEquals(1, repositoryPort.prepared().size());
+        assertEquals(0, repositoryPort.published().size());
+        assertEquals("true", result.dockerMetadataJson().get("repositoryPublishSkipped"));
+    }
+
+    @Test
     void shouldReturnFailedValidationWhenResultJsonIsMissing() {
         DockerClaudeCodeExecutor executor = executor(CapturingRunner.withResult(validResultJson("SUCCESS"))
                 .without("result.json"));
@@ -701,6 +756,18 @@ class DockerClaudeCodeExecutorTest {
     }
 
     private static RepairJobCommand command(String taskId) {
+        return command(taskId, Map.of("yolo", "true"));
+    }
+
+    private static RepairJobCommand command(String taskId, Map<String, String> policyJson) {
+        return command(taskId, policyJson, Map.of("ragSummary", "retrieved relevant chunks"));
+    }
+
+    private static RepairJobCommand command(
+            String taskId,
+            Map<String, String> policyJson,
+            Map<String, String> contextJson
+    ) {
         return new RepairJobCommand(
                 "repair-1001",
                 taskId,
@@ -712,8 +779,8 @@ class DockerClaudeCodeExecutorTest {
                 "order",
                 "main",
                 "repair/FS-1001",
-                Map.of("ragSummary", "retrieved relevant chunks"),
-                Map.of("yolo", "true")
+                contextJson,
+                policyJson
         );
     }
 
@@ -767,6 +834,27 @@ class DockerClaudeCodeExecutorTest {
                   "needHumanAction": true
                 }
                 """;
+    }
+
+    private static String validQaResultJson(String status) {
+        String acceptanceStatus = "FAILED".equals(status) ? "FAILED" : "PASSED";
+        String summary = "FAILED".equals(status)
+                ? "QA FAILED with real command evidence"
+                : "QA PASSED with real command evidence";
+        return """
+                {
+                  "status": "%s",
+                  "summary": "%s",
+                  "acceptanceResults": [
+                    {
+                      "criteria": "文档必须包含 marker",
+                      "command": "grep -q marker docs/example.md",
+                      "status": "%s",
+                      "logArtifactId": "qa-log-1"
+                    }
+                  ]
+                }
+                """.formatted(status, summary, acceptanceStatus);
     }
 
     private static ClaudeCodeModelProvider provider(String name, Map<String, String> env) {

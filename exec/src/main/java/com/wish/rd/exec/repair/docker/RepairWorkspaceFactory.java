@@ -79,10 +79,140 @@ public class RepairWorkspaceFactory {
         );
         Files.writeString(files.prompt(), command.prompt(), StandardCharsets.UTF_8);
         Files.writeString(files.context(), toContextJson(command), StandardCharsets.UTF_8);
-        Files.writeString(files.resultSchema(), resultSchemaJson, StandardCharsets.UTF_8);
+        Files.writeString(files.resultSchema(), resultSchemaJson(command), StandardCharsets.UTF_8);
 
         return new RepairWorkspace(taskRoot, inputDirectory, repoDirectory, outputDirectory, files);
     }
+
+    private String resultSchemaJson(RepairJobCommand command) {
+        String role = command.contextJson().getOrDefault("agentRole", "").strip().toUpperCase();
+        return switch (role) {
+            case "REQUIREMENT_REVIEWER" -> REQUIREMENT_REVIEWER_SCHEMA_JSON;
+            case "SOLUTION_ARCHITECT" -> SOLUTION_ARCHITECT_SCHEMA_JSON;
+            case "QA_AGENT" -> QA_AGENT_SCHEMA_JSON;
+            default -> resultSchemaJson;
+        };
+    }
+
+    private static final String REQUIREMENT_REVIEWER_SCHEMA_JSON = """
+            {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "title": "RD-Bot Requirement Reviewer Result",
+              "type": "object",
+              "additionalProperties": true,
+              "required": [
+                "decision",
+                "feasibility",
+                "missingInformation",
+                "risks",
+                "acceptanceCoverage"
+              ],
+              "properties": {
+                "decision": {
+                  "type": "string",
+                  "enum": ["APPROVED", "NEED_INFO", "REJECTED"]
+                },
+                "feasibility": {
+                  "type": "string",
+                  "enum": ["CAN_DO", "NEED_INFO", "UNSAFE"]
+                },
+                "missingInformation": {
+                  "type": "array",
+                  "items": {"type": "string"}
+                },
+                "risks": {
+                  "type": "array",
+                  "items": {"type": "string"}
+                },
+                "acceptanceCoverage": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {"type": "string", "pattern": "\\\\S"}
+                }
+              }
+            }
+            """;
+
+    private static final String SOLUTION_ARCHITECT_SCHEMA_JSON = """
+            {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "title": "RD-Bot Solution Architect Result",
+              "type": "object",
+              "additionalProperties": true,
+              "required": [
+                "summary",
+                "affectedFiles",
+                "implementationSteps",
+                "acceptanceMapping",
+                "testPlan"
+              ],
+              "properties": {
+                "summary": {"type": "string", "pattern": "\\\\S"},
+                "affectedFiles": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {"type": "string", "pattern": "\\\\S"}
+                },
+                "implementationSteps": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {"type": "string", "pattern": "\\\\S"}
+                },
+                "acceptanceMapping": {
+                  "type": "array",
+                  "minItems": 1
+                },
+                "testPlan": {
+                  "type": "array",
+                  "minItems": 1
+                }
+              }
+            }
+            """;
+
+    private static final String QA_AGENT_SCHEMA_JSON = """
+            {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "title": "RD-Bot QA Agent Result",
+              "type": "object",
+              "additionalProperties": true,
+              "required": [
+                "status",
+                "summary",
+                "acceptanceResults"
+              ],
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": ["PASSED", "FAILED", "SKIPPED"]
+                },
+                "summary": {"type": "string", "pattern": "\\\\S"},
+                "acceptanceResults": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "required": [
+                      "criteria",
+                      "command",
+                      "status",
+                      "logArtifactId"
+                    ],
+                    "properties": {
+                      "criteria": {"type": "string", "pattern": "\\\\S"},
+                      "command": {"type": "string", "pattern": "\\\\S"},
+                      "status": {
+                        "type": "string",
+                        "enum": ["PASSED", "FAILED", "SKIPPED"]
+                      },
+                      "logArtifactId": {"type": "string", "pattern": "\\\\S"}
+                    }
+                  }
+                }
+              }
+            }
+            """;
 
     private static String requireSafeTaskDirectoryName(String taskId) {
         String normalized = taskId == null ? "" : taskId.strip();

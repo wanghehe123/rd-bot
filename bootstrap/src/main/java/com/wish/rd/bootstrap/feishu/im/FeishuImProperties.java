@@ -21,6 +21,7 @@ public class FeishuImProperties {
     private Http http = new Http();
     private WriteBack writeBack = new WriteBack();
     private LocalListener localListener = new LocalListener();
+    private Alert alert = new Alert();
 
     public boolean isEnabled() {
         return enabled;
@@ -84,6 +85,14 @@ public class FeishuImProperties {
 
     public void setLocalListener(LocalListener localListener) {
         this.localListener = localListener == null ? new LocalListener() : localListener;
+    }
+
+    public Alert getAlert() {
+        return alert;
+    }
+
+    public void setAlert(Alert alert) {
+        this.alert = alert == null ? new Alert() : alert;
     }
 
     private static String safe(String value, String defaultValue) {
@@ -199,6 +208,30 @@ public class FeishuImProperties {
 
         public void setWriteBackViaCli(boolean writeBackViaCli) {
             this.writeBackViaCli = writeBackViaCli;
+        }
+    }
+
+    /**
+     * 告警通知配置。
+     */
+    public static class Alert {
+        private boolean enabled = false;
+        private String chatId = "";
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public String getChatId() {
+            return chatId;
+        }
+
+        public void setChatId(String chatId) {
+            this.chatId = safe(chatId, "");
         }
     }
 }

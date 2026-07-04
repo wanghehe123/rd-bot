@@ -11,8 +11,18 @@ import com.wish.rd.exec.repair.RepairRecord;
 import com.wish.rd.exec.repair.RepairRecordArtifact;
 import com.wish.rd.exec.repair.RepairRecordRepository;
 import com.wish.rd.exec.repair.RepairRecordStatus;
+import com.wish.rd.engine.agent.AgentRole;
+import com.wish.rd.engine.agent.AgentStageRun;
+import com.wish.rd.engine.agent.AgentStageRunStore;
+import com.wish.rd.engine.agent.AgentStageStatus;
+import com.wish.rd.engine.agent.WorkflowExperienceEntry;
+import com.wish.rd.engine.agent.WorkflowExperienceStore;
+import com.wish.rd.engine.agent.WorkflowExperienceType;
 import com.wish.rd.framework.convention.RetrievedChunk;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
+import com.wish.rd.rag.context.RoleContextEvidence;
+import com.wish.rd.rag.context.RoleContextPackage;
+import com.wish.rd.rag.context.RoleContextPackageStore;
 import com.wish.rd.rag.ingestion.IngestionStatus;
 import com.wish.rd.rag.ingestion.IngestionTaskStore;
 import com.wish.rd.rag.ingestion.ManagedIngestionTask;
@@ -74,6 +84,12 @@ class PostgresPersistenceCrudIntegrationTest {
     @Autowired
     private RdTaskStore rdTaskStore;
     @Autowired
+    private AgentStageRunStore agentStageRunStore;
+    @Autowired
+    private RoleContextPackageStore roleContextPackageStore;
+    @Autowired
+    private WorkflowExperienceStore workflowExperienceStore;
+    @Autowired
     private RepairRecordRepository repairRecordRepository;
 
     @DynamicPropertySource
@@ -110,6 +126,7 @@ class PostgresPersistenceCrudIntegrationTest {
             verifyVectorCrud(marker, base.id());
             verifyIngestionTaskCrud(marker, base.id(), document.id(), now);
             verifyRdTaskCrud(marker, now);
+            verifyMultiAgentOrchestrationCrud(marker, now);
             verifyRepairRecordCrud(marker);
             verifyKnowledgeDeletes(base.id(), document.id());
 
@@ -374,6 +391,81 @@ class PostgresPersistenceCrudIntegrationTest {
                 () -> assertEquals("https://github.com/example/repo/pull/1",
                         rdTaskStore.findBugFixTask(taskId).orElseThrow().pullRequestUrl()),
                 () -> assertTrue(rdTaskStore.listBugFixTasks().stream().anyMatch(task -> task.taskId().equals(taskId)))
+        );
+    }
+
+    private void verifyMultiAgentOrchestrationCrud(String marker, long now) {
+        String taskId = id();
+        rdTaskStore.saveBugFixTask(RdBugFixTask.created(
+                taskId,
+                marker + "-agent-ticket",
+                marker + "-agent-title",
+                "P1",
+                now
+        ));
+        RoleContextPackage context = new RoleContextPackage(
+                id(),
+                taskId,
+                AgentRole.QA_AGENT.name(),
+                1,
+                List.of(new RoleContextEvidence(
+                        "mat-" + marker,
+                        "MANUAL_TEXT",
+                        "https://example.com/" + marker,
+                        "真实验收材料",
+                        "sha256:" + marker,
+                        "QA 真实验收日志",
+                        now
+                )),
+                List.of("真实验收通过"),
+                List.of("不得泄露密钥"),
+                8_000,
+                32,
+                List.of(),
+                now
+        );
+        roleContextPackageStore.save(context);
+
+        AgentStageRun stageRun = AgentStageRun.pending(
+                id(),
+                taskId,
+                AgentRole.QA_AGENT,
+                1,
+                taskId + ":QA_AGENT:1",
+                now
+        );
+        agentStageRunStore.save(stageRun);
+        AgentStageRun contextReady = agentStageRunStore.transition(
+                stageRun.stageRunId(),
+                AgentStageStatus.CONTEXT_READY,
+                "",
+                "",
+                now + 1
+        );
+        WorkflowExperienceEntry experience = new WorkflowExperienceEntry(
+                id(),
+                taskId,
+                stageRun.stageRunId(),
+                "",
+                AgentRole.QA_AGENT,
+                WorkflowExperienceType.QA_REPORT,
+                "QA 验收 " + marker,
+                "真实测试通过 " + marker,
+                "{\"status\":\"PASSED\",\"marker\":\"" + marker + "\"}",
+                true,
+                false,
+                true,
+                now + 2
+        );
+        workflowExperienceStore.save(experience);
+
+        assertAll(
+                () -> assertEquals(context.packageId(), roleContextPackageStore.findById(context.packageId()).orElseThrow().packageId()),
+                () -> assertEquals(List.of(context), roleContextPackageStore.listByTaskAndRole(taskId, "qa_agent")),
+                () -> assertEquals(AgentStageStatus.CONTEXT_READY, contextReady.status()),
+                () -> assertTrue(agentStageRunStore.listByTask(taskId).stream()
+                        .anyMatch(stage -> stage.stageRunId().equals(stageRun.stageRunId()))),
+                () -> assertEquals(List.of(experience), workflowExperienceStore.listByTask(taskId))
         );
     }
 

@@ -125,17 +125,36 @@ rd:
         user-email: ${RD_EXECUTOR_DOCKER_GIT_USER_EMAIL:rd-bot@example.local}
         timeout-seconds: ${RD_EXECUTOR_DOCKER_GIT_TIMEOUT_SECONDS:120}
       providers:
-        - name: deepseek
-          base-url: ${DEEPSEEK_ANTHROPIC_BASE_URL:https://api.deepseek.com/anthropic}
-          auth-token-env: ${RD_CLAUDE_AUTH_TOKEN_ENV:DEEPSEEK_API_KEY}
-          model: ${DEEPSEEK_CLAUDE_MODEL:deepseek-v4-pro[1m]}
-          default-opus-model: ${DEEPSEEK_CLAUDE_OPUS_MODEL:deepseek-v4-pro[1m]}
-          default-sonnet-model: ${DEEPSEEK_CLAUDE_SONNET_MODEL:deepseek-v4-pro[1m]}
-          default-haiku-model: ${DEEPSEEK_CLAUDE_HAIKU_MODEL:deepseek-v4-flash}
-          subagent-model: ${DEEPSEEK_CLAUDE_SUBAGENT_MODEL:deepseek-v4-flash}
-          effort-level: ${DEEPSEEK_CLAUDE_EFFORT_LEVEL:max}
+        - name: long-cat
+          protocol: ${LONGCAT_PROTOCOL:anthropic-compatible}
+          base-url: ${LONGCAT_ANTHROPIC_BASE_URL:https://api.longcat.chat/anthropic}
+          auth-token-env: ${RD_CLAUDE_AUTH_TOKEN_ENV:LONGCAT_API_KEY}
+          model: ${LONGCAT_CLAUDE_MODEL:LongCat-2.0}
+          default-opus-model: ${LONGCAT_CLAUDE_OPUS_MODEL:LongCat-2.0}
+          default-sonnet-model: ${LONGCAT_CLAUDE_SONNET_MODEL:LongCat-2.0}
+          default-haiku-model: ${LONGCAT_CLAUDE_HAIKU_MODEL:LongCat-2.0}
+          subagent-model: ${LONGCAT_CLAUDE_SUBAGENT_MODEL:LongCat-2.0}
+          effort-level: ${LONGCAT_CLAUDE_EFFORT_LEVEL:max}
           extra-env:
             RD_CLAUDE_LOCAL_FALLBACK_ENABLED: ${RD_CLAUDE_LOCAL_FALLBACK_ENABLED:true}
+        - name: minimax
+          protocol: ${MINIMAX_PROTOCOL:openai-chat-completions}
+          base-url: ${MINIMAX_BASE_URL:https://api.minimaxi.com/v1}
+          api-key-env: ${MINIMAX_API_KEY_ENV:MINIMAX_API_KEY}
+          model: ${MINIMAX_MODEL:MiniMax-M2.7}
+          default-opus-model: ${MINIMAX_OPUS_MODEL:MiniMax-M2.7}
+          default-sonnet-model: ${MINIMAX_SONNET_MODEL:MiniMax-M2.7}
+          default-haiku-model: ${MINIMAX_HAIKU_MODEL:MiniMax-M2.7}
+          subagent-model: ${MINIMAX_SUBAGENT_MODEL:MiniMax-M2.7}
+          effort-level: ${MINIMAX_EFFORT_LEVEL:max}
+    openai-chat:
+      enabled: ${RD_EXECUTOR_OPENAI_CHAT_ENABLED:false}
+      provider-name: ${MINIMAX_PROVIDER_NAME:minimax}
+      base-url: ${MINIMAX_BASE_URL:https://api.minimaxi.com/v1}
+      api-key-env: ${MINIMAX_API_KEY_ENV:MINIMAX_API_KEY}
+      model: ${MINIMAX_MODEL:MiniMax-M2.7}
+      protocol: ${RD_EXECUTOR_OPENAI_CHAT_PROTOCOL:openai-chat-completions}
+      timeout: ${RD_EXECUTOR_OPENAI_CHAT_TIMEOUT:60s}
   github:
     merge-sync:
       enabled: ${RD_GITHUB_MERGE_SYNC_ENABLED:true}
@@ -170,6 +189,9 @@ rd:
         write-back-via-cli: ${FEISHU_IM_LOCAL_LISTENER_WRITE_BACK_VIA_CLI:true}
       write-back:
         enabled: ${FEISHU_IM_WRITE_BACK_ENABLED:true}
+      alert:
+        enabled: ${FEISHU_IM_ALERT_ENABLED:false}
+        chat-id: ${FEISHU_IM_ALERT_CHAT_ID:}
       http:
         connect-timeout-millis: 3000
         request-timeout-millis: 10000
@@ -195,12 +217,12 @@ rd:
         actualResult: actualResult
   ai:
     provider:
-      name: ${RD_AI_PROVIDER_NAME:deepseek}
-      base-url: ${RD_AI_PROVIDER_BASE_URL:https://api.deepseek.com}
-      api-key: ${DEEPSEEK_API_KEY:}
+      name: ${RD_AI_PROVIDER_NAME:long-cat}
+      base-url: ${RD_AI_PROVIDER_BASE_URL:https://api.longcat.chat/anthropic}
+      api-key: ${LONGCAT_API_KEY:}
     chat:
-      default-model: ${RD_AI_CHAT_DEFAULT_MODEL:deepseek-chat}
-      deep-thinking-model: ${RD_AI_CHAT_DEEP_THINKING_MODEL:deepseek-reasoner}
+      default-model: ${RD_AI_CHAT_DEFAULT_MODEL:LongCat-2.0}
+      deep-thinking-model: ${RD_AI_CHAT_DEEP_THINKING_MODEL:LongCat-2.0}
     embedding:
       default-model: ${RD_AI_EMBEDDING_DEFAULT_MODEL:bge-m3}
     rerank:

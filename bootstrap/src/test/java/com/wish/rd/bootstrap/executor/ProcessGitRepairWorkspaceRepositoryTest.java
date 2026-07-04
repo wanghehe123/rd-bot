@@ -71,6 +71,41 @@ class ProcessGitRepairWorkspaceRepositoryTest {
     }
 
     @Test
+    void shouldPrepareFromExistingRemoteWorkBranchWhenAvailable() throws Exception {
+        assumeTrue(gitAvailable(), "git CLI is required");
+        Path seedRepository = temporaryDirectory.resolve("seed");
+        Path remoteRepository = temporaryDirectory.resolve("remote.git");
+        createSeedRepository(seedRepository, remoteRepository);
+        git(seedRepository, "checkout", "-b", "repair/task-1001");
+        Files.createDirectories(seedRepository.resolve("src"));
+        Files.writeString(
+                seedRepository.resolve("src/only-on-work-branch.txt"),
+                "work branch content\n",
+                StandardCharsets.UTF_8
+        );
+        git(seedRepository, "add", "src/only-on-work-branch.txt");
+        git(seedRepository, "commit", "-m", "work branch");
+        git(seedRepository, "push", remoteRepository.toString(), "repair/task-1001");
+
+        RepairWorkspaceFactory factory = new RepairWorkspaceFactory(
+                temporaryDirectory.resolve("workspaces"),
+                "{\"type\":\"object\"}"
+        );
+        RepairJobCommand command = command(remoteRepository.toString());
+        RepairWorkspace workspace = factory.create(command);
+        DockerExecutorProperties properties = new DockerExecutorProperties();
+        properties.getGit().setUserName("RD-Bot Test");
+        properties.getGit().setUserEmail("rd-bot-test@example.local");
+        ProcessGitRepairWorkspaceRepository repository = new ProcessGitRepairWorkspaceRepository(properties);
+
+        RepairWorkspaceRepositoryPort.RepositoryOperationResult prepareResult =
+                repository.prepare(command, workspace);
+
+        assertEquals("origin-work-branch", prepareResult.metadataJson().get("checkoutSource"));
+        assertTrue(Files.exists(workspace.repoDirectory().resolve("src/only-on-work-branch.txt")));
+    }
+
+    @Test
     void shouldPublishOnlyStructuredChangedFilesAndIgnoreExecutionArtifacts() throws Exception {
         assumeTrue(gitAvailable(), "git CLI is required");
         Path seedRepository = temporaryDirectory.resolve("seed");

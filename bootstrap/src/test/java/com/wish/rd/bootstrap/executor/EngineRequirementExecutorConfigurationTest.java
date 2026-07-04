@@ -5,6 +5,9 @@ import com.wish.rd.bootstrap.github.MockGitHubCodePlatformAdapter;
 import com.wish.rd.engine.requirement.RequirementExecutionRequest;
 import com.wish.rd.engine.requirement.RequirementExecutionResult;
 import com.wish.rd.engine.requirement.RequirementExecutorPort;
+import com.wish.rd.engine.requirement.RequirementPullRequestPublishCommand;
+import com.wish.rd.engine.requirement.RequirementPullRequestPublication;
+import com.wish.rd.engine.requirement.RequirementPullRequestPublisherPort;
 import com.wish.rd.exec.repair.code.CodePlatformPort;
 import com.wish.rd.exec.repair.execution.RepairExecutionResult;
 import com.wish.rd.exec.repair.execution.RepairExecutionStatus;
@@ -23,7 +26,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class EngineRequirementExecutorConfigurationTest {
 
     @Test
-    void shouldAllowMockCodePlatformForLocalRequirementGoldenPath() {
+    void shouldWireRequirementExecutorAndPullRequestPublisherSeparately() {
         EngineRequirementExecutorConfiguration configuration = new EngineRequirementExecutorConfiguration();
         StaticListableBeanFactory beans = new StaticListableBeanFactory();
         beans.addBean("repairExecutor", successfulRepairExecutor());
@@ -36,11 +39,16 @@ class EngineRequirementExecutorConfigurationTest {
         RequirementExecutionResult result = executor.execute(request());
 
         assertTrue(result.success());
-        assertEquals(
-                "https://github.com/acme/order/pull/requirement-task-1001",
-                result.pullRequestUrl()
+        assertEquals("", result.pullRequestUrl());
+
+        RequirementPullRequestPublisherPort publisher = configuration.requirementPullRequestPublisher(
+                beans.getBeanProvider(CodePlatformPort.class)
         );
-        assertTrue(result.resultJson().contains("\"provider\":\"mock\""));
+        RequirementPullRequestPublication publication = publisher.publish(publishCommand());
+
+        assertTrue(publication.success());
+        assertEquals("https://github.com/acme/order/pull/requirement-task-1001", publication.pullRequestUrl());
+        assertTrue(publication.metadataJson().contains("mock"));
     }
 
     private RepairExecutorPort successfulRepairExecutor() {
@@ -72,5 +80,20 @@ class EngineRequirementExecutorConfigurationTest {
         );
         RdRequirementTask task = RdRequirementTask.created("task-1001", command, 1000L);
         return new RequirementExecutionRequest("task-1001", task, List.of(), "implement");
+    }
+
+    private RequirementPullRequestPublishCommand publishCommand() {
+        return new RequirementPullRequestPublishCommand(
+                "task-1001",
+                "需求交付",
+                "https://github.com/acme/order.git",
+                "",
+                "",
+                "main",
+                "requirement/task-1001",
+                """
+                        {"status":"SUCCESS","summary":"done","prBody":"body","multiAgentStatus":"SUCCESS","deliveryReview":{"approved":true}}
+                        """
+        );
     }
 }

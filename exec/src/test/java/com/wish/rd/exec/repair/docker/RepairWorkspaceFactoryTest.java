@@ -65,6 +65,23 @@ class RepairWorkspaceFactoryTest {
     }
 
     @Test
+    void shouldWriteQaAgentResultSchemaWhenRoleRequiresCommandEvidence() throws IOException {
+        RepairWorkspaceFactory factory = new RepairWorkspaceFactory(temporaryDirectory, RESULT_SCHEMA_JSON);
+        RepairWorkspace workspace = factory.create(command("task-qa-1001", "QA_AGENT"));
+
+        JsonNode schema = OBJECT_MAPPER.readTree(Files.readString(
+                workspace.files().resultSchema(),
+                StandardCharsets.UTF_8
+        ));
+
+        assertEquals("RD-Bot QA Agent Result", schema.path("title").asText());
+        assertTrue(schema.path("required").toString().contains("acceptanceResults"));
+        assertTrue(schema.path("properties").path("acceptanceResults").path("minItems").asInt() >= 1);
+        assertEquals("PASSED", schema.path("properties").path("status").path("enum").get(0).asText());
+        assertFalse(schema.path("required").toString().contains("changedFiles"));
+    }
+
+    @Test
     void shouldExposeProtocolOutputPaths() throws IOException {
         RepairWorkspaceFactory factory = new RepairWorkspaceFactory(temporaryDirectory, RESULT_SCHEMA_JSON);
 
@@ -128,6 +145,10 @@ class RepairWorkspaceFactoryTest {
     }
 
     private static RepairJobCommand command(String taskId) {
+        return command(taskId, "");
+    }
+
+    private static RepairJobCommand command(String taskId, String agentRole) {
         return new RepairJobCommand(
                 "repair-1001",
                 taskId,
@@ -139,7 +160,9 @@ class RepairWorkspaceFactoryTest {
                 "rd-bot",
                 "main",
                 "repair/task-1001",
-                Map.of("ragSummary", "检索到 3 个上下文块"),
+                agentRole.isBlank()
+                        ? Map.of("ragSummary", "检索到 3 个上下文块")
+                        : Map.of("ragSummary", "检索到 3 个上下文块", "agentRole", agentRole),
                 Map.of("yolo", "true")
         );
     }

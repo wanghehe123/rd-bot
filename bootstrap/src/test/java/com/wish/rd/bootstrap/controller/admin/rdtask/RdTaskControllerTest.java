@@ -1,8 +1,10 @@
 package com.wish.rd.bootstrap.controller.admin.rdtask;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.wish.rd.engine.agent.AgentRole;
 import com.wish.rd.engine.requirement.RequirementDeliveryEngine;
 import com.wish.rd.engine.requirement.RequirementExecutionResult;
+import com.wish.rd.engine.requirement.RequirementPullRequestPublication;
 import com.wish.rd.engine.ticket.RdTaskRestartEngine;
 import com.wish.rd.engine.ticket.RepairQueuePublishResult;
 import com.wish.rd.engine.ticket.RepairTicketMessage;
@@ -359,21 +361,46 @@ class RdTaskControllerTest {
         RequirementDeliveryEngine deliveryEngine = new RequirementDeliveryEngine(
                 registry,
                 materialStore,
-                request -> RequirementExecutionResult.success(
-                        request.taskId(),
-                        "已完成催单入口和接口联调",
-                        "https://github.com/example/waimai/pull/42",
-                        """
-                                {
-                                  "status": "SUCCESS",
-                                  "summary": "已完成催单入口和接口联调",
-                                  "prBody": "## 改动介绍\\n- 新增订单详情催单按钮\\n- 新增催单 API 调用",
-                                  "changedFiles": ["client/src/pages/OrderDetail.tsx", "server/src/routes/reminders.ts"],
-                                  "testCommands": ["npm run build", "npm test"],
-                                  "testStatus": "PASSED",
-                                  "riskLevel": "LOW"
-                                }
+                request -> {
+                    if (request.role() == AgentRole.QA_AGENT) {
+                        return RequirementExecutionResult.success(
+                                request.taskId(),
+                                "QA 验收通过",
+                                "",
                                 """
+                                        {
+                                          "status": "PASSED",
+                                          "summary": "QA 验收通过",
+                                          "acceptanceResults": [
+                                            {"criteria":"前端构建通过","command":"npm run build","status":"PASSED","logArtifactId":"qa-log-1"},
+                                            {"criteria":"新增接口测试通过","command":"npm test","status":"PASSED","logArtifactId":"qa-log-2"}
+                                          ]
+                                        }
+                                        """
+                        );
+                    }
+                    return RequirementExecutionResult.success(
+                            request.taskId(),
+                            "已完成催单入口和接口联调",
+                            "",
+                            """
+                                    {
+                                      "status": "SUCCESS",
+                                      "summary": "已完成催单入口和接口联调",
+                                      "prBody": "## 改动介绍\\n- 新增订单详情催单按钮\\n- 新增催单 API 调用",
+                                      "changedFiles": ["client/src/pages/OrderDetail.tsx", "server/src/routes/reminders.ts"],
+                                      "testCommands": ["npm run build", "npm test"],
+                                      "testStatus": "PASSED",
+                                      "riskLevel": "LOW"
+                                    }
+                                    """
+                    );
+                },
+                command -> RequirementPullRequestPublication.success(
+                        command.taskId(),
+                        "https://github.com/example/waimai/pull/42",
+                        "42",
+                        "{\"provider\":\"controller-test\"}"
                 )
         );
         mockMvc = MockMvcBuilders.standaloneSetup(controllerWithRequirementEngine(materialStore, deliveryEngine))
@@ -393,18 +420,36 @@ class RdTaskControllerTest {
                 "autoExecute", true
         ));
 
-        mockMvc.perform(post("/admin/rd-tasks/requirements")
+        String response = mockMvc.perform(post("/admin/rd-tasks/requirements")
                         .contentType(APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status", is("COMMITTED")))
+                .andExpect(jsonPath("$.status", is("COMPLETED")))
                 .andExpect(jsonPath("$.pullRequestUrl", is("https://github.com/example/waimai/pull/42")))
                 .andExpect(jsonPath("$.executionEvidence.summary", is("已完成催单入口和接口联调")))
                 .andExpect(jsonPath("$.executionEvidence.prBody").value(org.hamcrest.Matchers.containsString("新增订单详情催单按钮")))
                 .andExpect(jsonPath("$.executionEvidence.changedFiles[0]", is("client/src/pages/OrderDetail.tsx")))
                 .andExpect(jsonPath("$.executionEvidence.testCommands[0]", is("npm run build")))
                 .andExpect(jsonPath("$.executionEvidence.testStatus", is("PASSED")))
-                .andExpect(jsonPath("$.executionEvidence.riskLevel", is("LOW")));
+                .andExpect(jsonPath("$.executionEvidence.riskLevel", is("LOW")))
+                .andReturn().getResponse().getContentAsString();
+        String taskId = com.jayway.jsonpath.JsonPath.read(response, "$.taskId");
+        assertEquals(List.of(
+                "CREATED",
+                "MATERIAL_COLLECTING",
+                "MATERIAL_READY",
+                "CONTEXT_BUILDING",
+                "CONTEXT_READY",
+                "PLAN_GENERATING",
+                "PLAN_GENERATED",
+                "WAITING_POLICY",
+                "EXECUTING",
+                "VALIDATING",
+                "PR_CREATING",
+                "COMMITTED",
+                "REPORTING",
+                "COMPLETED"
+        ), registry.timeline(taskId).stream().map(event -> event.status()).toList());
     }
 
     @Test

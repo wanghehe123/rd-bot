@@ -60,11 +60,11 @@ public class RagSettingsController {
             @Value("${rag.memory.summary-start-turns:9}") int summaryStartTurns,
             @Value("${rag.memory.summary-max-chars:200}") int summaryMaxChars,
             @Value("${rag.memory.title-max-length:30}") int titleMaxLength,
-            @Value("${rd.ai.provider.name:deepseek}") String aiProviderName,
-            @Value("${rd.ai.provider.base-url:https://api.deepseek.com}") String aiProviderBaseUrl,
+            @Value("${rd.ai.provider.name:long-cat}") String aiProviderName,
+            @Value("${rd.ai.provider.base-url:https://api.longcat.chat/anthropic}") String aiProviderBaseUrl,
             @Value("${rd.ai.provider.api-key:}") String aiProviderApiKey,
-            @Value("${rd.ai.chat.default-model:deepseek-chat}") String chatDefaultModel,
-            @Value("${rd.ai.chat.deep-thinking-model:deepseek-reasoner}") String chatDeepThinkingModel,
+            @Value("${rd.ai.chat.default-model:LongCat-2.0}") String chatDefaultModel,
+            @Value("${rd.ai.chat.deep-thinking-model:LongCat-2.0}") String chatDeepThinkingModel,
             @Value("${rd.ai.embedding.default-model:bge-m3}") String embeddingDefaultModel,
             @Value("${rd.ai.rerank.default-model:bge-reranker-v2-m3}") String rerankDefaultModel,
             @Value("${rd.ai.stream.message-chunk-size:256}") int streamMessageChunkSize
@@ -85,8 +85,8 @@ public class RagSettingsController {
         this.summaryStartTurns = summaryStartTurns;
         this.summaryMaxChars = summaryMaxChars;
         this.titleMaxLength = titleMaxLength;
-        this.aiProviderName = normalize(aiProviderName, "deepseek");
-        this.aiProviderBaseUrl = normalize(aiProviderBaseUrl, "https://api.deepseek.com");
+        this.aiProviderName = normalize(aiProviderName, "long-cat");
+        this.aiProviderBaseUrl = normalize(aiProviderBaseUrl, "https://api.longcat.chat/anthropic");
         this.aiProviderApiKey = aiProviderApiKey == null ? "" : aiProviderApiKey.strip();
         this.chatDefaultModel = chatDefaultModel;
         this.chatDeepThinkingModel = chatDeepThinkingModel;

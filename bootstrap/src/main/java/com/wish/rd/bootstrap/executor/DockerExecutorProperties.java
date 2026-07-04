@@ -219,9 +219,20 @@ public class DockerExecutorProperties {
         if (providers == null || providers.isEmpty()) {
             return List.of(ClaudeCodeModelProvider.defaultAnthropic());
         }
-        return providers.stream()
+        List<ClaudeCodeModelProvider> compatibleProviders = providers.stream()
+                .filter(ModelProviderProperties::isDockerClaudeCodeCompatible)
                 .map(ModelProviderProperties::toModelProvider)
                 .toList();
+        if (compatibleProviders.isEmpty()) {
+            String configuredProviders = providers.stream()
+                    .map(ModelProviderProperties::providerLabel)
+                    .toList()
+                    .toString();
+            throw new IllegalStateException(
+                    "Docker Claude Code requires at least one anthropic-compatible provider; configured providers="
+                            + configuredProviders);
+        }
+        return compatibleProviders;
     }
 
     private static String defaultWhenBlank(String value, String defaultValue) {
@@ -391,7 +402,10 @@ public class DockerExecutorProperties {
      */
     public static class ModelProviderProperties {
 
+        private static final String DEFAULT_PROTOCOL = "anthropic-compatible";
+
         private String name = "";
+        private String protocol = DEFAULT_PROTOCOL;
         private String baseUrl = "";
         private String apiKeyEnv = "";
         private String authTokenEnv = "";
@@ -409,6 +423,14 @@ public class DockerExecutorProperties {
 
         public void setName(String name) {
             this.name = normalize(name);
+        }
+
+        public String getProtocol() {
+            return protocol;
+        }
+
+        public void setProtocol(String protocol) {
+            this.protocol = defaultWhenBlank(protocol, DEFAULT_PROTOCOL);
         }
 
         public String getBaseUrl() {
@@ -491,9 +513,22 @@ public class DockerExecutorProperties {
             this.extraEnv = extraEnv == null ? new LinkedHashMap<>() : new LinkedHashMap<>(extraEnv);
         }
 
+        private boolean isDockerClaudeCodeCompatible() {
+            String normalized = normalizeProtocol(protocol);
+            return "anthropic-compatible".equals(normalized)
+                    || "anthropic-claude-code".equals(normalized)
+                    || "claude-code".equals(normalized)
+                    || "anthropic".equals(normalized);
+        }
+
+        private String providerLabel() {
+            return defaultWhenBlank(name, "anthropic") + ":" + normalizeProtocol(protocol);
+        }
+
         private ClaudeCodeModelProvider toModelProvider() {
             String providerName = defaultWhenBlank(name, "anthropic");
             Map<String, String> env = new LinkedHashMap<>();
+            env.put("RD_CLAUDE_PROVIDER_PROTOCOL", normalizeProtocol(protocol));
             putIfNotBlank(env, "ANTHROPIC_BASE_URL", baseUrl);
             putIfNotBlank(env, "ANTHROPIC_MODEL", model);
             putIfNotBlank(env, "ANTHROPIC_DEFAULT_OPUS_MODEL", defaultOpusModel);
@@ -526,6 +561,13 @@ public class DockerExecutorProperties {
             if (!normalized.isBlank()) {
                 target.put(key, normalized);
             }
+        }
+
+        private static String normalizeProtocol(String value) {
+            String normalized = defaultWhenBlank(value, DEFAULT_PROTOCOL)
+                    .replace('_', '-')
+                    .toLowerCase();
+            return normalized.isBlank() ? DEFAULT_PROTOCOL : normalized;
         }
     }
 }

@@ -98,10 +98,10 @@ class ProcessContainerRunnerTest {
         ContainerRunRequest request = request(
                 properties,
                 Map.of(
-                        "ANTHROPIC_BASE_URL", "https://api.deepseek.com/anthropic",
-                        "ANTHROPIC_MODEL", "deepseek-v4-pro[1m]",
-                        "RD_CLAUDE_AUTH_TOKEN_ENV", "DEEPSEEK_API_KEY",
-                        "DEEPSEEK_API_KEY", "sk-deepseek-raw-secret",
+                        "ANTHROPIC_BASE_URL", "https://api.longcat.chat/anthropic",
+                        "ANTHROPIC_MODEL", "LongCat-2.0",
+                        "RD_CLAUDE_AUTH_TOKEN_ENV", "LONGCAT_API_KEY",
+                        "LONGCAT_API_KEY", "sk-longcat-raw-secret",
                         "RD_CLAUDE_API_KEY_ENV", "MIMO_API_KEY",
                         "MIMO_API_KEY", "sk-mimo-raw-secret"
                 ),
@@ -112,17 +112,17 @@ class ProcessContainerRunnerTest {
         ContainerRunResult result = runner.run(request);
         String dockerMetaJson = Files.readString(request.outputDirectory().resolve("docker-meta.json"), StandardCharsets.UTF_8);
 
-        assertTrue(argv.contains("ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic"));
-        assertTrue(argv.contains("ANTHROPIC_MODEL=deepseek-v4-pro[1m]"));
-        assertTrue(argv.contains("RD_CLAUDE_AUTH_TOKEN_ENV=DEEPSEEK_API_KEY"));
-        assertTrue(argv.contains("DEEPSEEK_API_KEY"));
-        assertFalse(argv.contains("DEEPSEEK_API_KEY=sk-deepseek-raw-secret"));
+        assertTrue(argv.contains("ANTHROPIC_BASE_URL=https://api.longcat.chat/anthropic"));
+        assertTrue(argv.contains("ANTHROPIC_MODEL=LongCat-2.0"));
+        assertTrue(argv.contains("RD_CLAUDE_AUTH_TOKEN_ENV=LONGCAT_API_KEY"));
+        assertTrue(argv.contains("LONGCAT_API_KEY"));
+        assertFalse(argv.contains("LONGCAT_API_KEY=sk-longcat-raw-secret"));
         assertTrue(argv.contains("RD_CLAUDE_API_KEY_ENV=MIMO_API_KEY"));
         assertTrue(argv.contains("MIMO_API_KEY"));
         assertFalse(argv.contains("MIMO_API_KEY=sk-mimo-raw-secret"));
-        assertFalse(result.metadata().toString().contains("sk-deepseek-raw-secret"));
+        assertFalse(result.metadata().toString().contains("sk-longcat-raw-secret"));
         assertFalse(result.metadata().toString().contains("sk-mimo-raw-secret"));
-        assertFalse(dockerMetaJson.contains("sk-deepseek-raw-secret"));
+        assertFalse(dockerMetaJson.contains("sk-longcat-raw-secret"));
         assertFalse(dockerMetaJson.contains("sk-mimo-raw-secret"));
     }
 

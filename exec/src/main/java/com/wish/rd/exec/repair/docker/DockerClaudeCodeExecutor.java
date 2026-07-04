@@ -13,6 +13,8 @@ import com.wish.rd.exec.repair.execution.RepairJobCommand;
 import com.wish.rd.exec.repair.model.ModelCircuitBreakerPolicy;
 import com.wish.rd.exec.repair.model.ModelHealthSnapshot;
 import com.wish.rd.exec.repair.model.ModelHealthStore;
+import com.wish.rd.exec.repair.result.AgentRoleResultValidation;
+import com.wish.rd.exec.repair.result.AgentRoleResultValidator;
 import com.wish.rd.exec.repair.result.StructuredRepairResult;
 import com.wish.rd.exec.repair.result.StructuredResultValidation;
 import com.wish.rd.exec.repair.result.StructuredResultValidator;
@@ -41,11 +43,13 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
     private static final String CONTAINER_OUTPUT_DIRECTORY = "/work/output";
     private static final String AUTH_TOKEN_ENV_ROUTER = "RD_CLAUDE_AUTH_TOKEN_ENV";
     private static final String API_KEY_ENV_ROUTER = "RD_CLAUDE_API_KEY_ENV";
+    private static final String AGENT_RESULT_JSON_FIELD = "__agentResultJson";
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     private final RepairWorkspaceFactory workspaceFactory;
     private final ContainerRunnerPort containerRunner;
     private final StructuredResultValidator resultValidator;
+    private final AgentRoleResultValidator roleResultValidator;
     private final Configuration configuration;
     private final RepairWorkspaceRepositoryPort workspaceRepository;
     private final RepairExecutionWatchdog watchdog;
@@ -225,6 +229,7 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
         this.workspaceFactory = workspaceFactory;
         this.containerRunner = containerRunner;
         this.resultValidator = resultValidator == null ? new StructuredResultValidator() : resultValidator;
+        this.roleResultValidator = new AgentRoleResultValidator(OBJECT_MAPPER, this.resultValidator);
         this.configuration = configuration == null ? Configuration.defaultConfiguration() : configuration;
         this.workspaceRepository = workspaceRepository == null
                 ? RepairWorkspaceRepositoryPort.noop()
@@ -274,7 +279,7 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
                 markProviderHealth(provider, providerResult);
                 lastResult = providerResult;
                 if (providerResult.status() == RepairExecutionStatus.SUCCESS) {
-                    lastResult = publishRepository(command, workspace, providerResult);
+                    lastResult = publishRepositoryIfRequired(command, workspace, providerResult);
                 }
                 providerAttempts.add(attemptMetadata(provider, index + 1, providerResult));
                 if (!shouldFallback(lastResult) || index == providers.size() - 1) {
@@ -290,7 +295,7 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
                 markProviderHealth(provider, providerResult);
                 lastResult = providerResult;
                 if (providerResult.status() == RepairExecutionStatus.SUCCESS) {
-                    lastResult = publishRepository(command, workspace, providerResult);
+                    lastResult = publishRepositoryIfRequired(command, workspace, providerResult);
                 }
                 providerAttempts.add(attemptMetadata(provider, attempt, providerResult));
                 return withProviderMetadata(lastResult, provider, providerAttempts);
@@ -306,6 +311,31 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
         }
     }
 
+    private RepairExecutionResult publishRepositoryIfRequired(
+            RepairJobCommand command,
+            RepairWorkspace workspace,
+            RepairExecutionResult result
+    ) {
+        if (!repositoryPublishRequired(command)) {
+            return withDockerMetadata(result, Map.of(
+                    "repositoryPublishSkipped", "true",
+                    "repositoryPublishRequired", "false"
+            ));
+        }
+        return publishRepository(command, workspace, result);
+    }
+
+    private boolean repositoryPublishRequired(RepairJobCommand command) {
+        if (command == null || command.policyJson() == null) {
+            return true;
+        }
+        String value = firstNonBlank(
+                command.policyJson().get("repositoryPublishRequired"),
+                command.policyJson().get("publishRepository")
+        );
+        return value.isBlank() || Boolean.parseBoolean(value);
+    }
+
     private RepairExecutionResult publishRepository(
             RepairJobCommand command,
             RepairWorkspace workspace,
@@ -318,6 +348,29 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
         } catch (IOException exception) {
             return repositoryFailure(result, exception.getMessage());
         }
+    }
+
+    private static RepairExecutionResult withDockerMetadata(
+            RepairExecutionResult result,
+            Map<String, String> metadata
+    ) {
+        if (metadata == null || metadata.isEmpty()) {
+            return result;
+        }
+        Map<String, String> dockerMetadata = new LinkedHashMap<>(result.dockerMetadataJson());
+        dockerMetadata.putAll(metadata);
+        return new RepairExecutionResult(
+                result.status(),
+                result.summary(),
+                result.pullRequestUrl(),
+                result.artifacts(),
+                result.rawResultJson(),
+                dockerMetadata,
+                result.githubMetadataJson(),
+                result.testMetadataJson(),
+                result.riskMetadataJson(),
+                result.errorMessage()
+        );
     }
 
     private AttemptOutcome runProvider(
@@ -346,7 +399,7 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
             evaluateWatchdog(command, runResult);
             List<RepairArtifact> artifacts = collectArtifacts(workspace.outputDirectory());
             Map<String, String> dockerMetadata = dockerMetadata(request, runResult, artifacts);
-            return new AttemptOutcome(toExecutionResult(runResult, artifacts, dockerMetadata));
+            return new AttemptOutcome(toExecutionResult(command, runResult, artifacts, dockerMetadata));
         } catch (IOException exception) {
             return new AttemptOutcome(failedExecution(exception.getMessage()));
         }
@@ -388,6 +441,19 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
 
     private static String normalizeEnvText(String value) {
         return value == null ? "" : value.strip();
+    }
+
+    private static String firstNonBlank(String... values) {
+        if (values == null) {
+            return "";
+        }
+        for (String value : values) {
+            String normalized = normalizeEnvText(value);
+            if (!normalized.isBlank()) {
+                return normalized;
+            }
+        }
+        return "";
     }
 
     private void evaluateWatchdog(RepairJobCommand command, ContainerRunResult runResult) {
@@ -589,6 +655,7 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
     }
 
     private RepairExecutionResult toExecutionResult(
+            RepairJobCommand command,
             ContainerRunResult runResult,
             List<RepairArtifact> artifacts,
             Map<String, String> dockerMetadata
@@ -599,6 +666,10 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
         }
 
         String rawJson = Files.readString(resultJson, StandardCharsets.UTF_8);
+        String agentRole = agentRole(command);
+        if (usesAgentRoleProtocol(agentRole)) {
+            return toAgentRoleExecutionResult(agentRole, rawJson, runResult, artifacts, dockerMetadata);
+        }
         StructuredResultValidation validation = resultValidator.validate(rawJson);
         if (!validation.valid()) {
             return failedValidation(String.join("; ", validation.errors()), artifacts, dockerMetadata);
@@ -628,6 +699,46 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
                 Map.of(),
                 testMetadataJson(structured),
                 riskMetadataJson(structured),
+                errorMessage
+        );
+    }
+
+    private RepairExecutionResult toAgentRoleExecutionResult(
+            String agentRole,
+            String rawJson,
+            ContainerRunResult runResult,
+            List<RepairArtifact> artifacts,
+            Map<String, String> dockerMetadata
+    ) {
+        AgentRoleResultValidation validation = roleResultValidator.validate(agentRole, rawJson);
+        if (!validation.valid()) {
+            return failedValidation(String.join("; ", validation.errors()), artifacts, dockerMetadata);
+        }
+
+        RepairExecutionStatus status = agentRoleStatus(agentRole, rawJson);
+        String summary = jsonText(rawJson, "summary", "Docker Claude Code role result.");
+        String errorMessage = "";
+        if (runResult.exitCode() != 0) {
+            status = RepairExecutionStatus.FAILED;
+            errorMessage = containerFailureMessage(runResult);
+        }
+        if ("QA_AGENT".equals(agentRole) && status == RepairExecutionStatus.FAILED && errorMessage.isBlank()) {
+            errorMessage = "QA_AGENT failed acceptance: " + summary;
+        }
+
+        return new RepairExecutionResult(
+                status,
+                summary,
+                "",
+                artifacts,
+                roleRawResultJson(rawJson),
+                dockerMetadata,
+                Map.of(),
+                Map.of(),
+                Map.of(
+                        "riskLevel", "LOW",
+                        "needHumanAction", String.valueOf(status != RepairExecutionStatus.SUCCESS)
+                ),
                 errorMessage
         );
     }
@@ -835,6 +946,49 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
             case "UNSAFE" -> RepairExecutionStatus.UNSAFE;
             default -> RepairExecutionStatus.FAILED_VALIDATION;
         };
+    }
+
+    private static String agentRole(RepairJobCommand command) {
+        if (command == null || command.contextJson() == null) {
+            return "";
+        }
+        return normalizeEnvText(command.contextJson().get("agentRole")).toUpperCase(java.util.Locale.ROOT);
+    }
+
+    private static boolean usesAgentRoleProtocol(String agentRole) {
+        return "REQUIREMENT_REVIEWER".equals(agentRole)
+                || "SOLUTION_ARCHITECT".equals(agentRole)
+                || "QA_AGENT".equals(agentRole);
+    }
+
+    private static RepairExecutionStatus agentRoleStatus(String agentRole, String rawJson) {
+        if (!"QA_AGENT".equals(agentRole)) {
+            return RepairExecutionStatus.SUCCESS;
+        }
+        String status = jsonText(rawJson, "status", "").toUpperCase(java.util.Locale.ROOT);
+        if ("PASSED".equals(status)) {
+            return RepairExecutionStatus.SUCCESS;
+        }
+        return RepairExecutionStatus.FAILED;
+    }
+
+    private static Map<String, String> roleRawResultJson(String rawJson) {
+        Map<String, String> raw = new LinkedHashMap<>();
+        raw.put("status", jsonText(rawJson, "status", "SUCCESS"));
+        raw.put("summary", jsonText(rawJson, "summary", ""));
+        raw.put("prBody", jsonText(rawJson, "prBody", ""));
+        raw.put(AGENT_RESULT_JSON_FIELD, rawJson == null ? "" : rawJson);
+        return raw;
+    }
+
+    private static String jsonText(String rawJson, String fieldName, String fallback) {
+        try {
+            JsonNode root = OBJECT_MAPPER.readTree(rawJson == null ? "{}" : rawJson);
+            String value = root.path(fieldName).asText("");
+            return value.isBlank() ? fallback : value;
+        } catch (JsonProcessingException exception) {
+            return fallback;
+        }
     }
 
     private static List<String> missingSuccessArtifacts(List<RepairArtifact> artifacts) {
