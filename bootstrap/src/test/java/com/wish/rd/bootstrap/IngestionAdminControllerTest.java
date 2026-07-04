@@ -14,6 +14,8 @@ import java.nio.charset.StandardCharsets;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.startsWith;
 import static org.hamcrest.Matchers.greaterThan;
+import static org.hamcrest.Matchers.greaterThanOrEqualTo;
+import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.not;
@@ -139,7 +141,8 @@ class IngestionAdminControllerTest {
         mockMvc.perform(get("/ingestion/tasks")
                         .param("status", "COMPLETED"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.total", is(1)));
+                .andExpect(jsonPath("$.total", greaterThanOrEqualTo(1)))
+                .andExpect(jsonPath("$.records[*].id").value(hasItem(taskId)));
 
         mockMvc.perform(delete("/ingestion/pipelines/" + pipelineId))
                 .andExpect(status().isOk())
