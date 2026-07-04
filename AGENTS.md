@@ -1,314 +1,198 @@
-# RD-Bot Agent Guide
+# RD-Bot 中文开发手册
 
-This file applies to the whole repository. Read it before changing code.
+本文件适用于仓库内全部代码。改动前请先完整阅读。该说明基于当前代码库的真实结构，不再假设不存在的模块。
 
-## Product Positioning
+---
 
-RD-Bot is an AI-native software delivery harness for R&D workflows. It is not a
-chatbot and not a direct code-generation demo. Treat the model as a replaceable
-worker inside a controlled platform.
+## 一、项目定位
 
-The project value lives in the harness around the model:
+RD-Bot 是研发交付编排系统，而非聊天机器人。
 
-- workflow orchestration,
-- task-scoped RAG context packaging,
-- tool and connector boundaries,
-- sandboxed execution,
-- validation and rollback evidence,
-- PR-based delivery,
-- audit trails,
-- policy gates,
-- human-in-the-loop recovery.
+平台价值在于：
 
-The goal is to turn a Feishu ticket, mock ticket, or manually created
-engineering task into a governed repair workflow:
+- 用可替换模型能力完成交付任务。
+- RAG 证据检索与上下文打包。
+- 多角色流水线编排（需求评审、方案、编码、QA）。
+- 执行隔离与可回放产物。
+- 政策门控、告警、恢复和审计闭环。
 
-`Ticket -> Context -> Plan -> Policy Gate -> Sandbox Execution -> Validation -> Pull Request -> Report -> Audit`
+目标链路是：
 
-## Harness Engineering Principles
+`工单/需求 -> 上下文构建 -> 方案 -> 策略 -> 执行 -> 验证 -> PR -> 报告 -> 审计`
 
-- Do not attribute product capability only to the model. Build the surrounding
-  tools, state, constraints, execution environment, feedback, and observability.
-- Keep the control plane separate from the execution plane. The platform
-  orchestrates; delegates execute.
-- External systems are replaceable connectors behind ports.
-- Every risky operation must be policy-checked before it changes code,
-  repositories, tickets, secrets, or production-adjacent state.
-- Agent output is not trusted until validation evidence is recorded.
-- Agent delivery is reviewable. Prefer PRs and reports over direct writes to
-  protected branches.
-- Human operators remain responsible for priority, acceptance, risk decisions,
-  and manual recovery.
+---
 
-## Project Shape
+## 二、仓库结构（当前）
 
-RD-Bot is a Java 21 / Spring Boot 3.5 multi-module monolith. It is split by
-layers, not by microservices.
+这是 `pom.xml` 里的实际模块：
 
-- `rag`: core RAG domain, ingestion, knowledge, retrieval, prompt planning,
-  memory, trace, settings, and runtime task state.
-- `engine`: orchestration layer. It wires RAG capabilities into end-to-end
-  flows. Keep business orchestration here.
-- `bootstrap`: Spring Boot entrypoint, REST controllers, configuration, static
-  admin frontend, and external adapter implementations.
-- `exec`: execution-plane module. It owns the contract for sandboxed repair
-  execution, repair records, validation results, artifact persistence, and code
-  platform ports. The first production direction is Docker + Claude Code, but
-  domain contracts must not depend on Claude-specific APIs.
-- `skill`: reusable workflow-step module. It hosts composable repair,
-  validation, analysis, risk scoring, review, and reporting skills as they are
-  extracted from the main workflow.
-- `frontend`: frontend workspace if present. Do not assume it is part of Maven.
+- `rag`：知识、检索、上下文、trace、任务运行时基础域。
+- `engine`：编排层，承接单任务和多角色工作流。
+- `exec`：执行/验证能力抽象与接入（Docker executor、模型执行结果、健康治理）。
+- `skill`：可复用能力切片与技能策略。
+- `bootstrap`：Spring Boot 启动、HTTP API、配置、持久化适配、管理端能力。
+- `frontend/`：前端工程目录，当前不在 Maven 依赖构图中，静态页面由 `bootstrap` 托管。
 
-Follow [RULE.md](RULE.md) for Java style, naming, comments, REST conventions,
-patterns, and tests.
+依赖方向规则（代码实际）：
 
-## Harness Concept Mapping
+- `bootstrap -> engine`
+- `bootstrap -> exec`
+- `bootstrap -> skill`
+- `bootstrap -> rag`
+- `engine -> rag`
+- `exec -> rag`
+- `skill -> rag`
 
-RD-Bot intentionally separates the control plane, execution plane,
-knowledge/context plane, and integration plane.
+请以 `pom.xml`/子模块 `pom.xml` 为最终准绳。
 
-| RD-Bot module | Harness-style concept | Responsibility |
-| --- | --- | --- |
-| `bootstrap` | Adapter/API plane | REST, configuration, admin UI, and external adapter implementations. |
-| `engine` | Control plane / workflow orchestrator | Turns tickets or manual tasks into repair workflows and coordinates stages. |
-| `rag` | Knowledge/context plane | Produces task-scoped context packages, retrieval traces, and prompt plans. |
-| `exec` | Delegate/execution plane | Runs repair agents in sandboxed environments, records artifacts, and validates results. |
-| `skill` | Reusable workflow steps | Common repair, validation, analysis, policy, and reporting capabilities. |
-| `frontend` | Developer portal / operations UI | Shows task state, evidence, policy results, metrics, and manual recovery actions. |
+---
 
-## Core Domain Vocabulary
+## 三、核心概念与角色（按当前实现）
 
-- `RepairWorkflow`: one end-to-end automated R&D task.
-- `RepairRecord`: durable audit record for one workflow execution.
-- `RepairArtifact`: large output produced by a workflow stage, such as logs,
-  patches, prompts, test results, and PR metadata.
-- `ContextPackage`: task-scoped RAG output used by the repair agent.
-- `ExecutionDelegate`: sandboxed worker that runs code repair and validation.
-- `PolicyGate`: programmable guardrail before risky operations.
-- `Connector`: replaceable adapter for ticket, code, model, queue, storage, and
-  notification systems.
-- `DistributedLockExecutor`: domain-level lock port used when a runtime state
-  transition must be mutually exclusive across deployed instances.
+- `RdTask`：任务主对象（`rd_tasks`），对应需求/工单交付需求。
+- `RdTaskStatus`：任务状态机，当前枚举为
+  `CREATED, MATERIAL_COLLECTING, MATERIAL_READY, CONTEXT_BUILDING, CONTEXT_READY, PLAN_GENERATING, PLAN_GENERATED, WAITING_POLICY, WAITING_APPROVAL, SEARCHING, EXECUTING, VALIDATING, PR_CREATING, COMMITTED, MERGED, REPORTING, COMPLETED, REJECTED, FAILED_RETRYABLE, FAILED_NEEDS_HUMAN, CANCELLED, DEAD_LETTERED, RECOVERING, DELETED`
+- `RepairRecord`：主执行记录（含 `repair_records` 等持久化链路）。
+- `RequirementDeliveryEngine`：需求交付主编排入口（多角色）。
+- `AgentRole`：`REQUIREMENT_REVIEWER -> SOLUTION_ARCHITECT -> CODING_AGENT -> QA_AGENT`。
+- `AgentStageRun`：每个角色一次执行尝试。
+- `AgentStageStatus`：阶段状态机，`PENDING -> CONTEXT_READY -> DISPATCHING -> RUNNING -> RESULT_COLLECTING -> VERIFYING -> SUCCEEDED`，以及失败/恢复分支。
+- `RoleContextPackage`：按角色裁剪的上下文包。
+- `WorkflowExperience`：经验沉淀类型（需求评审/方案/代码/QA/交付复核）。
+- `PolicyGate`：高风险动作前的显式门控。
 
-## Current Product Direction
+---
 
-The public, recruiter-readable future direction lives in
-[docs/roadmap/public-roadmap.md](docs/roadmap/public-roadmap.md).
+## 四、当前进度（P0~P3）
 
-The private implementation plan lives in Feishu Wiki under the parent page:
+### P0：基础底座
 
-- Parent: `https://my.feishu.cn/wiki/KN6dwQ48wic3OcktRghccUnnnng`
-- P0: `https://my.feishu.cn/wiki/W7bzwwbAciPkqZkECSXc146znfb`
-- P1: `https://my.feishu.cn/wiki/LHEGwQY69ipBx5kzXNgcIDQNnFf`
-- P2: `https://my.feishu.cn/wiki/AAohwtzsWiKhCckDpA7clXNEn8f`
-- P3: `https://my.feishu.cn/wiki/ZFGSwPefQiR8H1kukY0cQtbCn7f`
+- PostgreSQL 持久化方向已落地。
+- SQL 与历史状态落库脚本在
+  `bootstrap/src/main/resources/sql/postgres`，包含 `rd_tasks`、`repair_records`、`repair_record_artifacts`、`repair_audit_events` 等。
+- `RdTask` 运行时状态和事件轨迹可观测。
 
-Do not invent a different roadmap. If the docs and code disagree, inspect both
-and ask the user before making a design-changing edit.
+### P1：需求入口与调度
 
-Private Feishu planning pages are implementation references only and should not
-be required to understand the public project direction.
+- Feishu/工单/队列体系采用接口化抽象；RocketMQ 接入方向已在配置和适配里。
+- 管理端任务创建与手工触发通道已打通。
 
-## Development Priority
+### P2：多角色交付与执行
 
-Build in this order unless the user explicitly changes scope:
+- `RequirementDeliveryEngine` 已按 4 个角色分阶段执行。
+- `Docker Claude Code`、provider 列表、fallback/retry/超时告警链路已纳入执行面。
+- PR 发布与产物归档路径已可用，并通过管理 API 查询。
 
-1. **P0: Knowledge productionization first**
-   - PostgreSQL persistence.
-   - Project-managed SQL scripts, not Flyway/Liquibase unless the user changes
-     this decision.
-   - Snowflake IDs using `bigint` database columns.
-   - Persistent knowledge bases, documents, chunks, ingestion tasks, node logs,
-     Feishu document import, scheduled refresh, `repair_records`, and
-     `repair_record_artifacts`.
-2. **P1: Feishu ticket + RocketMQ scheduling**
-   - Ticket system must be an interface/port. This project implements Feishu
-     first.
-   - The user will provide exact Feishu ticket API fields during development.
-     Do not guess field names or status enums.
-   - Use RocketMQ. Suggested names: topic `RD_BOT_REPAIR_TICKET`, consumer group
-     `GID_RD_BOT_REPAIR_WORKER`, tags `P0`, `P1`, `P2`.
-3. **P2: Docker Claude Code + GitHub PR**
-   - Execution runs in Docker.
-   - Claude Code runs in yolo mode by default because it is sandboxed.
-   - Do not hard-kill for resource or timeout limits by default. Add timeout and
-     budget alerts; RD decides whether to stop the task.
-   - Code platform must be a port. This project implements GitHub first. Prefer
-     GitHub App for production, `gh` CLI for local real-PR smoke, and PAT only
-     as an explicit local fallback.
-4. **P3: Production governance**
-   - Audit, idempotency, dead-letter handling, manual recovery, alerting,
-     allowlists, secret boundaries, log redaction, and operational views.
+### P3：治理与生产运营
 
-Keep this engineering roadmap separate from the demo roadmap in
-[docs/roadmap/public-roadmap.md](docs/roadmap/public-roadmap.md). The demo
-roadmap should prioritize a runnable golden path for portfolio and interview
-review without requiring private Feishu, RocketMQ, or GitHub App credentials.
+- 告警、告警分类、重试与恢复、指标、技能策略、经验复用在持续补齐。
+- 当前建议把“治理增强”与“旧行为兼容性”绑定：任何增强都需带状态与产物断言。
 
-## End-to-End Workflow
+---
 
-RD-Bot should optimize for a durable, resumable workflow rather than a single
-agent RPC:
+## 五、架构与开发边界
 
-`Ticket or Manual Task -> RepairWorkflow -> ContextPackage -> Repair Plan -> PolicyGate -> ExecutionDelegate -> Validation -> Pull Request or Artifact -> Report -> Audit`
+1. `engine`、`exec` 只做业务控制和领域编排，不直接接触基础设施 SDK 细节；SDK 与外部客户端封装在 `bootstrap`。
+2. 任何外部系统调用都必须通过端口/适配器（ticket、queue、storage、model、code platform、alert）。
+3. 共享状态流转只能通过状态机 + 持久化事件，不能靠局部内存“顺便推进”。
+4. 跨实例共享状态禁止直接依赖 JVM 内的 `synchronized` 作为兜底锁。
+5. 禁止在核心代码中硬编码敏感凭证、API 秘钥与测试环境密钥。
 
-When a real external integration is unavailable, provide a mock or local adapter
-that exercises the same port contract.
+---
 
-## Repair Workflow State Model
+## 六、状态机与阶段编排（必须遵循）
 
-A repair workflow is durable and resumable. Recommended state transitions:
+### 6.1 主任务状态
 
-`CREATED -> CONTEXT_BUILDING -> CONTEXT_READY -> PLAN_GENERATED -> WAITING_POLICY -> WAITING_APPROVAL -> EXECUTING -> VALIDATING -> PR_CREATING -> PR_CREATED -> REPORTING -> COMPLETED`
+任务主状态实际流转包含并行入口与兜底分支，推荐按 `RdTaskStatus` 枚举实现，核心链路可用：
 
-Failure and recovery states:
+`CREATED -> MATERIAL_COLLECTING -> MATERIAL_READY -> CONTEXT_BUILDING -> CONTEXT_READY -> PLAN_GENERATING -> PLAN_GENERATED -> WAITING_POLICY -> WAITING_APPROVAL -> SEARCHING/EXECUTING -> VALIDATING -> PR_CREATING -> COMMITTED -> MERGED/REPORTING -> COMPLETED`
+
+失败与恢复要落到：
 
 - `FAILED_RETRYABLE`
 - `FAILED_NEEDS_HUMAN`
+- `REJECTED`
+- `RECOVERING`
 - `CANCELLED`
 - `DEAD_LETTERED`
-- `RECOVERING`
+- `DELETED`（只做删除语义标记，不是正常流转）
 
-## Architecture Rules
+### 6.2 阶段状态
 
-- Preserve dependency direction: `bootstrap -> engine -> rag`.
-- Put external system contracts behind ports. Do not call Feishu, RocketMQ,
-  Docker, GitHub, PostgreSQL, or model SDKs directly from core RAG logic.
-- `bootstrap` handles HTTP/adapters/configuration only. It should not own
-  business orchestration.
-- `engine` orchestrates use cases and task flow.
-- `rag` owns RAG domain behavior and context packaging.
-- `exec` owns repair execution models, repair record persistence interfaces,
-  Docker execution, result validation, and code platform abstractions.
-- Treat model providers and repair executors as replaceable workers. Workflow
-  orchestration must depend on ports, not a concrete model SDK or CLI command.
-- Production shared mutable state must not rely on JVM-level `synchronized`.
-  Use database atomic constraints/transactions, queue idempotency, or a lock
-  port such as `DistributedLockExecutor` for cross-instance mutual exclusion.
-- Keep distributed lock SDKs out of core domains. `rag`, `engine`, and `exec`
-  may depend on lock ports; Redisson-specific implementation and configuration
-  belong in `bootstrap`.
-- JVM-level `synchronized` is acceptable only for process-local resource
-  protection such as local file append, lifecycle close guards, token-cache
-  refresh guards, Snowflake sequence internals, or test/mock snapshots.
-- Use records for immutable value objects and normalize null inputs in compact
-  constructors.
-- Keep existing route shapes compatible unless a task explicitly changes them.
-- Bug-fix RAG is task-scoped, not conversation-scoped. `RagBugFixEngine` must
-  build and return a RAG result keyed by `taskId`; it must not load, append, or
-  persist conversation memory, and `BugFixMessage`/queue requests should not
-  carry `conversationId`.
-- `RagBugFixEngine` only performs RAG retrieval/context packaging. It must not
-  call `BugFixAgentEngine.submit` or otherwise trigger agent execution; upstream
-  orchestration is responsible for taking the returned RAG result and invoking
-  the agent.
+每个 `AgentStageRun` 使用 `AgentStageStatus` 进行完整追踪。
 
-## Policy Gates
+- 每个阶段必须有：上下文包 ID、provider 尝试记录、产物 ID（prompt/result/log）、失败分类、阶段时间线。
+- 进入失败分支时必须保留原因并可恢复，不得无日志短路终止。
+- `REQUIREMENT_REVIEWER` 结果为 `NEED_INFO / NEEDS_HUMAN / UNSAFE / REJECTED / FAILED` 时，必须阻断后续阶段并写入人工干预事件。
 
-Risky operations must pass explicit policy gates. Governance is not only a P3
-feature; every phase should preserve a minimal guardrail path.
+---
 
-Examples:
+## 七、配置与凭证（AGENT 必须执行）
 
-- The agent cannot push directly to protected branches.
-- The agent must create PRs instead of committing to `main`.
-- Any production-impacting change requires manual approval.
-- Secrets must never be included in prompts, logs, artifacts, or PR comments.
-- Docker execution must use allowlisted repositories, images, and commands.
-- High-risk patches require human review before PR creation.
-- Validation failures must preserve artifacts and stop before PR creation unless
-  the user explicitly chooses a different policy.
+1. 凭证只允许通过环境变量/秘密存储读取，不得写入仓库文本。
+2. 配置真值优先 `bootstrap/src/main/resources/application.yaml`，缺失值通过环境变量回退。
+3. 仅记录变量名，不记录明文：
 
-## External Integrations
+- 长猫模型：`RD_CLAUDE_*` / `LONGCAT_*`
+- MiniMax 模型：`MINIMAX_*`
+- GitHub：`GITHUB_PAT` / `GH_TOKEN` / GitHub App 变量
+- Feishu：`FEISHU_APP_ID`, `FEISHU_APP_SECRET`, `FEISHU_IM_ALERT_CHAT_ID`
+- 告警/扫描：`RD_BOT_SECRET_SCAN_NEEDLES`, `RD_BOT_SECRET_SCAN_MASK`
+- 执行/仓库：`RD_EXECUTOR_*`, `RD_GITHUB_*`, `FEISHU_*`, `ROCKETMQ_*`, `POSTGRES_*`, `REDIS_*`
 
-Do not guess external API details.
+---
 
-- Feishu ticket API fields, authentication, status enums, and write-back format
-  are user-provided at implementation time.
-- RocketMQ infrastructure is user-created based on names the project chooses.
-- Docker image name, Claude Code command, and yolo flags should be configurable.
-- GitHub auth should be designed by the project; document the choice and keep it
-  replaceable.
-- Redisson is the first distributed lock implementation. Keep Redis address,
-  password, and lock mode configurable; local fallback is only for single-node
-  development or tests, not production multi-instance correctness.
+## 八、告警、技能与经验沉淀
 
-When information is missing and affects public contracts, schema, queues,
-security, or persistence, ask the user.
+### 告警
 
-## Persistence Guidance
+- 告警类型至少覆盖：provider 降级、阶段失败重试、QA 阻断、交付复核失败、PR 发布失败、知识库刷新失败、票据写回失败。
+- 告警需能回溯：`messageId`、`taskId`、`stage`、`nextAction`、`reason`。
 
-- Use PostgreSQL.
-- Keep SQL under a clear project-managed directory, recommended:
-  `bootstrap/src/main/resources/sql/postgres`.
-- Favor repository/store ports plus PostgreSQL implementations.
-- Main repair table: `repair_records`.
-- Large logs, diffs, patches, prompt snapshots, and result files should be in
-  `repair_record_artifacts` or object storage references, not overloaded into
-  the main row.
-- Preserve enough fields for audit: ticket, RAG context, executor, Docker,
-  GitHub, test result, risk, errors, timestamps, and extension JSON.
+### 技能治理
 
-## Observability and Evaluation
+- 技能/工具必须先注册、再策略判定、再安装执行；高风险能力必须有角色/作用域限制。
+- 非授权或高风险技能安装流程必须拒绝并留档。
 
-Every workflow stage should emit structured traces. Minimum trace dimensions:
+### 经验沉淀
 
-- ticket id,
-- task id,
-- knowledge base version,
-- retrieved document ids,
-- prompt plan id,
-- model/executor config,
-- Docker image and command,
-- validation command,
-- test result,
-- generated diff summary,
-- PR URL,
-- policy decision,
-- error category,
-- human intervention reason.
+- 交付成功后至少产出：
+  - `REQUIREMENT_REVIEW`
+  - `TECHNICAL_DESIGN`
+  - `CODE_CHANGE`
+  - `QA_REPORT`
+  - `DELIVERY_REPORT`
+- 每条经验需可追溯：`taskId`、`stageRunId`、`sourceArtifactId`、`contentHash`、`redacted=true`。
 
-Minimum product metrics:
+---
 
-- context build latency,
-- repair success rate,
-- validation pass rate,
-- PR creation rate,
-- human intervention rate,
-- retry rate,
-- mean time to repair,
-- top failure categories.
+## 九、测试与验收（与 RULE 对齐）
 
-## Testing
+1. 先补领域单测与失败路径；再做模块/集成验证。
+2. 重点链路要有真实 HTTP 请求链回归：至少一条成功链 + 一条状态变更链 + 一条反查链。
+3. `SKIPPED` 不等于通过，生产验收必须记录实际调用证据。
+4. 本地缺外部服务时可跳过真实外部调用，但跳过必须显式写在验收记录里并给出补测命令模板。
 
-Use focused tests first, then broader verification.
+---
 
-- Preferred full verification: `./mvnw test`
-- Focused module verification examples:
-  - `./mvnw -pl rag test`
-  - `./mvnw -pl bootstrap -am test`
-  - `./mvnw -pl rag,bootstrap -am -Dtest=SomeTest test`
-- Keep `/test/...` channels isolated from production routes.
-- For persistence work, add tests that prove restart/reload behavior at the
-  repository boundary or with a PostgreSQL-compatible test setup.
+## 十、开发约束（强制）
 
-If a verification command cannot run locally because services are missing
-PostgreSQL, RocketMQ, Docker, or credentials, report that clearly and include
-the focused tests that did run.
+- 修改前先读相关代码与 `docs`；
+- 不做无关重构和一次性大改，优先最小闭环；
+- 遵循 `RULE.md`，尤其是分层、命名、异常、测试、可观测性约束；
+- 不随意回滚他人未授权改动；
+- 不提交、不推送、不建 PR，除非用户明确要求；
+- 交付报告必须列明：通过测试、失败项/缺失环境、实链验证命令与证据路径。
 
-## Working Practices
+---
 
-- Inspect current code and docs before editing. Prefer `rg` for search.
-- Keep edits scoped to the requested phase.
-- Before adding `synchronized` to production code, classify the state being
-  protected. If it can be touched by multiple application instances, use a
-  database/queue guarantee or `DistributedLockExecutor` instead.
-- Do not revert user changes or unrelated untracked files.
-- Do not make destructive git or filesystem changes unless explicitly asked.
-- Do not commit, stage, push, or create PRs unless explicitly asked.
-- Update README/RULE/Feishu docs only when the task asks for docs or when an
-  implementation changes documented behavior.
-- Local `docs/` artifacts are ignored by git in this repository. If a new doc is
-  meant to be reviewed or published, mention the path explicitly in the final
-  response and verify whether the user wants ignore rules changed.
+## 十一、硬约束（生产环境）
+
+1. 任何阶段化交付不得回到“单角色全链路”模式。
+2. 角色上下文必须独立，禁止只依赖前一角色未证据化输出。
+3. 需求评审不过关不得进入编码/交付。
+4. provider 重试、阶段失败、人工恢复、经验复用必须都写到可审计字段。
+5. 涉及生产密钥与外部副作用的行为必须经过脱敏、告警和 PR/记录链路。
+
+任何“看起来已实现”但未留产物的优化，不算交付。

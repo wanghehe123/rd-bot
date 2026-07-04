@@ -41,6 +41,7 @@ docs/superpowers/*
 # ===== 生成产物 / 本地输出 =====
 lark-output/
 qa-runs/
+.codegraph/
 
 # ===== 本地环境与密钥 =====
 *.env
