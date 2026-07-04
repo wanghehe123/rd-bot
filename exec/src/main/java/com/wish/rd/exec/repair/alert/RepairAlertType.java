@@ -53,5 +53,55 @@ public enum RepairAlertType {
     /**
      * 执行被安全策略拒绝。
      */
-    SECURITY_POLICY_REJECTED
+    SECURITY_POLICY_REJECTED,
+
+    /**
+     * Agent 阶段发生可重试失败。
+     */
+    STAGE_FAILED_RETRYABLE,
+
+    /**
+     * Agent 阶段失败且需要人工处理。
+     */
+    STAGE_FAILED_NEEDS_HUMAN,
+
+    /**
+     * 模型供应商发生降级切换。
+     */
+    PROVIDER_FALLBACK,
+
+    /**
+     * 策略门禁等待人工审批。
+     */
+    POLICY_WAITING_APPROVAL,
+
+    /**
+     * QA 阶段真实验收失败。
+     */
+    QA_FAILED,
+
+    /**
+     * 交付复核失败。
+     */
+    DELIVERY_REVIEW_FAILED,
+
+    /**
+     * 交付复核通过后的 PR 发布失败。
+     */
+    PR_PUBLICATION_FAILED,
+
+    /**
+     * 经验沉淀失败。
+     */
+    EXPERIENCE_CAPTURE_FAILED,
+
+    /**
+     * 多 Agent 工作流进入死信。
+     */
+    WORKFLOW_DEAD_LETTERED,
+
+    /**
+     * Skill 策略拒绝安装或使用。
+     */
+    SKILL_POLICY_REJECTED
 }

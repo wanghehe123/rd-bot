@@ -302,7 +302,7 @@ class StructuredResultValidatorTest {
     }
 
     @Test
-    void needHumanActionMustBePresentAndBoolean() {
+    void needHumanActionMayBeOmittedButMustBeBooleanWhenPresent() {
         StructuredResultValidation missing = validator.validate("""
                 {
                   "status": "SUCCESS",
@@ -339,8 +339,7 @@ class StructuredResultValidatorTest {
                 }
                 """);
 
-        assertFalse(missing.valid());
-        assertTrue(missing.errors().contains("needHumanAction must be present"));
+        assertTrue(missing.valid());
         assertFalse(nullValue.valid());
         assertTrue(nullValue.errors().contains("needHumanAction must be boolean"));
         assertFalse(stringValue.valid());

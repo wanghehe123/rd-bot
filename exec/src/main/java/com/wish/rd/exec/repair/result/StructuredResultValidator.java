@@ -78,7 +78,7 @@ public final class StructuredResultValidator {
         validateStringArrayFieldType(root, "testCommands", errors);
         validateStringFieldType(root, "testStatus", errors);
         validateStringFieldType(root, "riskLevel", errors);
-        validateBooleanFieldType(root, "needHumanAction", errors);
+        validateOptionalBooleanFieldType(root, "needHumanAction", errors);
         return errors;
     }
 
@@ -114,6 +114,16 @@ public final class StructuredResultValidator {
         JsonNode value = root.get(fieldName);
         if (value == null) {
             errors.add(fieldName + " must be present");
+            return;
+        }
+        if (!value.isBoolean()) {
+            errors.add(fieldName + " must be boolean");
+        }
+    }
+
+    private static void validateOptionalBooleanFieldType(JsonNode root, String fieldName, List<String> errors) {
+        JsonNode value = root.get(fieldName);
+        if (value == null) {
             return;
         }
         if (!value.isBoolean()) {

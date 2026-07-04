@@ -622,6 +622,34 @@ public final class RagStreamTaskRegistry {
     }
 
     /**
+     * 将需求任务推进到 VALIDATING。
+     *
+     * @param taskId         任务 ID
+     * @param validationJson 验证输入或结果 JSON，暂存到执行结果快照供管理台审计
+     * @return 新任务快照
+     */
+    public RdRequirementTask markRequirementValidating(String taskId, String validationJson) {
+        return withLock(() -> {
+            RdRequirementTask existing = getRequirementTask(taskId);
+            return transitionAndSave(existing, RdTaskStatus.VALIDATING, "", validationJson, "", "");
+        });
+    }
+
+    /**
+     * 将需求任务推进到 PR_CREATING。
+     *
+     * @param taskId             任务 ID
+     * @param reviewedResultJson 复核通过后的交付结果 JSON
+     * @return 新任务快照
+     */
+    public RdRequirementTask markRequirementPrCreating(String taskId, String reviewedResultJson) {
+        return withLock(() -> {
+            RdRequirementTask existing = getRequirementTask(taskId);
+            return transitionAndSave(existing, RdTaskStatus.PR_CREATING, "", reviewedResultJson, "", "");
+        });
+    }
+
+    /**
      * 将需求任务推进到 COMMITTED。
      *
      * @param taskId              任务 ID
@@ -637,6 +665,39 @@ public final class RagStreamTaskRegistry {
         return withLock(() -> {
             RdRequirementTask existing = getRequirementTask(taskId);
             return transitionAndSave(existing, RdTaskStatus.COMMITTED, "", executionResultJson, pullRequestUrl, "");
+        });
+    }
+
+    /**
+     * 将需求任务推进到 REPORTING。
+     *
+     * @param taskId           任务 ID
+     * @param deliveryReportJson 交付报告 JSON
+     * @return 新任务快照
+     */
+    public RdRequirementTask markRequirementReporting(String taskId, String deliveryReportJson) {
+        return withLock(() -> {
+            RdRequirementTask existing = getRequirementTask(taskId);
+            return transitionAndSave(existing, RdTaskStatus.REPORTING, "", deliveryReportJson, "", "");
+        });
+    }
+
+    /**
+     * 将需求任务推进到 COMPLETED。
+     *
+     * @param taskId              任务 ID
+     * @param pullRequestUrl      PR 链接
+     * @param executionResultJson 最终交付结果 JSON
+     * @return 新任务快照
+     */
+    public RdRequirementTask markRequirementCompleted(
+            String taskId,
+            String pullRequestUrl,
+            String executionResultJson
+    ) {
+        return withLock(() -> {
+            RdRequirementTask existing = getRequirementTask(taskId);
+            return transitionAndSave(existing, RdTaskStatus.COMPLETED, "", executionResultJson, pullRequestUrl, "");
         });
     }
 
