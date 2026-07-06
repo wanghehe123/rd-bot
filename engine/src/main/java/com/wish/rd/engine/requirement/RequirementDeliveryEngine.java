@@ -3,34 +3,35 @@ package com.wish.rd.engine.requirement;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.wish.rd.engine.agent.AgentStageArtifact;
+import com.wish.rd.engine.agent.model.AgentStageArtifact;
 import com.wish.rd.engine.agent.AgentStageArtifactStore;
-import com.wish.rd.engine.agent.AgentRole;
+import com.wish.rd.engine.agent.model.AgentRole;
 import com.wish.rd.engine.agent.AgentStagePlanner;
-import com.wish.rd.engine.agent.AgentStageRun;
+import com.wish.rd.engine.agent.model.AgentStageRun;
 import com.wish.rd.engine.agent.AgentStageRunStore;
-import com.wish.rd.engine.agent.AgentStageStatus;
-import com.wish.rd.engine.agent.AgentWorkflowAlert;
+import com.wish.rd.engine.agent.model.AgentStageStatus;
+import com.wish.rd.engine.agent.model.AgentWorkflowAlert;
 import com.wish.rd.engine.agent.AgentWorkflowAlertSinkPort;
-import com.wish.rd.engine.agent.AgentWorkflowAlertType;
-import com.wish.rd.engine.agent.InMemoryAgentStageArtifactStore;
-import com.wish.rd.engine.agent.InMemoryAgentStageRunStore;
-import com.wish.rd.engine.agent.WorkflowExperienceEntry;
+import com.wish.rd.engine.agent.model.AgentWorkflowAlertType;
+import com.wish.rd.engine.agent.impl.InMemoryAgentStageArtifactStore;
+import com.wish.rd.engine.agent.impl.InMemoryAgentStageRunStore;
+import com.wish.rd.engine.agent.model.WorkflowExperienceEntry;
 import com.wish.rd.engine.agent.WorkflowExperienceStore;
-import com.wish.rd.engine.agent.WorkflowExperienceType;
+import com.wish.rd.engine.agent.model.WorkflowExperienceType;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
-import com.wish.rd.rag.context.InMemoryRoleContextPackageStore;
+import com.wish.rd.rag.context.impl.InMemoryRoleContextPackageStore;
 import com.wish.rd.rag.context.RoleContextBuilder;
-import com.wish.rd.rag.context.RoleContextEvidence;
-import com.wish.rd.rag.context.RoleContextPackage;
+import com.wish.rd.rag.context.model.RoleContextEvidence;
+import com.wish.rd.rag.context.model.RoleContextPackage;
 import com.wish.rd.rag.context.RoleContextPackageStore;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
-import com.wish.rd.rag.runtime.RdRequirementTask;
-import com.wish.rd.rag.runtime.RdTask;
-import com.wish.rd.rag.runtime.TaskMaterial;
+import com.wish.rd.rag.runtime.model.RdRequirementTask;
+import com.wish.rd.rag.runtime.model.RdTask;
+import com.wish.rd.rag.runtime.model.RdTaskStatus;
+import com.wish.rd.rag.runtime.model.TaskMaterial;
 import com.wish.rd.rag.runtime.TaskMaterialStore;
-import com.wish.rd.rag.runtime.TaskMaterialSourceType;
-import com.wish.rd.rag.runtime.TaskMaterialType;
+import com.wish.rd.rag.runtime.model.TaskMaterialSourceType;
+import com.wish.rd.rag.runtime.model.TaskMaterialType;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -39,12 +40,22 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
+import com.wish.rd.engine.requirement.model.RequirementContextPackage;
+import com.wish.rd.engine.requirement.model.RequirementDeliveryResult;
+import com.wish.rd.engine.requirement.model.RequirementDeliveryReviewResult;
+import com.wish.rd.engine.requirement.model.RequirementExecutionRequest;
+import com.wish.rd.engine.requirement.model.RequirementExecutionResult;
+import com.wish.rd.engine.requirement.model.RequirementPlan;
+import com.wish.rd.engine.requirement.model.RequirementPolicyDecision;
+import com.wish.rd.engine.requirement.model.RequirementPullRequestPublication;
+import com.wish.rd.engine.requirement.model.RequirementPullRequestPublishCommand;
 
 /**
  * 需求交付编排引擎。
@@ -55,6 +66,10 @@ import java.util.stream.Collectors;
 public class RequirementDeliveryEngine {
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final Comparator<AgentStageRun> STAGE_RUN_RECENCY = Comparator
+            .comparingInt(AgentStageRun::attemptNo)
+            .thenComparingLong(AgentStageRun::createTimeEpochMillis)
+            .thenComparing(AgentStageRun::stageRunId);
 
     private final RagStreamTaskRegistry taskRegistry;
     private final TaskMaterialStore materialStore;
@@ -519,6 +534,9 @@ public class RequirementDeliveryEngine {
         if (!(task instanceof RdRequirementTask requirementTask)) {
             throw new IllegalArgumentException("task is not a requirement task: " + taskId);
         }
+        if (isNonRetryableTerminalRequirementStatus(requirementTask.status())) {
+            return currentResult(requirementTask);
+        }
         // 关键前置：任务必须有材料，否则 context 与 plan 生成无法闭环，直接拒绝执行。
         List<TaskMaterial> materials = materialStore.listByTask(requirementTask.taskId());
         if (materials.isEmpty()) {
@@ -726,12 +744,74 @@ public class RequirementDeliveryEngine {
         );
     }
 
+    private RequirementDeliveryResult currentResult(RdRequirementTask task) {
+        return new RequirementDeliveryResult(
+                task.taskId(),
+                task.status(),
+                task.pullRequestUrl(),
+                task.executionResultJson(),
+                task.errorMessage()
+        );
+    }
+
+    private boolean isNonRetryableTerminalRequirementStatus(RdTaskStatus status) {
+        return status == RdTaskStatus.COMPLETED
+                || status == RdTaskStatus.CANCELLED
+                || status == RdTaskStatus.DEAD_LETTERED
+                || status == RdTaskStatus.DELETED;
+    }
+
     private void ensureRequirementStages(RdRequirementTask task) {
-        if (!stageRunStore.listByTask(task.taskId()).isEmpty()) {
+        List<AgentStageRun> stages = stageRunStore.listByTask(task.taskId());
+        if (stages.isEmpty()) {
+            stagePlanner.planRequirementDelivery(task.taskId(), System.currentTimeMillis())
+                    .forEach(stageRunStore::save);
             return;
         }
-        stagePlanner.planRequirementDelivery(task.taskId(), System.currentTimeMillis())
-                .forEach(stageRunStore::save);
+        long now = System.currentTimeMillis();
+        for (AgentRole role : AgentRole.requirementDeliveryOrder()) {
+            AgentStageRun latest = latestStageOrNull(stages, role);
+            if (latest == null) {
+                stageRunStore.save(pendingStage(task.taskId(), role, 1, now));
+                continue;
+            }
+            if (isRetryableRequirementStatus(task.status()) && isRetryableStageFailure(latest)) {
+                stageRunStore.save(pendingStage(task.taskId(), role, latest.attemptNo() + 1, now));
+            }
+        }
+    }
+
+    private boolean isRetryableRequirementStatus(RdTaskStatus status) {
+        return status == RdTaskStatus.REJECTED
+                || status == RdTaskStatus.FAILED_RETRYABLE
+                || status == RdTaskStatus.FAILED_NEEDS_HUMAN;
+    }
+
+    private boolean isRetryableStageFailure(AgentStageRun stage) {
+        return stage.status() == AgentStageStatus.FAILED_RETRYABLE
+                || (stage.status().isTerminal() && stage.status() != AgentStageStatus.SUCCEEDED);
+    }
+
+    private AgentStageRun pendingStage(String taskId, AgentRole role, int attemptNo, long createTimeEpochMillis) {
+        return AgentStageRun.pending(
+                idGenerator.nextIdString(),
+                taskId,
+                role,
+                attemptNo,
+                stageIdempotencyKey(taskId, role, attemptNo),
+                createTimeEpochMillis
+        );
+    }
+
+    private String stageIdempotencyKey(String taskId, AgentRole role, int attemptNo) {
+        return taskId + ":" + role.name() + ":" + attemptNo;
+    }
+
+    private AgentStageRun latestStageOrNull(List<AgentStageRun> stages, AgentRole role) {
+        return stages.stream()
+                .filter(stage -> stage.role() == role)
+                .max(STAGE_RUN_RECENCY)
+                .orElse(null);
     }
 
     private void ensureRoleContexts(RdRequirementTask task, List<TaskMaterial> materials) {
@@ -1525,7 +1605,7 @@ public class RequirementDeliveryEngine {
     private AgentStageRun stageRun(String taskId, AgentRole role) {
         return stageRunStore.listByTask(taskId).stream()
                 .filter(stage -> stage.role() == role)
-                .findFirst()
+                .max(STAGE_RUN_RECENCY)
                 .orElseThrow(() -> new IllegalStateException("agent stage run missing: " + taskId + " " + role));
     }
 

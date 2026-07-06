@@ -1,16 +1,16 @@
 package com.wish.rd.bootstrap;
 
-import com.wish.rd.engine.bugfix.BugFixExecutionResult;
+import com.wish.rd.engine.bugfix.model.BugFixExecutionResult;
 import com.wish.rd.engine.bugfix.BugFixExecutor;
 import com.wish.rd.engine.bugfix.BugFixPromptBuilder;
 import com.wish.rd.engine.bugfix.RdBotFixEngine;
-import com.wish.rd.engine.bugfix.acceptance.RagEvidenceAcceptancePlanGenerator;
+import com.wish.rd.engine.bugfix.acceptance.impl.RagEvidenceAcceptancePlanGenerator;
 import com.wish.rd.engine.rag.ChatQueueLimiter;
 import com.wish.rd.engine.rag.RagBugFixEngine;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
 import com.wish.rd.rag.intent.IntentTreeRegistry;
 import com.wish.rd.rag.rewrite.QueryTermMappingRegistry;
-import com.wish.rd.rag.runtime.InMemoryRdTaskStore;
+import com.wish.rd.rag.runtime.impl.InMemoryRdTaskStore;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.web.servlet.MockMvc;

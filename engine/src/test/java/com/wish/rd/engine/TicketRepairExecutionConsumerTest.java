@@ -1,32 +1,32 @@
 package com.wish.rd.engine;
 
-import com.wish.rd.adapter.TicketMessage;
-import com.wish.rd.adapter.TicketMessageQuery;
-import com.wish.rd.adapter.TicketMessages;
+import com.wish.rd.adapter.model.TicketMessage;
+import com.wish.rd.adapter.model.TicketMessageQuery;
+import com.wish.rd.adapter.model.TicketMessages;
 import com.wish.rd.adapter.TicketProviderPort;
-import com.wish.rd.adapter.TicketReplyCommand;
-import com.wish.rd.adapter.TicketSnapshot;
-import com.wish.rd.adapter.TicketUpdateCommand;
+import com.wish.rd.adapter.model.TicketReplyCommand;
+import com.wish.rd.adapter.model.TicketSnapshot;
+import com.wish.rd.adapter.model.TicketUpdateCommand;
 import com.wish.rd.adapter.TicketUpdatePort;
-import com.wish.rd.adapter.TicketUpdateResult;
-import com.wish.rd.engine.bugfix.BugFixExecutionResult;
+import com.wish.rd.adapter.model.TicketUpdateResult;
+import com.wish.rd.engine.bugfix.model.BugFixExecutionResult;
 import com.wish.rd.engine.bugfix.BugFixExecutor;
 import com.wish.rd.engine.bugfix.RdBotFixEngine;
 import com.wish.rd.engine.rag.ChatQueueLimiter;
 import com.wish.rd.engine.rag.RagBugFixEngine;
-import com.wish.rd.engine.ticket.InMemoryRepairRecordRepository;
-import com.wish.rd.engine.ticket.RepairQueueDeadLetter;
+import com.wish.rd.engine.ticket.impl.InMemoryRepairRecordRepository;
+import com.wish.rd.engine.ticket.model.RepairQueueDeadLetter;
 import com.wish.rd.engine.ticket.RepairQueueDeadLetterRepository;
 import com.wish.rd.engine.ticket.RepairRecordRepository;
-import com.wish.rd.engine.ticket.RepairRecordStatus;
-import com.wish.rd.engine.ticket.RepairTicketMessage;
+import com.wish.rd.engine.ticket.model.RepairRecordStatus;
+import com.wish.rd.engine.ticket.model.RepairTicketMessage;
 import com.wish.rd.engine.ticket.TicketFieldMapping;
-import com.wish.rd.engine.ticket.TicketRepairEngine;
-import com.wish.rd.engine.ticket.TicketRepairExecutionConsumer;
+import com.wish.rd.engine.ticket.impl.TicketRepairEngine;
+import com.wish.rd.engine.ticket.impl.TicketRepairExecutionConsumer;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
 import com.wish.rd.rag.intent.IntentTreeRegistry;
 import com.wish.rd.rag.rewrite.QueryTermMappingRegistry;
-import com.wish.rd.rag.runtime.InMemoryRdTaskStore;
+import com.wish.rd.rag.runtime.impl.InMemoryRdTaskStore;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
 import org.junit.jupiter.api.Test;
 
@@ -412,10 +412,10 @@ class TicketRepairExecutionConsumerTest {
     }
 
     private static final class RecordingBugFixExecutor implements BugFixExecutor {
-        private final List<com.wish.rd.engine.bugfix.BugFixExecutionRequest> requests = new ArrayList<>();
+        private final List<com.wish.rd.engine.bugfix.model.BugFixExecutionRequest> requests = new ArrayList<>();
 
         @Override
-        public BugFixExecutionResult execute(com.wish.rd.engine.bugfix.BugFixExecutionRequest request) {
+        public BugFixExecutionResult execute(com.wish.rd.engine.bugfix.model.BugFixExecutionRequest request) {
             requests.add(request);
             return new BugFixExecutionResult(
                     request.taskId(),
@@ -428,10 +428,10 @@ class TicketRepairExecutionConsumerTest {
     }
 
     private static final class FailingBugFixExecutor implements BugFixExecutor {
-        private final List<com.wish.rd.engine.bugfix.BugFixExecutionRequest> requests = new ArrayList<>();
+        private final List<com.wish.rd.engine.bugfix.model.BugFixExecutionRequest> requests = new ArrayList<>();
 
         @Override
-        public BugFixExecutionResult execute(com.wish.rd.engine.bugfix.BugFixExecutionRequest request) {
+        public BugFixExecutionResult execute(com.wish.rd.engine.bugfix.model.BugFixExecutionRequest request) {
             requests.add(request);
             return new BugFixExecutionResult(
                     request.taskId(),
@@ -444,10 +444,10 @@ class TicketRepairExecutionConsumerTest {
     }
 
     private static final class FailThenSucceedBugFixExecutor implements BugFixExecutor {
-        private final List<com.wish.rd.engine.bugfix.BugFixExecutionRequest> requests = new ArrayList<>();
+        private final List<com.wish.rd.engine.bugfix.model.BugFixExecutionRequest> requests = new ArrayList<>();
 
         @Override
-        public BugFixExecutionResult execute(com.wish.rd.engine.bugfix.BugFixExecutionRequest request) {
+        public BugFixExecutionResult execute(com.wish.rd.engine.bugfix.model.BugFixExecutionRequest request) {
             requests.add(request);
             if (requests.size() == 1) {
                 return new BugFixExecutionResult(

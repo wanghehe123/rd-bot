@@ -1,6 +1,6 @@
 package com.wish.rd.bootstrap;
 
-import com.wish.rd.exec.repair.alert.RepairAlertType;
+import com.wish.rd.exec.repair.alert.model.RepairAlertType;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 

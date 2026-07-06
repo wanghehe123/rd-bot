@@ -1,16 +1,17 @@
 package com.wish.rd.rag.context;
 
-import com.wish.rd.rag.runtime.CreateRequirementTaskCommand;
-import com.wish.rd.rag.runtime.RdRequirementTask;
-import com.wish.rd.rag.runtime.TaskMaterial;
-import com.wish.rd.rag.runtime.TaskMaterialSourceType;
-import com.wish.rd.rag.runtime.TaskMaterialType;
+import com.wish.rd.rag.runtime.model.CreateRequirementTaskCommand;
+import com.wish.rd.rag.runtime.model.RdRequirementTask;
+import com.wish.rd.rag.runtime.model.TaskMaterial;
+import com.wish.rd.rag.runtime.model.TaskMaterialSourceType;
+import com.wish.rd.rag.runtime.model.TaskMaterialType;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import com.wish.rd.rag.context.model.RoleContextPackage;
 
 class RoleContextBuilderTest {
 

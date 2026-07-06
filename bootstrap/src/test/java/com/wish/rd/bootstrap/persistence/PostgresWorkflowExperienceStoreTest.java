@@ -1,11 +1,13 @@
 package com.wish.rd.bootstrap.persistence;
 
+import com.wish.rd.bootstrap.persistence.impl.PostgresWorkflowExperienceStore;
+
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.wish.rd.bootstrap.persistence.entity.RdExperienceEntryRow;
 import com.wish.rd.bootstrap.persistence.mapper.RdExperienceEntryMapper;
-import com.wish.rd.engine.agent.AgentRole;
-import com.wish.rd.engine.agent.WorkflowExperienceEntry;
-import com.wish.rd.engine.agent.WorkflowExperienceType;
+import com.wish.rd.engine.agent.model.AgentRole;
+import com.wish.rd.engine.agent.model.WorkflowExperienceEntry;
+import com.wish.rd.engine.agent.model.WorkflowExperienceType;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;

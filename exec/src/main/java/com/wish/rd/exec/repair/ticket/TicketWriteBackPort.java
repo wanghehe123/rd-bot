@@ -1,5 +1,9 @@
 package com.wish.rd.exec.repair.ticket;
 
+import com.wish.rd.exec.repair.ticket.model.TicketUpdateCommand;
+import com.wish.rd.exec.repair.ticket.model.TicketWriteBackResult;
+
+
 /**
  * 修复结果写回外部工单系统的端口。
  */

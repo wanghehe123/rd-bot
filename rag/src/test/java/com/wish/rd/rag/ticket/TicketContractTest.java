@@ -1,14 +1,14 @@
 package com.wish.rd.rag.ticket;
 
-import com.wish.rd.adapter.TicketMessage;
-import com.wish.rd.adapter.TicketMessageQuery;
-import com.wish.rd.adapter.TicketMessages;
+import com.wish.rd.adapter.model.TicketMessage;
+import com.wish.rd.adapter.model.TicketMessageQuery;
+import com.wish.rd.adapter.model.TicketMessages;
 import com.wish.rd.adapter.TicketProviderPort;
-import com.wish.rd.adapter.TicketReplyCommand;
-import com.wish.rd.adapter.TicketSnapshot;
-import com.wish.rd.adapter.TicketUpdateCommand;
+import com.wish.rd.adapter.model.TicketReplyCommand;
+import com.wish.rd.adapter.model.TicketSnapshot;
+import com.wish.rd.adapter.model.TicketUpdateCommand;
 import com.wish.rd.adapter.TicketUpdatePort;
-import com.wish.rd.adapter.TicketUpdateResult;
+import com.wish.rd.adapter.model.TicketUpdateResult;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;

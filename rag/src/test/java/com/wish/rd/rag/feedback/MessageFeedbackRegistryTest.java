@@ -1,13 +1,15 @@
 package com.wish.rd.rag.feedback;
 
-import com.wish.rd.framework.convention.ChatMessage;
-import com.wish.rd.rag.memory.ConversationRegistry;
+import com.wish.rd.framework.convention.model.ChatMessage;
+import com.wish.rd.rag.memory.impl.ConversationRegistry;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import com.wish.rd.rag.feedback.model.MessageFeedback;
+import com.wish.rd.rag.feedback.model.MessageFeedbackCommand;
 
 class MessageFeedbackRegistryTest {
 

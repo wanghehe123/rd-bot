@@ -2,14 +2,14 @@ package com.wish.rd.bootstrap;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.wish.rd.engine.requirement.RequirementContextPackage;
-import com.wish.rd.engine.requirement.RequirementPolicyDecision;
+import com.wish.rd.engine.requirement.model.RequirementContextPackage;
+import com.wish.rd.engine.requirement.model.RequirementPolicyDecision;
 import com.wish.rd.engine.requirement.RuleBasedRequirementPolicyGate;
-import com.wish.rd.rag.runtime.RdRequirementTask;
-import com.wish.rd.rag.runtime.RdTaskStatus;
-import com.wish.rd.rag.runtime.TaskMaterial;
-import com.wish.rd.rag.runtime.TaskMaterialSourceType;
-import com.wish.rd.rag.runtime.TaskMaterialType;
+import com.wish.rd.rag.runtime.model.RdRequirementTask;
+import com.wish.rd.rag.runtime.model.RdTaskStatus;
+import com.wish.rd.rag.runtime.model.TaskMaterial;
+import com.wish.rd.rag.runtime.model.TaskMaterialSourceType;
+import com.wish.rd.rag.runtime.model.TaskMaterialType;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Method;

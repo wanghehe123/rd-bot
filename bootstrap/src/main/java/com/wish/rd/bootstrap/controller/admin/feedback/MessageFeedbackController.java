@@ -1,7 +1,7 @@
 package com.wish.rd.bootstrap.controller.admin.feedback;
 
 import com.wish.rd.engine.admin.feedback.MessageFeedbackAdminEngine;
-import com.wish.rd.rag.feedback.MessageFeedbackCommand;
+import com.wish.rd.rag.feedback.model.MessageFeedbackCommand;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;

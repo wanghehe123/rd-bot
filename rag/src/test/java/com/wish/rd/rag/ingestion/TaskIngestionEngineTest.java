@@ -1,7 +1,7 @@
 package com.wish.rd.rag.ingestion;
 
-import com.wish.rd.rag.core.chunk.ChunkingMode;
-import com.wish.rd.rag.vector.InMemoryVectorStore;
+import com.wish.rd.rag.core.chunk.model.ChunkingMode;
+import com.wish.rd.rag.vector.impl.InMemoryVectorStore;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
@@ -11,6 +11,13 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import com.wish.rd.rag.ingestion.model.IngestionNodeLog;
+import com.wish.rd.rag.ingestion.model.IngestionNodeType;
+import com.wish.rd.rag.ingestion.model.IngestionStatus;
+import com.wish.rd.rag.ingestion.model.IngestionTaskCommand;
+import com.wish.rd.rag.ingestion.model.IngestionTaskResult;
+import com.wish.rd.rag.ingestion.model.NodeConfig;
+import com.wish.rd.rag.ingestion.model.PipelineDefinition;
 
 class TaskIngestionEngineTest {
 

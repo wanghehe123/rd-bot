@@ -1,15 +1,20 @@
 package com.wish.rd.bootstrap.executor;
 
+import com.wish.rd.bootstrap.executor.impl.EngineBugFixExecutorAdapter;
+
+import com.wish.rd.bootstrap.threading.RdBotThreadPoolConfiguration;
 import com.wish.rd.engine.bugfix.BugFixExecutor;
-import com.wish.rd.engine.audit.NoopRepairAuditSink;
+import com.wish.rd.engine.audit.impl.NoopRepairAuditSink;
 import com.wish.rd.engine.audit.RepairAuditSinkPort;
 import com.wish.rd.exec.repair.code.CodePlatformPort;
 import com.wish.rd.exec.repair.execution.RepairExecutorPort;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.task.AsyncTaskExecutor;
 
 /**
  * Spring wiring for the engine bug-fix executor bridge.
@@ -40,7 +45,9 @@ public class EngineBugFixExecutorConfiguration {
             @Value("${rd.executor.repository.name:repository}") String repoName,
             @Value("${rd.executor.repository.url:}") String repositoryUrl,
             @Value("${rd.executor.repository.base-branch:main}") String baseBranch,
-            @Value("${rd.executor.repository.work-branch-prefix:repair/}") String workBranchPrefix
+            @Value("${rd.executor.repository.work-branch-prefix:repair/}") String workBranchPrefix,
+            @Qualifier(RdBotThreadPoolConfiguration.EXECUTOR_IO_EXECUTOR_BEAN)
+            AsyncTaskExecutor executorIoTaskExecutor
     ) {
         RepairExecutorPort repairExecutor = repairExecutorProvider.getIfAvailable();
         CodePlatformPort codePlatform = codePlatformProvider.getIfAvailable();
@@ -57,7 +64,8 @@ public class EngineBugFixExecutorConfiguration {
                         baseBranch,
                         workBranchPrefix
                 ),
-                auditSinkProvider.getIfAvailable(NoopRepairAuditSink::instance)
+                auditSinkProvider.getIfAvailable(NoopRepairAuditSink::instance),
+                executorIoTaskExecutor
         );
     }
 }

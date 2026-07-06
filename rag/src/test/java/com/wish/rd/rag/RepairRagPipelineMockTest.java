@@ -1,20 +1,20 @@
 package com.wish.rd.rag;
 
-import com.wish.rd.framework.convention.RetrievedChunk;
-import com.wish.rd.adapter.CodeSearchQuery;
-import com.wish.rd.adapter.LogQuery;
-import com.wish.rd.rag.guidance.GuidanceDecision;
-import com.wish.rd.rag.ingestion.DocumentSource;
+import com.wish.rd.framework.convention.model.RetrievedChunk;
+import com.wish.rd.adapter.model.CodeSearchQuery;
+import com.wish.rd.adapter.model.LogQuery;
+import com.wish.rd.rag.guidance.model.GuidanceDecision;
+import com.wish.rd.rag.ingestion.model.DocumentSource;
 import com.wish.rd.rag.ingestion.IngestionPipeline;
-import com.wish.rd.rag.intent.IntentLevel;
-import com.wish.rd.rag.intent.IntentNode;
+import com.wish.rd.rag.intent.model.IntentLevel;
+import com.wish.rd.rag.intent.model.IntentNode;
 import com.wish.rd.rag.intent.IntentTree;
-import com.wish.rd.rag.pipeline.RepairContextPackage;
+import com.wish.rd.rag.pipeline.model.RepairContextPackage;
 import com.wish.rd.rag.pipeline.RepairRagPipeline;
-import com.wish.rd.rag.pipeline.RepairRagRequest;
+import com.wish.rd.rag.pipeline.model.RepairRagRequest;
 import com.wish.rd.rag.pipeline.RepairTaskContextPort;
 import com.wish.rd.rag.runtime.RagRuntimeFactory;
-import com.wish.rd.rag.vector.InMemoryVectorStore;
+import com.wish.rd.rag.vector.impl.InMemoryVectorStore;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;

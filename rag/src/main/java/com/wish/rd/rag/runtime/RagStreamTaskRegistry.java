@@ -1,6 +1,9 @@
 package com.wish.rd.rag.runtime;
 
-import com.wish.rd.adapter.TicketSnapshot;
+import com.wish.rd.rag.runtime.impl.InMemoryRdTaskStatusEventStore;
+import com.wish.rd.rag.runtime.impl.InMemoryRdTaskStore;
+
+import com.wish.rd.adapter.model.TicketSnapshot;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
 import com.wish.rd.rag.lock.DistributedLockExecutor;
 import org.springframework.beans.factory.ObjectProvider;
@@ -13,6 +16,16 @@ import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.Optional;
 import java.util.function.Supplier;
+import com.wish.rd.rag.runtime.model.CreateRequirementTaskCommand;
+import com.wish.rd.rag.runtime.model.RdBugFixTask;
+import com.wish.rd.rag.runtime.model.RdRequirementTask;
+import com.wish.rd.rag.runtime.model.RdTask;
+import com.wish.rd.rag.runtime.model.RdTaskEventTrigger;
+import com.wish.rd.rag.runtime.model.RdTaskPage;
+import com.wish.rd.rag.runtime.model.RdTaskQuery;
+import com.wish.rd.rag.runtime.model.RdTaskStatus;
+import com.wish.rd.rag.runtime.model.RdTaskStatusEvent;
+import com.wish.rd.rag.runtime.model.RdTaskType;
 
 /**
  * RD 任务状态机注册表。
@@ -153,6 +166,40 @@ public final class RagStreamTaskRegistry {
             String priority,
             String promptSnapshot
     ) {
+        return createTaskManually(ticketId, ticketTitle, title, priority, promptSnapshot, "", "", "", "", "", "", "");
+    }
+
+    /**
+     * 管理台创建任务：携带项目仓库快照。
+     *
+     * @param ticketId       工单 ID
+     * @param ticketTitle    工单标题
+     * @param title          展示标题
+     * @param priority       优先级
+     * @param promptSnapshot Prompt 快照
+     * @param projectId      项目 ID
+     * @param projectKey     项目 key
+     * @param projectName    项目名称
+     * @param repositoryUrl  仓库地址
+     * @param repoOwner      仓库 owner
+     * @param repoName       仓库名
+     * @param baseBranch     基准分支
+     * @return 新任务快照
+     */
+    public RdBugFixTask createTaskManually(
+            String ticketId,
+            String ticketTitle,
+            String title,
+            String priority,
+            String promptSnapshot,
+            String projectId,
+            String projectKey,
+            String projectName,
+            String repositoryUrl,
+            String repoOwner,
+            String repoName,
+            String baseBranch
+    ) {
         return withLock(() -> {
             long now = System.currentTimeMillis();
             RdBugFixTask task = new RdBugFixTask(
@@ -168,6 +215,13 @@ public final class RagStreamTaskRegistry {
                     "",
                     "",
                     "",
+                    projectId,
+                    projectKey,
+                    projectName,
+                    repositoryUrl,
+                    repoOwner,
+                    repoName,
+                    baseBranch,
                     now,
                     now,
                     false
@@ -702,6 +756,19 @@ public final class RagStreamTaskRegistry {
     }
 
     /**
+     * 将需求任务推进到 MERGED。
+     *
+     * @param taskId 任务 ID
+     * @return 新需求任务快照
+     */
+    public RdRequirementTask markRequirementMerged(String taskId) {
+        return withLock(() -> {
+            RdRequirementTask existing = getRequirementTask(taskId);
+            return transitionAndSave(existing, RdTaskStatus.MERGED, "", "", "", "");
+        });
+    }
+
+    /**
      * 将需求任务推进到 REJECTED。
      *
      * @param taskId              任务 ID
@@ -913,7 +980,8 @@ public final class RagStreamTaskRegistry {
                     || target == RdTaskStatus.MATERIAL_COLLECTING
                     || target == RdTaskStatus.CONTEXT_BUILDING
                     || target == RdTaskStatus.EXECUTING;
-            case MERGED, COMPLETED, CANCELLED, DEAD_LETTERED, DELETED -> false;
+            case COMPLETED -> target == RdTaskStatus.MERGED;
+            case MERGED, CANCELLED, DEAD_LETTERED, DELETED -> false;
             case RECOVERING -> target == RdTaskStatus.MATERIAL_COLLECTING
                     || target == RdTaskStatus.SEARCHING
                     || target == RdTaskStatus.EXECUTING
@@ -960,12 +1028,17 @@ public final class RagStreamTaskRegistry {
 
     private boolean matchesKeywords(RdTaskQuery query, RdTask task) {
         if (task instanceof RdBugFixTask bugFixTask) {
-            return query.matchesKeywords(bugFixTask.ticketId(), bugFixTask.ticketTitle(), bugFixTask.title());
+            return query.matchesKeywords(
+                    bugFixTask.ticketId(),
+                    bugFixTask.ticketTitle() + " " + bugFixTask.projectName(),
+                    bugFixTask.title() + " " + bugFixTask.repositoryUrl()
+            );
         }
         if (task instanceof RdRequirementTask requirementTask) {
             String sourceText = String.join(" ",
                     requirementTask.sourceId(),
                     requirementTask.sourceUrl(),
+                    requirementTask.projectName(),
                     requirementTask.repositoryUrl(),
                     requirementTask.repoOwner(),
                     requirementTask.repoName()

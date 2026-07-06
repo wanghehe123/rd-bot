@@ -1,8 +1,8 @@
 package com.wish.rd.bootstrap.controller.rag;
 
-import com.wish.rd.rag.trace.RagTraceDetail;
-import com.wish.rd.rag.trace.RagTraceNodeView;
-import com.wish.rd.rag.trace.RagTraceRunView;
+import com.wish.rd.rag.trace.model.RagTraceDetail;
+import com.wish.rd.rag.trace.model.RagTraceNodeView;
+import com.wish.rd.rag.trace.model.RagTraceRunView;
 import com.wish.rd.rag.trace.RagTraceStore;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;

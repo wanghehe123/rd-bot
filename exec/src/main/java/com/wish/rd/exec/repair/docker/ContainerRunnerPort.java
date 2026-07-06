@@ -1,6 +1,8 @@
 package com.wish.rd.exec.repair.docker;
 
 import java.io.IOException;
+import com.wish.rd.exec.repair.docker.model.ContainerRunRequest;
+import com.wish.rd.exec.repair.docker.model.ContainerRunResult;
 
 /**
  * 容器执行端口，供后续 Docker Claude Code 执行器同步运行一次容器任务。

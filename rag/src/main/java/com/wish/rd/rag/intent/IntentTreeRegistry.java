@@ -7,6 +7,10 @@ import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.concurrent.atomic.AtomicLong;
 import org.springframework.stereotype.Component;
+import com.wish.rd.rag.intent.model.IntentLevel;
+import com.wish.rd.rag.intent.model.IntentNode;
+import com.wish.rd.rag.intent.model.IntentNodeCommand;
+import com.wish.rd.rag.intent.model.ManagedIntentNode;
 
 @Component
 public final class IntentTreeRegistry {

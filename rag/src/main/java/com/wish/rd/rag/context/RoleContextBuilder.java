@@ -1,12 +1,14 @@
 package com.wish.rd.rag.context;
 
-import com.wish.rd.rag.runtime.RdRequirementTask;
-import com.wish.rd.rag.runtime.TaskMaterial;
+import com.wish.rd.rag.runtime.model.RdRequirementTask;
+import com.wish.rd.rag.runtime.model.TaskMaterial;
 
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
+import com.wish.rd.rag.context.model.RoleContextEvidence;
+import com.wish.rd.rag.context.model.RoleContextPackage;
 
 /**
  * 角色上下文构建器。

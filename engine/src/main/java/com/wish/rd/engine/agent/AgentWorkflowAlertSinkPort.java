@@ -1,5 +1,8 @@
 package com.wish.rd.engine.agent;
 
+import com.wish.rd.engine.agent.model.AgentWorkflowAlert;
+
+
 /**
  * 多 Agent 工作流告警输出端口。
  */

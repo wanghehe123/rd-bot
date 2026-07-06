@@ -2,25 +2,25 @@ package com.wish.rd.bootstrap;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.wish.rd.engine.bugfix.BugFixExecutionRequest;
-import com.wish.rd.engine.bugfix.BugFixExecutionResult;
+import com.wish.rd.engine.bugfix.model.BugFixExecutionRequest;
+import com.wish.rd.engine.bugfix.model.BugFixExecutionResult;
 import com.wish.rd.engine.bugfix.BugFixExecutor;
-import com.wish.rd.engine.bugfix.acceptance.AcceptanceAssertion;
-import com.wish.rd.engine.bugfix.acceptance.AcceptancePlan;
-import com.wish.rd.engine.bugfix.acceptance.AcceptancePlanStatus;
-import com.wish.rd.engine.bugfix.acceptance.AcceptancePlanStep;
-import com.wish.rd.engine.rag.BugFixMessage;
-import com.wish.rd.bootstrap.executor.EngineBugFixExecutorAdapter;
+import com.wish.rd.engine.bugfix.acceptance.model.AcceptanceAssertion;
+import com.wish.rd.engine.bugfix.acceptance.model.AcceptancePlan;
+import com.wish.rd.engine.bugfix.acceptance.model.AcceptancePlanStatus;
+import com.wish.rd.engine.bugfix.acceptance.model.AcceptancePlanStep;
+import com.wish.rd.engine.rag.model.BugFixMessage;
+import com.wish.rd.bootstrap.executor.impl.EngineBugFixExecutorAdapter;
 import com.wish.rd.bootstrap.executor.EngineBugFixExecutorConfiguration;
 import com.wish.rd.exec.repair.code.CodePlatformPort;
-import com.wish.rd.exec.repair.code.CreatePullRequestCommand;
-import com.wish.rd.exec.repair.code.PullRequestResult;
-import com.wish.rd.exec.repair.execution.RepairArtifact;
-import com.wish.rd.exec.repair.execution.RepairArtifactType;
-import com.wish.rd.exec.repair.execution.RepairExecutionResult;
-import com.wish.rd.exec.repair.execution.RepairExecutionStatus;
+import com.wish.rd.exec.repair.code.model.CreatePullRequestCommand;
+import com.wish.rd.exec.repair.code.model.PullRequestResult;
+import com.wish.rd.exec.repair.execution.model.RepairArtifact;
+import com.wish.rd.exec.repair.execution.model.RepairArtifactType;
+import com.wish.rd.exec.repair.execution.model.RepairExecutionResult;
+import com.wish.rd.exec.repair.execution.model.RepairExecutionStatus;
 import com.wish.rd.exec.repair.execution.RepairExecutorPort;
-import com.wish.rd.exec.repair.execution.RepairJobCommand;
+import com.wish.rd.exec.repair.execution.model.RepairJobCommand;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
@@ -233,7 +233,7 @@ class EngineBugFixExecutorAdapterTest {
     void shouldKeepBridgeInBootstrapWithoutChangingEnginePortShape() throws IOException {
         Path projectRoot = Path.of(System.getProperty("user.dir")).getParent();
         String adapterSource = Files.readString(projectRoot.resolve(
-                "bootstrap/src/main/java/com/wish/rd/bootstrap/executor/EngineBugFixExecutorAdapter.java"
+                "bootstrap/src/main/java/com/wish/rd/bootstrap/executor/impl/EngineBugFixExecutorAdapter.java"
         ));
         String enginePort = Files.readString(projectRoot.resolve(
                 "engine/src/main/java/com/wish/rd/engine/bugfix/BugFixExecutor.java"
@@ -363,6 +363,11 @@ class EngineBugFixExecutorAdapterTest {
     @Configuration(proxyBeanMethods = false)
     @Import(EngineBugFixExecutorConfiguration.class)
     static class BridgeContextConfiguration {
+
+        @Bean
+        org.springframework.core.task.AsyncTaskExecutor rdExecutorIoTaskExecutor() {
+            return new org.springframework.core.task.SimpleAsyncTaskExecutor("test-executor-io-");
+        }
 
         @Bean
         RepairExecutorPort repairExecutorPort() {

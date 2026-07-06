@@ -1,9 +1,10 @@
 package com.wish.rd.bootstrap.feishu.im;
 
-import com.wish.rd.adapter.TicketMessage;
-import com.wish.rd.adapter.TicketMessageQuery;
-import com.wish.rd.adapter.TicketMessages;
-import com.wish.rd.adapter.TicketSnapshot;
+import com.wish.rd.adapter.model.TicketMessage;
+import com.wish.rd.adapter.model.TicketMessageQuery;
+import com.wish.rd.adapter.model.TicketMessages;
+import com.wish.rd.adapter.model.TicketSnapshot;
+import com.wish.rd.bootstrap.feishu.im.model.FeishuImTicketDraft;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.stereotype.Component;
 

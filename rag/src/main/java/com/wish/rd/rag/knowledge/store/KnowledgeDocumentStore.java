@@ -1,6 +1,6 @@
 package com.wish.rd.rag.knowledge.store;
 
-import com.wish.rd.rag.knowledge.KnowledgeDocument;
+import com.wish.rd.rag.knowledge.model.KnowledgeDocument;
 
 import java.util.List;
 import java.util.Optional;

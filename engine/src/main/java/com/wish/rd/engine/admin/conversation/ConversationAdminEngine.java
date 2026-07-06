@@ -1,8 +1,8 @@
 package com.wish.rd.engine.admin.conversation;
 
-import com.wish.rd.rag.memory.ConversationRegistry;
-import com.wish.rd.rag.memory.ManagedConversation;
-import com.wish.rd.rag.memory.ManagedConversationMessage;
+import com.wish.rd.rag.memory.impl.ConversationRegistry;
+import com.wish.rd.rag.memory.model.ManagedConversation;
+import com.wish.rd.rag.memory.model.ManagedConversationMessage;
 
 import java.util.List;
 import org.springframework.stereotype.Service;

@@ -1,6 +1,7 @@
 package com.wish.rd.engine.agent;
 
 import java.util.List;
+import com.wish.rd.engine.agent.model.WorkflowExperienceEntry;
 
 /**
  * 多 Agent 工作流经验存储端口。

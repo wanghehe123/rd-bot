@@ -1,15 +1,15 @@
 package com.wish.rd.rag.ingestion;
 
-import com.wish.rd.framework.convention.RetrievedChunk;
+import com.wish.rd.framework.convention.model.RetrievedChunk;
 import com.wish.rd.rag.core.chunk.ChunkingStrategyFactory;
-import com.wish.rd.rag.core.chunk.VectorChunk;
-import com.wish.rd.rag.core.chunk.strategy.FixedSizeTextChunker;
-import com.wish.rd.rag.core.chunk.strategy.StructureAwareTextChunker;
+import com.wish.rd.rag.core.chunk.model.VectorChunk;
+import com.wish.rd.rag.core.chunk.strategy.impl.FixedSizeTextChunker;
+import com.wish.rd.rag.core.chunk.strategy.impl.StructureAwareTextChunker;
 import com.wish.rd.rag.core.parser.DocumentParser;
 import com.wish.rd.rag.core.parser.DocumentParserSelector;
-import com.wish.rd.rag.core.parser.MarkdownDocumentParser;
-import com.wish.rd.rag.core.parser.ParseResult;
-import com.wish.rd.rag.core.parser.PlainTextDocumentParser;
+import com.wish.rd.rag.core.parser.impl.MarkdownDocumentParser;
+import com.wish.rd.rag.core.parser.model.ParseResult;
+import com.wish.rd.rag.core.parser.impl.PlainTextDocumentParser;
 import com.wish.rd.rag.vector.VectorStore;
 
 import java.util.ArrayList;
@@ -18,6 +18,12 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import com.wish.rd.rag.ingestion.model.IngestionNodeLog;
+import com.wish.rd.rag.ingestion.model.IngestionStatus;
+import com.wish.rd.rag.ingestion.model.IngestionTaskCommand;
+import com.wish.rd.rag.ingestion.model.IngestionTaskResult;
+import com.wish.rd.rag.ingestion.model.NodeConfig;
+import com.wish.rd.rag.ingestion.model.PipelineDefinition;
 
 /**
  * 摄取任务执行引擎：按管线节点链驱动"获取→解析→分块→索引"四步，产出可检索的分块。

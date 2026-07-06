@@ -1,10 +1,10 @@
 package com.wish.rd.bootstrap.feishu.ticket;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import com.wish.rd.adapter.TicketMessage;
-import com.wish.rd.adapter.TicketMessageQuery;
-import com.wish.rd.adapter.TicketMessages;
-import com.wish.rd.adapter.TicketSnapshot;
+import com.wish.rd.adapter.model.TicketMessage;
+import com.wish.rd.adapter.model.TicketMessageQuery;
+import com.wish.rd.adapter.model.TicketMessages;
+import com.wish.rd.adapter.model.TicketSnapshot;
 
 import java.time.Instant;
 import java.util.ArrayList;

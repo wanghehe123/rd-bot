@@ -1,7 +1,7 @@
 package com.wish.rd.bootstrap;
 
-import com.wish.rd.framework.convention.ChatMessage;
-import com.wish.rd.rag.memory.ConversationRegistry;
+import com.wish.rd.framework.convention.model.ChatMessage;
+import com.wish.rd.rag.memory.impl.ConversationRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;

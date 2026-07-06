@@ -1,5 +1,10 @@
 package com.wish.rd.engine.bugfix.acceptance;
 
+import com.wish.rd.engine.bugfix.acceptance.model.AcceptancePlan;
+import com.wish.rd.engine.bugfix.acceptance.model.AcceptancePlanGenerationCommand;
+import com.wish.rd.engine.bugfix.acceptance.model.AcceptancePlanGenerationResult;
+
+
 /**
  * 验收计划生成端口。
  *

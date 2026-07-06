@@ -1,5 +1,10 @@
 package com.wish.rd.adapter;
 
+import com.wish.rd.adapter.model.TicketReplyCommand;
+import com.wish.rd.adapter.model.TicketUpdateCommand;
+import com.wish.rd.adapter.model.TicketUpdateResult;
+
+
 /**
  * 工单系统写入端口：向工单会话回复消息、更新工单状态/字段。
  *

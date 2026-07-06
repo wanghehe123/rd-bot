@@ -1,5 +1,7 @@
 package com.wish.rd.bootstrap.lock;
 
+import com.wish.rd.bootstrap.lock.impl.RedissonDistributedLockExecutor;
+
 import com.wish.rd.rag.lock.DistributedLockExecutor;
 import org.redisson.Redisson;
 import org.redisson.api.RedissonClient;

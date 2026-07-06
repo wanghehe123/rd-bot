@@ -1,9 +1,9 @@
 package com.wish.rd.bootstrap.executor;
 
-import com.wish.rd.exec.repair.docker.ClaudeCodeModelProvider;
-import com.wish.rd.exec.repair.docker.DockerClaudeCodeExecutor;
+import com.wish.rd.exec.repair.docker.model.ClaudeCodeModelProvider;
+import com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor;
 import com.wish.rd.exec.repair.model.ModelCircuitBreakerPolicy;
-import com.wish.rd.exec.repair.security.ExecutionAllowlistPolicy;
+import com.wish.rd.exec.repair.security.model.ExecutionAllowlistPolicy;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 

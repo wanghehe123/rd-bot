@@ -1,8 +1,8 @@
 package com.wish.rd.engine.admin.intent;
 
-import com.wish.rd.rag.intent.IntentNodeCommand;
+import com.wish.rd.rag.intent.model.IntentNodeCommand;
 import com.wish.rd.rag.intent.IntentTreeRegistry;
-import com.wish.rd.rag.intent.ManagedIntentNode;
+import com.wish.rd.rag.intent.model.ManagedIntentNode;
 
 import java.util.List;
 import org.springframework.stereotype.Service;

@@ -1,9 +1,10 @@
 package com.wish.rd.exec.repair.docker;
 
-import com.wish.rd.exec.repair.execution.RepairJobCommand;
+import com.wish.rd.exec.repair.execution.model.RepairJobCommand;
 
 import java.io.IOException;
 import java.util.Map;
+import com.wish.rd.exec.repair.docker.model.RepairWorkspace;
 
 /**
  * Docker 修复工作区的代码仓库端口，由 bootstrap 适配 Git CLI 或其他代码平台工作区实现。

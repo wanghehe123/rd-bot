@@ -1,7 +1,7 @@
 package com.wish.rd.bootstrap.controller.admin.sample;
 
 import com.wish.rd.engine.admin.sample.SampleQuestionAdminEngine;
-import com.wish.rd.rag.sample.SampleQuestionCommand;
+import com.wish.rd.rag.sample.model.SampleQuestionCommand;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;

@@ -133,14 +133,14 @@ public class GitHubCodePlatformProperties {
         this.ghCliCommand = defaultWhenBlank(ghCliCommand, "gh");
     }
 
-    boolean isRepositoryAllowed(String owner, String repo) {
+    public boolean isRepositoryAllowed(String owner, String repo) {
         if (allowedRepositories.isEmpty()) {
             return true;
         }
         return allowedRepositories.contains((normalize(owner) + "/" + normalize(repo)).toLowerCase(Locale.ROOT));
     }
 
-    void validateForRealAdapter() {
+    public void validateForRealAdapter() {
         if (authMode == AuthMode.PAT_LOCAL_SMOKE) {
             if (patToken.isBlank()) {
                 throw new IllegalStateException("GitHub PAT local smoke fallback requires patToken");

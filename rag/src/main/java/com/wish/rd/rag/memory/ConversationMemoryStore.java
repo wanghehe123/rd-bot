@@ -1,6 +1,6 @@
 package com.wish.rd.rag.memory;
 
-import com.wish.rd.framework.convention.ChatMessage;
+import com.wish.rd.framework.convention.model.ChatMessage;
 
 import java.util.List;
 

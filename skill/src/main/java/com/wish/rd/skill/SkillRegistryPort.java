@@ -2,6 +2,7 @@ package com.wish.rd.skill;
 
 import java.util.List;
 import java.util.Optional;
+import com.wish.rd.skill.model.AgentSkillDescriptor;
 
 /**
  * Skill 注册表端口。

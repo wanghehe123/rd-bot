@@ -1,6 +1,7 @@
 package com.wish.rd.adapter;
 
 import java.util.Optional;
+import com.wish.rd.adapter.model.TicketSnapshot;
 
 /**
  * 工单系统访问端口（旧版整合接口）。

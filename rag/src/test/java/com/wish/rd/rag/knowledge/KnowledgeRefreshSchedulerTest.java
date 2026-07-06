@@ -1,7 +1,7 @@
 package com.wish.rd.rag.knowledge;
 
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
-import com.wish.rd.rag.core.chunk.ChunkingMode;
+import com.wish.rd.rag.core.chunk.model.ChunkingMode;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
@@ -12,6 +12,13 @@ import java.util.concurrent.atomic.AtomicLong;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import com.wish.rd.rag.knowledge.model.CreateKnowledgeBaseCommand;
+import com.wish.rd.rag.knowledge.model.FeishuDocumentSnapshot;
+import com.wish.rd.rag.knowledge.model.KnowledgeBase;
+import com.wish.rd.rag.knowledge.model.KnowledgeDocument;
+import com.wish.rd.rag.knowledge.model.KnowledgeDocumentSource;
+import com.wish.rd.rag.knowledge.model.KnowledgeRefreshMetric;
+import com.wish.rd.rag.knowledge.model.WriteKnowledgeDocumentCommand;
 
 class KnowledgeRefreshSchedulerTest {
 

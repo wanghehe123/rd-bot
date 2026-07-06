@@ -6,6 +6,9 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import com.wish.rd.rag.trace.model.RagTraceDetail;
+import com.wish.rd.rag.trace.model.RagTraceNodeRecord;
+import com.wish.rd.rag.trace.model.RagTraceRunStart;
 
 class RagTraceStoreTest {
 

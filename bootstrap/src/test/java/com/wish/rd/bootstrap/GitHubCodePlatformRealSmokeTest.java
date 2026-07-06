@@ -1,10 +1,10 @@
 package com.wish.rd.bootstrap;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.wish.rd.bootstrap.github.GitHubCodePlatformAdapter;
+import com.wish.rd.bootstrap.github.impl.GitHubCodePlatformAdapter;
 import com.wish.rd.bootstrap.github.GitHubCodePlatformProperties;
-import com.wish.rd.exec.repair.code.CreatePullRequestCommand;
-import com.wish.rd.exec.repair.code.PullRequestResult;
+import com.wish.rd.exec.repair.code.model.CreatePullRequestCommand;
+import com.wish.rd.exec.repair.code.model.PullRequestResult;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 

@@ -1,6 +1,7 @@
 package com.wish.rd.bootstrap.feishu.im;
 
 import com.wish.rd.engine.ticket.TicketFieldMapping;
+import com.wish.rd.bootstrap.feishu.im.model.FeishuImTicketDraft;
 import org.springframework.stereotype.Component;
 
 import java.util.LinkedHashMap;

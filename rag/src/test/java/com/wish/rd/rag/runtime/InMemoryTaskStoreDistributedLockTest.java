@@ -1,5 +1,8 @@
 package com.wish.rd.rag.runtime;
 
+import com.wish.rd.rag.runtime.impl.InMemoryRdTaskStatusEventStore;
+import com.wish.rd.rag.runtime.impl.InMemoryTaskMaterialStore;
+
 import com.wish.rd.rag.lock.DistributedLockExecutor;
 import org.junit.jupiter.api.Test;
 
@@ -8,6 +11,12 @@ import java.util.List;
 import java.util.function.Supplier;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import com.wish.rd.rag.runtime.model.RdTaskEventTrigger;
+import com.wish.rd.rag.runtime.model.RdTaskStatus;
+import com.wish.rd.rag.runtime.model.RdTaskStatusEvent;
+import com.wish.rd.rag.runtime.model.TaskMaterial;
+import com.wish.rd.rag.runtime.model.TaskMaterialSourceType;
+import com.wish.rd.rag.runtime.model.TaskMaterialType;
 
 /**
  * 内存任务相关 store 的分布式锁接入测试。

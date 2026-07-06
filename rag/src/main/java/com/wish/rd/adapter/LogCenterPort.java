@@ -1,12 +1,13 @@
 package com.wish.rd.adapter;
 
 import java.util.List;
+import com.wish.rd.adapter.model.LogQuery;
 
 /**
  * 日志中心访问端口：按 {@link LogQuery} 检索目标系统的运行日志。
  *
  * <p>RAG 能力层只定义契约，具体实现由外部适配器（当前为测试通道的 mock）提供。
- * 被 {@link com.wish.rd.rag.retrieval.LogCenterSearchChannel} 用于拉取"运行日志"证据。
+ * 被 {@link com.wish.rd.rag.retrieval.impl.LogCenterSearchChannel} 用于拉取"运行日志"证据。
  */
 public interface LogCenterPort {
 

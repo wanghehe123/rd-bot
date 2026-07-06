@@ -1,8 +1,9 @@
 package com.wish.rd.bootstrap.feishu.im;
 
-import com.wish.rd.adapter.TicketMessageQuery;
-import com.wish.rd.adapter.TicketMessages;
-import com.wish.rd.adapter.TicketSnapshot;
+import com.wish.rd.adapter.model.TicketMessageQuery;
+import com.wish.rd.adapter.model.TicketMessages;
+import com.wish.rd.adapter.model.TicketSnapshot;
+import com.wish.rd.bootstrap.feishu.im.model.FeishuImTicketDraft;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;

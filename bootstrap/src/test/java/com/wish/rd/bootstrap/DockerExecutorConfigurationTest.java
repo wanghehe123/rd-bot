@@ -2,17 +2,17 @@ package com.wish.rd.bootstrap;
 
 import com.wish.rd.bootstrap.executor.DockerExecutorConfiguration;
 import com.wish.rd.bootstrap.executor.DockerExecutorProperties;
-import com.wish.rd.bootstrap.executor.InMemoryRepairAlertSink;
-import com.wish.rd.bootstrap.executor.ProcessGitRepairWorkspaceRepository;
-import com.wish.rd.bootstrap.executor.ProcessContainerRunner;
-import com.wish.rd.exec.repair.alert.RepairAlert;
+import com.wish.rd.bootstrap.executor.impl.InMemoryRepairAlertSink;
+import com.wish.rd.bootstrap.executor.impl.ProcessGitRepairWorkspaceRepository;
+import com.wish.rd.bootstrap.executor.impl.ProcessContainerRunner;
+import com.wish.rd.exec.repair.alert.model.RepairAlert;
 import com.wish.rd.exec.repair.alert.RepairAlertSinkPort;
-import com.wish.rd.exec.repair.alert.RepairAlertType;
-import com.wish.rd.exec.repair.docker.DockerClaudeCodeExecutor;
+import com.wish.rd.exec.repair.alert.model.RepairAlertType;
+import com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor;
 import com.wish.rd.exec.repair.docker.RepairWorkspaceRepositoryPort;
 import com.wish.rd.exec.repair.execution.RepairExecutorPort;
-import com.wish.rd.exec.repair.model.ModelHealthStore;
-import com.wish.rd.exec.repair.security.ExecutionAllowlistPolicy;
+import com.wish.rd.exec.repair.health.ModelHealthStore;
+import com.wish.rd.exec.repair.security.model.ExecutionAllowlistPolicy;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.autoconfigure.context.ConfigurationPropertiesAutoConfiguration;
@@ -172,7 +172,7 @@ class DockerExecutorConfigurationTest {
                         "rd.executor.docker.providers[1].protocol=openai-chat-completions",
                         "rd.executor.docker.providers[1].base-url=https://api.minimaxi.com/v1",
                         "rd.executor.docker.providers[1].api-key-env=MINIMAX_API_KEY",
-                        "rd.executor.docker.providers[1].model=MiniMax-M2.7"
+                        "rd.executor.docker.providers[1].model=MiniMax-M3"
                 );
 
         contextRunner.run(context -> {
@@ -195,7 +195,7 @@ class DockerExecutorConfigurationTest {
                         "rd.executor.docker.providers[0].protocol=openai-chat-completions",
                         "rd.executor.docker.providers[0].base-url=https://api.minimaxi.com/v1",
                         "rd.executor.docker.providers[0].api-key-env=MINIMAX_API_KEY",
-                        "rd.executor.docker.providers[0].model=MiniMax-M2.7"
+                        "rd.executor.docker.providers[0].model=MiniMax-M3"
                 );
 
         contextRunner.run(context -> {

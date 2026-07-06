@@ -2,7 +2,7 @@ package com.wish.rd.bootstrap;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.wish.rd.exec.repair.result.AgentRoleResultValidation;
+import com.wish.rd.exec.repair.result.model.AgentRoleResultValidation;
 import com.wish.rd.exec.repair.result.AgentRoleResultValidator;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;

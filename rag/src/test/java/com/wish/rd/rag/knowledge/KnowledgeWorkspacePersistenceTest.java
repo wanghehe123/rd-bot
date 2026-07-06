@@ -1,11 +1,11 @@
 package com.wish.rd.rag.knowledge;
 
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
-import com.wish.rd.rag.core.chunk.ChunkingMode;
-import com.wish.rd.rag.knowledge.store.InMemoryKnowledgeBaseStore;
-import com.wish.rd.rag.knowledge.store.InMemoryKnowledgeChunkStore;
-import com.wish.rd.rag.knowledge.store.InMemoryKnowledgeDocumentStore;
-import com.wish.rd.rag.vector.InMemoryVectorStore;
+import com.wish.rd.rag.core.chunk.model.ChunkingMode;
+import com.wish.rd.rag.knowledge.store.impl.InMemoryKnowledgeBaseStore;
+import com.wish.rd.rag.knowledge.store.impl.InMemoryKnowledgeChunkStore;
+import com.wish.rd.rag.knowledge.store.impl.InMemoryKnowledgeDocumentStore;
+import com.wish.rd.rag.vector.impl.InMemoryVectorStore;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
@@ -15,6 +15,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import com.wish.rd.rag.knowledge.model.CreateKnowledgeBaseCommand;
+import com.wish.rd.rag.knowledge.model.KnowledgeBase;
+import com.wish.rd.rag.knowledge.model.KnowledgeDocument;
+import com.wish.rd.rag.knowledge.model.WriteKnowledgeDocumentCommand;
 
 class KnowledgeWorkspacePersistenceTest {
 

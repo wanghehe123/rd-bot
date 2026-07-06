@@ -1,9 +1,11 @@
 package com.wish.rd.rag.ingestion;
 
+import com.wish.rd.rag.ingestion.impl.InMemoryIngestionTaskStore;
+
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
-import com.wish.rd.rag.knowledge.KnowledgeDocument;
+import com.wish.rd.rag.knowledge.model.KnowledgeDocument;
 import com.wish.rd.rag.knowledge.KnowledgeWorkspace;
-import com.wish.rd.rag.vector.InMemoryVectorStore;
+import com.wish.rd.rag.vector.impl.InMemoryVectorStore;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -12,6 +14,19 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 import org.springframework.stereotype.Component;
+import com.wish.rd.rag.ingestion.model.IngestionNodeLog;
+import com.wish.rd.rag.ingestion.model.IngestionNodeType;
+import com.wish.rd.rag.ingestion.model.IngestionPipelineCommand;
+import com.wish.rd.rag.ingestion.model.IngestionPipelineNodeCommand;
+import com.wish.rd.rag.ingestion.model.IngestionPipelinePage;
+import com.wish.rd.rag.ingestion.model.IngestionStatus;
+import com.wish.rd.rag.ingestion.model.IngestionTaskCommand;
+import com.wish.rd.rag.ingestion.model.IngestionTaskPage;
+import com.wish.rd.rag.ingestion.model.ManagedIngestionPipeline;
+import com.wish.rd.rag.ingestion.model.ManagedIngestionPipelineNode;
+import com.wish.rd.rag.ingestion.model.ManagedIngestionTask;
+import com.wish.rd.rag.ingestion.model.ManagedIngestionTaskCommand;
+import com.wish.rd.rag.ingestion.model.ManagedIngestionTaskNode;
 
 @Component
 public final class IngestionAdminRegistry {

@@ -1,18 +1,20 @@
 package com.wish.rd.rag.pipeline;
 
-import com.wish.rd.framework.convention.RetrievedChunk;
+import com.wish.rd.framework.convention.model.RetrievedChunk;
 import com.wish.rd.framework.trace.RagTraceNode;
-import com.wish.rd.rag.guidance.GuidanceDecision;
+import com.wish.rd.rag.guidance.model.GuidanceDecision;
 import com.wish.rd.rag.guidance.IntentGuidanceService;
 import com.wish.rd.rag.intent.IntentClassifier;
-import com.wish.rd.rag.intent.NodeScore;
+import com.wish.rd.rag.intent.model.NodeScore;
 import com.wish.rd.rag.retrieval.MultiChannelRetrievalEngine;
-import com.wish.rd.rag.retrieval.RetrievalBundle;
-import com.wish.rd.rag.retrieval.RetrievalRequest;
+import com.wish.rd.rag.retrieval.model.RetrievalBundle;
+import com.wish.rd.rag.retrieval.model.RetrievalRequest;
 import com.wish.rd.rag.text.TextAnalyzer;
 
 import java.util.List;
 import java.util.Optional;
+import com.wish.rd.rag.pipeline.model.RepairContextPackage;
+import com.wish.rd.rag.pipeline.model.RepairRagRequest;
 
 /**
  * 修复场景 RAG 主流程编排器：把"意图分类 → 歧义引导 → 多通道检索 → 上下文打包"串成一条链路。

@@ -7,6 +7,9 @@ import java.util.NoSuchElementException;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import com.wish.rd.rag.sample.model.ManagedSampleQuestion;
+import com.wish.rd.rag.sample.model.SampleQuestionCommand;
+import com.wish.rd.rag.sample.model.SampleQuestionPage;
 
 class SampleQuestionRegistryTest {
 

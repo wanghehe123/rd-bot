@@ -1,6 +1,9 @@
 package com.wish.rd.adapter;
 
 import java.util.Optional;
+import com.wish.rd.adapter.model.TicketMessageQuery;
+import com.wish.rd.adapter.model.TicketMessages;
+import com.wish.rd.adapter.model.TicketSnapshot;
 
 /**
  * 工单系统读取端口：按工单 ID 查询工单快照与消息。

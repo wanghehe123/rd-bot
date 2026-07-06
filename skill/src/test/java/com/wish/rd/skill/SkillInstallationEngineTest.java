@@ -1,5 +1,7 @@
 package com.wish.rd.skill;
 
+import com.wish.rd.skill.impl.RoleAllowlistSkillPolicyGate;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -9,6 +11,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import com.wish.rd.skill.model.AgentSkillDescriptor;
+import com.wish.rd.skill.model.SkillInstallCommand;
+import com.wish.rd.skill.model.SkillInstallResult;
+import com.wish.rd.skill.model.SkillRiskLevel;
 
 class SkillInstallationEngineTest {
 

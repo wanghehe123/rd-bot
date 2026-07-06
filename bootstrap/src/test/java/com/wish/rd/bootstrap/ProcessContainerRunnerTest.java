@@ -1,10 +1,10 @@
 package com.wish.rd.bootstrap;
 
 import com.wish.rd.bootstrap.executor.DockerExecutorProperties;
-import com.wish.rd.bootstrap.executor.ProcessContainerRunner;
-import com.wish.rd.exec.repair.docker.ContainerRunRequest;
-import com.wish.rd.exec.repair.docker.ContainerRunResult;
-import com.wish.rd.exec.repair.docker.DockerClaudeCodeExecutor;
+import com.wish.rd.bootstrap.executor.impl.ProcessContainerRunner;
+import com.wish.rd.exec.repair.docker.model.ContainerRunRequest;
+import com.wish.rd.exec.repair.docker.model.ContainerRunResult;
+import com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
@@ -65,7 +65,8 @@ class ProcessContainerRunnerTest {
         properties.setNetworkMode("host");
         properties.setYoloFlag("--yolo-test");
         properties.setOutputFormat("jsonl");
-        ProcessContainerRunner runner = runner(properties, argv -> new ProcessContainerRunner.CommandResult(0, 1, "", ""));
+        ProcessContainerRunner runner = runner(properties,
+                (argv, environment) -> new ProcessContainerRunner.CommandResult(0, 1, "", ""));
         Path workspace = temporaryDirectory.resolve("workspace");
         ContainerRunRequest request = request(
                 properties,
@@ -94,7 +95,8 @@ class ProcessContainerRunnerTest {
     @Test
     void shouldPassProviderEnvValuesButOnlyReferenceSecretEnvNames() throws IOException {
         DockerExecutorProperties properties = new DockerExecutorProperties();
-        ProcessContainerRunner runner = runner(properties, argv -> new ProcessContainerRunner.CommandResult(0, 1, "", ""));
+        ProcessContainerRunner runner = runner(properties,
+                (argv, environment) -> new ProcessContainerRunner.CommandResult(0, 1, "", ""));
         ContainerRunRequest request = request(
                 properties,
                 Map.of(
@@ -127,6 +129,33 @@ class ProcessContainerRunnerTest {
     }
 
     @Test
+    void shouldPassSecretValuesToDockerCliProcessEnvironmentWithoutArgvLeak() throws IOException {
+        DockerExecutorProperties properties = new DockerExecutorProperties();
+        RecordingLauncher launcher = new RecordingLauncher(temporaryDirectory.resolve("output"), 0);
+        ProcessContainerRunner runner = runner(properties, launcher);
+        ContainerRunRequest request = request(
+                properties,
+                Map.of(
+                        "RD_CLAUDE_AUTH_TOKEN_ENV", "LONGCAT_API_KEY",
+                        "LONGCAT_API_KEY", "test-longcat-secret-from-process-env",
+                        "VISIBLE_FLAG", "visible"
+                ),
+                Map.of(temporaryDirectory.resolve("workspace").toString(), "/work")
+        );
+
+        ContainerRunResult result = runner.run(request);
+        String argv = String.join(" ", launcher.commands().getFirst());
+
+        assertFalse(argv.contains("test-longcat-secret-from-process-env"));
+        assertFalse(result.metadata().toString().contains("test-longcat-secret-from-process-env"));
+        assertEquals(
+                "test-longcat-secret-from-process-env",
+                launcher.environments().getFirst().get("LONGCAT_API_KEY")
+        );
+        assertEquals("visible", launcher.environments().getFirst().get("VISIBLE_FLAG"));
+    }
+
+    @Test
     void shouldRunWithFakeLauncherAndReturnStandardArtifactPaths() throws IOException {
         DockerExecutorProperties properties = new DockerExecutorProperties();
         RecordingLauncher launcher = new RecordingLauncher(temporaryDirectory.resolve("output"), 17);
@@ -154,7 +183,8 @@ class ProcessContainerRunnerTest {
         String apiKey = "sk-ant-raw-secret";
         String token = "ghp-raw-token";
         String unclassifiedSecret = "pat-unclassified-secret";
-        ProcessContainerRunner runner = runner(properties, argv -> new ProcessContainerRunner.CommandResult(0, 1, "", ""));
+        ProcessContainerRunner runner = runner(properties,
+                (argv, environment) -> new ProcessContainerRunner.CommandResult(0, 1, "", ""));
         ContainerRunRequest request = request(
                 properties,
                 Map.of(
@@ -186,7 +216,7 @@ class ProcessContainerRunnerTest {
     void shouldOverwriteContainerProvidedDockerMetadataWithSanitizedRunnerMetadata() throws IOException {
         DockerExecutorProperties properties = new DockerExecutorProperties();
         String rawToken = "raw-token-from-container";
-        ProcessContainerRunner runner = runner(properties, argv -> {
+        ProcessContainerRunner runner = runner(properties, (argv, environment) -> {
             Path dockerMetaJson = temporaryDirectory.resolve("output/docker-meta.json");
             Files.createDirectories(dockerMetaJson.getParent());
             Files.writeString(dockerMetaJson, "{\"env\":\"" + rawToken + "\"}", StandardCharsets.UTF_8);
@@ -251,6 +281,7 @@ class ProcessContainerRunnerTest {
         private final Path outputDirectory;
         private final int exitCode;
         private final List<List<String>> commands = new ArrayList<>();
+        private final List<Map<String, String>> environments = new ArrayList<>();
 
         private RecordingLauncher(Path outputDirectory, int exitCode) {
             this.outputDirectory = outputDirectory;
@@ -258,8 +289,12 @@ class ProcessContainerRunnerTest {
         }
 
         @Override
-        public ProcessContainerRunner.CommandResult launch(List<String> argv) throws IOException {
+        public ProcessContainerRunner.CommandResult launch(
+                List<String> argv,
+                Map<String, String> environment
+        ) throws IOException {
             commands.add(List.copyOf(argv));
+            environments.add(environment == null ? Map.of() : Map.copyOf(environment));
             Files.createDirectories(outputDirectory);
             Files.writeString(outputDirectory.resolve("result.json"), "{\"status\":\"FAILED\"}", StandardCharsets.UTF_8);
             Files.writeString(outputDirectory.resolve("patch.diff"), "diff --git a/App.java b/App.java", StandardCharsets.UTF_8);
@@ -270,6 +305,10 @@ class ProcessContainerRunnerTest {
 
         private List<List<String>> commands() {
             return List.copyOf(commands);
+        }
+
+        private List<Map<String, String>> environments() {
+            return List.copyOf(environments);
         }
     }
 

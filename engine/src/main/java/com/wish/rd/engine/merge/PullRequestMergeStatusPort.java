@@ -1,5 +1,8 @@
 package com.wish.rd.engine.merge;
 
+import com.wish.rd.engine.merge.model.PullRequestMergeStatus;
+
+
 /**
  * PR 合并状态查询端口。
  *

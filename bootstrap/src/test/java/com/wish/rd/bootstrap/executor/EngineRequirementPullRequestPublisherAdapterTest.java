@@ -1,10 +1,12 @@
 package com.wish.rd.bootstrap.executor;
 
-import com.wish.rd.engine.requirement.RequirementPullRequestPublishCommand;
-import com.wish.rd.engine.requirement.RequirementPullRequestPublication;
+import com.wish.rd.bootstrap.executor.impl.EngineRequirementPullRequestPublisherAdapter;
+
+import com.wish.rd.engine.requirement.model.RequirementPullRequestPublishCommand;
+import com.wish.rd.engine.requirement.model.RequirementPullRequestPublication;
 import com.wish.rd.exec.repair.code.CodePlatformPort;
-import com.wish.rd.exec.repair.code.CreatePullRequestCommand;
-import com.wish.rd.exec.repair.code.PullRequestResult;
+import com.wish.rd.exec.repair.code.model.CreatePullRequestCommand;
+import com.wish.rd.exec.repair.code.model.PullRequestResult;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;

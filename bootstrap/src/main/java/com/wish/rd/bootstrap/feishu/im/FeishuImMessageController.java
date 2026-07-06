@@ -2,20 +2,22 @@ package com.wish.rd.bootstrap.feishu.im;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.wish.rd.engine.requirement.RequirementDeliveryResult;
-import com.wish.rd.adapter.TicketSnapshot;
+import com.wish.rd.bootstrap.feishu.im.model.FeishuImTicketDraft;
+import com.wish.rd.bootstrap.threading.RequirementDeliveryDispatchService;
+import com.wish.rd.engine.requirement.model.RequirementDeliveryResult;
+import com.wish.rd.adapter.model.TicketSnapshot;
 import com.wish.rd.engine.requirement.RequirementDeliveryEngine;
-import com.wish.rd.engine.ticket.RepairQueuePublishResult;
+import com.wish.rd.engine.ticket.model.RepairQueuePublishResult;
 import com.wish.rd.engine.ticket.TicketEventIngestionEngine;
-import com.wish.rd.engine.ticket.TicketEventInput;
+import com.wish.rd.engine.ticket.model.TicketEventInput;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
-import com.wish.rd.rag.runtime.CreateRequirementTaskCommand;
+import com.wish.rd.rag.runtime.model.CreateRequirementTaskCommand;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
-import com.wish.rd.rag.runtime.RdRequirementTask;
-import com.wish.rd.rag.runtime.TaskMaterial;
-import com.wish.rd.rag.runtime.TaskMaterialSourceType;
+import com.wish.rd.rag.runtime.model.RdRequirementTask;
+import com.wish.rd.rag.runtime.model.TaskMaterial;
+import com.wish.rd.rag.runtime.model.TaskMaterialSourceType;
 import com.wish.rd.rag.runtime.TaskMaterialStore;
-import com.wish.rd.rag.runtime.TaskMaterialType;
+import com.wish.rd.rag.runtime.model.TaskMaterialType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
@@ -58,6 +60,7 @@ public class FeishuImMessageController {
     private final RagStreamTaskRegistry taskRegistry;
     private final TaskMaterialStore materialStore;
     private final RequirementDeliveryEngine requirementDeliveryEngine;
+    private final RequirementDeliveryDispatchService requirementDeliveryDispatchService;
     private final SnowflakeIdGenerator idGenerator;
 
     public FeishuImMessageController(
@@ -67,7 +70,8 @@ public class FeishuImMessageController {
             FeishuImTicketStore store,
             TicketEventIngestionEngine ingestionEngine
     ) {
-        this(objectMapper, properties, parser, store, ingestionEngine, null, null, null, SnowflakeIdGenerator.defaultGenerator());
+        this(objectMapper, properties, parser, store, ingestionEngine, null, null, null, null,
+                SnowflakeIdGenerator.defaultGenerator());
     }
 
     @Autowired
@@ -80,6 +84,7 @@ public class FeishuImMessageController {
             ObjectProvider<RagStreamTaskRegistry> taskRegistryProvider,
             ObjectProvider<TaskMaterialStore> materialStoreProvider,
             ObjectProvider<RequirementDeliveryEngine> requirementDeliveryEngineProvider,
+            ObjectProvider<RequirementDeliveryDispatchService> requirementDeliveryDispatchServiceProvider,
             ObjectProvider<SnowflakeIdGenerator> idGeneratorProvider
     ) {
         this(
@@ -91,6 +96,7 @@ public class FeishuImMessageController {
                 taskRegistryProvider.getIfAvailable(),
                 materialStoreProvider.getIfAvailable(),
                 requirementDeliveryEngineProvider.getIfAvailable(),
+                requirementDeliveryDispatchServiceProvider.getIfAvailable(),
                 idGeneratorProvider.getIfAvailable(SnowflakeIdGenerator::defaultGenerator)
         );
     }
@@ -104,6 +110,7 @@ public class FeishuImMessageController {
             RagStreamTaskRegistry taskRegistry,
             TaskMaterialStore materialStore,
             RequirementDeliveryEngine requirementDeliveryEngine,
+            RequirementDeliveryDispatchService requirementDeliveryDispatchService,
             SnowflakeIdGenerator idGenerator
     ) {
         this.objectMapper = objectMapper;
@@ -114,6 +121,7 @@ public class FeishuImMessageController {
         this.taskRegistry = taskRegistry;
         this.materialStore = materialStore;
         this.requirementDeliveryEngine = requirementDeliveryEngine;
+        this.requirementDeliveryDispatchService = requirementDeliveryDispatchService;
         this.idGenerator = idGenerator == null ? SnowflakeIdGenerator.defaultGenerator() : idGenerator;
     }
 
@@ -239,7 +247,12 @@ public class FeishuImMessageController {
                 System.currentTimeMillis(),
                 System.currentTimeMillis()
         ));
-        RequirementDeliveryResult result = requirementDeliveryEngine.submit(task.taskId());
+        RequirementDeliveryResult result = null;
+        if (requirementDeliveryDispatchService != null) {
+            requirementDeliveryDispatchService.submit(task.taskId());
+        } else {
+            result = requirementDeliveryEngine.submit(task.taskId());
+        }
         RdRequirementTask latest = taskRegistry.getRequirementTask(task.taskId());
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("accepted", true);
@@ -247,7 +260,10 @@ public class FeishuImMessageController {
         response.put("taskId", latest.taskId());
         response.put("status", latest.status().name());
         response.put("pullRequestUrl", latest.pullRequestUrl());
-        response.putAll(executionEvidence(result.resultJson()));
+        response.put("dispatched", requirementDeliveryDispatchService != null);
+        if (result != null) {
+            response.putAll(executionEvidence(result.resultJson()));
+        }
         return ResponseEntity.ok(response);
     }
 

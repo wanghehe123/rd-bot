@@ -1,10 +1,13 @@
 package com.wish.rd.rag.memory;
 
-import com.wish.rd.framework.convention.ChatMessage;
+import com.wish.rd.rag.memory.impl.ConversationRegistry;
+
+import com.wish.rd.framework.convention.model.ChatMessage;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import com.wish.rd.rag.memory.model.ManagedConversation;
 
 class ConversationRegistryTest {
 

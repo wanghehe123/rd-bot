@@ -1,6 +1,6 @@
 package com.wish.rd.engine;
 
-import com.wish.rd.adapter.TicketSnapshot;
+import com.wish.rd.adapter.model.TicketSnapshot;
 import com.wish.rd.engine.ticket.TicketFieldMapping;
 import org.junit.jupiter.api.Test;
 

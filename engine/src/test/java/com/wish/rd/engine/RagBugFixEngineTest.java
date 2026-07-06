@@ -1,10 +1,10 @@
 package com.wish.rd.engine;
 
-import com.wish.rd.adapter.TicketSnapshot;
-import com.wish.rd.engine.rag.BugFixMessage;
+import com.wish.rd.adapter.model.TicketSnapshot;
+import com.wish.rd.engine.rag.model.BugFixMessage;
 import com.wish.rd.engine.rag.ChatQueueLimiter;
 import com.wish.rd.engine.rag.RagBugFixEngine;
-import com.wish.rd.engine.rag.RagRetrievalLogEvent;
+import com.wish.rd.engine.rag.model.RagRetrievalLogEvent;
 import com.wish.rd.engine.rag.RagRetrievalLogSink;
 import com.wish.rd.rag.intent.IntentTreeRegistry;
 import com.wish.rd.rag.rewrite.QueryTermMappingRegistry;

@@ -1,9 +1,9 @@
 package com.wish.rd.bootstrap;
 
-import com.wish.rd.bootstrap.ticket.MockTicketWriteBackAdapter;
-import com.wish.rd.exec.repair.ticket.TicketUpdateCommand;
+import com.wish.rd.bootstrap.ticket.impl.MockTicketWriteBackAdapter;
+import com.wish.rd.exec.repair.ticket.model.TicketUpdateCommand;
 import com.wish.rd.exec.repair.ticket.TicketWriteBackPort;
-import com.wish.rd.exec.repair.ticket.TicketWriteBackResult;
+import com.wish.rd.exec.repair.ticket.model.TicketWriteBackResult;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Configuration;
@@ -82,9 +82,9 @@ class MockTicketWriteBackAdapterTest {
     @Test
     void mockWriteBackSourceShouldRemainProviderNeutral() throws IOException {
         String adapterSource = java.nio.file.Files.readString(moduleRoot().resolve(
-                "src/main/java/com/wish/rd/bootstrap/ticket/MockTicketWriteBackAdapter.java"));
+                "src/main/java/com/wish/rd/bootstrap/ticket/impl/MockTicketWriteBackAdapter.java"));
         String commandSource = java.nio.file.Files.readString(moduleRoot().getParent().resolve(
-                "exec/src/main/java/com/wish/rd/exec/repair/ticket/TicketUpdateCommand.java"));
+                "exec/src/main/java/com/wish/rd/exec/repair/ticket/model/TicketUpdateCommand.java"));
 
         String combined = (adapterSource + "\n" + commandSource).toLowerCase();
         assertFalse(combined.contains("help" + "desk"));

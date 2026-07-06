@@ -2,6 +2,7 @@ package com.wish.rd.rag.context;
 
 import java.util.List;
 import java.util.Optional;
+import com.wish.rd.rag.context.model.RoleContextPackage;
 
 /**
  * 角色上下文包存储端口。

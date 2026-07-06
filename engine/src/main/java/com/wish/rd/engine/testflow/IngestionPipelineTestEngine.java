@@ -1,15 +1,16 @@
 package com.wish.rd.engine.testflow;
 
-import com.wish.rd.framework.convention.RetrievedChunk;
-import com.wish.rd.rag.core.chunk.ChunkingMode;
-import com.wish.rd.rag.ingestion.IngestionNodeLog;
-import com.wish.rd.rag.ingestion.IngestionTaskCommand;
-import com.wish.rd.rag.ingestion.IngestionTaskResult;
-import com.wish.rd.rag.ingestion.PipelineDefinition;
+import com.wish.rd.framework.convention.model.RetrievedChunk;
+import com.wish.rd.rag.core.chunk.model.ChunkingMode;
+import com.wish.rd.rag.ingestion.model.IngestionNodeLog;
+import com.wish.rd.rag.ingestion.model.IngestionTaskCommand;
+import com.wish.rd.rag.ingestion.model.IngestionTaskResult;
+import com.wish.rd.rag.ingestion.model.PipelineDefinition;
 import com.wish.rd.rag.ingestion.TaskIngestionEngine;
-import com.wish.rd.rag.vector.InMemoryVectorStore;
+import com.wish.rd.rag.vector.impl.InMemoryVectorStore;
 
 import java.nio.charset.StandardCharsets;
+import com.wish.rd.engine.testflow.model.IngestionPipelineTestResult;
 
 /**
  * 摄取管线测试引擎：对应 {@code POST /test/ingestion/default-pipeline}。

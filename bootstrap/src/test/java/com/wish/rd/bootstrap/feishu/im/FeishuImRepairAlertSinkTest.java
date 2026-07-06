@@ -1,8 +1,8 @@
 package com.wish.rd.bootstrap.feishu.im;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.wish.rd.exec.repair.alert.RepairAlert;
-import com.wish.rd.exec.repair.alert.RepairAlertType;
+import com.wish.rd.exec.repair.alert.model.RepairAlert;
+import com.wish.rd.exec.repair.alert.model.RepairAlertType;
 import org.junit.jupiter.api.Test;
 
 import java.net.http.HttpRequest;

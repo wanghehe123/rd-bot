@@ -2,9 +2,9 @@ package com.wish.rd.bootstrap.feishu.ticket;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.wish.rd.engine.ticket.RepairQueuePublishResult;
+import com.wish.rd.engine.ticket.model.RepairQueuePublishResult;
 import com.wish.rd.engine.ticket.TicketEventIngestionEngine;
-import com.wish.rd.engine.ticket.TicketEventInput;
+import com.wish.rd.engine.ticket.model.TicketEventInput;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;

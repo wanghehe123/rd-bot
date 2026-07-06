@@ -1,5 +1,8 @@
 package com.wish.rd.rag.knowledge;
 
+import com.wish.rd.rag.knowledge.model.FeishuDocumentSnapshot;
+
+
 /**
  * Feishu 文档读取端口。
  *

@@ -1,6 +1,6 @@
 package com.wish.rd.rag.retrieval;
 
-import com.wish.rd.framework.convention.RetrievedChunk;
+import com.wish.rd.framework.convention.model.RetrievedChunk;
 import com.wish.rd.framework.trace.RagTraceNode;
 
 import java.util.Comparator;
@@ -10,6 +10,9 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import com.wish.rd.rag.retrieval.model.ChannelSearchResult;
+import com.wish.rd.rag.retrieval.model.RetrievalBundle;
+import com.wish.rd.rag.retrieval.model.RetrievalRequest;
 
 /**
  * 多通道检索引擎：用 Java 虚拟线程并行调度所有启用的检索通道，并负责合并去重。

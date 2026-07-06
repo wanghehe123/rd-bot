@@ -1,10 +1,12 @@
 package com.wish.rd.bootstrap.executor;
 
-import com.wish.rd.engine.agent.AgentWorkflowAlert;
-import com.wish.rd.engine.agent.AgentWorkflowAlertType;
-import com.wish.rd.exec.repair.alert.RepairAlert;
+import com.wish.rd.bootstrap.executor.impl.EngineAgentWorkflowAlertSink;
+
+import com.wish.rd.engine.agent.model.AgentWorkflowAlert;
+import com.wish.rd.engine.agent.model.AgentWorkflowAlertType;
+import com.wish.rd.exec.repair.alert.model.RepairAlert;
 import com.wish.rd.exec.repair.alert.RepairAlertSinkPort;
-import com.wish.rd.exec.repair.alert.RepairAlertType;
+import com.wish.rd.exec.repair.alert.model.RepairAlertType;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;

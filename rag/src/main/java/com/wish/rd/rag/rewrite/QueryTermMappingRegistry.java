@@ -1,11 +1,16 @@
 package com.wish.rd.rag.rewrite;
 
+import com.wish.rd.rag.rewrite.impl.RuleBasedQueryRewriteService;
+
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.concurrent.atomic.AtomicLong;
 import org.springframework.stereotype.Component;
+import com.wish.rd.rag.rewrite.model.ManagedQueryTermMapping;
+import com.wish.rd.rag.rewrite.model.QueryTermMapping;
+import com.wish.rd.rag.rewrite.model.QueryTermMappingCommand;
 
 /**
  * 查询术语映射注册表：内存中管理"源术语→目标术语"的映射 CRUD。

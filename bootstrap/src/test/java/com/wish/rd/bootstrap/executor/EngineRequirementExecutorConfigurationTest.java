@@ -1,19 +1,19 @@
 package com.wish.rd.bootstrap.executor;
 
 import com.wish.rd.bootstrap.github.GitHubCodePlatformProperties;
-import com.wish.rd.bootstrap.github.MockGitHubCodePlatformAdapter;
-import com.wish.rd.engine.requirement.RequirementExecutionRequest;
-import com.wish.rd.engine.requirement.RequirementExecutionResult;
+import com.wish.rd.bootstrap.github.impl.MockGitHubCodePlatformAdapter;
+import com.wish.rd.engine.requirement.model.RequirementExecutionRequest;
+import com.wish.rd.engine.requirement.model.RequirementExecutionResult;
 import com.wish.rd.engine.requirement.RequirementExecutorPort;
-import com.wish.rd.engine.requirement.RequirementPullRequestPublishCommand;
-import com.wish.rd.engine.requirement.RequirementPullRequestPublication;
+import com.wish.rd.engine.requirement.model.RequirementPullRequestPublishCommand;
+import com.wish.rd.engine.requirement.model.RequirementPullRequestPublication;
 import com.wish.rd.engine.requirement.RequirementPullRequestPublisherPort;
 import com.wish.rd.exec.repair.code.CodePlatformPort;
-import com.wish.rd.exec.repair.execution.RepairExecutionResult;
-import com.wish.rd.exec.repair.execution.RepairExecutionStatus;
+import com.wish.rd.exec.repair.execution.model.RepairExecutionResult;
+import com.wish.rd.exec.repair.execution.model.RepairExecutionStatus;
 import com.wish.rd.exec.repair.execution.RepairExecutorPort;
-import com.wish.rd.rag.runtime.CreateRequirementTaskCommand;
-import com.wish.rd.rag.runtime.RdRequirementTask;
+import com.wish.rd.rag.runtime.model.CreateRequirementTaskCommand;
+import com.wish.rd.rag.runtime.model.RdRequirementTask;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.support.StaticListableBeanFactory;
 
@@ -34,7 +34,8 @@ class EngineRequirementExecutorConfigurationTest {
 
         RequirementExecutorPort executor = configuration.requirementExecutor(
                 beans.getBeanProvider(RepairExecutorPort.class),
-                beans.getBeanProvider(CodePlatformPort.class)
+                beans.getBeanProvider(CodePlatformPort.class),
+                new org.springframework.core.task.SimpleAsyncTaskExecutor("test-executor-io-")
         );
         RequirementExecutionResult result = executor.execute(request());
 

@@ -1,7 +1,7 @@
 package com.wish.rd.bootstrap.controller.testchannel;
 
 import com.wish.rd.engine.testflow.RagPromptFlowTestEngine;
-import com.wish.rd.engine.testflow.RagPromptFlowTestResult;
+import com.wish.rd.engine.testflow.model.RagPromptFlowTestResult;
 import com.wish.rd.rag.trace.RagTraceStore;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RestController;

@@ -1,8 +1,8 @@
 package com.wish.rd.bootstrap;
 
 import com.wish.rd.bootstrap.rag.ratelimit.FairDistributedRateLimiter;
-import com.wish.rd.bootstrap.rag.ratelimit.RedisChatQueueLimiter;
-import com.wish.rd.engine.rag.BugFixMessage;
+import com.wish.rd.bootstrap.rag.ratelimit.impl.RedisChatQueueLimiter;
+import com.wish.rd.engine.rag.model.BugFixMessage;
 import com.wish.rd.engine.rag.ChatQueueLimiter;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;

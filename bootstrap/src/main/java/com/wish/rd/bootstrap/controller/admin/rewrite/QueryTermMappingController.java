@@ -1,7 +1,7 @@
 package com.wish.rd.bootstrap.controller.admin.rewrite;
 
 import com.wish.rd.engine.admin.rewrite.QueryTermMappingAdminEngine;
-import com.wish.rd.rag.rewrite.QueryTermMappingCommand;
+import com.wish.rd.rag.rewrite.model.QueryTermMappingCommand;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;

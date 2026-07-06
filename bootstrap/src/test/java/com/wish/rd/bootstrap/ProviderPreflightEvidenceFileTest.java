@@ -71,8 +71,8 @@ class ProviderPreflightEvidenceFileTest {
     void shouldRejectProviderPreflightEvidenceWhenAProviderProbeFailed() throws Exception {
         Path evidenceJson = tempDir.resolve("provider-preflight.json");
         Files.writeString(evidenceJson, validEvidenceJson().replace(
-                "\"name\": \"minimax\", \"protocol\": \"openai-chat-completions\", \"adapterName\": \"openai-chat-completions\", \"baseUrl\": \"https://api.minimaxi.com/v1\", \"apiKeyEnv\": \"MINIMAX_API_KEY\", \"model\": \"MiniMax-M2.7\", \"httpStatus\": 200, \"success\": true",
-                "\"name\": \"minimax\", \"protocol\": \"openai-chat-completions\", \"adapterName\": \"openai-chat-completions\", \"baseUrl\": \"https://api.minimaxi.com/v1\", \"apiKeyEnv\": \"MINIMAX_API_KEY\", \"model\": \"MiniMax-M2.7\", \"httpStatus\": 401, \"success\": false"
+                "\"name\": \"minimax\", \"protocol\": \"openai-chat-completions\", \"adapterName\": \"openai-chat-completions\", \"baseUrl\": \"https://api.minimaxi.com/v1\", \"apiKeyEnv\": \"MINIMAX_API_KEY\", \"model\": \"MiniMax-M3\", \"httpStatus\": 200, \"success\": true",
+                "\"name\": \"minimax\", \"protocol\": \"openai-chat-completions\", \"adapterName\": \"openai-chat-completions\", \"baseUrl\": \"https://api.minimaxi.com/v1\", \"apiKeyEnv\": \"MINIMAX_API_KEY\", \"model\": \"MiniMax-M3\", \"httpStatus\": 401, \"success\": false"
         ));
 
         ProviderPreflightEvidenceFile evidence = ProviderPreflightEvidenceFile.from(profile(evidenceJson));
@@ -101,7 +101,7 @@ class ProviderPreflightEvidenceFileTest {
                   "successfulProviderCount": 2,
                   "providers": [
                     {"name": "long-cat", "protocol": "anthropic-compatible", "adapterName": "docker-claude-code", "baseUrl": "https://api.longcat.chat/anthropic", "apiKeyEnv": "LONGCAT_API_KEY", "model": "LongCat-2.0", "httpStatus": 200, "success": true, "responseFingerprint": "sha256:aaaaaaaa", "failureCategory": ""},
-                    {"name": "minimax", "protocol": "openai-chat-completions", "adapterName": "openai-chat-completions", "baseUrl": "https://api.minimaxi.com/v1", "apiKeyEnv": "MINIMAX_API_KEY", "model": "MiniMax-M2.7", "httpStatus": 200, "success": true, "responseFingerprint": "sha256:bbbbbbbb", "failureCategory": ""}
+                    {"name": "minimax", "protocol": "openai-chat-completions", "adapterName": "openai-chat-completions", "baseUrl": "https://api.minimaxi.com/v1", "apiKeyEnv": "MINIMAX_API_KEY", "model": "MiniMax-M3", "httpStatus": 200, "success": true, "responseFingerprint": "sha256:bbbbbbbb", "failureCategory": ""}
                   ]
                 }
                 """;

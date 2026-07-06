@@ -1,22 +1,22 @@
 package com.wish.rd.engine.rag;
 
-import com.wish.rd.adapter.TicketSnapshot;
-import com.wish.rd.framework.convention.RetrievedChunk;
-import com.wish.rd.rag.core.chunk.ChunkingMode;
-import com.wish.rd.rag.ingestion.DocumentIngestionCommand;
+import com.wish.rd.adapter.model.TicketSnapshot;
+import com.wish.rd.framework.convention.model.RetrievedChunk;
+import com.wish.rd.rag.core.chunk.model.ChunkingMode;
+import com.wish.rd.rag.ingestion.model.DocumentIngestionCommand;
 import com.wish.rd.rag.ingestion.DocumentIngestionService;
 import com.wish.rd.rag.intent.IntentTreeRegistry;
 import com.wish.rd.rag.knowledge.KnowledgeWorkspace;
-import com.wish.rd.rag.pipeline.RepairContextPackage;
+import com.wish.rd.rag.pipeline.model.RepairContextPackage;
 import com.wish.rd.rag.pipeline.RepairRagPipeline;
-import com.wish.rd.rag.pipeline.RepairRagRequest;
-import com.wish.rd.rag.prompt.RepairPromptPlan;
+import com.wish.rd.rag.pipeline.model.RepairRagRequest;
+import com.wish.rd.rag.prompt.model.RepairPromptPlan;
 import com.wish.rd.rag.prompt.RepairPromptService;
 import com.wish.rd.rag.rewrite.QueryTermMappingRegistry;
 import com.wish.rd.rag.runtime.RagRuntimeFactory;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
-import com.wish.rd.rag.runtime.RdBugFixTask;
-import com.wish.rd.rag.vector.InMemoryVectorStore;
+import com.wish.rd.rag.runtime.model.RdBugFixTask;
+import com.wish.rd.rag.vector.impl.InMemoryVectorStore;
 import com.wish.rd.rag.vector.VectorStore;
 
 import java.nio.charset.StandardCharsets;
@@ -29,6 +29,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import com.wish.rd.engine.rag.model.BugFixMessage;
+import com.wish.rd.engine.rag.model.BugFixStopResult;
+import com.wish.rd.engine.rag.model.RagRetrievalLogEvent;
 
 /**
  * Bug 修复 RAG 编排引擎。

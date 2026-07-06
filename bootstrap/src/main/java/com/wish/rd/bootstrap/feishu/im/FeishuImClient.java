@@ -150,19 +150,19 @@ public class FeishuImClient {
      * @param code      错误码
      * @param message   错误摘要
      */
-    record FeishuImSendResult(boolean success, String messageId, String code, String message) {
+    public record FeishuImSendResult(boolean success, String messageId, String code, String message) {
 
-        FeishuImSendResult {
+        public FeishuImSendResult {
             messageId = messageId == null ? "" : messageId;
             code = code == null ? "" : code;
             message = message == null ? "" : message;
         }
 
-        static FeishuImSendResult success(String messageId) {
+        public static FeishuImSendResult success(String messageId) {
             return new FeishuImSendResult(true, messageId, "0", "ok");
         }
 
-        static FeishuImSendResult failure(String code, String message) {
+        public static FeishuImSendResult failure(String code, String message) {
             return new FeishuImSendResult(false, "", code, message);
         }
     }
@@ -170,7 +170,7 @@ public class FeishuImClient {
     /**
      * 飞书 IM 客户端异常。
      */
-    static final class FeishuImException extends RuntimeException {
+    public static final class FeishuImException extends RuntimeException {
         FeishuImException(String message) {
             super(message);
         }

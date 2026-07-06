@@ -1,8 +1,8 @@
 package com.wish.rd.engine.bugfix;
 
-import com.wish.rd.engine.bugfix.acceptance.AcceptancePlan;
-import com.wish.rd.engine.rag.BugFixMessage;
-import com.wish.rd.framework.convention.RetrievedChunk;
+import com.wish.rd.engine.bugfix.acceptance.model.AcceptancePlan;
+import com.wish.rd.engine.rag.model.BugFixMessage;
+import com.wish.rd.framework.convention.model.RetrievedChunk;
 
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;

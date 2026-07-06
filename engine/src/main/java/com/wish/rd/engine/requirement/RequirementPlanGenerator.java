@@ -1,9 +1,11 @@
 package com.wish.rd.engine.requirement;
 
-import com.wish.rd.rag.runtime.RdRequirementTask;
+import com.wish.rd.rag.runtime.model.RdRequirementTask;
 
 import java.util.ArrayList;
 import java.util.List;
+import com.wish.rd.engine.requirement.model.RequirementContextPackage;
+import com.wish.rd.engine.requirement.model.RequirementPlan;
 
 /**
  * 规则化需求计划生成器。

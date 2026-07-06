@@ -2,6 +2,15 @@ package com.wish.rd.exec.repair;
 
 import java.util.List;
 import java.util.Optional;
+import com.wish.rd.exec.repair.model.CreateRepairAssetCommand;
+import com.wish.rd.exec.repair.model.CreateRepairRecordArtifactCommand;
+import com.wish.rd.exec.repair.model.CreateRepairRecordCommand;
+import com.wish.rd.exec.repair.model.RepairAsset;
+import com.wish.rd.exec.repair.model.RepairRecord;
+import com.wish.rd.exec.repair.model.RepairRecordArtifact;
+import com.wish.rd.exec.repair.model.RepairRecordPage;
+import com.wish.rd.exec.repair.model.RepairRecordQuery;
+import com.wish.rd.exec.repair.model.RepairRecordStatus;
 
 /**
  * 修复记录仓储端口。

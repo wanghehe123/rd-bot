@@ -3,6 +3,7 @@ package com.wish.rd.exec.repair;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import com.wish.rd.exec.repair.model.RepairAssetType;
 
 class RepairAssetTypeTest {
 

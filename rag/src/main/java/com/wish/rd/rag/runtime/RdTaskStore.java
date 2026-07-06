@@ -4,6 +4,10 @@ import java.util.Comparator;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import com.wish.rd.rag.runtime.model.RdBugFixTask;
+import com.wish.rd.rag.runtime.model.RdRequirementTask;
+import com.wish.rd.rag.runtime.model.RdTask;
+import com.wish.rd.rag.runtime.model.RdTaskStatus;
 
 /**
  * RD 任务持久化端口。

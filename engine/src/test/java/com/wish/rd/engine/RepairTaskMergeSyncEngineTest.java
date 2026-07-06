@@ -1,18 +1,21 @@
 package com.wish.rd.engine;
 
-import com.wish.rd.adapter.TicketSnapshot;
-import com.wish.rd.engine.merge.PullRequestMergeStatus;
+import com.wish.rd.adapter.model.TicketSnapshot;
+import com.wish.rd.engine.merge.model.PullRequestMergeStatus;
 import com.wish.rd.engine.merge.PullRequestMergeStatusPort;
 import com.wish.rd.engine.merge.RepairTaskMergeSyncEngine;
-import com.wish.rd.engine.ticket.CreateRepairRecordCommand;
-import com.wish.rd.engine.ticket.InMemoryRepairRecordRepository;
+import com.wish.rd.engine.ticket.model.CreateRepairRecordCommand;
+import com.wish.rd.engine.ticket.impl.InMemoryRepairRecordRepository;
 import com.wish.rd.engine.ticket.RepairRecordRepository;
-import com.wish.rd.engine.ticket.RepairRecordStatus;
+import com.wish.rd.engine.ticket.model.RepairRecordStatus;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
-import com.wish.rd.rag.runtime.InMemoryRdTaskStore;
+import com.wish.rd.rag.runtime.impl.InMemoryRdTaskStore;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
-import com.wish.rd.rag.runtime.RdBugFixTask;
-import com.wish.rd.rag.runtime.RdTaskStatus;
+import com.wish.rd.rag.runtime.model.CreateRequirementTaskCommand;
+import com.wish.rd.rag.runtime.model.RdBugFixTask;
+import com.wish.rd.rag.runtime.model.RdRequirementTask;
+import com.wish.rd.rag.runtime.model.RdTask;
+import com.wish.rd.rag.runtime.model.RdTaskStatus;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -32,7 +35,7 @@ class RepairTaskMergeSyncEngineTest {
         RecordingPullRequestMergeStatusPort statusPort = new RecordingPullRequestMergeStatusPort(true);
         RepairTaskMergeSyncEngine engine = new RepairTaskMergeSyncEngine(registry, statusPort, recordRepository);
 
-        RdBugFixTask synced = engine.syncTask(task.taskId());
+        RdTask synced = engine.syncTask(task.taskId());
 
         assertEquals(RdTaskStatus.MERGED, synced.status());
         assertEquals(RdTaskStatus.MERGED, registry.get(task.taskId()).status());
@@ -47,7 +50,7 @@ class RepairTaskMergeSyncEngineTest {
         RecordingPullRequestMergeStatusPort statusPort = new RecordingPullRequestMergeStatusPort(false);
         RepairTaskMergeSyncEngine engine = new RepairTaskMergeSyncEngine(registry, statusPort);
 
-        RdBugFixTask synced = engine.syncTask(task.taskId());
+        RdTask synced = engine.syncTask(task.taskId());
 
         assertEquals(RdTaskStatus.COMMITTED, synced.status());
         assertEquals(RdTaskStatus.COMMITTED, registry.get(task.taskId()).status());
@@ -61,7 +64,7 @@ class RepairTaskMergeSyncEngineTest {
         RecordingPullRequestMergeStatusPort statusPort = new RecordingPullRequestMergeStatusPort(true);
         RepairTaskMergeSyncEngine engine = new RepairTaskMergeSyncEngine(registry, statusPort);
 
-        List<RdBugFixTask> synced = engine.syncAllCommitted();
+        List<RdTask> synced = engine.syncAllCommitted();
 
         assertEquals(1, synced.size());
         assertEquals(RdTaskStatus.MERGED, registry.get(committed.taskId()).status());
@@ -86,7 +89,7 @@ class RepairTaskMergeSyncEngineTest {
         };
         RepairTaskMergeSyncEngine engine = new RepairTaskMergeSyncEngine(registry, statusPort);
 
-        List<RdBugFixTask> synced = engine.syncAllCommitted();
+        List<RdTask> synced = engine.syncAllCommitted();
 
         assertEquals(2, synced.size());
         assertEquals(RdTaskStatus.COMMITTED, registry.get(invalid.taskId()).status());
@@ -102,12 +105,40 @@ class RepairTaskMergeSyncEngineTest {
         RecordingPullRequestMergeStatusPort statusPort = new RecordingPullRequestMergeStatusPort(true);
         RepairTaskMergeSyncEngine engine = new RepairTaskMergeSyncEngine(registry, statusPort, recordRepository);
 
-        List<RdBugFixTask> synced = engine.syncAllCommitted();
+        List<RdTask> synced = engine.syncAllCommitted();
 
         assertEquals(1, synced.size());
         assertEquals(RdTaskStatus.MERGED, synced.getFirst().status());
         assertEquals(RepairRecordStatus.MERGED, recordRepository.findByTicketId(merged.ticketId()).orElseThrow().status());
         assertEquals(List.of(), statusPort.urls());
+    }
+
+    @Test
+    void shouldMarkCompletedRequirementTaskAsMergedWhenPullRequestIsMerged() {
+        RagStreamTaskRegistry registry = newRegistry();
+        RdRequirementTask completed = completedRequirementTask(registry, "https://github.com/acme/order/pull/52");
+        RecordingPullRequestMergeStatusPort statusPort = new RecordingPullRequestMergeStatusPort(true);
+        RepairTaskMergeSyncEngine engine = new RepairTaskMergeSyncEngine(registry, statusPort);
+
+        RdTask synced = engine.syncTask(completed.taskId());
+
+        assertEquals(RdTaskStatus.MERGED, synced.status());
+        assertEquals(RdTaskStatus.MERGED, registry.getTask(completed.taskId()).status());
+        assertEquals(List.of("https://github.com/acme/order/pull/52"), statusPort.urls());
+    }
+
+    @Test
+    void shouldSyncCompletedRequirementTasksWithPullRequestUrl() {
+        RagStreamTaskRegistry registry = newRegistry();
+        RdRequirementTask completed = completedRequirementTask(registry, "https://github.com/acme/order/pull/53");
+        RecordingPullRequestMergeStatusPort statusPort = new RecordingPullRequestMergeStatusPort(true);
+        RepairTaskMergeSyncEngine engine = new RepairTaskMergeSyncEngine(registry, statusPort);
+
+        List<RdTask> synced = engine.syncAllCommitted();
+
+        assertEquals(1, synced.size());
+        assertEquals(RdTaskStatus.MERGED, registry.getTask(completed.taskId()).status());
+        assertEquals(List.of("https://github.com/acme/order/pull/53"), statusPort.urls());
     }
 
     private static RdBugFixTask committedTask(RagStreamTaskRegistry registry, String pullRequestUrl) {
@@ -119,6 +150,33 @@ class RepairTaskMergeSyncEngineTest {
         registry.markSearching(created.taskId(), "RAG 检索中");
         registry.markExecuting(created.taskId(), "执行修复");
         return registry.markCommitted(created.taskId(), pullRequestUrl, "{\"status\":\"SUCCESS\"}");
+    }
+
+    private static RdRequirementTask completedRequirementTask(RagStreamTaskRegistry registry, String pullRequestUrl) {
+        RdRequirementTask created = registry.createRequirementTask(new CreateRequirementTaskCommand(
+                "优惠券系统",
+                "P2",
+                "https://github.com/acme/order.git",
+                "acme",
+                "order",
+                "main",
+                "完成优惠券核心链路",
+                List.of("通过验收"),
+                false
+        ));
+        registry.markRequirementMaterialCollecting(created.taskId(), "collecting");
+        registry.markRequirementMaterialReady(created.taskId(), "ready");
+        registry.markRequirementContextBuilding(created.taskId(), "context");
+        registry.markRequirementContextReady(created.taskId(), "{}");
+        registry.markRequirementPlanGenerating(created.taskId(), "planning");
+        registry.markRequirementPlanGenerated(created.taskId(), "{}");
+        registry.markRequirementWaitingPolicy(created.taskId(), "{}");
+        registry.markRequirementExecuting(created.taskId(), "prompt");
+        registry.markRequirementValidating(created.taskId(), "{}");
+        registry.markRequirementPrCreating(created.taskId(), "{}");
+        registry.markRequirementCommitted(created.taskId(), pullRequestUrl, "{\"status\":\"SUCCESS\"}");
+        registry.markRequirementReporting(created.taskId(), "{\"status\":\"SUCCESS\"}");
+        return registry.markRequirementCompleted(created.taskId(), pullRequestUrl, "{\"status\":\"SUCCESS\"}");
     }
 
     private static RagStreamTaskRegistry newRegistry() {

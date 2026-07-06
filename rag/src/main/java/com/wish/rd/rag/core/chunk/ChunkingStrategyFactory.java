@@ -3,6 +3,7 @@ package com.wish.rd.rag.core.chunk;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
+import com.wish.rd.rag.core.chunk.model.ChunkingMode;
 
 /**
  * 分块策略工厂：按 {@link ChunkingMode} 维护一组已注册的 {@link ChunkingStrategy}。

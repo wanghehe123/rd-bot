@@ -1,5 +1,9 @@
 package com.wish.rd.engine.ticket;
 
+import com.wish.rd.engine.ticket.model.RepairQueuePublishResult;
+import com.wish.rd.engine.ticket.model.RepairTicketMessage;
+
+
 /**
  * 修复队列发布端口。
  *

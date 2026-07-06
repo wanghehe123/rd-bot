@@ -1,20 +1,20 @@
 package com.wish.rd.engine.requirement;
 
 import com.wish.rd.engine.agent.AgentStageRunStore;
-import com.wish.rd.engine.agent.InMemoryAgentStageRunStore;
+import com.wish.rd.engine.agent.impl.InMemoryAgentStageRunStore;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
-import com.wish.rd.rag.context.InMemoryRoleContextPackageStore;
-import com.wish.rd.rag.context.RoleContextPackage;
+import com.wish.rd.rag.context.impl.InMemoryRoleContextPackageStore;
+import com.wish.rd.rag.context.model.RoleContextPackage;
 import com.wish.rd.rag.context.RoleContextPackageStore;
-import com.wish.rd.rag.runtime.CreateRequirementTaskCommand;
-import com.wish.rd.rag.runtime.InMemoryRdTaskStatusEventStore;
-import com.wish.rd.rag.runtime.InMemoryRdTaskStore;
-import com.wish.rd.rag.runtime.InMemoryTaskMaterialStore;
+import com.wish.rd.rag.runtime.model.CreateRequirementTaskCommand;
+import com.wish.rd.rag.runtime.impl.InMemoryRdTaskStatusEventStore;
+import com.wish.rd.rag.runtime.impl.InMemoryRdTaskStore;
+import com.wish.rd.rag.runtime.impl.InMemoryTaskMaterialStore;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
-import com.wish.rd.rag.runtime.RdRequirementTask;
-import com.wish.rd.rag.runtime.TaskMaterial;
-import com.wish.rd.rag.runtime.TaskMaterialSourceType;
-import com.wish.rd.rag.runtime.TaskMaterialType;
+import com.wish.rd.rag.runtime.model.RdRequirementTask;
+import com.wish.rd.rag.runtime.model.TaskMaterial;
+import com.wish.rd.rag.runtime.model.TaskMaterialSourceType;
+import com.wish.rd.rag.runtime.model.TaskMaterialType;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.support.StaticListableBeanFactory;
 
@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import com.wish.rd.engine.requirement.model.RequirementExecutionResult;
 
 class RequirementDeliveryEngineInjectionTest {
 

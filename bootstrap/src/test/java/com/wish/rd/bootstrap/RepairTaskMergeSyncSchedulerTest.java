@@ -1,15 +1,15 @@
 package com.wish.rd.bootstrap;
 
-import com.wish.rd.adapter.TicketSnapshot;
+import com.wish.rd.adapter.model.TicketSnapshot;
 import com.wish.rd.bootstrap.github.RepairTaskMergeSyncScheduler;
-import com.wish.rd.engine.merge.PullRequestMergeStatus;
+import com.wish.rd.engine.merge.model.PullRequestMergeStatus;
 import com.wish.rd.engine.merge.PullRequestMergeStatusPort;
 import com.wish.rd.engine.merge.RepairTaskMergeSyncEngine;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
-import com.wish.rd.rag.runtime.InMemoryRdTaskStore;
+import com.wish.rd.rag.runtime.impl.InMemoryRdTaskStore;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
-import com.wish.rd.rag.runtime.RdBugFixTask;
-import com.wish.rd.rag.runtime.RdTaskStatus;
+import com.wish.rd.rag.runtime.model.RdBugFixTask;
+import com.wish.rd.rag.runtime.model.RdTaskStatus;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;

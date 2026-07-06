@@ -1,11 +1,11 @@
 package com.wish.rd.bootstrap;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.wish.rd.bootstrap.rocketmq.RocketMqRepairQueueAdapter;
+import com.wish.rd.bootstrap.rocketmq.impl.RocketMqRepairQueueAdapter;
 import com.wish.rd.bootstrap.rocketmq.RocketMqRepairQueueProperties;
 import com.wish.rd.engine.ticket.RepairQueueConsumer;
-import com.wish.rd.engine.ticket.RepairQueuePublishResult;
-import com.wish.rd.engine.ticket.RepairTicketMessage;
+import com.wish.rd.engine.ticket.model.RepairQueuePublishResult;
+import com.wish.rd.engine.ticket.model.RepairTicketMessage;
 import org.apache.rocketmq.client.producer.DefaultMQProducer;
 import org.apache.rocketmq.client.producer.SendResult;
 import org.apache.rocketmq.common.message.Message;

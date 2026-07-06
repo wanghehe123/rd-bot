@@ -1,7 +1,7 @@
 package com.wish.rd.exec.repair.docker;
 
-import com.wish.rd.exec.repair.execution.RepairExecutionStopCommand;
-import com.wish.rd.exec.repair.execution.RepairExecutionStopResult;
+import com.wish.rd.exec.repair.execution.model.RepairExecutionStopCommand;
+import com.wish.rd.exec.repair.execution.model.RepairExecutionStopResult;
 
 /**
  * 容器控制端口，用于显式停止运行中的 Docker 容器。

@@ -1,5 +1,6 @@
 package com.wish.rd.exec.repair.model;
 
+import com.wish.rd.exec.repair.health.ModelHealthStore;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;

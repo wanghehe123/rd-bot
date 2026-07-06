@@ -3,6 +3,7 @@ package com.wish.rd.exec.repair.alert;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import com.wish.rd.exec.repair.alert.model.RepairAlertType;
 
 class RepairAlertTypeTest {
 

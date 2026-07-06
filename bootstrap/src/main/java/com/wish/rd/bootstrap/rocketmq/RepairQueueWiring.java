@@ -1,5 +1,7 @@
 package com.wish.rd.bootstrap.rocketmq;
 
+import com.wish.rd.bootstrap.rocketmq.impl.InMemoryRepairQueueAdapter;
+
 import com.wish.rd.engine.ticket.RepairQueueConsumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

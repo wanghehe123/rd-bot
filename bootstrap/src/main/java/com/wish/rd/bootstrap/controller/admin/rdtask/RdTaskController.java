@@ -2,30 +2,33 @@ package com.wish.rd.bootstrap.controller.admin.rdtask;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.wish.rd.engine.audit.NoopRepairAuditSink;
-import com.wish.rd.engine.audit.RepairAuditEvent;
-import com.wish.rd.engine.audit.RepairAuditEventType;
+import com.wish.rd.bootstrap.threading.RequirementDeliveryDispatchService;
+import com.wish.rd.engine.audit.impl.NoopRepairAuditSink;
+import com.wish.rd.engine.audit.model.RepairAuditEvent;
+import com.wish.rd.engine.audit.model.RepairAuditEventType;
 import com.wish.rd.engine.audit.RepairAuditSinkPort;
 import com.wish.rd.engine.ticket.RdTaskRestartEngine;
 import com.wish.rd.engine.requirement.RequirementDeliveryEngine;
 import com.wish.rd.exec.repair.execution.RepairExecutionControlPort;
-import com.wish.rd.exec.repair.execution.RepairExecutionStopCommand;
-import com.wish.rd.exec.repair.execution.RepairExecutionStopResult;
+import com.wish.rd.exec.repair.execution.model.RepairExecutionStopCommand;
+import com.wish.rd.exec.repair.execution.model.RepairExecutionStopResult;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
-import com.wish.rd.rag.runtime.CreateRequirementTaskCommand;
-import com.wish.rd.rag.runtime.InMemoryTaskMaterialStore;
-import com.wish.rd.rag.runtime.RdBugFixTask;
-import com.wish.rd.rag.runtime.RdRequirementTask;
-import com.wish.rd.rag.runtime.RdTask;
-import com.wish.rd.rag.runtime.RdTaskPage;
-import com.wish.rd.rag.runtime.RdTaskQuery;
-import com.wish.rd.rag.runtime.RdTaskStatus;
-import com.wish.rd.rag.runtime.RdTaskStatusEvent;
+import com.wish.rd.rag.runtime.model.CreateRequirementTaskCommand;
+import com.wish.rd.rag.runtime.impl.InMemoryTaskMaterialStore;
+import com.wish.rd.rag.runtime.model.RdBugFixTask;
+import com.wish.rd.rag.runtime.model.RdRequirementTask;
+import com.wish.rd.rag.runtime.model.RdTask;
+import com.wish.rd.rag.runtime.model.RdTaskPage;
+import com.wish.rd.rag.runtime.model.RdTaskQuery;
+import com.wish.rd.rag.runtime.model.RdTaskStatus;
+import com.wish.rd.rag.runtime.model.RdTaskStatusEvent;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
-import com.wish.rd.rag.runtime.TaskMaterial;
-import com.wish.rd.rag.runtime.TaskMaterialSourceType;
+import com.wish.rd.rag.runtime.model.TaskMaterial;
+import com.wish.rd.rag.runtime.model.TaskMaterialSourceType;
 import com.wish.rd.rag.runtime.TaskMaterialStore;
-import com.wish.rd.rag.runtime.TaskMaterialType;
+import com.wish.rd.rag.runtime.model.TaskMaterialType;
+import com.wish.rd.rag.project.model.RdProject;
+import com.wish.rd.rag.project.RdProjectService;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
@@ -75,6 +78,8 @@ public class RdTaskController {
     private final TaskMaterialStore materialStore;
     private final SnowflakeIdGenerator idGenerator;
     private final RequirementDeliveryEngine requirementDeliveryEngine;
+    private final RequirementDeliveryDispatchService requirementDeliveryDispatchService;
+    private final RdProjectService projectService;
 
     public RdTaskController(RagStreamTaskRegistry registry) {
         this(
@@ -89,6 +94,8 @@ public class RdTaskController {
                 null,
                 new InMemoryTaskMaterialStore(),
                 SnowflakeIdGenerator.defaultGenerator(),
+                null,
+                null,
                 null
         );
     }
@@ -106,7 +113,28 @@ public class RdTaskController {
                 restartEngine,
                 new InMemoryTaskMaterialStore(),
                 SnowflakeIdGenerator.defaultGenerator(),
+                null,
+                null,
                 null
+        );
+    }
+
+    public RdTaskController(RagStreamTaskRegistry registry, RdProjectService projectService) {
+        this(
+                registry,
+                command -> new RepairExecutionStopResult(
+                        command.taskId(),
+                        command.containerName(),
+                        false,
+                        "execution control unavailable"
+                ),
+                NoopRepairAuditSink.instance(),
+                null,
+                new InMemoryTaskMaterialStore(),
+                SnowflakeIdGenerator.defaultGenerator(),
+                null,
+                null,
+                projectService
         );
     }
 
@@ -118,7 +146,9 @@ public class RdTaskController {
             ObjectProvider<RdTaskRestartEngine> restartEngineProvider,
             ObjectProvider<TaskMaterialStore> materialStoreProvider,
             ObjectProvider<SnowflakeIdGenerator> idGeneratorProvider,
-            ObjectProvider<RequirementDeliveryEngine> requirementDeliveryEngineProvider
+            ObjectProvider<RequirementDeliveryEngine> requirementDeliveryEngineProvider,
+            ObjectProvider<RequirementDeliveryDispatchService> requirementDeliveryDispatchServiceProvider,
+            ObjectProvider<RdProjectService> projectServiceProvider
     ) {
         this(
                 registry,
@@ -132,7 +162,9 @@ public class RdTaskController {
                 restartEngineProvider.getIfAvailable(),
                 materialStoreProvider.getIfAvailable(InMemoryTaskMaterialStore::new),
                 idGeneratorProvider.getIfAvailable(SnowflakeIdGenerator::defaultGenerator),
-                requirementDeliveryEngineProvider.getIfAvailable()
+                requirementDeliveryEngineProvider.getIfAvailable(),
+                requirementDeliveryDispatchServiceProvider.getIfAvailable(),
+                projectServiceProvider.getIfAvailable()
         );
     }
 
@@ -143,7 +175,9 @@ public class RdTaskController {
             RdTaskRestartEngine restartEngine,
             TaskMaterialStore materialStore,
             SnowflakeIdGenerator idGenerator,
-            RequirementDeliveryEngine requirementDeliveryEngine
+            RequirementDeliveryEngine requirementDeliveryEngine,
+            RequirementDeliveryDispatchService requirementDeliveryDispatchService,
+            RdProjectService projectService
     ) {
         this.registry = registry;
         this.executionControlPort = executionControlPort;
@@ -152,6 +186,8 @@ public class RdTaskController {
         this.materialStore = materialStore == null ? new InMemoryTaskMaterialStore() : materialStore;
         this.idGenerator = idGenerator == null ? SnowflakeIdGenerator.defaultGenerator() : idGenerator;
         this.requirementDeliveryEngine = requirementDeliveryEngine;
+        this.requirementDeliveryDispatchService = requirementDeliveryDispatchService;
+        this.projectService = projectService;
     }
 
     /**
@@ -206,12 +242,20 @@ public class RdTaskController {
         if (request == null || request.title() == null || request.title().isBlank()) {
             throw new IllegalArgumentException("title must not be blank");
         }
+        ProjectSnapshot project = resolveProject(request.projectId());
         RdBugFixTask task = registry.createTaskManually(
                 request.ticketId(),
                 request.ticketTitle(),
                 request.title(),
                 request.priority(),
-                request.promptSnapshot()
+                request.promptSnapshot(),
+                project.projectId(),
+                project.projectKey(),
+                project.projectName(),
+                project.repositoryUrl(),
+                project.repoOwner(),
+                project.repoName(),
+                project.baseBranch()
         );
         return toDetailView(task);
     }
@@ -225,15 +269,23 @@ public class RdTaskController {
     @PostMapping("/admin/rd-tasks/requirements")
     public RdTaskView createRequirement(@RequestBody CreateRequirementTaskRequest request) {
         CreateRequirementTaskRequest safeRequest = requireRequirementRequest(request);
+        ProjectSnapshot project = resolveProject(safeRequest.projectId());
         RdRequirementTask task = registry.createRequirementTask(new CreateRequirementTaskCommand(
                 safeRequest.title(),
                 safeRequest.priority(),
-                safeRequest.repositoryUrl(),
-                safeRequest.repoOwner(),
-                safeRequest.repoName(),
-                safeRequest.baseBranch(),
+                "ADMIN",
+                "",
+                "",
+                project.projectId(),
+                project.projectKey(),
+                project.projectName(),
+                firstNonBlank(safeRequest.repositoryUrl(), project.repositoryUrl()),
+                firstNonBlank(safeRequest.repoOwner(), project.repoOwner()),
+                firstNonBlank(safeRequest.repoName(), project.repoName()),
+                firstNonBlank(safeRequest.baseBranch(), project.baseBranch()),
                 safeRequest.expectedResult(),
                 safeRequest.acceptanceCriteria(),
+                List.of(),
                 safeRequest.autoExecute()
         ));
         saveRequirementMaterials(task.taskId(), safeRequest.materials());
@@ -568,6 +620,9 @@ public class RdTaskController {
         String sourceType = "";
         String sourceId = "";
         String sourceUrl = "";
+        String projectId = "";
+        String projectKey = "";
+        String projectName = "";
         String repositoryUrl = "";
         String repoOwner = "";
         String repoName = "";
@@ -582,6 +637,13 @@ public class RdTaskController {
             executionResultJson = bugFixTask.executionResultJson();
             pullRequestUrl = bugFixTask.pullRequestUrl();
             paused = bugFixTask.paused();
+            projectId = bugFixTask.projectId();
+            projectKey = bugFixTask.projectKey();
+            projectName = bugFixTask.projectName();
+            repositoryUrl = bugFixTask.repositoryUrl();
+            repoOwner = bugFixTask.repoOwner();
+            repoName = bugFixTask.repoName();
+            baseBranch = bugFixTask.baseBranch();
         } else if (task instanceof RdRequirementTask requirementTask) {
             promptSnapshot = requirementTask.promptSnapshot();
             executionResultJson = requirementTask.executionResultJson();
@@ -590,6 +652,9 @@ public class RdTaskController {
             sourceType = requirementTask.sourceType();
             sourceId = requirementTask.sourceId();
             sourceUrl = requirementTask.sourceUrl();
+            projectId = requirementTask.projectId();
+            projectKey = requirementTask.projectKey();
+            projectName = requirementTask.projectName();
             repositoryUrl = requirementTask.repositoryUrl();
             repoOwner = requirementTask.repoOwner();
             repoName = requirementTask.repoName();
@@ -616,6 +681,9 @@ public class RdTaskController {
                 sourceType,
                 sourceId,
                 sourceUrl,
+                projectId,
+                projectKey,
+                projectName,
                 repositoryUrl,
                 repoOwner,
                 repoName,
@@ -749,6 +817,38 @@ public class RdTaskController {
                 || (input.sourceUri() != null && !input.sourceUri().isBlank());
     }
 
+    private ProjectSnapshot resolveProject(String projectId) {
+        String safeProjectId = projectId == null ? "" : projectId.strip();
+        if (safeProjectId.isBlank()) {
+            return ProjectSnapshot.empty();
+        }
+        if (projectService == null) {
+            throw new IllegalArgumentException("project management is unavailable");
+        }
+        try {
+            RdProject project = projectService.getEnabled(safeProjectId);
+            return new ProjectSnapshot(
+                    project.projectId(),
+                    project.projectKey(),
+                    project.name(),
+                    project.repositoryUrl(),
+                    project.repoOwner(),
+                    project.repoName(),
+                    project.defaultBranch()
+            );
+        } catch (NoSuchElementException exception) {
+            throw new IllegalArgumentException(exception.getMessage());
+        }
+    }
+
+    private static String firstNonBlank(String first, String second) {
+        String safeFirst = first == null ? "" : first.strip();
+        if (!safeFirst.isBlank()) {
+            return safeFirst;
+        }
+        return second == null ? "" : second.strip();
+    }
+
     private void saveRequirementMaterials(String taskId, List<RequirementMaterialInput> inputs) {
         for (int i = 0; i < inputs.size(); i++) {
             RequirementMaterialInput input = inputs.get(i);
@@ -845,6 +945,10 @@ public class RdTaskController {
     }
 
     private void submitRequirementTask(String taskId) {
+        if (requirementDeliveryDispatchService != null) {
+            requirementDeliveryDispatchService.submit(taskId);
+            return;
+        }
         if (requirementDeliveryEngine == null) {
             throw new IllegalStateException("requirement delivery engine unavailable");
         }
@@ -909,7 +1013,8 @@ public class RdTaskController {
             String ticketTitle,
             String title,
             String priority,
-            String promptSnapshot
+            String promptSnapshot,
+            String projectId
     ) {
     }
 
@@ -917,6 +1022,7 @@ public class RdTaskController {
     public record CreateRequirementTaskRequest(
             String title,
             String priority,
+            String projectId,
             String repositoryUrl,
             String repoOwner,
             String repoName,
@@ -987,6 +1093,9 @@ public class RdTaskController {
             String sourceType,
             String sourceId,
             String sourceUrl,
+            String projectId,
+            String projectKey,
+            String projectName,
             String repositoryUrl,
             String repoOwner,
             String repoName,
@@ -1077,5 +1186,21 @@ public class RdTaskController {
 
     /** 删除结果。 */
     public record DeleteResponse(boolean deleted) {
+    }
+
+    /** 任务创建时解析出的项目仓库快照。 */
+    private record ProjectSnapshot(
+            String projectId,
+            String projectKey,
+            String projectName,
+            String repositoryUrl,
+            String repoOwner,
+            String repoName,
+            String baseBranch
+    ) {
+
+        static ProjectSnapshot empty() {
+            return new ProjectSnapshot("", "", "", "", "", "", "");
+        }
     }
 }

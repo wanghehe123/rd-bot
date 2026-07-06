@@ -8,6 +8,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import com.wish.rd.exec.repair.result.model.AgentRoleResultValidation;
+import com.wish.rd.exec.repair.result.model.StructuredResultValidation;
 
 /**
  * 多角色 Agent 产物协议校验器。

@@ -1,21 +1,24 @@
 package com.wish.rd.exec.repair.docker;
 
+import com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor;
+import com.wish.rd.exec.repair.docker.impl.DockerExecutionRegistry;
+
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.wish.rd.exec.repair.alert.RepairAlert;
+import com.wish.rd.exec.repair.alert.model.RepairAlert;
 import com.wish.rd.exec.repair.alert.RepairAlertSinkPort;
-import com.wish.rd.exec.repair.alert.RepairAlertType;
+import com.wish.rd.exec.repair.alert.model.RepairAlertType;
 import com.wish.rd.exec.repair.alert.RepairExecutionWatchdog;
-import com.wish.rd.exec.repair.execution.RepairArtifact;
-import com.wish.rd.exec.repair.execution.RepairArtifactType;
-import com.wish.rd.exec.repair.execution.RepairExecutionResult;
-import com.wish.rd.exec.repair.execution.RepairExecutionStatus;
-import com.wish.rd.exec.repair.execution.RepairJobCommand;
+import com.wish.rd.exec.repair.execution.model.RepairArtifact;
+import com.wish.rd.exec.repair.execution.model.RepairArtifactType;
+import com.wish.rd.exec.repair.execution.model.RepairExecutionResult;
+import com.wish.rd.exec.repair.execution.model.RepairExecutionStatus;
+import com.wish.rd.exec.repair.execution.model.RepairJobCommand;
 import com.wish.rd.exec.repair.model.ModelCircuitBreakerPolicy;
 import com.wish.rd.exec.repair.model.ModelHealthState;
-import com.wish.rd.exec.repair.model.ModelHealthStore;
+import com.wish.rd.exec.repair.health.ModelHealthStore;
 import com.wish.rd.exec.repair.result.StructuredResultValidator;
-import com.wish.rd.exec.repair.security.ExecutionAllowlistPolicy;
+import com.wish.rd.exec.repair.security.model.ExecutionAllowlistPolicy;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -35,6 +38,11 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import com.wish.rd.exec.repair.docker.model.ClaudeCodeModelProvider;
+import com.wish.rd.exec.repair.docker.model.ContainerRunRequest;
+import com.wish.rd.exec.repair.docker.model.ContainerRunResult;
+import com.wish.rd.exec.repair.docker.model.RepairWorkspace;
+import com.wish.rd.exec.repair.docker.model.RepairWorkspaceFiles;
 
 class DockerClaudeCodeExecutorTest {
 
@@ -260,6 +268,30 @@ class DockerClaudeCodeExecutorTest {
         assertFalse(runner.wasCalled());
         assertEquals("deepseek", result.dockerMetadataJson().get("provider"));
         assertTrue(result.dockerMetadataJson().get("providerAttemptsJson").contains("\"FAILED_VALIDATION\""));
+    }
+
+    @Test
+    void shouldResolveRoutedAuthTokenFromFallbackAndInjectIntoContainerEnv() {
+        String envName = "RD_BOT_TEST_AUTH_TOKEN_FROM_FALLBACK_7479799581383987200";
+        String secretValue = "test-secret-from-fallback";
+        CapturingRunner runner = CapturingRunner.withResult(validResultJson("SUCCESS"));
+        DockerClaudeCodeExecutor executor = executor(
+                runner,
+                COMMAND,
+                List.of(provider("long-cat", Map.of(
+                        "ANTHROPIC_BASE_URL", "https://api.longcat.chat/anthropic",
+                        "RD_CLAUDE_AUTH_TOKEN_ENV", envName,
+                        envName, ""
+                ))),
+                new ModelHealthStore(ModelCircuitBreakerPolicy.disabled()),
+                name -> envName.equals(name) ? secretValue : ""
+        );
+
+        RepairExecutionResult result = executor.execute(command());
+
+        assertEquals(RepairExecutionStatus.SUCCESS, result.status());
+        assertTrue(runner.wasCalled());
+        assertEquals(secretValue, runner.request().env().get(envName));
     }
 
     @Test
@@ -604,7 +636,7 @@ class DockerClaudeCodeExecutorTest {
 
     @Test
     void shouldNotImportGitHubOrRagStreamTaskRegistry() throws IOException {
-        Path source = dockerSourceRoot().resolve("DockerClaudeCodeExecutor.java");
+        Path source = dockerSourceRoot().resolve("impl/DockerClaudeCodeExecutor.java");
         assertTrue(Files.exists(source), "DockerClaudeCodeExecutor source must exist");
         String body = Files.readString(source);
 
@@ -615,7 +647,7 @@ class DockerClaudeCodeExecutorTest {
 
     @Test
     void publicExecutorShouldHaveJavadoc() throws IOException {
-        Path source = dockerSourceRoot().resolve("DockerClaudeCodeExecutor.java");
+        Path source = dockerSourceRoot().resolve("impl/DockerClaudeCodeExecutor.java");
         assertTrue(Files.exists(source), "DockerClaudeCodeExecutor source must exist");
         String body = Files.readString(source);
 
@@ -652,6 +684,16 @@ class DockerClaudeCodeExecutorTest {
             List<ClaudeCodeModelProvider> providers,
             ModelHealthStore healthStore
     ) {
+        return executor(runner, command, providers, healthStore, AuthEnvironmentResolverForTests.missing());
+    }
+
+    private DockerClaudeCodeExecutor executor(
+            ContainerRunnerPort runner,
+            List<String> command,
+            List<ClaudeCodeModelProvider> providers,
+            ModelHealthStore healthStore,
+            DockerClaudeCodeExecutor.AuthEnvironmentResolver authEnvironmentResolver
+    ) {
         DockerClaudeCodeExecutor.Configuration configuration = new DockerClaudeCodeExecutor.Configuration(
                 "rd-bot/claude-code:test",
                 command,
@@ -667,7 +709,10 @@ class DockerClaudeCodeExecutorTest {
                 configuration,
                 RepairWorkspaceRepositoryPort.noop(),
                 null,
-                healthStore
+                healthStore,
+                DockerExecutionRegistry.noop(),
+                ExecutionAllowlistPolicy.disabled(),
+                authEnvironmentResolver
         );
     }
 
@@ -882,6 +927,16 @@ class DockerClaudeCodeExecutorTest {
             return reactorRelative;
         }
         throw new IllegalStateException("Cannot find docker source root from " + currentDirectory);
+    }
+
+    private static final class AuthEnvironmentResolverForTests {
+
+        private AuthEnvironmentResolverForTests() {
+        }
+
+        private static DockerClaudeCodeExecutor.AuthEnvironmentResolver missing() {
+            return envName -> "";
+        }
     }
 
     private static final class CapturingRunner implements ContainerRunnerPort {

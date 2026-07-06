@@ -1,7 +1,7 @@
 package com.wish.rd.exec.repair.code;
 
-import com.wish.rd.exec.repair.execution.RepairArtifact;
-import com.wish.rd.exec.repair.execution.RepairArtifactType;
+import com.wish.rd.exec.repair.execution.model.RepairArtifact;
+import com.wish.rd.exec.repair.execution.model.RepairArtifactType;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -18,6 +18,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import com.wish.rd.exec.repair.code.model.CreatePullRequestCommand;
+import com.wish.rd.exec.repair.code.model.PullRequestResult;
 
 class CodePlatformPortContractTest {
 

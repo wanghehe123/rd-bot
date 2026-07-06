@@ -1,10 +1,10 @@
 package com.wish.rd.bootstrap;
 
-import com.wish.rd.engine.merge.PullRequestMergeStatus;
+import com.wish.rd.engine.merge.model.PullRequestMergeStatus;
 import com.wish.rd.engine.merge.PullRequestMergeStatusPort;
 import com.wish.rd.engine.merge.RepairTaskMergeSyncEngine;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
-import com.wish.rd.rag.runtime.InMemoryRdTaskStore;
+import com.wish.rd.rag.runtime.impl.InMemoryRdTaskStore;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.web.servlet.MockMvc;

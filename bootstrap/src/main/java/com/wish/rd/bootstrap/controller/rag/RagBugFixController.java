@@ -1,10 +1,10 @@
 package com.wish.rd.bootstrap.controller.rag;
 
-import com.wish.rd.adapter.TicketSnapshot;
-import com.wish.rd.engine.rag.BugFixMessage;
-import com.wish.rd.engine.rag.BugFixStopResult;
+import com.wish.rd.adapter.model.TicketSnapshot;
+import com.wish.rd.engine.rag.model.BugFixMessage;
+import com.wish.rd.engine.rag.model.BugFixStopResult;
 import com.wish.rd.engine.rag.RagBugFixEngine;
-import com.wish.rd.rag.runtime.RdBugFixTask;
+import com.wish.rd.rag.runtime.model.RdBugFixTask;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;

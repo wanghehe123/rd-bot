@@ -2,7 +2,7 @@ package com.wish.rd.exec.repair.docker;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.wish.rd.exec.repair.execution.RepairJobCommand;
+import com.wish.rd.exec.repair.execution.model.RepairJobCommand;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -11,6 +11,8 @@ import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.regex.Pattern;
+import com.wish.rd.exec.repair.docker.model.RepairWorkspace;
+import com.wish.rd.exec.repair.docker.model.RepairWorkspaceFiles;
 
 /**
  * 为 Docker Claude Code 执行创建本地工作区和标准输入协议文件。

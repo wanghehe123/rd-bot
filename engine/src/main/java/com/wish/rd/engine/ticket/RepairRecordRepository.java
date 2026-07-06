@@ -2,6 +2,11 @@ package com.wish.rd.engine.ticket;
 
 import java.util.List;
 import java.util.Optional;
+import com.wish.rd.engine.ticket.model.CreateRepairRecordArtifactCommand;
+import com.wish.rd.engine.ticket.model.CreateRepairRecordCommand;
+import com.wish.rd.engine.ticket.model.RepairRecord;
+import com.wish.rd.engine.ticket.model.RepairRecordArtifact;
+import com.wish.rd.engine.ticket.model.RepairRecordStatus;
 
 /**
  * 工单修复记录仓储端口。

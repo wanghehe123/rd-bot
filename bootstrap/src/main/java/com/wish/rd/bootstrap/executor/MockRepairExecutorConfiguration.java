@@ -1,11 +1,11 @@
 package com.wish.rd.bootstrap.executor;
 
-import com.wish.rd.exec.repair.execution.RepairArtifact;
-import com.wish.rd.exec.repair.execution.RepairArtifactType;
-import com.wish.rd.exec.repair.execution.RepairExecutionResult;
-import com.wish.rd.exec.repair.execution.RepairExecutionStatus;
+import com.wish.rd.exec.repair.execution.model.RepairArtifact;
+import com.wish.rd.exec.repair.execution.model.RepairArtifactType;
+import com.wish.rd.exec.repair.execution.model.RepairExecutionResult;
+import com.wish.rd.exec.repair.execution.model.RepairExecutionStatus;
 import com.wish.rd.exec.repair.execution.RepairExecutorPort;
-import com.wish.rd.exec.repair.execution.RepairJobCommand;
+import com.wish.rd.exec.repair.execution.model.RepairJobCommand;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;

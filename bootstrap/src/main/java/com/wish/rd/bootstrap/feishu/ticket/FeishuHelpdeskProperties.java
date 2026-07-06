@@ -1,5 +1,8 @@
 package com.wish.rd.bootstrap.feishu.ticket;
 
+import com.wish.rd.bootstrap.feishu.ticket.impl.FeishuTicketAdapter;
+import com.wish.rd.bootstrap.feishu.ticket.impl.MockFeishuTicketAdapter;
+
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**

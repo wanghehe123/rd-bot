@@ -1,6 +1,7 @@
 package com.wish.rd.rag.runtime;
 
 import java.util.List;
+import com.wish.rd.rag.runtime.model.RdTaskStatusEvent;
 
 /**
  * RD 任务状态事件持久化端口。

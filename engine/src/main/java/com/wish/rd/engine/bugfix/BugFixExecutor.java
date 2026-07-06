@@ -1,5 +1,9 @@
 package com.wish.rd.engine.bugfix;
 
+import com.wish.rd.engine.bugfix.model.BugFixExecutionRequest;
+import com.wish.rd.engine.bugfix.model.BugFixExecutionResult;
+
+
 /**
  * Bug 修复执行端口。
  *

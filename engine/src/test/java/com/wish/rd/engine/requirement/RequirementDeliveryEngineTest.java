@@ -1,32 +1,32 @@
 package com.wish.rd.engine.requirement;
 
-import com.wish.rd.engine.agent.AgentRole;
-import com.wish.rd.engine.agent.AgentStageArtifact;
+import com.wish.rd.engine.agent.model.AgentRole;
+import com.wish.rd.engine.agent.model.AgentStageArtifact;
 import com.wish.rd.engine.agent.AgentStagePlanner;
-import com.wish.rd.engine.agent.AgentStageRun;
+import com.wish.rd.engine.agent.model.AgentStageRun;
 import com.wish.rd.engine.agent.AgentStageRunStore;
-import com.wish.rd.engine.agent.AgentStageStatus;
-import com.wish.rd.engine.agent.AgentWorkflowAlert;
+import com.wish.rd.engine.agent.model.AgentStageStatus;
+import com.wish.rd.engine.agent.model.AgentWorkflowAlert;
 import com.wish.rd.engine.agent.AgentWorkflowAlertSinkPort;
-import com.wish.rd.engine.agent.AgentWorkflowAlertType;
-import com.wish.rd.engine.agent.InMemoryAgentStageArtifactStore;
-import com.wish.rd.engine.agent.InMemoryAgentStageRunStore;
-import com.wish.rd.engine.agent.WorkflowExperienceEntry;
+import com.wish.rd.engine.agent.model.AgentWorkflowAlertType;
+import com.wish.rd.engine.agent.impl.InMemoryAgentStageArtifactStore;
+import com.wish.rd.engine.agent.impl.InMemoryAgentStageRunStore;
+import com.wish.rd.engine.agent.model.WorkflowExperienceEntry;
 import com.wish.rd.engine.agent.WorkflowExperienceStore;
-import com.wish.rd.engine.agent.WorkflowExperienceType;
+import com.wish.rd.engine.agent.model.WorkflowExperienceType;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
-import com.wish.rd.rag.context.InMemoryRoleContextPackageStore;
+import com.wish.rd.rag.context.impl.InMemoryRoleContextPackageStore;
 import com.wish.rd.rag.context.RoleContextBuilder;
-import com.wish.rd.rag.runtime.CreateRequirementTaskCommand;
-import com.wish.rd.rag.runtime.InMemoryRdTaskStatusEventStore;
-import com.wish.rd.rag.runtime.InMemoryRdTaskStore;
-import com.wish.rd.rag.runtime.InMemoryTaskMaterialStore;
+import com.wish.rd.rag.runtime.model.CreateRequirementTaskCommand;
+import com.wish.rd.rag.runtime.impl.InMemoryRdTaskStatusEventStore;
+import com.wish.rd.rag.runtime.impl.InMemoryRdTaskStore;
+import com.wish.rd.rag.runtime.impl.InMemoryTaskMaterialStore;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
-import com.wish.rd.rag.runtime.RdRequirementTask;
-import com.wish.rd.rag.runtime.RdTaskStatus;
-import com.wish.rd.rag.runtime.TaskMaterial;
-import com.wish.rd.rag.runtime.TaskMaterialSourceType;
-import com.wish.rd.rag.runtime.TaskMaterialType;
+import com.wish.rd.rag.runtime.model.RdRequirementTask;
+import com.wish.rd.rag.runtime.model.RdTaskStatus;
+import com.wish.rd.rag.runtime.model.TaskMaterial;
+import com.wish.rd.rag.runtime.model.TaskMaterialSourceType;
+import com.wish.rd.rag.runtime.model.TaskMaterialType;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -37,6 +37,12 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import com.wish.rd.engine.requirement.model.RequirementDeliveryResult;
+import com.wish.rd.engine.requirement.model.RequirementDeliveryReviewResult;
+import com.wish.rd.engine.requirement.model.RequirementExecutionRequest;
+import com.wish.rd.engine.requirement.model.RequirementExecutionResult;
+import com.wish.rd.engine.requirement.model.RequirementPullRequestPublication;
+import com.wish.rd.engine.requirement.model.RequirementPullRequestPublishCommand;
 
 class RequirementDeliveryEngineTest {
 
@@ -707,6 +713,84 @@ class RequirementDeliveryEngineTest {
         AgentWorkflowAlert alert = alertSink.alerts().getFirst();
         assertEquals(AgentWorkflowAlertType.STAGE_FAILED_NEEDS_HUMAN, alert.type());
         assertEquals("REQUIREMENT_REVIEWER", alert.metadata().get("role"));
+    }
+
+    @Test
+    void shouldCreateNewAgentStageAttemptWhenRejectedRequirementIsSubmittedAgain() {
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(),
+                new InMemoryRdTaskStatusEventStore(),
+                generator());
+        InMemoryTaskMaterialStore materialStore = new InMemoryTaskMaterialStore();
+        RdRequirementTask task = createRequirementTask(
+                registry,
+                materialStore,
+                "7820000000021",
+                "外卖订单预计送达超时提示",
+                "订单详情接口返回超时提示字段",
+                "用户查询订单详情时可以看到是否超过预计送达时间。"
+        );
+        AgentStageRunStore stageRunStore = new InMemoryAgentStageRunStore();
+        AtomicInteger executorCalls = new AtomicInteger();
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry,
+                materialStore,
+                request -> {
+                    int callNo = executorCalls.incrementAndGet();
+                    if (callNo == 1) {
+                        return RequirementExecutionResult.failure(
+                                request.taskId(),
+                                "provider long-cat is missing required auth environment variable(s): LONGCAT_API_KEY",
+                                "{\"status\":\"FAILED\",\"errorMessage\":\"missing LONGCAT_API_KEY\"}"
+                        );
+                    }
+                    if (request.role() == AgentRole.CODING_AGENT) {
+                        return RequirementExecutionResult.success(
+                                request.taskId(),
+                                "实现完成",
+                                "",
+                                codingResultJson(request.role())
+                        );
+                    }
+                    return RequirementExecutionResult.success(
+                            request.taskId(),
+                            request.role().name() + " 完成",
+                            "",
+                            roleResultJson(request.role())
+                    );
+                },
+                new RequirementContextBuilder(),
+                new RequirementPlanGenerator(),
+                new RuleBasedRequirementPolicyGate(),
+                new AgentStagePlanner(new AtomicStageIdSupplier()),
+                stageRunStore,
+                new RoleContextBuilder(),
+                new InMemoryRoleContextPackageStore(),
+                AgentWorkflowAlertSinkPort.noop(),
+                WorkflowExperienceStore.noop(),
+                new RequirementDeliveryReviewer(),
+                new RecordingRequirementPullRequestPublisher()
+        );
+
+        RequirementDeliveryResult first = engine.submit(task.taskId());
+        RequirementDeliveryResult second = engine.submit(task.taskId());
+
+        assertEquals(RdTaskStatus.REJECTED, first.status());
+        assertTrue(first.errorMessage().contains("LONGCAT_API_KEY"));
+        assertEquals(RdTaskStatus.COMPLETED, second.status());
+        assertEquals("https://github.com/example/waimai/pull/12", second.pullRequestUrl());
+        assertEquals(5, executorCalls.get());
+        assertEquals(2, registry.timeline(task.taskId()).stream()
+                .filter(event -> event.status().equals(RdTaskStatus.EXECUTING.name()))
+                .count());
+        List<AgentStageRun> reviewerStages = stageRunStore.listByTask(task.taskId()).stream()
+                .filter(stage -> stage.role() == AgentRole.REQUIREMENT_REVIEWER)
+                .toList();
+        assertEquals(2, reviewerStages.size());
+        assertEquals(List.of(1, 2), reviewerStages.stream().map(AgentStageRun::attemptNo).toList());
+        assertEquals(List.of(AgentStageStatus.FAILED_NEEDS_HUMAN, AgentStageStatus.SUCCEEDED),
+                reviewerStages.stream().map(AgentStageRun::status).toList());
+        assertEquals(5, stageRunStore.listByTask(task.taskId()).size());
     }
 
     @Test

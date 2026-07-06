@@ -1,5 +1,7 @@
 package com.wish.rd.bootstrap.lock;
 
+import com.wish.rd.bootstrap.lock.impl.RedissonDistributedLockExecutor;
+
 import org.junit.jupiter.api.Test;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;

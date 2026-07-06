@@ -1,15 +1,15 @@
 package com.wish.rd.engine;
 
 import com.wish.rd.engine.admin.knowledge.KnowledgeAdminEngine;
-import com.wish.rd.engine.admin.knowledge.KnowledgeAdminOverview;
-import com.wish.rd.rag.core.chunk.ChunkingMode;
-import com.wish.rd.rag.knowledge.CreateKnowledgeBaseCommand;
-import com.wish.rd.rag.knowledge.KnowledgeBase;
-import com.wish.rd.rag.knowledge.KnowledgeChunk;
-import com.wish.rd.rag.knowledge.KnowledgeDocument;
-import com.wish.rd.rag.knowledge.KnowledgeDocumentStatus;
+import com.wish.rd.engine.admin.knowledge.model.KnowledgeAdminOverview;
+import com.wish.rd.rag.core.chunk.model.ChunkingMode;
+import com.wish.rd.rag.knowledge.model.CreateKnowledgeBaseCommand;
+import com.wish.rd.rag.knowledge.model.KnowledgeBase;
+import com.wish.rd.rag.knowledge.model.KnowledgeChunk;
+import com.wish.rd.rag.knowledge.model.KnowledgeDocument;
+import com.wish.rd.rag.knowledge.model.KnowledgeDocumentStatus;
 import com.wish.rd.rag.knowledge.KnowledgeWorkspace;
-import com.wish.rd.rag.knowledge.WriteKnowledgeDocumentCommand;
+import com.wish.rd.rag.knowledge.model.WriteKnowledgeDocumentCommand;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;

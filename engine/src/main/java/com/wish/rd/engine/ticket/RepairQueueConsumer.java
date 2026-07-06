@@ -1,5 +1,10 @@
 package com.wish.rd.engine.ticket;
 
+import com.wish.rd.engine.ticket.impl.TicketRepairEngine;
+
+import com.wish.rd.engine.ticket.model.RepairTicketMessage;
+
+
 /**
  * 修复队列消费端口：由 bootstrap 的 MQ 适配器在收到消息时回调触发。
  *

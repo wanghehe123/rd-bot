@@ -2,6 +2,8 @@ package com.wish.rd.engine.ticket;
 
 import java.util.List;
 import java.util.Optional;
+import com.wish.rd.engine.ticket.model.RepairQueueDeadLetter;
+import com.wish.rd.engine.ticket.model.RepairTicketMessage;
 
 /**
  * 修复队列死信仓储端口，用于人工恢复和运维视图。

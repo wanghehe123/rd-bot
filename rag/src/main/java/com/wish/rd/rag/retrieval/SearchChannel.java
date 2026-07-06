@@ -1,5 +1,9 @@
 package com.wish.rd.rag.retrieval;
 
+import com.wish.rd.rag.retrieval.model.ChannelSearchResult;
+import com.wish.rd.rag.retrieval.model.RetrievalRequest;
+
+
 /**
  * 检索通道统一接口。
  *

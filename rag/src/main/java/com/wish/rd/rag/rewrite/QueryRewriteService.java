@@ -1,8 +1,9 @@
 package com.wish.rd.rag.rewrite;
 
-import com.wish.rd.framework.convention.ChatMessage;
+import com.wish.rd.framework.convention.model.ChatMessage;
 
 import java.util.List;
+import com.wish.rd.rag.rewrite.model.RewriteResult;
 
 public interface QueryRewriteService {
 

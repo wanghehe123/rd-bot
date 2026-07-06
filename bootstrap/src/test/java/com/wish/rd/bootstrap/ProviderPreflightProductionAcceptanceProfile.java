@@ -340,7 +340,7 @@ record ProviderPreflightProductionAcceptanceProfile(
                         "openai-chat-completions",
                         "https://api.minimaxi.com/v1",
                         "MINIMAX_API_KEY",
-                        "MiniMax-M2.7",
+                        "MiniMax-M3",
                         "authorization-bearer"
                 );
                 default -> new ProviderDefaults(

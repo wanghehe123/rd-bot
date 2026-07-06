@@ -1,9 +1,14 @@
 package com.wish.rd.rag.knowledge;
 
-import com.wish.rd.rag.core.chunk.ChunkingMode;
+import com.wish.rd.rag.core.chunk.model.ChunkingMode;
 
 import java.nio.charset.StandardCharsets;
 import org.springframework.stereotype.Component;
+import com.wish.rd.rag.knowledge.model.FeishuDocImportCommand;
+import com.wish.rd.rag.knowledge.model.FeishuDocumentSnapshot;
+import com.wish.rd.rag.knowledge.model.KnowledgeDocument;
+import com.wish.rd.rag.knowledge.model.KnowledgeDocumentSource;
+import com.wish.rd.rag.knowledge.model.WriteKnowledgeDocumentCommand;
 
 /**
  * Feishu 知识导入器：把 Feishu 文档快照写入知识库并触发分块索引。

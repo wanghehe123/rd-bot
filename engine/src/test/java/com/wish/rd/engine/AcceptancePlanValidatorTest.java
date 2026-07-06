@@ -1,10 +1,10 @@
 package com.wish.rd.engine;
 
-import com.wish.rd.engine.bugfix.acceptance.AcceptanceAssertion;
-import com.wish.rd.engine.bugfix.acceptance.AcceptancePlan;
-import com.wish.rd.engine.bugfix.acceptance.AcceptancePlanStatus;
-import com.wish.rd.engine.bugfix.acceptance.AcceptancePlanStep;
-import com.wish.rd.engine.bugfix.acceptance.AcceptancePlanValidationResult;
+import com.wish.rd.engine.bugfix.acceptance.model.AcceptanceAssertion;
+import com.wish.rd.engine.bugfix.acceptance.model.AcceptancePlan;
+import com.wish.rd.engine.bugfix.acceptance.model.AcceptancePlanStatus;
+import com.wish.rd.engine.bugfix.acceptance.model.AcceptancePlanStep;
+import com.wish.rd.engine.bugfix.acceptance.model.AcceptancePlanValidationResult;
 import com.wish.rd.engine.bugfix.acceptance.AcceptancePlanValidator;
 import org.junit.jupiter.api.Test;
 

@@ -1,20 +1,20 @@
 package com.wish.rd.rag.knowledge;
 
-import com.wish.rd.framework.convention.RetrievedChunk;
+import com.wish.rd.framework.convention.model.RetrievedChunk;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
-import com.wish.rd.rag.core.chunk.ChunkingMode;
-import com.wish.rd.rag.ingestion.IngestionNodeLog;
-import com.wish.rd.rag.ingestion.IngestionTaskCommand;
-import com.wish.rd.rag.ingestion.IngestionTaskResult;
-import com.wish.rd.rag.ingestion.PipelineDefinition;
+import com.wish.rd.rag.core.chunk.model.ChunkingMode;
+import com.wish.rd.rag.ingestion.model.IngestionNodeLog;
+import com.wish.rd.rag.ingestion.model.IngestionTaskCommand;
+import com.wish.rd.rag.ingestion.model.IngestionTaskResult;
+import com.wish.rd.rag.ingestion.model.PipelineDefinition;
 import com.wish.rd.rag.ingestion.TaskIngestionEngine;
-import com.wish.rd.rag.knowledge.store.InMemoryKnowledgeBaseStore;
-import com.wish.rd.rag.knowledge.store.InMemoryKnowledgeChunkStore;
-import com.wish.rd.rag.knowledge.store.InMemoryKnowledgeDocumentStore;
+import com.wish.rd.rag.knowledge.store.impl.InMemoryKnowledgeBaseStore;
+import com.wish.rd.rag.knowledge.store.impl.InMemoryKnowledgeChunkStore;
+import com.wish.rd.rag.knowledge.store.impl.InMemoryKnowledgeDocumentStore;
 import com.wish.rd.rag.knowledge.store.KnowledgeBaseStore;
 import com.wish.rd.rag.knowledge.store.KnowledgeChunkStore;
 import com.wish.rd.rag.knowledge.store.KnowledgeDocumentStore;
-import com.wish.rd.rag.vector.InMemoryVectorStore;
+import com.wish.rd.rag.vector.impl.InMemoryVectorStore;
 import com.wish.rd.rag.vector.VectorStore;
 
 import java.nio.charset.StandardCharsets;
@@ -27,6 +27,13 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import org.springframework.stereotype.Component;
+import com.wish.rd.rag.knowledge.model.CreateKnowledgeBaseCommand;
+import com.wish.rd.rag.knowledge.model.KnowledgeBase;
+import com.wish.rd.rag.knowledge.model.KnowledgeChunk;
+import com.wish.rd.rag.knowledge.model.KnowledgeDocument;
+import com.wish.rd.rag.knowledge.model.KnowledgeDocumentSource;
+import com.wish.rd.rag.knowledge.model.KnowledgeDocumentStatus;
+import com.wish.rd.rag.knowledge.model.WriteKnowledgeDocumentCommand;
 
 /**
  * 知识库工作区 facade：统一管理知识库、文档、分块与向量索引的一致性。

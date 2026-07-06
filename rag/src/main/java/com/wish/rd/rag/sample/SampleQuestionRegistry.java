@@ -7,6 +7,9 @@ import java.util.Locale;
 import java.util.NoSuchElementException;
 import java.util.concurrent.atomic.AtomicLong;
 import org.springframework.stereotype.Component;
+import com.wish.rd.rag.sample.model.ManagedSampleQuestion;
+import com.wish.rd.rag.sample.model.SampleQuestionCommand;
+import com.wish.rd.rag.sample.model.SampleQuestionPage;
 
 @Component
 public final class SampleQuestionRegistry {

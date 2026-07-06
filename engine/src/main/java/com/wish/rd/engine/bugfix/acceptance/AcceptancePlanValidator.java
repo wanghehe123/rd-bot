@@ -2,6 +2,11 @@ package com.wish.rd.engine.bugfix.acceptance;
 
 import java.util.ArrayList;
 import java.util.List;
+import com.wish.rd.engine.bugfix.acceptance.model.AcceptanceAssertion;
+import com.wish.rd.engine.bugfix.acceptance.model.AcceptancePlan;
+import com.wish.rd.engine.bugfix.acceptance.model.AcceptancePlanStatus;
+import com.wish.rd.engine.bugfix.acceptance.model.AcceptancePlanStep;
+import com.wish.rd.engine.bugfix.acceptance.model.AcceptancePlanValidationResult;
 
 /**
  * 本地确定性验收计划校验器。

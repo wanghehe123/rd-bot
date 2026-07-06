@@ -1,21 +1,21 @@
 package com.wish.rd.bootstrap.feishu.im;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.wish.rd.engine.agent.AgentRole;
+import com.wish.rd.engine.agent.model.AgentRole;
 import com.wish.rd.engine.requirement.RequirementDeliveryEngine;
-import com.wish.rd.engine.requirement.RequirementExecutionResult;
-import com.wish.rd.engine.requirement.RequirementPullRequestPublication;
+import com.wish.rd.engine.requirement.model.RequirementExecutionResult;
+import com.wish.rd.engine.requirement.model.RequirementPullRequestPublication;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
-import com.wish.rd.engine.ticket.RepairQueuePublishResult;
+import com.wish.rd.engine.ticket.model.RepairQueuePublishResult;
 import com.wish.rd.engine.ticket.RepairQueuePublisher;
-import com.wish.rd.engine.ticket.RepairTicketMessage;
+import com.wish.rd.engine.ticket.model.RepairTicketMessage;
 import com.wish.rd.engine.ticket.TicketEventIngestionEngine;
-import com.wish.rd.rag.runtime.InMemoryRdTaskStatusEventStore;
-import com.wish.rd.rag.runtime.InMemoryRdTaskStore;
-import com.wish.rd.rag.runtime.InMemoryTaskMaterialStore;
+import com.wish.rd.rag.runtime.impl.InMemoryRdTaskStatusEventStore;
+import com.wish.rd.rag.runtime.impl.InMemoryRdTaskStore;
+import com.wish.rd.rag.runtime.impl.InMemoryTaskMaterialStore;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
-import com.wish.rd.rag.runtime.RdRequirementTask;
-import com.wish.rd.rag.runtime.RdTaskStatus;
+import com.wish.rd.rag.runtime.model.RdRequirementTask;
+import com.wish.rd.rag.runtime.model.RdTaskStatus;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.web.servlet.MockMvc;
@@ -169,6 +169,7 @@ class FeishuImMessageControllerTest {
                 registry,
                 materialStore,
                 deliveryEngine,
+                null,
                 generator()
         );
         MockMvc localMockMvc = MockMvcBuilders.standaloneSetup(controller).build();
@@ -252,6 +253,7 @@ class FeishuImMessageControllerTest {
                 registry,
                 materialStore,
                 deliveryEngine,
+                null,
                 generator()
         );
         MockMvc localMockMvc = MockMvcBuilders.standaloneSetup(controller).build();
@@ -274,7 +276,7 @@ class FeishuImMessageControllerTest {
                 .andExpect(jsonPath("$.missingFields[1]").value("expectedResult"));
 
         assertTrue(publisher.published.isEmpty());
-        assertEquals(0, registry.queryTasks(new com.wish.rd.rag.runtime.RdTaskQuery(
+        assertEquals(0, registry.queryTasks(new com.wish.rd.rag.runtime.model.RdTaskQuery(
                 "REQUIREMENT",
                 "",
                 "",

@@ -2,13 +2,13 @@ package com.wish.rd.bootstrap;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.wish.rd.bootstrap.github.GitHubCodePlatformAdapter;
+import com.wish.rd.bootstrap.github.impl.GitHubCodePlatformAdapter;
 import com.wish.rd.bootstrap.github.GitHubCodePlatformProperties;
-import com.wish.rd.bootstrap.github.MockGitHubCodePlatformAdapter;
-import com.wish.rd.engine.merge.PullRequestMergeStatus;
+import com.wish.rd.bootstrap.github.impl.MockGitHubCodePlatformAdapter;
+import com.wish.rd.engine.merge.model.PullRequestMergeStatus;
 import com.wish.rd.exec.repair.code.CodePlatformPort;
-import com.wish.rd.exec.repair.code.CreatePullRequestCommand;
-import com.wish.rd.exec.repair.code.PullRequestResult;
+import com.wish.rd.exec.repair.code.model.CreatePullRequestCommand;
+import com.wish.rd.exec.repair.code.model.PullRequestResult;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
@@ -307,7 +307,7 @@ class GitHubCodePlatformAdapterTest {
     @Test
     void sourceShouldNotKnowFeishuTicketFields() throws IOException {
         String adapterSource = java.nio.file.Files.readString(moduleRoot().resolve(
-                "src/main/java/com/wish/rd/bootstrap/github/GitHubCodePlatformAdapter.java"));
+                "src/main/java/com/wish/rd/bootstrap/github/impl/GitHubCodePlatformAdapter.java"));
 
         assertFalse(adapterSource.toLowerCase().contains("feishu"));
         assertFalse(adapterSource.contains("helpdesk"));

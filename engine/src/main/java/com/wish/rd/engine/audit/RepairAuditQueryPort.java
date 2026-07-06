@@ -1,6 +1,7 @@
 package com.wish.rd.engine.audit;
 
 import java.util.List;
+import com.wish.rd.engine.audit.model.RepairAuditEvent;
 
 /**
  * Query port for repair workflow audit events.

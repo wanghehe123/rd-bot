@@ -1,13 +1,15 @@
 package com.wish.rd.bootstrap.persistence;
 
+import com.wish.rd.bootstrap.persistence.impl.PostgresAgentStageRunStore;
+
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.wish.rd.bootstrap.persistence.entity.RdAgentStageEventRow;
 import com.wish.rd.bootstrap.persistence.entity.RdAgentStageRunRow;
 import com.wish.rd.bootstrap.persistence.mapper.RdAgentStageRunMapper;
-import com.wish.rd.engine.agent.AgentRole;
-import com.wish.rd.engine.agent.AgentStageRun;
+import com.wish.rd.engine.agent.model.AgentRole;
+import com.wish.rd.engine.agent.model.AgentStageRun;
 import com.wish.rd.engine.agent.AgentStageRunStore;
-import com.wish.rd.engine.agent.AgentStageStatus;
+import com.wish.rd.engine.agent.model.AgentStageStatus;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;

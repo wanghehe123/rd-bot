@@ -1,5 +1,9 @@
 package com.wish.rd.exec.repair.code;
 
+import com.wish.rd.exec.repair.code.model.CreatePullRequestCommand;
+import com.wish.rd.exec.repair.code.model.PullRequestResult;
+
+
 /**
  * 代码平台端口，负责把修复分支和执行产物发布为代码评审请求。
  */

@@ -1,5 +1,8 @@
 package com.wish.rd.engine.audit;
 
+import com.wish.rd.engine.audit.model.RepairAuditEvent;
+
+
 /**
  * 修复审计事件输出端口，bootstrap 可适配为 PostgreSQL、日志或通知系统。
  */

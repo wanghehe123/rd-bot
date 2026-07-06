@@ -127,6 +127,27 @@ CREATE TABLE IF NOT EXISTS ingestion_task_nodes (
 
 CREATE INDEX IF NOT EXISTS idx_ingestion_task_nodes_task ON ingestion_task_nodes (task_id, node_order);
 
+-- 项目管理：系统可交付项目及其仓库配置。项目配置是生产共享状态，禁止使用 in-memory 兜底。
+CREATE TABLE IF NOT EXISTS rd_projects (
+    id              BIGINT PRIMARY KEY,
+    project_key     VARCHAR(128) NOT NULL,
+    name            TEXT NOT NULL,
+    description     TEXT NOT NULL DEFAULT '',
+    repository_url  TEXT NOT NULL,
+    repo_owner      VARCHAR(256) NOT NULL DEFAULT '',
+    repo_name       VARCHAR(256) NOT NULL DEFAULT '',
+    default_branch  VARCHAR(256) NOT NULL DEFAULT 'main',
+    enabled         BOOLEAN NOT NULL DEFAULT TRUE,
+    deleted         BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uk_rd_projects_project_key_active
+    ON rd_projects (project_key) WHERE deleted = FALSE;
+CREATE INDEX IF NOT EXISTS idx_rd_projects_enabled ON rd_projects (enabled, deleted, updated_at);
+CREATE INDEX IF NOT EXISTS idx_rd_projects_repo ON rd_projects (repo_owner, repo_name);
+
 CREATE TABLE IF NOT EXISTS rd_tasks (
     id                 BIGINT PRIMARY KEY,
     task_type          VARCHAR(64) NOT NULL,
@@ -152,6 +173,9 @@ ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS paused BOOLEAN NOT NULL DEFAULT FA
 ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS source_type VARCHAR(32) NOT NULL DEFAULT '';
 ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS source_id VARCHAR(256) NOT NULL DEFAULT '';
 ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS source_url TEXT NOT NULL DEFAULT '';
+ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS project_id VARCHAR(128) NOT NULL DEFAULT '';
+ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS project_key VARCHAR(128) NOT NULL DEFAULT '';
+ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS project_name TEXT NOT NULL DEFAULT '';
 ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS repository_url TEXT NOT NULL DEFAULT '';
 ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS repo_owner VARCHAR(256) NOT NULL DEFAULT '';
 ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS repo_name VARCHAR(256) NOT NULL DEFAULT '';
@@ -159,6 +183,7 @@ ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS base_branch VARCHAR(256) NOT NULL 
 ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS work_branch VARCHAR(256) NOT NULL DEFAULT '';
 ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS expected_result TEXT NOT NULL DEFAULT '';
 ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS acceptance_criteria_json JSONB NOT NULL DEFAULT '[]'::jsonb;
+CREATE INDEX IF NOT EXISTS idx_rd_tasks_project ON rd_tasks (project_id, task_type, updated_at);
 
 -- 任务管理：状态事件 append-only 表，承载全链路时间线（含耗时与触发来源）。
 CREATE TABLE IF NOT EXISTS rd_task_status_events (

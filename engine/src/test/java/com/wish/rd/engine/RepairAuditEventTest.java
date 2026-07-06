@@ -1,7 +1,7 @@
 package com.wish.rd.engine;
 
-import com.wish.rd.engine.audit.RepairAuditEvent;
-import com.wish.rd.engine.audit.RepairAuditEventType;
+import com.wish.rd.engine.audit.model.RepairAuditEvent;
+import com.wish.rd.engine.audit.model.RepairAuditEventType;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;

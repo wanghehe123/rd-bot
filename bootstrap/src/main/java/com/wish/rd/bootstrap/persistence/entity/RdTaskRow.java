@@ -31,6 +31,9 @@ public class RdTaskRow {
     public String sourceType;
     public String sourceId;
     public String sourceUrl;
+    public String projectId;
+    public String projectKey;
+    public String projectName;
     public String repositoryUrl;
     public String repoOwner;
     public String repoName;

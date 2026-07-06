@@ -1,10 +1,10 @@
 package com.wish.rd.bootstrap.controller.admin.repair;
 
-import com.wish.rd.exec.repair.RepairAsset;
-import com.wish.rd.exec.repair.RepairRecord;
-import com.wish.rd.exec.repair.RepairRecordArtifact;
-import com.wish.rd.exec.repair.RepairRecordPage;
-import com.wish.rd.exec.repair.RepairRecordQuery;
+import com.wish.rd.exec.repair.model.RepairAsset;
+import com.wish.rd.exec.repair.model.RepairRecord;
+import com.wish.rd.exec.repair.model.RepairRecordArtifact;
+import com.wish.rd.exec.repair.model.RepairRecordPage;
+import com.wish.rd.exec.repair.model.RepairRecordQuery;
 import com.wish.rd.exec.repair.RepairRecordRepository;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;

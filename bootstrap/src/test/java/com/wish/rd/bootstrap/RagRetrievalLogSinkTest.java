@@ -2,10 +2,10 @@ package com.wish.rd.bootstrap;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.wish.rd.bootstrap.rag.FileRagRetrievalLogSink;
-import com.wish.rd.engine.rag.RagRetrievalLogEvent;
+import com.wish.rd.bootstrap.rag.impl.FileRagRetrievalLogSink;
+import com.wish.rd.engine.rag.model.RagRetrievalLogEvent;
 import com.wish.rd.engine.rag.RagRetrievalLogSink;
-import com.wish.rd.framework.convention.RetrievedChunk;
+import com.wish.rd.framework.convention.model.RetrievedChunk;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.boot.autoconfigure.AutoConfigurations;

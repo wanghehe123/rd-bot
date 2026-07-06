@@ -1,5 +1,9 @@
 package com.wish.rd.engine.requirement;
 
+import com.wish.rd.engine.requirement.model.RequirementExecutionRequest;
+import com.wish.rd.engine.requirement.model.RequirementExecutionResult;
+
+
 /**
  * 需求交付执行端口。
  */

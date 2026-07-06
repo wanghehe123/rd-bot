@@ -1,5 +1,9 @@
 package com.wish.rd.skill;
 
+import com.wish.rd.skill.model.AgentSkillDescriptor;
+import com.wish.rd.skill.model.SkillPolicyDecision;
+
+
 /**
  * Skill 使用策略门禁。
  */

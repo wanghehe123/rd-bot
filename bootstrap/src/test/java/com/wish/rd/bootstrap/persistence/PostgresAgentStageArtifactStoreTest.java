@@ -1,9 +1,11 @@
 package com.wish.rd.bootstrap.persistence;
 
+import com.wish.rd.bootstrap.persistence.impl.PostgresAgentStageArtifactStore;
+
 import com.wish.rd.bootstrap.persistence.entity.RdAgentStageArtifactRow;
 import com.wish.rd.bootstrap.persistence.mapper.RdAgentStageArtifactMapper;
-import com.wish.rd.engine.agent.AgentRole;
-import com.wish.rd.engine.agent.AgentStageArtifact;
+import com.wish.rd.engine.agent.model.AgentRole;
+import com.wish.rd.engine.agent.model.AgentStageArtifact;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 

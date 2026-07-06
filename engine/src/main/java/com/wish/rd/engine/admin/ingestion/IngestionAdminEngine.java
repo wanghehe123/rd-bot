@@ -1,13 +1,13 @@
 package com.wish.rd.engine.admin.ingestion;
 
 import com.wish.rd.rag.ingestion.IngestionAdminRegistry;
-import com.wish.rd.rag.ingestion.IngestionPipelineCommand;
-import com.wish.rd.rag.ingestion.IngestionPipelinePage;
-import com.wish.rd.rag.ingestion.IngestionTaskPage;
-import com.wish.rd.rag.ingestion.ManagedIngestionPipeline;
-import com.wish.rd.rag.ingestion.ManagedIngestionTask;
-import com.wish.rd.rag.ingestion.ManagedIngestionTaskCommand;
-import com.wish.rd.rag.ingestion.ManagedIngestionTaskNode;
+import com.wish.rd.rag.ingestion.model.IngestionPipelineCommand;
+import com.wish.rd.rag.ingestion.model.IngestionPipelinePage;
+import com.wish.rd.rag.ingestion.model.IngestionTaskPage;
+import com.wish.rd.rag.ingestion.model.ManagedIngestionPipeline;
+import com.wish.rd.rag.ingestion.model.ManagedIngestionTask;
+import com.wish.rd.rag.ingestion.model.ManagedIngestionTaskCommand;
+import com.wish.rd.rag.ingestion.model.ManagedIngestionTaskNode;
 
 import java.util.List;
 import org.springframework.stereotype.Service;

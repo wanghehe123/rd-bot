@@ -1,12 +1,14 @@
 package com.wish.rd.bootstrap.controller.admin.ingestion;
 
 import com.wish.rd.engine.admin.ingestion.IngestionAdminEngine;
-import com.wish.rd.rag.core.chunk.ChunkingMode;
-import com.wish.rd.rag.ingestion.IngestionPipelineCommand;
-import com.wish.rd.rag.ingestion.IngestionPipelineNodeCommand;
-import com.wish.rd.rag.ingestion.ManagedIngestionTaskCommand;
+import com.wish.rd.bootstrap.threading.IngestionTaskExecutionService;
+import com.wish.rd.rag.core.chunk.model.ChunkingMode;
+import com.wish.rd.rag.ingestion.model.IngestionPipelineCommand;
+import com.wish.rd.rag.ingestion.model.IngestionPipelineNodeCommand;
+import com.wish.rd.rag.ingestion.model.ManagedIngestionTaskCommand;
 import com.wish.rd.rag.ingestion.ObjectStorageService;
-import com.wish.rd.rag.ingestion.StoredIngestionFile;
+import com.wish.rd.rag.ingestion.model.StoredIngestionFile;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -42,15 +44,18 @@ import java.util.Map;
 public final class IngestionAdminController {
 
     private final IngestionAdminEngine adminEngine;
+    private final IngestionTaskExecutionService taskExecutionService;
     private final ObjectStorageService objectStorageService;
     private final String bucketName;
 
     public IngestionAdminController(
             IngestionAdminEngine adminEngine,
+            ObjectProvider<IngestionTaskExecutionService> taskExecutionServiceProvider,
             ObjectStorageService objectStorageService,
             @Value("${rustfs.bucket:biz}") String bucketName
     ) {
         this.adminEngine = adminEngine;
+        this.taskExecutionService = taskExecutionServiceProvider.getIfAvailable();
         this.objectStorageService = objectStorageService;
         this.bucketName = bucketName;
     }
@@ -89,7 +94,7 @@ public final class IngestionAdminController {
 
     @PostMapping("/ingestion/tasks")
     public Object createTask(@RequestBody IngestionTaskCreateRequest request) {
-        return adminEngine.executeTask(request.toCommand());
+        return executeTask(request.toCommand());
     }
 
     @PostMapping(value = "/ingestion/tasks/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -122,7 +127,7 @@ public final class IngestionAdminController {
         metadata.put("storedFileSize", storedFile.size());
         metadata.put("originalFilename", storedFile.originalFilename());
 
-        return adminEngine.executeTask(new ManagedIngestionTaskCommand(
+        return executeTask(new ManagedIngestionTaskCommand(
                 pipelineId,
                 knowledgeBaseId,
                 knowledgeType,
@@ -136,6 +141,13 @@ public final class IngestionAdminController {
                 overlapSize,
                 metadata
         ));
+    }
+
+    private Object executeTask(ManagedIngestionTaskCommand command) {
+        if (taskExecutionService == null) {
+            return adminEngine.executeTask(command);
+        }
+        return taskExecutionService.execute(command);
     }
 
     @GetMapping("/ingestion/tasks/{id}")

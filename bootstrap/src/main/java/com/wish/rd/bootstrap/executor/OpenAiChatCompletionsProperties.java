@@ -1,5 +1,7 @@
 package com.wish.rd.bootstrap.executor;
 
+import com.wish.rd.bootstrap.executor.impl.OpenAiChatCompletionsRepairExecutor;
+
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
@@ -14,7 +16,7 @@ public class OpenAiChatCompletionsProperties {
 
     private boolean enabled = false;
     private String providerName = "minimax";
-    private String model = "MiniMax-M2.7";
+    private String model = "MiniMax-M3";
     private String baseUrl = "https://api.minimaxi.com/v1";
     private String apiKeyEnv = "MINIMAX_API_KEY";
     private Duration timeout = Duration.ofSeconds(60);
@@ -41,7 +43,7 @@ public class OpenAiChatCompletionsProperties {
     }
 
     public void setModel(String model) {
-        this.model = defaultWhenBlank(model, "MiniMax-M2.7");
+        this.model = defaultWhenBlank(model, "MiniMax-M3");
     }
 
     public String getBaseUrl() {

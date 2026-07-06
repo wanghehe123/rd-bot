@@ -1,15 +1,15 @@
 package com.wish.rd.engine;
 
-import com.wish.rd.adapter.TicketSnapshot;
+import com.wish.rd.adapter.model.TicketSnapshot;
 import com.wish.rd.engine.ticket.RdTaskRestartEngine;
-import com.wish.rd.engine.ticket.RepairQueuePublishResult;
-import com.wish.rd.engine.ticket.RepairTicketMessage;
+import com.wish.rd.engine.ticket.model.RepairQueuePublishResult;
+import com.wish.rd.engine.ticket.model.RepairTicketMessage;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
-import com.wish.rd.rag.runtime.InMemoryRdTaskStatusEventStore;
-import com.wish.rd.rag.runtime.InMemoryRdTaskStore;
+import com.wish.rd.rag.runtime.impl.InMemoryRdTaskStatusEventStore;
+import com.wish.rd.rag.runtime.impl.InMemoryRdTaskStore;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
-import com.wish.rd.rag.runtime.RdBugFixTask;
-import com.wish.rd.rag.runtime.RdTaskStatus;
+import com.wish.rd.rag.runtime.model.RdBugFixTask;
+import com.wish.rd.rag.runtime.model.RdTaskStatus;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;

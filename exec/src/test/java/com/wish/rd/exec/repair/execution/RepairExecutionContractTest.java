@@ -15,6 +15,11 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import com.wish.rd.exec.repair.execution.model.RepairArtifact;
+import com.wish.rd.exec.repair.execution.model.RepairArtifactType;
+import com.wish.rd.exec.repair.execution.model.RepairExecutionResult;
+import com.wish.rd.exec.repair.execution.model.RepairExecutionStatus;
+import com.wish.rd.exec.repair.execution.model.RepairJobCommand;
 
 class RepairExecutionContractTest {
 
@@ -295,12 +300,12 @@ class RepairExecutionContractTest {
     @Test
     void publicContractsShouldHaveJavadoc() throws IOException {
         Map<String, String> publicTypes = Map.of(
-                "RepairArtifact", "RepairArtifact.java",
-                "RepairArtifactType", "RepairArtifactType.java",
-                "RepairExecutionResult", "RepairExecutionResult.java",
-                "RepairExecutionStatus", "RepairExecutionStatus.java",
+                "RepairArtifact", "model/RepairArtifact.java",
+                "RepairArtifactType", "model/RepairArtifactType.java",
+                "RepairExecutionResult", "model/RepairExecutionResult.java",
+                "RepairExecutionStatus", "model/RepairExecutionStatus.java",
                 "RepairExecutorPort", "RepairExecutorPort.java",
-                "RepairJobCommand", "RepairJobCommand.java"
+                "RepairJobCommand", "model/RepairJobCommand.java"
         );
 
         for (Map.Entry<String, String> entry : publicTypes.entrySet()) {

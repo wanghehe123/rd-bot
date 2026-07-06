@@ -8,6 +8,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import com.wish.rd.exec.repair.result.model.StructuredRepairResult;
+import com.wish.rd.exec.repair.result.model.StructuredResultValidation;
 
 /**
  * 校验 Claude Code result.json 的纯业务协议，不依赖 Docker、GitHub、Spring 或本地文件系统。

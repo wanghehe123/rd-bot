@@ -2,8 +2,9 @@ package com.wish.rd.bootstrap.controller.testchannel;
 
 import com.wish.rd.engine.merge.RepairTaskMergeSyncEngine;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
-import com.wish.rd.rag.runtime.RdBugFixTask;
-import com.wish.rd.rag.runtime.RdTaskStatus;
+import com.wish.rd.rag.runtime.model.RdBugFixTask;
+import com.wish.rd.rag.runtime.model.RdTask;
+import com.wish.rd.rag.runtime.model.RdTaskStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -55,7 +56,7 @@ public class RepairTaskMergeSyncTestChannelController {
      * @return 同步后的任务快照
      */
     @PostMapping("/test/repair/bugfix/tasks/{taskId}/sync-merge")
-    public ResponseEntity<RdBugFixTask> syncMerge(@PathVariable("taskId") String taskId) {
+    public ResponseEntity<RdTask> syncMerge(@PathVariable("taskId") String taskId) {
         return ResponseEntity.ok(mergeSyncEngine.syncTask(taskId));
     }
 

@@ -1,8 +1,8 @@
 package com.wish.rd.rag.ingestion;
 
-import com.wish.rd.rag.core.chunk.ChunkingMode;
-import com.wish.rd.rag.knowledge.CreateKnowledgeBaseCommand;
-import com.wish.rd.rag.knowledge.KnowledgeBase;
+import com.wish.rd.rag.core.chunk.model.ChunkingMode;
+import com.wish.rd.rag.knowledge.model.CreateKnowledgeBaseCommand;
+import com.wish.rd.rag.knowledge.model.KnowledgeBase;
 import com.wish.rd.rag.knowledge.KnowledgeWorkspace;
 import org.junit.jupiter.api.Test;
 
@@ -14,6 +14,13 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import com.wish.rd.rag.ingestion.model.IngestionPipelineCommand;
+import com.wish.rd.rag.ingestion.model.IngestionPipelineNodeCommand;
+import com.wish.rd.rag.ingestion.model.IngestionStatus;
+import com.wish.rd.rag.ingestion.model.ManagedIngestionPipeline;
+import com.wish.rd.rag.ingestion.model.ManagedIngestionTask;
+import com.wish.rd.rag.ingestion.model.ManagedIngestionTaskCommand;
+import com.wish.rd.rag.ingestion.model.ManagedIngestionTaskNode;
 
 class IngestionAdminRegistryTest {
 

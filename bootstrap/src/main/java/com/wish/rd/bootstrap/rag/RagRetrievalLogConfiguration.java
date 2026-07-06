@@ -1,5 +1,7 @@
 package com.wish.rd.bootstrap.rag;
 
+import com.wish.rd.bootstrap.rag.impl.FileRagRetrievalLogSink;
+
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wish.rd.engine.rag.RagRetrievalLogSink;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;

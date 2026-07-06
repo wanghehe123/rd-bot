@@ -1,12 +1,14 @@
 package com.wish.rd.bootstrap.executor;
 
+import com.wish.rd.bootstrap.executor.impl.OpenAiChatCompletionsRepairExecutor;
+
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
-import com.wish.rd.exec.repair.execution.RepairExecutionResult;
-import com.wish.rd.exec.repair.execution.RepairExecutionStatus;
-import com.wish.rd.exec.repair.execution.RepairJobCommand;
+import com.wish.rd.exec.repair.execution.model.RepairExecutionResult;
+import com.wish.rd.exec.repair.execution.model.RepairExecutionStatus;
+import com.wish.rd.exec.repair.execution.model.RepairJobCommand;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -65,7 +67,7 @@ class OpenAiChatCompletionsRepairExecutorTest {
         assertEquals(RepairExecutionStatus.SUCCESS, result.status());
         assertEquals("Bearer test-token", authorization.get());
         JsonNode payload = OBJECT_MAPPER.readTree(requestBody.get());
-        assertEquals("MiniMax-M2.7", payload.path("model").asText());
+        assertEquals("MiniMax-M3", payload.path("model").asText());
         assertTrue(payload.path("messages").toString().contains("review this requirement"));
         assertEquals("openai-chat-completions", result.dockerMetadataJson().get("protocol"));
         assertEquals("minimax", result.dockerMetadataJson().get("provider"));
@@ -100,7 +102,7 @@ class OpenAiChatCompletionsRepairExecutorTest {
         OpenAiChatCompletionsRepairExecutor executor = new OpenAiChatCompletionsRepairExecutor(
                 new OpenAiChatCompletionsRepairExecutor.Configuration(
                         "minimax",
-                        "MiniMax-M2.7",
+                        "MiniMax-M3",
                         "http://127.0.0.1:" + server.getAddress().getPort() + "/anthropic",
                         "MINIMAX_API_KEY",
                         Duration.ofSeconds(5),
@@ -115,7 +117,7 @@ class OpenAiChatCompletionsRepairExecutorTest {
         assertEquals(RepairExecutionStatus.SUCCESS, result.status());
         assertEquals("2023-06-01", anthropicVersion.get());
         JsonNode payload = OBJECT_MAPPER.readTree(requestBody.get());
-        assertEquals("MiniMax-M2.7", payload.path("model").asText());
+        assertEquals("MiniMax-M3", payload.path("model").asText());
         assertEquals("openai-chat-completions", result.dockerMetadataJson().get("protocol"));
         assertEquals("anthropic-compatible", result.dockerMetadataJson().get("modelProtocol"));
         assertEquals("32", result.dockerMetadataJson().get("totalTokens"));
@@ -157,7 +159,7 @@ class OpenAiChatCompletionsRepairExecutorTest {
         return new OpenAiChatCompletionsRepairExecutor(
                 new OpenAiChatCompletionsRepairExecutor.Configuration(
                         "minimax",
-                        "MiniMax-M2.7",
+                        "MiniMax-M3",
                         "http://127.0.0.1:" + server.getAddress().getPort() + "/v1",
                         "MINIMAX_API_KEY",
                         Duration.ofSeconds(5)

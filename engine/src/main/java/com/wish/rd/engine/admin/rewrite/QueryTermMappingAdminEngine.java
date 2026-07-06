@@ -1,7 +1,7 @@
 package com.wish.rd.engine.admin.rewrite;
 
-import com.wish.rd.rag.rewrite.ManagedQueryTermMapping;
-import com.wish.rd.rag.rewrite.QueryTermMappingCommand;
+import com.wish.rd.rag.rewrite.model.ManagedQueryTermMapping;
+import com.wish.rd.rag.rewrite.model.QueryTermMappingCommand;
 import com.wish.rd.rag.rewrite.QueryTermMappingRegistry;
 
 import java.util.List;

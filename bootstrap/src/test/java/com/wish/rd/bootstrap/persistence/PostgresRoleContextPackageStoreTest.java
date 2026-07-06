@@ -1,9 +1,11 @@
 package com.wish.rd.bootstrap.persistence;
 
+import com.wish.rd.bootstrap.persistence.impl.PostgresRoleContextPackageStore;
+
 import com.wish.rd.bootstrap.persistence.entity.RdRoleContextPackageRow;
 import com.wish.rd.bootstrap.persistence.mapper.RdRoleContextPackageMapper;
-import com.wish.rd.rag.context.RoleContextEvidence;
-import com.wish.rd.rag.context.RoleContextPackage;
+import com.wish.rd.rag.context.model.RoleContextEvidence;
+import com.wish.rd.rag.context.model.RoleContextPackage;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;

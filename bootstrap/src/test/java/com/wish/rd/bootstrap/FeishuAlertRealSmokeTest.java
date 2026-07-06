@@ -4,8 +4,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wish.rd.bootstrap.feishu.im.FeishuImClient;
 import com.wish.rd.bootstrap.feishu.im.FeishuImProperties;
 import com.wish.rd.bootstrap.feishu.im.FeishuImRepairAlertSink;
-import com.wish.rd.exec.repair.alert.RepairAlert;
-import com.wish.rd.exec.repair.alert.RepairAlertType;
+import com.wish.rd.exec.repair.alert.model.RepairAlert;
+import com.wish.rd.exec.repair.alert.model.RepairAlertType;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 

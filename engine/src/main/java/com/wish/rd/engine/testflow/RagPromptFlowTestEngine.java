@@ -1,29 +1,30 @@
 package com.wish.rd.engine.testflow;
 
-import com.wish.rd.framework.convention.RetrievedChunk;
-import com.wish.rd.rag.core.chunk.ChunkingMode;
-import com.wish.rd.rag.ingestion.DocumentIngestionCommand;
-import com.wish.rd.rag.ingestion.DocumentIngestionResult;
+import com.wish.rd.framework.convention.model.RetrievedChunk;
+import com.wish.rd.rag.core.chunk.model.ChunkingMode;
+import com.wish.rd.rag.ingestion.model.DocumentIngestionCommand;
+import com.wish.rd.rag.ingestion.model.DocumentIngestionResult;
 import com.wish.rd.rag.ingestion.DocumentIngestionService;
-import com.wish.rd.rag.intent.IntentLevel;
-import com.wish.rd.rag.intent.IntentNode;
+import com.wish.rd.rag.intent.model.IntentLevel;
+import com.wish.rd.rag.intent.model.IntentNode;
 import com.wish.rd.rag.intent.IntentTree;
-import com.wish.rd.rag.pipeline.RepairContextPackage;
+import com.wish.rd.rag.pipeline.model.RepairContextPackage;
 import com.wish.rd.rag.pipeline.RepairRagPipeline;
-import com.wish.rd.rag.pipeline.RepairRagRequest;
-import com.wish.rd.rag.prompt.RepairPromptPlan;
+import com.wish.rd.rag.pipeline.model.RepairRagRequest;
+import com.wish.rd.rag.prompt.model.RepairPromptPlan;
 import com.wish.rd.rag.prompt.RepairPromptService;
-import com.wish.rd.rag.rewrite.QueryTermMapping;
-import com.wish.rd.rag.rewrite.RuleBasedQueryRewriteService;
+import com.wish.rd.rag.rewrite.model.QueryTermMapping;
+import com.wish.rd.rag.rewrite.impl.RuleBasedQueryRewriteService;
 import com.wish.rd.rag.runtime.RagRuntimeFactory;
-import com.wish.rd.rag.trace.RagTraceNodeRecord;
-import com.wish.rd.rag.trace.RagTraceRunStart;
+import com.wish.rd.rag.trace.model.RagTraceNodeRecord;
+import com.wish.rd.rag.trace.model.RagTraceRunStart;
 import com.wish.rd.rag.trace.RagTraceStore;
-import com.wish.rd.rag.vector.InMemoryVectorStore;
+import com.wish.rd.rag.vector.impl.InMemoryVectorStore;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
+import com.wish.rd.engine.testflow.model.RagPromptFlowTestResult;
 
 /**
  * Prompt 流程测试引擎：对应 {@code POST /test/rag/prompt-flow}。

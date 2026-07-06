@@ -1,9 +1,11 @@
 package com.wish.rd.bootstrap.persistence;
 
+import com.wish.rd.bootstrap.persistence.impl.PostgresVectorStore;
+
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wish.rd.bootstrap.persistence.entity.KnowledgeVectorRow;
 import com.wish.rd.bootstrap.persistence.mapper.KnowledgeVectorMapper;
-import com.wish.rd.framework.convention.RetrievedChunk;
+import com.wish.rd.framework.convention.model.RetrievedChunk;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.InvocationHandler;

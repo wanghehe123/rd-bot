@@ -6,6 +6,9 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import com.wish.rd.engine.agent.model.AgentRole;
+import com.wish.rd.engine.agent.model.AgentStageRun;
+import com.wish.rd.engine.agent.model.AgentStageStatus;
 
 class AgentStagePlannerTest {
 

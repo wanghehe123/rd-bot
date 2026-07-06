@@ -1,14 +1,14 @@
 package com.wish.rd.bootstrap;
 
-import com.wish.rd.bootstrap.skill.LocalFileSystemSkillInstaller;
-import com.wish.rd.skill.AgentSkillDescriptor;
-import com.wish.rd.skill.RoleAllowlistSkillPolicyGate;
-import com.wish.rd.skill.SkillInstallCommand;
-import com.wish.rd.skill.SkillInstallResult;
+import com.wish.rd.bootstrap.skill.impl.LocalFileSystemSkillInstaller;
+import com.wish.rd.skill.model.AgentSkillDescriptor;
+import com.wish.rd.skill.impl.RoleAllowlistSkillPolicyGate;
+import com.wish.rd.skill.model.SkillInstallCommand;
+import com.wish.rd.skill.model.SkillInstallResult;
 import com.wish.rd.skill.SkillInstallationEngine;
 import com.wish.rd.skill.SkillInstallerPort;
 import com.wish.rd.skill.SkillRegistryPort;
-import com.wish.rd.skill.SkillRiskLevel;
+import com.wish.rd.skill.model.SkillRiskLevel;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 

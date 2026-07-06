@@ -1,12 +1,12 @@
 package com.wish.rd.bootstrap.controller.testchannel;
 
-import com.wish.rd.adapter.TicketSnapshot;
-import com.wish.rd.engine.bugfix.BugFixExecutionResult;
-import com.wish.rd.engine.bugfix.RdBotFixCommand;
+import com.wish.rd.adapter.model.TicketSnapshot;
+import com.wish.rd.engine.bugfix.model.BugFixExecutionResult;
+import com.wish.rd.engine.bugfix.model.RdBotFixCommand;
 import com.wish.rd.engine.bugfix.RdBotFixEngine;
-import com.wish.rd.engine.bugfix.RdBotFixResult;
-import com.wish.rd.engine.bugfix.acceptance.AcceptancePlan;
-import com.wish.rd.engine.rag.BugFixMessage;
+import com.wish.rd.engine.bugfix.model.RdBotFixResult;
+import com.wish.rd.engine.bugfix.acceptance.model.AcceptancePlan;
+import com.wish.rd.engine.rag.model.BugFixMessage;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;

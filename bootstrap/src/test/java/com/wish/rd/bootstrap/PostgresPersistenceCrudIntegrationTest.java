@@ -2,41 +2,42 @@ package com.wish.rd.bootstrap;
 
 import com.wish.rd.bootstrap.user.controller.vo.UserVO;
 import com.wish.rd.bootstrap.user.service.UserAdminService;
-import com.wish.rd.exec.repair.CreateRepairAssetCommand;
-import com.wish.rd.exec.repair.CreateRepairRecordArtifactCommand;
-import com.wish.rd.exec.repair.CreateRepairRecordCommand;
-import com.wish.rd.exec.repair.RepairAsset;
-import com.wish.rd.exec.repair.RepairAssetType;
-import com.wish.rd.exec.repair.RepairRecord;
-import com.wish.rd.exec.repair.RepairRecordArtifact;
+import com.wish.rd.exec.repair.model.CreateRepairAssetCommand;
+import com.wish.rd.exec.repair.model.CreateRepairRecordArtifactCommand;
+import com.wish.rd.exec.repair.model.CreateRepairRecordCommand;
+import com.wish.rd.exec.repair.model.RepairAsset;
+import com.wish.rd.exec.repair.model.RepairAssetType;
+import com.wish.rd.exec.repair.model.RepairRecord;
+import com.wish.rd.exec.repair.model.RepairRecordArtifact;
 import com.wish.rd.exec.repair.RepairRecordRepository;
-import com.wish.rd.exec.repair.RepairRecordStatus;
-import com.wish.rd.engine.agent.AgentRole;
-import com.wish.rd.engine.agent.AgentStageRun;
+import com.wish.rd.exec.repair.model.RepairRecordQuery;
+import com.wish.rd.exec.repair.model.RepairRecordStatus;
+import com.wish.rd.engine.agent.model.AgentRole;
+import com.wish.rd.engine.agent.model.AgentStageRun;
 import com.wish.rd.engine.agent.AgentStageRunStore;
-import com.wish.rd.engine.agent.AgentStageStatus;
-import com.wish.rd.engine.agent.WorkflowExperienceEntry;
+import com.wish.rd.engine.agent.model.AgentStageStatus;
+import com.wish.rd.engine.agent.model.WorkflowExperienceEntry;
 import com.wish.rd.engine.agent.WorkflowExperienceStore;
-import com.wish.rd.engine.agent.WorkflowExperienceType;
-import com.wish.rd.framework.convention.RetrievedChunk;
+import com.wish.rd.engine.agent.model.WorkflowExperienceType;
+import com.wish.rd.framework.convention.model.RetrievedChunk;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
-import com.wish.rd.rag.context.RoleContextEvidence;
-import com.wish.rd.rag.context.RoleContextPackage;
+import com.wish.rd.rag.context.model.RoleContextEvidence;
+import com.wish.rd.rag.context.model.RoleContextPackage;
 import com.wish.rd.rag.context.RoleContextPackageStore;
-import com.wish.rd.rag.ingestion.IngestionStatus;
+import com.wish.rd.rag.ingestion.model.IngestionStatus;
 import com.wish.rd.rag.ingestion.IngestionTaskStore;
-import com.wish.rd.rag.ingestion.ManagedIngestionTask;
-import com.wish.rd.rag.ingestion.ManagedIngestionTaskNode;
-import com.wish.rd.rag.knowledge.KnowledgeBase;
-import com.wish.rd.rag.knowledge.KnowledgeChunk;
-import com.wish.rd.rag.knowledge.KnowledgeDocument;
-import com.wish.rd.rag.knowledge.KnowledgeDocumentStatus;
+import com.wish.rd.rag.ingestion.model.ManagedIngestionTask;
+import com.wish.rd.rag.ingestion.model.ManagedIngestionTaskNode;
+import com.wish.rd.rag.knowledge.model.KnowledgeBase;
+import com.wish.rd.rag.knowledge.model.KnowledgeChunk;
+import com.wish.rd.rag.knowledge.model.KnowledgeDocument;
+import com.wish.rd.rag.knowledge.model.KnowledgeDocumentStatus;
 import com.wish.rd.rag.knowledge.store.KnowledgeBaseStore;
 import com.wish.rd.rag.knowledge.store.KnowledgeChunkStore;
 import com.wish.rd.rag.knowledge.store.KnowledgeDocumentStore;
-import com.wish.rd.rag.runtime.RdBugFixTask;
-import com.wish.rd.rag.runtime.RdTaskStatus;
+import com.wish.rd.rag.runtime.model.RdBugFixTask;
 import com.wish.rd.rag.runtime.RdTaskStore;
+import com.wish.rd.rag.runtime.model.RdTaskStatus;
 import com.wish.rd.rag.vector.VectorStore;
 
 import java.sql.Connection;
@@ -568,15 +569,15 @@ class PostgresPersistenceCrudIntegrationTest {
                 () -> assertTrue(metadata.riskJson().contains("LOW")),
                 () -> assertEquals("manual review note " + marker, metadata.errorMessage()),
                 // 分页查询：按 status 过滤
-                () -> assertTrue(repairRecordRepository.query(new com.wish.rd.exec.repair.RepairRecordQuery(
+                () -> assertTrue(repairRecordRepository.query(new RepairRecordQuery(
                         "", "CONTEXT_READY", "", 0L, 0L, 1, 20
                 )).records().stream().anyMatch(record -> record.id().equals(created.id()))),
                 // 分页查询：按 priority 过滤（存于 extension_json）
-                () -> assertEquals(1, repairRecordRepository.query(new com.wish.rd.exec.repair.RepairRecordQuery(
+                () -> assertEquals(1, repairRecordRepository.query(new RepairRecordQuery(
                         "", "", "P0", 0L, 0L, 1, 20
                 )).total()),
                 // 分页查询：按 ticketId 过滤
-                () -> assertEquals(1, repairRecordRepository.query(new com.wish.rd.exec.repair.RepairRecordQuery(
+                () -> assertEquals(1, repairRecordRepository.query(new RepairRecordQuery(
                         marker + "-ticket-2", "", "", 0L, 0L, 1, 20
                 )).total())
         );

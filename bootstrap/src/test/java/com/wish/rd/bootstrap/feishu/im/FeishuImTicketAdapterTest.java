@@ -1,8 +1,11 @@
 package com.wish.rd.bootstrap.feishu.im;
 
+import com.wish.rd.bootstrap.feishu.im.impl.FeishuImTicketAdapter;
+
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.wish.rd.adapter.TicketReplyCommand;
-import com.wish.rd.adapter.TicketUpdateResult;
+import com.wish.rd.adapter.model.TicketReplyCommand;
+import com.wish.rd.adapter.model.TicketUpdateResult;
+import com.wish.rd.bootstrap.feishu.im.model.FeishuImTicketDraft;
 import org.junit.jupiter.api.Test;
 
 import java.net.http.HttpRequest;

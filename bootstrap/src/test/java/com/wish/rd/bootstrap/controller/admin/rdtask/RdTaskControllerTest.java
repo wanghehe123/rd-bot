@@ -1,18 +1,22 @@
 package com.wish.rd.bootstrap.controller.admin.rdtask;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.wish.rd.engine.agent.AgentRole;
+import com.wish.rd.engine.agent.model.AgentRole;
 import com.wish.rd.engine.requirement.RequirementDeliveryEngine;
-import com.wish.rd.engine.requirement.RequirementExecutionResult;
-import com.wish.rd.engine.requirement.RequirementPullRequestPublication;
+import com.wish.rd.engine.requirement.model.RequirementExecutionResult;
+import com.wish.rd.engine.requirement.model.RequirementPullRequestPublication;
 import com.wish.rd.engine.ticket.RdTaskRestartEngine;
-import com.wish.rd.engine.ticket.RepairQueuePublishResult;
-import com.wish.rd.engine.ticket.RepairTicketMessage;
-import com.wish.rd.rag.runtime.InMemoryRdTaskStatusEventStore;
-import com.wish.rd.rag.runtime.InMemoryRdTaskStore;
-import com.wish.rd.rag.runtime.InMemoryTaskMaterialStore;
-import com.wish.rd.rag.runtime.RdBugFixTask;
+import com.wish.rd.engine.ticket.model.RepairQueuePublishResult;
+import com.wish.rd.engine.ticket.model.RepairTicketMessage;
+import com.wish.rd.rag.runtime.impl.InMemoryRdTaskStatusEventStore;
+import com.wish.rd.rag.runtime.impl.InMemoryRdTaskStore;
+import com.wish.rd.rag.runtime.impl.InMemoryTaskMaterialStore;
+import com.wish.rd.rag.runtime.model.RdBugFixTask;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
+import com.wish.rd.rag.project.model.RdProject;
+import com.wish.rd.rag.project.model.RdProjectCommand;
+import com.wish.rd.rag.project.RdProjectService;
+import com.wish.rd.rag.project.RdProjectStore;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.beans.factory.support.StaticListableBeanFactory;
@@ -21,8 +25,10 @@ import org.junit.jupiter.api.Test;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -256,6 +262,80 @@ class RdTaskControllerTest {
                 .andExpect(jsonPath("$[0].taskId", is(taskId)))
                 .andExpect(jsonPath("$[0].sourceType", is("MANUAL_TEXT")))
                 .andExpect(jsonPath("$[0].contentPreview", is("用户可以在订单详情页点击催单。")));
+    }
+
+    @Test
+    void shouldCreateRequirementTaskFromSelectedProject() throws Exception {
+        RdProjectService projectService = projectService();
+        RdProject project = projectService.create(projectCommand());
+        mockMvc = MockMvcBuilders.standaloneSetup(new RdTaskController(registry, projectService)).build();
+        String body = objectMapper.writeValueAsString(Map.of(
+                "title", "增加订单催单功能",
+                "priority", "P1",
+                "projectId", project.projectId(),
+                "expectedResult", "用户可在订单详情页催单，商家端收到提醒",
+                "acceptanceCriteria", List.of("前端构建通过"),
+                "materials", List.of(Map.of(
+                        "sourceType", "MANUAL_TEXT",
+                        "title", "需求正文",
+                        "content", "用户可以在订单详情页点击催单。"
+                )),
+                "autoExecute", false
+        ));
+
+        mockMvc.perform(post("/admin/rd-tasks/requirements")
+                        .contentType(APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.projectId", is(project.projectId())))
+                .andExpect(jsonPath("$.projectKey", is("waimai")))
+                .andExpect(jsonPath("$.projectName", is("外卖系统")))
+                .andExpect(jsonPath("$.repositoryUrl", is("https://github.com/example/waimai.git")))
+                .andExpect(jsonPath("$.repoOwner", is("example")))
+                .andExpect(jsonPath("$.repoName", is("waimai")))
+                .andExpect(jsonPath("$.baseBranch", is("main")));
+    }
+
+    @Test
+    void shouldCreateBugFixTaskFromSelectedProject() throws Exception {
+        RdProjectService projectService = projectService();
+        RdProject project = projectService.create(projectCommand());
+        mockMvc = MockMvcBuilders.standaloneSetup(new RdTaskController(registry, projectService)).build();
+        String body = objectMapper.writeValueAsString(Map.of(
+                "title", "支付回调状态修复",
+                "ticketId", "FS-3006",
+                "ticketTitle", "支付成功后订单仍待支付",
+                "priority", "P1",
+                "projectId", project.projectId()
+        ));
+
+        mockMvc.perform(post("/admin/rd-tasks")
+                        .contentType(APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.taskType", is("BUG_FIX")))
+                .andExpect(jsonPath("$.projectId", is(project.projectId())))
+                .andExpect(jsonPath("$.projectKey", is("waimai")))
+                .andExpect(jsonPath("$.projectName", is("外卖系统")))
+                .andExpect(jsonPath("$.repositoryUrl", is("https://github.com/example/waimai.git")))
+                .andExpect(jsonPath("$.baseBranch", is("main")));
+    }
+
+    @Test
+    void shouldRejectTaskWhenSelectedProjectMissing() throws Exception {
+        mockMvc = MockMvcBuilders.standaloneSetup(new RdTaskController(registry, projectService())).build();
+        String body = objectMapper.writeValueAsString(Map.of(
+                "title", "支付回调状态修复",
+                "ticketId", "FS-3006",
+                "priority", "P1",
+                "projectId", "9999999999999999"
+        ));
+
+        mockMvc.perform(post("/admin/rd-tasks")
+                        .contentType(APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("project not found")));
     }
 
     @Test
@@ -511,6 +591,23 @@ class RdTaskControllerTest {
         return new SnowflakeIdGenerator(1, 1, now::getAndIncrement);
     }
 
+    private RdProjectService projectService() {
+        return new RdProjectService(generator(), new FakeRdProjectStore());
+    }
+
+    private RdProjectCommand projectCommand() {
+        return new RdProjectCommand(
+                "waimai",
+                "外卖系统",
+                "外卖订单验收仓库",
+                "https://github.com/example/waimai.git",
+                "",
+                "",
+                "main",
+                true
+        );
+    }
+
     private RdTaskController controllerWithRequirementEngine(
             InMemoryTaskMaterialStore materialStore,
             RequirementDeliveryEngine deliveryEngine
@@ -526,7 +623,37 @@ class RdTaskControllerTest {
                 beans.getBeanProvider(RdTaskRestartEngine.class),
                 beans.getBeanProvider(com.wish.rd.rag.runtime.TaskMaterialStore.class),
                 beans.getBeanProvider(SnowflakeIdGenerator.class),
-                beans.getBeanProvider(RequirementDeliveryEngine.class)
+                beans.getBeanProvider(RequirementDeliveryEngine.class),
+                beans.getBeanProvider(com.wish.rd.bootstrap.threading.RequirementDeliveryDispatchService.class),
+                beans.getBeanProvider(RdProjectService.class)
         );
+    }
+
+    private static final class FakeRdProjectStore implements RdProjectStore {
+
+        private final LinkedHashMap<String, RdProject> projects = new LinkedHashMap<>();
+
+        @Override
+        public RdProject save(RdProject project) {
+            projects.put(project.projectId(), project);
+            return project;
+        }
+
+        @Override
+        public Optional<RdProject> findById(String projectId) {
+            return Optional.ofNullable(projects.get(projectId));
+        }
+
+        @Override
+        public Optional<RdProject> findByKey(String projectKey) {
+            return projects.values().stream()
+                    .filter(project -> project.projectKey().equals(projectKey))
+                    .findFirst();
+        }
+
+        @Override
+        public List<RdProject> list() {
+            return List.copyOf(projects.values());
+        }
     }
 }

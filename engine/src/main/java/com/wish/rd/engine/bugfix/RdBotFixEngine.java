@@ -1,19 +1,19 @@
 package com.wish.rd.engine.bugfix;
 
-import com.wish.rd.adapter.TicketSnapshot;
-import com.wish.rd.engine.bugfix.acceptance.AcceptancePlan;
-import com.wish.rd.engine.bugfix.acceptance.AcceptancePlanGenerationCommand;
-import com.wish.rd.engine.bugfix.acceptance.AcceptancePlanGenerationResult;
+import com.wish.rd.adapter.model.TicketSnapshot;
+import com.wish.rd.engine.bugfix.acceptance.model.AcceptancePlan;
+import com.wish.rd.engine.bugfix.acceptance.model.AcceptancePlanGenerationCommand;
+import com.wish.rd.engine.bugfix.acceptance.model.AcceptancePlanGenerationResult;
 import com.wish.rd.engine.bugfix.acceptance.AcceptancePlanGeneratorPort;
-import com.wish.rd.engine.bugfix.acceptance.AcceptancePlanStatus;
-import com.wish.rd.engine.bugfix.acceptance.AcceptancePlanValidationResult;
+import com.wish.rd.engine.bugfix.acceptance.model.AcceptancePlanStatus;
+import com.wish.rd.engine.bugfix.acceptance.model.AcceptancePlanValidationResult;
 import com.wish.rd.engine.bugfix.acceptance.AcceptancePlanValidator;
-import com.wish.rd.engine.rag.BugFixMessage;
+import com.wish.rd.engine.rag.model.BugFixMessage;
 import com.wish.rd.engine.rag.ChatQueueLimiter;
 import com.wish.rd.engine.rag.RagBugFixEngine;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
-import com.wish.rd.rag.runtime.RdBugFixTask;
-import com.wish.rd.rag.runtime.RdTaskStatus;
+import com.wish.rd.rag.runtime.model.RdBugFixTask;
+import com.wish.rd.rag.runtime.model.RdTaskStatus;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -23,6 +23,10 @@ import java.util.List;
 import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import com.wish.rd.engine.bugfix.model.BugFixExecutionRequest;
+import com.wish.rd.engine.bugfix.model.BugFixExecutionResult;
+import com.wish.rd.engine.bugfix.model.RdBotFixCommand;
+import com.wish.rd.engine.bugfix.model.RdBotFixResult;
 
 /**
  * RD 机器人 Bug 修复全流程编排引擎。

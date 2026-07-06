@@ -1,7 +1,7 @@
 package com.wish.rd.engine.admin.feedback;
 
-import com.wish.rd.rag.feedback.MessageFeedback;
-import com.wish.rd.rag.feedback.MessageFeedbackCommand;
+import com.wish.rd.rag.feedback.model.MessageFeedback;
+import com.wish.rd.rag.feedback.model.MessageFeedbackCommand;
 import com.wish.rd.rag.feedback.MessageFeedbackRegistry;
 import org.springframework.stereotype.Service;
 

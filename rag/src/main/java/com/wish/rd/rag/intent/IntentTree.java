@@ -2,6 +2,7 @@ package com.wish.rd.rag.intent;
 
 import java.util.ArrayList;
 import java.util.List;
+import com.wish.rd.rag.intent.model.IntentNode;
 
 public final class IntentTree {
 

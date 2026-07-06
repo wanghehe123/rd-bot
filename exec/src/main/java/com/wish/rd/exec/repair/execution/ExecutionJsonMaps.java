@@ -4,12 +4,12 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-final class ExecutionJsonMaps {
+public final class ExecutionJsonMaps {
 
     private ExecutionJsonMaps() {
     }
 
-    static Map<String, String> copy(Map<String, String> source) {
+    public static Map<String, String> copy(Map<String, String> source) {
         if (source == null || source.isEmpty()) {
             return Map.of();
         }

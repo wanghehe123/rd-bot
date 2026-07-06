@@ -1,7 +1,7 @@
 package com.wish.rd.bootstrap.feishu.im;
 
-import com.wish.rd.bootstrap.executor.InMemoryRepairAlertSink;
-import com.wish.rd.exec.repair.alert.RepairAlert;
+import com.wish.rd.bootstrap.executor.impl.InMemoryRepairAlertSink;
+import com.wish.rd.exec.repair.alert.model.RepairAlert;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;

@@ -16,6 +16,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import com.wish.rd.exec.repair.docker.model.ContainerRunRequest;
+import com.wish.rd.exec.repair.docker.model.ContainerRunResult;
 
 class ContainerRunnerContractTest {
 

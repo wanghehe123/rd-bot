@@ -1,13 +1,13 @@
 package com.wish.rd.bootstrap;
 
 import com.wish.rd.bootstrap.controller.admin.repair.RepairRecordController;
-import com.wish.rd.exec.repair.CreateRepairRecordArtifactCommand;
-import com.wish.rd.exec.repair.CreateRepairAssetCommand;
-import com.wish.rd.exec.repair.CreateRepairRecordCommand;
-import com.wish.rd.exec.repair.InMemoryRepairRecordRepository;
-import com.wish.rd.exec.repair.RepairAssetType;
+import com.wish.rd.exec.repair.model.CreateRepairRecordArtifactCommand;
+import com.wish.rd.exec.repair.model.CreateRepairAssetCommand;
+import com.wish.rd.exec.repair.model.CreateRepairRecordCommand;
+import com.wish.rd.exec.repair.impl.InMemoryRepairRecordRepository;
+import com.wish.rd.exec.repair.model.RepairAssetType;
 import com.wish.rd.exec.repair.RepairRecordRepository;
-import com.wish.rd.exec.repair.RepairRecordStatus;
+import com.wish.rd.exec.repair.model.RepairRecordStatus;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.web.servlet.MockMvc;

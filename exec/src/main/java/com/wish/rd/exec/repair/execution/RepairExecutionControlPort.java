@@ -1,5 +1,9 @@
 package com.wish.rd.exec.repair.execution;
 
+import com.wish.rd.exec.repair.execution.model.RepairExecutionStopCommand;
+import com.wish.rd.exec.repair.execution.model.RepairExecutionStopResult;
+
+
 /**
  * 修复执行控制端口，用于 RD 手动终止正在运行的执行任务。
  */

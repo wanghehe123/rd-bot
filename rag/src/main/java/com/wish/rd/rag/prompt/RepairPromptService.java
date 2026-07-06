@@ -1,15 +1,17 @@
 package com.wish.rd.rag.prompt;
 
-import com.wish.rd.framework.convention.ChatMessage;
-import com.wish.rd.framework.convention.RetrievedChunk;
-import com.wish.rd.rag.pipeline.RepairContextPackage;
-import com.wish.rd.rag.pipeline.RepairRagRequest;
+import com.wish.rd.framework.convention.model.ChatMessage;
+import com.wish.rd.framework.convention.model.RetrievedChunk;
+import com.wish.rd.rag.pipeline.model.RepairContextPackage;
+import com.wish.rd.rag.pipeline.model.RepairRagRequest;
 import com.wish.rd.rag.rewrite.QueryRewriteService;
-import com.wish.rd.rag.rewrite.RewriteResult;
-import com.wish.rd.rag.rewrite.RuleBasedQueryRewriteService;
+import com.wish.rd.rag.rewrite.model.RewriteResult;
+import com.wish.rd.rag.rewrite.impl.RuleBasedQueryRewriteService;
 
 import java.util.ArrayList;
 import java.util.List;
+import com.wish.rd.rag.prompt.model.PromptScene;
+import com.wish.rd.rag.prompt.model.RepairPromptPlan;
 
 /**
  * 修复场景 Prompt 规划服务：把检索证据、对话记忆、改写后问题组装成最终的系统/用户 Prompt。

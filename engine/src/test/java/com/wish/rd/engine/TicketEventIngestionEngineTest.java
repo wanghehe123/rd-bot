@@ -1,10 +1,10 @@
 package com.wish.rd.engine;
 
-import com.wish.rd.engine.ticket.RepairQueuePublishResult;
+import com.wish.rd.engine.ticket.model.RepairQueuePublishResult;
 import com.wish.rd.engine.ticket.RepairQueuePublisher;
-import com.wish.rd.engine.ticket.RepairTicketMessage;
+import com.wish.rd.engine.ticket.model.RepairTicketMessage;
 import com.wish.rd.engine.ticket.TicketEventIngestionEngine;
-import com.wish.rd.engine.ticket.TicketEventInput;
+import com.wish.rd.engine.ticket.model.TicketEventInput;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;

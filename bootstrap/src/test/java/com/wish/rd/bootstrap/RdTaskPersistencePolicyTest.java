@@ -17,13 +17,13 @@ class RdTaskPersistencePolicyTest {
                 "bootstrap/src/main/resources/sql/postgres/p0_knowledge_productionization.sql"));
 
         assertTrue(Files.exists(PROJECT_ROOT.resolve(
-                "bootstrap/src/main/java/com/wish/rd/bootstrap/persistence/PostgresRdTaskStore.java")));
+                "bootstrap/src/main/java/com/wish/rd/bootstrap/persistence/impl/PostgresRdTaskStore.java")));
         assertTrue(Files.exists(PROJECT_ROOT.resolve(
                 "bootstrap/src/main/java/com/wish/rd/bootstrap/persistence/entity/RdTaskRow.java")));
         assertTrue(Files.exists(PROJECT_ROOT.resolve(
                 "bootstrap/src/main/java/com/wish/rd/bootstrap/persistence/mapper/RdTaskMapper.java")));
         assertTrue(Files.exists(PROJECT_ROOT.resolve(
-                "bootstrap/src/main/java/com/wish/rd/bootstrap/persistence/PostgresTaskMaterialStore.java")));
+                "bootstrap/src/main/java/com/wish/rd/bootstrap/persistence/impl/PostgresTaskMaterialStore.java")));
         assertTrue(Files.exists(PROJECT_ROOT.resolve(
                 "bootstrap/src/main/java/com/wish/rd/bootstrap/persistence/entity/RdTaskMaterialRow.java")));
         assertTrue(Files.exists(PROJECT_ROOT.resolve(

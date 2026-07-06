@@ -10,6 +10,8 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
+import com.wish.rd.exec.repair.docker.model.ContainerRunRequest;
+import com.wish.rd.exec.repair.docker.model.ContainerRunResult;
 
 /**
  * 测试用容器执行器，写入确定性的 Docker Claude Code 协议产物且不调用真实 Docker。

@@ -1,5 +1,8 @@
 package com.wish.rd.rag.knowledge;
 
+import com.wish.rd.rag.knowledge.model.KnowledgeRefreshMetric;
+
+
 /**
  * Sink for knowledge refresh operation metrics.
  */

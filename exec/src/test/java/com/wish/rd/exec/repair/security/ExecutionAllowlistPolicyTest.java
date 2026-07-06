@@ -1,6 +1,7 @@
 package com.wish.rd.exec.repair.security;
 
-import com.wish.rd.exec.repair.execution.RepairJobCommand;
+import com.wish.rd.exec.repair.execution.model.RepairJobCommand;
+import com.wish.rd.exec.repair.security.model.ExecutionAllowlistPolicy;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -36,6 +37,25 @@ class ExecutionAllowlistPolicyTest {
     }
 
     @Test
+    void shouldTreatGithubRepositoryUrlGitSuffixAsOptional() {
+        ExecutionAllowlistPolicy policy = new ExecutionAllowlistPolicy(
+                true,
+                List.of("https://github.com/example/order.git"),
+                List.of("example/order"),
+                List.of("main"),
+                List.of("requirement/*")
+        );
+
+        assertTrue(policy.evaluate(command(
+                "example",
+                "order",
+                "https://github.com/example/order",
+                "main",
+                "requirement/task-1001"
+        )).allowed());
+    }
+
+    @Test
     void shouldRejectEnabledPolicyWithoutRules() {
         ExecutionAllowlistPolicy policy = new ExecutionAllowlistPolicy(true, List.of(), List.of(), List.of(), List.of());
 
@@ -43,13 +63,23 @@ class ExecutionAllowlistPolicyTest {
     }
 
     private static RepairJobCommand command(String owner, String name, String baseBranch, String workBranch) {
+        return command(owner, name, "https://github.com/" + owner + "/" + name + ".git", baseBranch, workBranch);
+    }
+
+    private static RepairJobCommand command(
+            String owner,
+            String name,
+            String repositoryUrl,
+            String baseBranch,
+            String workBranch
+    ) {
         return new RepairJobCommand(
                 "repair-1001",
                 "task-1001",
                 "FS-1001",
                 "Order service fails",
                 "Fix the order service regression.",
-                "https://github.com/" + owner + "/" + name + ".git",
+                repositoryUrl,
                 owner,
                 name,
                 baseBranch,

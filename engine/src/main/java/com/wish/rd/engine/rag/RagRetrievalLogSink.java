@@ -1,5 +1,8 @@
 package com.wish.rd.engine.rag;
 
+import com.wish.rd.engine.rag.model.RagRetrievalLogEvent;
+
+
 /**
  * RAG 检索评测日志输出端口。
  *

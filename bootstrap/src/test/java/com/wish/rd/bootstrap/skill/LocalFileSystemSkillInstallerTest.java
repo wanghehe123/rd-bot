@@ -1,9 +1,11 @@
 package com.wish.rd.bootstrap.skill;
 
-import com.wish.rd.skill.AgentSkillDescriptor;
-import com.wish.rd.skill.SkillInstallCommand;
-import com.wish.rd.skill.SkillInstallResult;
-import com.wish.rd.skill.SkillRiskLevel;
+import com.wish.rd.bootstrap.skill.impl.LocalFileSystemSkillInstaller;
+
+import com.wish.rd.skill.model.AgentSkillDescriptor;
+import com.wish.rd.skill.model.SkillInstallCommand;
+import com.wish.rd.skill.model.SkillInstallResult;
+import com.wish.rd.skill.model.SkillRiskLevel;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 

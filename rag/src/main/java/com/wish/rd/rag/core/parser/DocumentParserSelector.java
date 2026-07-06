@@ -1,6 +1,7 @@
 package com.wish.rd.rag.core.parser;
 
 import java.util.List;
+import com.wish.rd.rag.core.parser.model.ParserType;
 
 /**
  * 文档解析器选择器：按 MIME 类型在已注册的解析器中挑选合适的实现。

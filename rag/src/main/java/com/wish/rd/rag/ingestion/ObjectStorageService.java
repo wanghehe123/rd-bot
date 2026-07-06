@@ -1,6 +1,7 @@
 package com.wish.rd.rag.ingestion;
 
 import java.io.InputStream;
+import com.wish.rd.rag.ingestion.model.StoredIngestionFile;
 
 public interface ObjectStorageService {
 

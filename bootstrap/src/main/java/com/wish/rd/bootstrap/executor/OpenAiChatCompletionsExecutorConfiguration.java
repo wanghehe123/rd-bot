@@ -1,6 +1,9 @@
 package com.wish.rd.bootstrap.executor;
 
-import com.wish.rd.exec.repair.docker.DockerClaudeCodeExecutor;
+import com.wish.rd.bootstrap.executor.impl.OpenAiChatCompletionsRepairExecutor;
+import com.wish.rd.bootstrap.executor.impl.RoleAwareRepairExecutor;
+
+import com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor;
 import com.wish.rd.exec.repair.execution.RepairExecutorPort;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;

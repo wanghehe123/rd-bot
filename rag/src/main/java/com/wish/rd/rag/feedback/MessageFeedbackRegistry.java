@@ -1,13 +1,15 @@
 package com.wish.rd.rag.feedback;
 
-import com.wish.rd.rag.memory.ConversationRegistry;
-import com.wish.rd.rag.memory.ManagedConversationMessage;
+import com.wish.rd.rag.memory.impl.ConversationRegistry;
+import com.wish.rd.rag.memory.model.ManagedConversationMessage;
 
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import org.springframework.stereotype.Component;
+import com.wish.rd.rag.feedback.model.MessageFeedback;
+import com.wish.rd.rag.feedback.model.MessageFeedbackCommand;
 
 @Component
 public final class MessageFeedbackRegistry {

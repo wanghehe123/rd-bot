@@ -1,6 +1,8 @@
 package com.wish.rd.rag.memory;
 
-import com.wish.rd.framework.convention.ChatMessage;
+import com.wish.rd.rag.memory.impl.DefaultConversationMemoryService;
+
+import com.wish.rd.framework.convention.model.ChatMessage;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;

@@ -1,6 +1,8 @@
 package com.wish.rd.rag.core.parser;
 
 import java.util.Map;
+import com.wish.rd.rag.core.parser.model.ParseResult;
+import com.wish.rd.rag.core.parser.model.ParserType;
 
 /**
  * 文档解析器接口：把原始字节解析为纯文本，供后续分块使用。

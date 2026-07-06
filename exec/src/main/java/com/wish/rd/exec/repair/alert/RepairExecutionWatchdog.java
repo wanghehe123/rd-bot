@@ -7,6 +7,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import com.wish.rd.exec.repair.alert.model.RepairAlert;
+import com.wish.rd.exec.repair.alert.model.RepairAlertType;
 
 /**
  * 修复执行观察器，按配置策略发出超时和预算告警，不直接依赖 Docker、进程或通知实现。

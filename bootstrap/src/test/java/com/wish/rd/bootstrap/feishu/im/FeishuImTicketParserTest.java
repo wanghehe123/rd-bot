@@ -1,5 +1,6 @@
 package com.wish.rd.bootstrap.feishu.im;
 
+import com.wish.rd.bootstrap.feishu.im.model.FeishuImTicketDraft;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;

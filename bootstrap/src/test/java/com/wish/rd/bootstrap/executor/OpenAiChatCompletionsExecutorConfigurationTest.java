@@ -1,5 +1,11 @@
 package com.wish.rd.bootstrap.executor;
 
+import com.wish.rd.bootstrap.executor.impl.InMemoryRepairAlertSink;
+import com.wish.rd.bootstrap.executor.impl.OpenAiChatCompletionsRepairExecutor;
+import com.wish.rd.bootstrap.executor.impl.ProcessContainerRunner;
+import com.wish.rd.bootstrap.executor.impl.ProcessGitRepairWorkspaceRepository;
+import com.wish.rd.bootstrap.executor.impl.RoleAwareRepairExecutor;
+
 import com.wish.rd.exec.repair.execution.RepairExecutorPort;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
@@ -24,7 +30,7 @@ class OpenAiChatCompletionsExecutorConfigurationTest {
                         "rd.executor.openai-chat.provider-name=minimax",
                         "rd.executor.openai-chat.base-url=https://api.minimaxi.com/v1",
                         "rd.executor.openai-chat.api-key-env=MINIMAX_API_KEY",
-                        "rd.executor.openai-chat.model=MiniMax-M2.7"
+                        "rd.executor.openai-chat.model=MiniMax-M3"
                 );
 
         contextRunner.run(context -> {

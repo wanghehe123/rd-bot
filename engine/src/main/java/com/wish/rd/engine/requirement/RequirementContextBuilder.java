@@ -1,11 +1,12 @@
 package com.wish.rd.engine.requirement;
 
-import com.wish.rd.rag.runtime.RdRequirementTask;
-import com.wish.rd.rag.runtime.TaskMaterial;
+import com.wish.rd.rag.runtime.model.RdRequirementTask;
+import com.wish.rd.rag.runtime.model.TaskMaterial;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import com.wish.rd.engine.requirement.model.RequirementContextPackage;
 
 /**
  * 需求上下文构建器。

@@ -1,5 +1,10 @@
 package com.wish.rd.skill;
 
+import com.wish.rd.skill.model.AgentSkillDescriptor;
+import com.wish.rd.skill.model.SkillInstallCommand;
+import com.wish.rd.skill.model.SkillInstallResult;
+
+
 /**
  * Skill 安装端口。
  *

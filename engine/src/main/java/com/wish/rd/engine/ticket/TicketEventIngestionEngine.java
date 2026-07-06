@@ -11,6 +11,9 @@ import java.time.Instant;
 import java.util.LinkedHashSet;
 import java.util.Set;
 import java.util.UUID;
+import com.wish.rd.engine.ticket.model.RepairQueuePublishResult;
+import com.wish.rd.engine.ticket.model.RepairTicketMessage;
+import com.wish.rd.engine.ticket.model.TicketEventInput;
 
 /**
  * 工单事件接入引擎：把标准化事件转成 {@link RepairTicketMessage} 并发布到队列。

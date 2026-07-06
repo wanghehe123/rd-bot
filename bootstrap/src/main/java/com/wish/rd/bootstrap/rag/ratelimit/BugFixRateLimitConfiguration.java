@@ -1,5 +1,7 @@
 package com.wish.rd.bootstrap.rag.ratelimit;
 
+import com.wish.rd.bootstrap.rag.ratelimit.impl.RedisChatQueueLimiter;
+
 import com.wish.rd.engine.rag.ChatQueueLimiter;
 import org.redisson.Redisson;
 import org.redisson.api.RedissonClient;

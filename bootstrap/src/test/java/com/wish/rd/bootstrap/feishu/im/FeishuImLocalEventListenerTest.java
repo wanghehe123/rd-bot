@@ -1,9 +1,11 @@
 package com.wish.rd.bootstrap.feishu.im;
 
+import com.wish.rd.bootstrap.feishu.im.impl.FeishuImLocalEventListener;
+
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.wish.rd.engine.ticket.RepairQueuePublishResult;
+import com.wish.rd.engine.ticket.model.RepairQueuePublishResult;
 import com.wish.rd.engine.ticket.RepairQueuePublisher;
-import com.wish.rd.engine.ticket.RepairTicketMessage;
+import com.wish.rd.engine.ticket.model.RepairTicketMessage;
 import com.wish.rd.engine.ticket.TicketEventIngestionEngine;
 import org.junit.jupiter.api.Test;
 

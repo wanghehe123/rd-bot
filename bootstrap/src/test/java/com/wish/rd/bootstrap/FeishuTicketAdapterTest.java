@@ -1,17 +1,17 @@
 package com.wish.rd.bootstrap;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.wish.rd.adapter.TicketMessageQuery;
-import com.wish.rd.adapter.TicketMessages;
-import com.wish.rd.adapter.TicketReplyCommand;
-import com.wish.rd.adapter.TicketSnapshot;
-import com.wish.rd.adapter.TicketUpdateResult;
+import com.wish.rd.adapter.model.TicketMessageQuery;
+import com.wish.rd.adapter.model.TicketMessages;
+import com.wish.rd.adapter.model.TicketReplyCommand;
+import com.wish.rd.adapter.model.TicketSnapshot;
+import com.wish.rd.adapter.model.TicketUpdateResult;
 import com.wish.rd.bootstrap.feishu.ticket.FeishuHelpdeskAuth;
 import com.wish.rd.bootstrap.feishu.ticket.FeishuHelpdeskClient;
 import com.wish.rd.bootstrap.feishu.ticket.FeishuHelpdeskProperties;
-import com.wish.rd.bootstrap.feishu.ticket.FeishuStartServiceCommand;
-import com.wish.rd.bootstrap.feishu.ticket.FeishuStartServiceResult;
-import com.wish.rd.bootstrap.feishu.ticket.FeishuTicketAdapter;
+import com.wish.rd.bootstrap.feishu.ticket.model.FeishuStartServiceCommand;
+import com.wish.rd.bootstrap.feishu.ticket.model.FeishuStartServiceResult;
+import com.wish.rd.bootstrap.feishu.ticket.impl.FeishuTicketAdapter;
 import com.wish.rd.bootstrap.feishu.ticket.FeishuTicketMapper;
 import org.junit.jupiter.api.Test;
 

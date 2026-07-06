@@ -1,10 +1,10 @@
 package com.wish.rd.bootstrap;
 
-import com.wish.rd.bootstrap.rocketmq.RocketMqRepairQueueAdapter;
+import com.wish.rd.bootstrap.rocketmq.impl.RocketMqRepairQueueAdapter;
 import com.wish.rd.bootstrap.rocketmq.RocketMqRepairQueueProperties;
 import com.wish.rd.engine.ticket.RepairQueueConsumer;
-import com.wish.rd.engine.ticket.RepairQueuePublishResult;
-import com.wish.rd.engine.ticket.RepairTicketMessage;
+import com.wish.rd.engine.ticket.model.RepairQueuePublishResult;
+import com.wish.rd.engine.ticket.model.RepairTicketMessage;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.springframework.beans.factory.annotation.Autowired;

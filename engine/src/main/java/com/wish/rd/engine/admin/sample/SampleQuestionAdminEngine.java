@@ -1,8 +1,8 @@
 package com.wish.rd.engine.admin.sample;
 
-import com.wish.rd.rag.sample.ManagedSampleQuestion;
-import com.wish.rd.rag.sample.SampleQuestionCommand;
-import com.wish.rd.rag.sample.SampleQuestionPage;
+import com.wish.rd.rag.sample.model.ManagedSampleQuestion;
+import com.wish.rd.rag.sample.model.SampleQuestionCommand;
+import com.wish.rd.rag.sample.model.SampleQuestionPage;
 import com.wish.rd.rag.sample.SampleQuestionRegistry;
 
 import java.util.List;

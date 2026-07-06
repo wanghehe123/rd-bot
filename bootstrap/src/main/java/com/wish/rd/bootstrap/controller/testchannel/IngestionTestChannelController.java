@@ -1,7 +1,7 @@
 package com.wish.rd.bootstrap.controller.testchannel;
 
 import com.wish.rd.engine.testflow.IngestionPipelineTestEngine;
-import com.wish.rd.engine.testflow.IngestionPipelineTestResult;
+import com.wish.rd.engine.testflow.model.IngestionPipelineTestResult;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RestController;
 

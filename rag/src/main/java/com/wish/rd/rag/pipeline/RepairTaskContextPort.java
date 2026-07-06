@@ -1,5 +1,8 @@
 package com.wish.rd.rag.pipeline;
 
+import com.wish.rd.rag.pipeline.model.RepairContextPackage;
+
+
 /**
  * 修复任务上下文交接端口。
  *

@@ -7,6 +7,11 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import com.wish.rd.rag.knowledge.model.CreateKnowledgeBaseCommand;
+import com.wish.rd.rag.knowledge.model.FeishuDocImportCommand;
+import com.wish.rd.rag.knowledge.model.FeishuDocumentSnapshot;
+import com.wish.rd.rag.knowledge.model.KnowledgeBase;
+import com.wish.rd.rag.knowledge.model.KnowledgeDocument;
 
 class FeishuDocKnowledgeImporterTest {
 

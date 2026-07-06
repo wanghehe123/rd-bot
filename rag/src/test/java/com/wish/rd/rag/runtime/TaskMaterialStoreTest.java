@@ -1,11 +1,16 @@
 package com.wish.rd.rag.runtime;
 
+import com.wish.rd.rag.runtime.impl.InMemoryTaskMaterialStore;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import com.wish.rd.rag.runtime.model.TaskMaterial;
+import com.wish.rd.rag.runtime.model.TaskMaterialSourceType;
+import com.wish.rd.rag.runtime.model.TaskMaterialType;
 
 /**
  * {@link TaskMaterialStore} 单测。

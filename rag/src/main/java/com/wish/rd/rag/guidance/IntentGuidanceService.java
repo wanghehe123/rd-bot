@@ -1,8 +1,9 @@
 package com.wish.rd.rag.guidance;
 
-import com.wish.rd.rag.intent.NodeScore;
+import com.wish.rd.rag.intent.model.NodeScore;
 
 import java.util.List;
+import com.wish.rd.rag.guidance.model.GuidanceDecision;
 
 /**
  * 意图歧义引导服务。

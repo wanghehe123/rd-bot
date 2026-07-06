@@ -1,6 +1,6 @@
 package com.wish.rd.rag.vector;
 
-import com.wish.rd.framework.convention.RetrievedChunk;
+import com.wish.rd.framework.convention.model.RetrievedChunk;
 
 import java.util.Collection;
 import java.util.List;

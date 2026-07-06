@@ -50,6 +50,46 @@ rustfs:
   secret-access-key: ${RUSTFS_SECRET_ACCESS_KEY:rustfsadmin}
 
 rd:
+  thread-pools:
+    requirement-delivery:
+      core-size: ${RD_THREAD_REQUIREMENT_CORE_SIZE:2}
+      max-size: ${RD_THREAD_REQUIREMENT_MAX_SIZE:4}
+      queue-capacity: ${RD_THREAD_REQUIREMENT_QUEUE_CAPACITY:100}
+      keep-alive-seconds: ${RD_THREAD_REQUIREMENT_KEEP_ALIVE_SECONDS:60}
+      await-termination-seconds: ${RD_THREAD_REQUIREMENT_AWAIT_TERMINATION_SECONDS:30}
+      thread-name-prefix: rd-requirement-
+    executor-io:
+      core-size: ${RD_THREAD_EXECUTOR_IO_CORE_SIZE:4}
+      max-size: ${RD_THREAD_EXECUTOR_IO_MAX_SIZE:8}
+      queue-capacity: ${RD_THREAD_EXECUTOR_IO_QUEUE_CAPACITY:200}
+      keep-alive-seconds: ${RD_THREAD_EXECUTOR_IO_KEEP_ALIVE_SECONDS:60}
+      await-termination-seconds: ${RD_THREAD_EXECUTOR_IO_AWAIT_TERMINATION_SECONDS:30}
+      thread-name-prefix: rd-executor-io-
+    repair-queue:
+      core-size: ${RD_THREAD_REPAIR_QUEUE_CORE_SIZE:2}
+      max-size: ${RD_THREAD_REPAIR_QUEUE_MAX_SIZE:4}
+      queue-capacity: ${RD_THREAD_REPAIR_QUEUE_QUEUE_CAPACITY:200}
+      keep-alive-seconds: ${RD_THREAD_REPAIR_QUEUE_KEEP_ALIVE_SECONDS:60}
+      await-termination-seconds: ${RD_THREAD_REPAIR_QUEUE_AWAIT_TERMINATION_SECONDS:30}
+      thread-name-prefix: rd-repair-queue-
+    ingestion:
+      core-size: ${RD_THREAD_INGESTION_CORE_SIZE:2}
+      max-size: ${RD_THREAD_INGESTION_MAX_SIZE:4}
+      queue-capacity: ${RD_THREAD_INGESTION_QUEUE_CAPACITY:100}
+      keep-alive-seconds: ${RD_THREAD_INGESTION_KEEP_ALIVE_SECONDS:60}
+      await-termination-seconds: ${RD_THREAD_INGESTION_AWAIT_TERMINATION_SECONDS:30}
+      thread-name-prefix: rd-ingestion-
+    maintenance:
+      core-size: ${RD_THREAD_MAINTENANCE_CORE_SIZE:1}
+      max-size: ${RD_THREAD_MAINTENANCE_MAX_SIZE:2}
+      queue-capacity: ${RD_THREAD_MAINTENANCE_QUEUE_CAPACITY:50}
+      keep-alive-seconds: ${RD_THREAD_MAINTENANCE_KEEP_ALIVE_SECONDS:60}
+      await-termination-seconds: ${RD_THREAD_MAINTENANCE_AWAIT_TERMINATION_SECONDS:30}
+      thread-name-prefix: rd-maintenance-
+    scheduler:
+      pool-size: ${RD_THREAD_SCHEDULER_POOL_SIZE:2}
+      await-termination-seconds: ${RD_THREAD_SCHEDULER_AWAIT_TERMINATION_SECONDS:30}
+      thread-name-prefix: rd-scheduler-
   distributed-lock:
     mode: ${RD_DISTRIBUTED_LOCK_MODE:redisson}
   rag:
@@ -141,18 +181,18 @@ rd:
           protocol: ${MINIMAX_PROTOCOL:openai-chat-completions}
           base-url: ${MINIMAX_BASE_URL:https://api.minimaxi.com/v1}
           api-key-env: ${MINIMAX_API_KEY_ENV:MINIMAX_API_KEY}
-          model: ${MINIMAX_MODEL:MiniMax-M2.7}
-          default-opus-model: ${MINIMAX_OPUS_MODEL:MiniMax-M2.7}
-          default-sonnet-model: ${MINIMAX_SONNET_MODEL:MiniMax-M2.7}
-          default-haiku-model: ${MINIMAX_HAIKU_MODEL:MiniMax-M2.7}
-          subagent-model: ${MINIMAX_SUBAGENT_MODEL:MiniMax-M2.7}
+          model: ${MINIMAX_MODEL:MiniMax-M3}
+          default-opus-model: ${MINIMAX_OPUS_MODEL:MiniMax-M3}
+          default-sonnet-model: ${MINIMAX_SONNET_MODEL:MiniMax-M3}
+          default-haiku-model: ${MINIMAX_HAIKU_MODEL:MiniMax-M3}
+          subagent-model: ${MINIMAX_SUBAGENT_MODEL:MiniMax-M3}
           effort-level: ${MINIMAX_EFFORT_LEVEL:max}
     openai-chat:
       enabled: ${RD_EXECUTOR_OPENAI_CHAT_ENABLED:false}
       provider-name: ${MINIMAX_PROVIDER_NAME:minimax}
       base-url: ${MINIMAX_BASE_URL:https://api.minimaxi.com/v1}
       api-key-env: ${MINIMAX_API_KEY_ENV:MINIMAX_API_KEY}
-      model: ${MINIMAX_MODEL:MiniMax-M2.7}
+      model: ${MINIMAX_MODEL:MiniMax-M3}
       protocol: ${RD_EXECUTOR_OPENAI_CHAT_PROTOCOL:openai-chat-completions}
       timeout: ${RD_EXECUTOR_OPENAI_CHAT_TIMEOUT:60s}
   github:

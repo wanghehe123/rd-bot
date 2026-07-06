@@ -1,10 +1,10 @@
 package com.wish.rd.bootstrap.controller.admin.operation;
 
-import com.wish.rd.bootstrap.rocketmq.InMemoryRepairQueueDeadLetterRepository;
-import com.wish.rd.engine.ticket.RepairQueueDeadLetter;
-import com.wish.rd.engine.ticket.RepairQueuePublishResult;
+import com.wish.rd.bootstrap.rocketmq.impl.InMemoryRepairQueueDeadLetterRepository;
+import com.wish.rd.engine.ticket.model.RepairQueueDeadLetter;
+import com.wish.rd.engine.ticket.model.RepairQueuePublishResult;
 import com.wish.rd.engine.ticket.RepairQueuePublisher;
-import com.wish.rd.engine.ticket.RepairTicketMessage;
+import com.wish.rd.engine.ticket.model.RepairTicketMessage;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.ObjectProvider;

@@ -3,6 +3,9 @@ package com.wish.rd.rag.knowledge;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import com.wish.rd.rag.knowledge.model.FeishuDocImportCommand;
+import com.wish.rd.rag.knowledge.model.KnowledgeDocument;
+import com.wish.rd.rag.knowledge.model.KnowledgeRefreshMetric;
 
 /**
  * 知识刷新调度器：扫描到期文档并按来源触发刷新。

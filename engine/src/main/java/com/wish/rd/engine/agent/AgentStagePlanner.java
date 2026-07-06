@@ -3,6 +3,8 @@ package com.wish.rd.engine.agent;
 import java.util.List;
 import java.util.Objects;
 import java.util.function.Supplier;
+import com.wish.rd.engine.agent.model.AgentRole;
+import com.wish.rd.engine.agent.model.AgentStageRun;
 
 /**
  * Agent 阶段规划器。

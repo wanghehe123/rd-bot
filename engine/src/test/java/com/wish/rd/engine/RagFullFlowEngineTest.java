@@ -1,7 +1,7 @@
 package com.wish.rd.engine;
 
 import com.wish.rd.engine.testflow.RagFullFlowTestEngine;
-import com.wish.rd.engine.testflow.RagFullFlowTestResult;
+import com.wish.rd.engine.testflow.model.RagFullFlowTestResult;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;

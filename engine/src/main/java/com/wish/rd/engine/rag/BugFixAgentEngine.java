@@ -1,5 +1,8 @@
 package com.wish.rd.engine.rag;
 
+import com.wish.rd.engine.rag.model.BugFixMessage;
+
+
 /**
  * Bug 修复执行引擎端口。
  *

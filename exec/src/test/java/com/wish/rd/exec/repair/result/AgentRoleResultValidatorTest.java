@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import com.wish.rd.exec.repair.result.model.AgentRoleResultValidation;
 
 class AgentRoleResultValidatorTest {
 

@@ -1,6 +1,7 @@
 package com.wish.rd.engine.agent;
 
 import java.util.List;
+import com.wish.rd.engine.agent.model.AgentStageArtifact;
 
 /**
  * Agent 阶段产物存储端口。

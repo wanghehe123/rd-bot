@@ -1,8 +1,9 @@
 package com.wish.rd.engine.admin.knowledge;
 
-import com.wish.rd.rag.knowledge.KnowledgeDocumentStatus;
+import com.wish.rd.rag.knowledge.model.KnowledgeDocumentStatus;
 import com.wish.rd.rag.knowledge.KnowledgeWorkspace;
 import org.springframework.stereotype.Service;
+import com.wish.rd.engine.admin.knowledge.model.KnowledgeAdminOverview;
 
 /**
  * 知识管理业务编排引擎。

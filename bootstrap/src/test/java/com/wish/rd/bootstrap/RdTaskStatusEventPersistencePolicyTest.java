@@ -24,7 +24,7 @@ class RdTaskStatusEventPersistencePolicyTest {
                 "bootstrap/src/main/resources/sql/postgres/p0_knowledge_productionization.sql"));
 
         assertTrue(Files.exists(PROJECT_ROOT.resolve(
-                "bootstrap/src/main/java/com/wish/rd/bootstrap/persistence/PostgresRdTaskStatusEventStore.java")));
+                "bootstrap/src/main/java/com/wish/rd/bootstrap/persistence/impl/PostgresRdTaskStatusEventStore.java")));
         assertTrue(Files.exists(PROJECT_ROOT.resolve(
                 "bootstrap/src/main/java/com/wish/rd/bootstrap/persistence/entity/RdTaskStatusEventRow.java")));
         assertTrue(Files.exists(PROJECT_ROOT.resolve(

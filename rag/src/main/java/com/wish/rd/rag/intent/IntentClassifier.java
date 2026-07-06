@@ -5,6 +5,8 @@ import com.wish.rd.rag.text.TextAnalyzer;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Set;
+import com.wish.rd.rag.intent.model.IntentNode;
+import com.wish.rd.rag.intent.model.NodeScore;
 
 /**
  * 意图分类器：基于规则的关键词匹配，对意图树所有节点评分并排序。

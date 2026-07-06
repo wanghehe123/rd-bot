@@ -1,11 +1,11 @@
 package com.wish.rd.engine;
 
-import com.wish.rd.engine.bugfix.acceptance.AcceptancePlan;
-import com.wish.rd.engine.bugfix.acceptance.AcceptancePlanGenerationCommand;
-import com.wish.rd.engine.bugfix.acceptance.AcceptancePlanStatus;
-import com.wish.rd.engine.bugfix.acceptance.RagEvidenceAcceptancePlanGenerator;
-import com.wish.rd.engine.rag.BugFixMessage;
-import com.wish.rd.framework.convention.RetrievedChunk;
+import com.wish.rd.engine.bugfix.acceptance.model.AcceptancePlan;
+import com.wish.rd.engine.bugfix.acceptance.model.AcceptancePlanGenerationCommand;
+import com.wish.rd.engine.bugfix.acceptance.model.AcceptancePlanStatus;
+import com.wish.rd.engine.bugfix.acceptance.impl.RagEvidenceAcceptancePlanGenerator;
+import com.wish.rd.engine.rag.model.BugFixMessage;
+import com.wish.rd.framework.convention.model.RetrievedChunk;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;

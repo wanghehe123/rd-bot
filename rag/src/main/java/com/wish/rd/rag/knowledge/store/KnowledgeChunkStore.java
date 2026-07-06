@@ -1,6 +1,6 @@
 package com.wish.rd.rag.knowledge.store;
 
-import com.wish.rd.rag.knowledge.KnowledgeChunk;
+import com.wish.rd.rag.knowledge.model.KnowledgeChunk;
 
 import java.util.Collection;
 import java.util.List;

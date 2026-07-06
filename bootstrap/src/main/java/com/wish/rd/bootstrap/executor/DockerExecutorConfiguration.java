@@ -1,18 +1,20 @@
 package com.wish.rd.bootstrap.executor;
 
+import com.wish.rd.bootstrap.executor.impl.InMemoryRepairAlertSink;
+
 import com.wish.rd.exec.repair.alert.RepairAlertSinkPort;
 import com.wish.rd.exec.repair.alert.RepairExecutionWatchdog;
 import com.wish.rd.exec.repair.docker.ContainerRunnerPort;
 import com.wish.rd.exec.repair.docker.ContainerControlPort;
-import com.wish.rd.exec.repair.docker.DockerExecutionRegistry;
-import com.wish.rd.exec.repair.docker.DockerClaudeCodeExecutor;
+import com.wish.rd.exec.repair.docker.impl.DockerExecutionRegistry;
+import com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor;
 import com.wish.rd.exec.repair.docker.RepairWorkspaceFactory;
 import com.wish.rd.exec.repair.docker.RepairWorkspaceRepositoryPort;
 import com.wish.rd.exec.repair.execution.RepairExecutionControlPort;
 import com.wish.rd.exec.repair.execution.RepairExecutorPort;
-import com.wish.rd.exec.repair.model.ModelHealthStore;
+import com.wish.rd.exec.repair.health.ModelHealthStore;
 import com.wish.rd.exec.repair.result.StructuredResultValidator;
-import com.wish.rd.exec.repair.security.ExecutionAllowlistPolicy;
+import com.wish.rd.exec.repair.security.model.ExecutionAllowlistPolicy;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;

@@ -1,5 +1,9 @@
 package com.wish.rd.engine.requirement;
 
+import com.wish.rd.engine.requirement.model.RequirementPullRequestPublication;
+import com.wish.rd.engine.requirement.model.RequirementPullRequestPublishCommand;
+
+
 /**
  * 需求交付 PR 发布端口。
  *

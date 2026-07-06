@@ -6,6 +6,11 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.springframework.stereotype.Component;
+import com.wish.rd.rag.trace.model.RagTraceDetail;
+import com.wish.rd.rag.trace.model.RagTraceNodeRecord;
+import com.wish.rd.rag.trace.model.RagTraceNodeView;
+import com.wish.rd.rag.trace.model.RagTraceRunStart;
+import com.wish.rd.rag.trace.model.RagTraceRunView;
 
 /**
  * RAG 链路追踪存储：记录 run（一次完整链路）与 node（链路中的步骤）两级轨迹。

@@ -70,7 +70,7 @@ public final class TextAnalyzer {
      * 计算查询与内容的术语重叠分：命中越多、术语越长，分数越高。
      *
      * <p>精确命中按权重满分计入；查询术语作为子串出现在内容中（且长度≥3）按 0.75 倍计分，
-     * 用于奖励"部分匹配"。该分数被 {@link com.wish.rd.rag.vector.InMemoryVectorStore}
+     * 用于奖励"部分匹配"。该分数被 {@link com.wish.rd.rag.vector.impl.InMemoryVectorStore}
      * 用作向量/关键词检索的统一打分。
      *
      * @param query   查询文本

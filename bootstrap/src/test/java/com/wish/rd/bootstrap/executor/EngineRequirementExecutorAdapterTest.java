@@ -1,21 +1,23 @@
 package com.wish.rd.bootstrap.executor;
 
+import com.wish.rd.bootstrap.executor.impl.EngineRequirementExecutorAdapter;
+
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.wish.rd.engine.agent.AgentRole;
-import com.wish.rd.engine.requirement.RequirementExecutionRequest;
-import com.wish.rd.engine.requirement.RequirementExecutionResult;
+import com.wish.rd.engine.agent.model.AgentRole;
+import com.wish.rd.engine.requirement.model.RequirementExecutionRequest;
+import com.wish.rd.engine.requirement.model.RequirementExecutionResult;
 import com.wish.rd.exec.repair.code.CodePlatformPort;
-import com.wish.rd.exec.repair.code.CreatePullRequestCommand;
-import com.wish.rd.exec.repair.code.PullRequestResult;
-import com.wish.rd.exec.repair.execution.RepairArtifact;
-import com.wish.rd.exec.repair.execution.RepairArtifactType;
-import com.wish.rd.exec.repair.execution.RepairExecutionResult;
-import com.wish.rd.exec.repair.execution.RepairExecutionStatus;
+import com.wish.rd.exec.repair.code.model.CreatePullRequestCommand;
+import com.wish.rd.exec.repair.code.model.PullRequestResult;
+import com.wish.rd.exec.repair.execution.model.RepairArtifact;
+import com.wish.rd.exec.repair.execution.model.RepairArtifactType;
+import com.wish.rd.exec.repair.execution.model.RepairExecutionResult;
+import com.wish.rd.exec.repair.execution.model.RepairExecutionStatus;
 import com.wish.rd.exec.repair.execution.RepairExecutorPort;
-import com.wish.rd.exec.repair.execution.RepairJobCommand;
-import com.wish.rd.rag.runtime.CreateRequirementTaskCommand;
-import com.wish.rd.rag.runtime.RdRequirementTask;
+import com.wish.rd.exec.repair.execution.model.RepairJobCommand;
+import com.wish.rd.rag.runtime.model.CreateRequirementTaskCommand;
+import com.wish.rd.rag.runtime.model.RdRequirementTask;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;

@@ -1,9 +1,11 @@
 package com.wish.rd.bootstrap.executor;
 
-import com.wish.rd.exec.repair.docker.RepairWorkspace;
+import com.wish.rd.bootstrap.executor.impl.ProcessGitRepairWorkspaceRepository;
+
+import com.wish.rd.exec.repair.docker.model.RepairWorkspace;
 import com.wish.rd.exec.repair.docker.RepairWorkspaceFactory;
 import com.wish.rd.exec.repair.docker.RepairWorkspaceRepositoryPort;
-import com.wish.rd.exec.repair.execution.RepairJobCommand;
+import com.wish.rd.exec.repair.execution.model.RepairJobCommand;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 

@@ -1,7 +1,7 @@
 package com.wish.rd.bootstrap.controller.admin.intent;
 
 import com.wish.rd.engine.admin.intent.IntentTreeAdminEngine;
-import com.wish.rd.rag.intent.IntentNodeCommand;
+import com.wish.rd.rag.intent.model.IntentNodeCommand;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;

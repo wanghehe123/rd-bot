@@ -1,6 +1,9 @@
 package com.wish.rd.rag.runtime;
 
-import com.wish.rd.adapter.TicketSnapshot;
+import com.wish.rd.rag.runtime.impl.InMemoryRdTaskStatusEventStore;
+import com.wish.rd.rag.runtime.impl.InMemoryRdTaskStore;
+
+import com.wish.rd.adapter.model.TicketSnapshot;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
 import org.junit.jupiter.api.Test;
 
@@ -12,6 +15,12 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import com.wish.rd.rag.runtime.model.RdBugFixTask;
+import com.wish.rd.rag.runtime.model.RdTaskEventTrigger;
+import com.wish.rd.rag.runtime.model.RdTaskPage;
+import com.wish.rd.rag.runtime.model.RdTaskQuery;
+import com.wish.rd.rag.runtime.model.RdTaskStatus;
+import com.wish.rd.rag.runtime.model.RdTaskStatusEvent;
 
 /**
  * {@link RagStreamTaskRegistry} 状态事件时间线与管理能力单测。

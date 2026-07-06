@@ -1,7 +1,7 @@
 package com.wish.rd.bootstrap.executor;
 
 import com.wish.rd.engine.bugfix.acceptance.AcceptancePlanGeneratorPort;
-import com.wish.rd.engine.bugfix.acceptance.RagEvidenceAcceptancePlanGenerator;
+import com.wish.rd.engine.bugfix.acceptance.impl.RagEvidenceAcceptancePlanGenerator;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;

@@ -23,14 +23,14 @@ public interface RdTaskMapper extends BaseMapper<RdTaskRow> {
                 id, task_type, ticket_id, ticket_title, priority, status,
                 message_id, title, prompt_snapshot, execution_result_json,
                 pull_request_url, error_message, paused, source_type, source_id, source_url,
-                repository_url, repo_owner, repo_name, base_branch, work_branch,
+                project_id, project_key, project_name, repository_url, repo_owner, repo_name, base_branch, work_branch,
                 expected_result, acceptance_criteria_json, created_at, updated_at
             )
             VALUES (
                 #{id}, #{taskType}, #{ticketId}, #{ticketTitle}, #{priority}, #{status},
                 #{messageId}, #{title}, #{promptSnapshot}, #{executionResultJson}::jsonb,
                 #{pullRequestUrl}, #{errorMessage}, COALESCE(#{paused}, FALSE), #{sourceType}, #{sourceId}, #{sourceUrl},
-                #{repositoryUrl}, #{repoOwner}, #{repoName}, #{baseBranch}, #{workBranch},
+                #{projectId}, #{projectKey}, #{projectName}, #{repositoryUrl}, #{repoOwner}, #{repoName}, #{baseBranch}, #{workBranch},
                 #{expectedResult}, #{acceptanceCriteriaJson}::jsonb, #{createdAt}, #{updatedAt}
             )
             ON CONFLICT (id) DO UPDATE SET
@@ -49,6 +49,9 @@ public interface RdTaskMapper extends BaseMapper<RdTaskRow> {
                 source_type = EXCLUDED.source_type,
                 source_id = EXCLUDED.source_id,
                 source_url = EXCLUDED.source_url,
+                project_id = EXCLUDED.project_id,
+                project_key = EXCLUDED.project_key,
+                project_name = EXCLUDED.project_name,
                 repository_url = EXCLUDED.repository_url,
                 repo_owner = EXCLUDED.repo_owner,
                 repo_name = EXCLUDED.repo_name,

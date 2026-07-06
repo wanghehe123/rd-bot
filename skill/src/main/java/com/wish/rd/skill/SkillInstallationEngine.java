@@ -1,5 +1,12 @@
 package com.wish.rd.skill;
 
+import com.wish.rd.skill.model.AgentSkillDescriptor;
+import com.wish.rd.skill.model.SkillInstallCommand;
+import com.wish.rd.skill.model.SkillInstallResult;
+import com.wish.rd.skill.model.SkillPolicyDecision;
+import com.wish.rd.skill.model.SkillRiskLevel;
+
+
 /**
  * Skill 安装编排服务。
  *

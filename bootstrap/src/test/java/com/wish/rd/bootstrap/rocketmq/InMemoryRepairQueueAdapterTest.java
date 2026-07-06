@@ -1,7 +1,9 @@
 package com.wish.rd.bootstrap.rocketmq;
 
-import com.wish.rd.engine.ticket.RepairQueuePublishResult;
-import com.wish.rd.engine.ticket.RepairTicketMessage;
+import com.wish.rd.bootstrap.rocketmq.impl.InMemoryRepairQueueAdapter;
+
+import com.wish.rd.engine.ticket.model.RepairQueuePublishResult;
+import com.wish.rd.engine.ticket.model.RepairTicketMessage;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;

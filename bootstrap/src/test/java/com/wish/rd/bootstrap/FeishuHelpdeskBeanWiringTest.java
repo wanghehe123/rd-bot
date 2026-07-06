@@ -3,7 +3,7 @@ package com.wish.rd.bootstrap;
 import com.wish.rd.adapter.TicketProviderPort;
 import com.wish.rd.adapter.TicketUpdatePort;
 import com.wish.rd.bootstrap.feishu.ticket.FeishuHelpdeskClient;
-import com.wish.rd.bootstrap.feishu.ticket.FeishuTicketAdapter;
+import com.wish.rd.bootstrap.feishu.ticket.impl.FeishuTicketAdapter;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;

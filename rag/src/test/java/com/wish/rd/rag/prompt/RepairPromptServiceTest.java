@@ -1,15 +1,15 @@
 package com.wish.rd.rag.prompt;
 
-import com.wish.rd.framework.convention.ChatMessage;
-import com.wish.rd.framework.convention.RetrievedChunk;
-import com.wish.rd.rag.guidance.GuidanceDecision;
-import com.wish.rd.rag.intent.IntentLevel;
-import com.wish.rd.rag.intent.IntentNode;
-import com.wish.rd.rag.intent.NodeScore;
-import com.wish.rd.rag.pipeline.RepairContextPackage;
-import com.wish.rd.rag.pipeline.RepairRagRequest;
-import com.wish.rd.rag.rewrite.QueryTermMapping;
-import com.wish.rd.rag.rewrite.RuleBasedQueryRewriteService;
+import com.wish.rd.framework.convention.model.ChatMessage;
+import com.wish.rd.framework.convention.model.RetrievedChunk;
+import com.wish.rd.rag.guidance.model.GuidanceDecision;
+import com.wish.rd.rag.intent.model.IntentLevel;
+import com.wish.rd.rag.intent.model.IntentNode;
+import com.wish.rd.rag.intent.model.NodeScore;
+import com.wish.rd.rag.pipeline.model.RepairContextPackage;
+import com.wish.rd.rag.pipeline.model.RepairRagRequest;
+import com.wish.rd.rag.rewrite.model.QueryTermMapping;
+import com.wish.rd.rag.rewrite.impl.RuleBasedQueryRewriteService;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -18,6 +18,8 @@ import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import com.wish.rd.rag.prompt.model.PromptScene;
+import com.wish.rd.rag.prompt.model.RepairPromptPlan;
 
 class RepairPromptServiceTest {
 

@@ -1,6 +1,6 @@
 package com.wish.rd.engine.ticket;
 
-import com.wish.rd.adapter.TicketSnapshot;
+import com.wish.rd.adapter.model.TicketSnapshot;
 
 import java.util.Map;
 

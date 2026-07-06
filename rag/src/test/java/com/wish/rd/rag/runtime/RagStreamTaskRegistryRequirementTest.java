@@ -1,6 +1,9 @@
 package com.wish.rd.rag.runtime;
 
-import com.wish.rd.adapter.TicketSnapshot;
+import com.wish.rd.rag.runtime.impl.InMemoryRdTaskStatusEventStore;
+import com.wish.rd.rag.runtime.impl.InMemoryRdTaskStore;
+
+import com.wish.rd.adapter.model.TicketSnapshot;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
 import org.junit.jupiter.api.Test;
 
@@ -9,6 +12,12 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import com.wish.rd.rag.runtime.model.CreateRequirementTaskCommand;
+import com.wish.rd.rag.runtime.model.RdRequirementTask;
+import com.wish.rd.rag.runtime.model.RdTaskPage;
+import com.wish.rd.rag.runtime.model.RdTaskQuery;
+import com.wish.rd.rag.runtime.model.RdTaskStatus;
+import com.wish.rd.rag.runtime.model.RdTaskType;
 
 /**
  * {@link RagStreamTaskRegistry} 需求任务能力单测。
