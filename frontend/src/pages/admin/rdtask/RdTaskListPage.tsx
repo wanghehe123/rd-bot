@@ -56,6 +56,7 @@ import {
   type RdTask,
   type RequirementMaterialPayload
 } from "@/services/rdTaskService";
+import { getProjectsPage, type RdProject } from "@/services/projectService";
 
 const PAGE_SIZE = 10;
 
@@ -269,11 +270,12 @@ export function RdTaskListPage() {
                 暂无任务，点击「新建任务」创建
               </div>
             ) : (
-              <Table className="min-w-[980px] table-fixed">
+              <Table className="min-w-[1080px] table-fixed">
                 <TableHeader>
                   <TableRow>
                     <TableHead className="w-[230px]">标题</TableHead>
                     <TableHead className="w-[80px]">类型</TableHead>
+                    <TableHead className="w-[120px]">项目</TableHead>
                     <TableHead className="w-[130px]">工单</TableHead>
                     <TableHead className="w-[72px]">优先级</TableHead>
                     <TableHead className="w-[110px]">状态</TableHead>
@@ -304,6 +306,11 @@ export function RdTaskListPage() {
                         <Badge variant="outline">
                           {task.taskType === "REQUIREMENT" ? "做需求" : "修 Bug"}
                         </Badge>
+                      </TableCell>
+                      <TableCell className="truncate text-sm text-muted-foreground">
+                        <span title={task.projectName || task.projectKey || "-"}>
+                          {task.projectName || task.projectKey || "-"}
+                        </span>
                       </TableCell>
                       <TableCell className="truncate text-sm text-muted-foreground">
                         <span title={task.taskType === "REQUIREMENT" ? (task.baseBranch || "-") : (task.ticketId || "-")}>
@@ -461,7 +468,9 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
   const [ticketTitle, setTicketTitle] = useState("");
   const [priority, setPriority] = useState("P2");
   const [promptSnapshot, setPromptSnapshot] = useState("");
-  const [repositoryUrl, setRepositoryUrl] = useState("");
+  const [selectedProjectId, setSelectedProjectId] = useState("");
+  const [projectOptions, setProjectOptions] = useState<RdProject[]>([]);
+  const [projectLoading, setProjectLoading] = useState(false);
   const [baseBranch, setBaseBranch] = useState("main");
   const [expectedResult, setExpectedResult] = useState("");
   const [acceptanceCriteriaText, setAcceptanceCriteriaText] = useState("");
@@ -471,6 +480,8 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
   const [localRequirementFile, setLocalRequirementFile] = useState<File | null>(null);
   const [autoExecute, setAutoExecute] = useState(true);
   const [saving, setSaving] = useState(false);
+
+  const selectedProject = projectOptions.find((project) => project.projectId === selectedProjectId) || null;
 
   useEffect(() => {
     if (!open) return;
@@ -488,7 +499,7 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
       setTicketTitle("");
       setPriority("P2");
       setPromptSnapshot("");
-      setRepositoryUrl("");
+      setSelectedProjectId("");
       setBaseBranch("main");
       setExpectedResult("");
       setAcceptanceCriteriaText("");
@@ -499,6 +510,33 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
       setAutoExecute(true);
     }
   }, [open, mode, task]);
+
+  useEffect(() => {
+    if (!open || mode !== "create") return;
+    let active = true;
+    setProjectLoading(true);
+    getProjectsPage({ enabled: true, page: 1, pageSize: 200 })
+      .then((data) => {
+        if (!active) return;
+        setProjectOptions(data.records || []);
+      })
+      .catch((error) => {
+        if (!active) return;
+        setProjectOptions([]);
+        toast.error(getErrorMessage(error, "加载项目列表失败"));
+      })
+      .finally(() => {
+        if (active) setProjectLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [open, mode]);
+
+  useEffect(() => {
+    if (!selectedProject) return;
+    setBaseBranch(selectedProject.defaultBranch || "main");
+  }, [selectedProject?.projectId]);
 
   const handleSubmit = async () => {
     const trimmed = title.trim();
@@ -512,8 +550,8 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
         const materialContent = manualRequirementText.trim();
         const materialUrl = feishuDocumentUrl.trim();
         const localFile = localRequirementFile;
-        if (!repositoryUrl.trim()) {
-          toast.error("请输入仓库地址");
+        if (!selectedProjectId) {
+          toast.error("请选择项目");
           return;
         }
         if (!baseBranch.trim()) {
@@ -570,7 +608,7 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
         await createRequirementTask({
           title: trimmed,
           priority,
-          repositoryUrl: repositoryUrl.trim(),
+          projectId: selectedProjectId,
           baseBranch: baseBranch.trim(),
           expectedResult: expectedResult.trim(),
           acceptanceCriteria: acceptanceCriteriaText
@@ -582,12 +620,17 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
         });
         toast.success("需求任务创建成功");
       } else if (mode === "create") {
+        if (!selectedProjectId) {
+          toast.error("请选择项目");
+          return;
+        }
         await createRdTask({
           title: trimmed,
           ticketId: ticketId.trim(),
           ticketTitle: ticketTitle.trim(),
           priority,
-          promptSnapshot: promptSnapshot.trim()
+          promptSnapshot: promptSnapshot.trim(),
+          projectId: selectedProjectId
         });
         toast.success("创建成功");
       } else if (task) {
@@ -642,6 +685,34 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
               placeholder={taskKind === "REQUIREMENT" ? "例如：增加订单催单功能" : "例如：支付下单接口 500 修复"}
             />
           </div>
+          {mode === "create" ? (
+            <div>
+              <label className="mb-2 block text-sm font-medium">项目</label>
+              <Select
+                value={selectedProjectId || undefined}
+                onValueChange={setSelectedProjectId}
+                disabled={projectLoading || projectOptions.length === 0}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder={projectLoading ? "加载项目中..." : "选择项目"} />
+                </SelectTrigger>
+                <SelectContent>
+                  {projectOptions.map((project) => (
+                    <SelectItem key={project.projectId} value={project.projectId}>
+                      {project.name} · {project.projectKey}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {projectOptions.length === 0 && !projectLoading ? (
+                <div className="mt-2 text-xs text-destructive">暂无启用项目，请先在项目管理中创建</div>
+              ) : selectedProject ? (
+                <div className="mt-2 truncate text-xs text-muted-foreground" title={selectedProject.repositoryUrl}>
+                  {selectedProject.repositoryUrl}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           <div className="grid gap-4 sm:grid-cols-2">
             {mode === "create" && taskKind === "REQUIREMENT" ? (
               <div>
@@ -681,14 +752,6 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
           </div>
           {mode === "create" && taskKind === "REQUIREMENT" ? (
             <>
-              <div>
-                <label className="mb-2 block text-sm font-medium">仓库地址</label>
-                <Input
-                  value={repositoryUrl}
-                  onChange={(event) => setRepositoryUrl(event.target.value)}
-                  placeholder="https://github.com/example/waimai.git"
-                />
-              </div>
               <div>
                 <label className="mb-2 block text-sm font-medium">需求材料</label>
                 <Select

@@ -59,6 +59,7 @@ const menuGroups: Array<{ title: string; items: MenuItem[] }> = [
         ]
       },
       { path: "/admin/ingestion", label: "数据通道", icon: Upload },
+      { path: "/admin/projects", label: "项目管理", icon: Github },
       { path: "/admin/rd-tasks", label: "任务管理", icon: ListChecks },
       { path: "/admin/mappings", label: "关键词映射", icon: KeyRound },
       { path: "/admin/traces", label: "链路追踪", icon: Workflow }
@@ -80,6 +81,7 @@ const breadcrumbMap: Record<string, string> = {
   "intent-tree": "意图树配置",
   "intent-list": "意图列表",
   ingestion: "数据通道",
+  projects: "项目管理",
   "rd-tasks": "任务管理",
   mappings: "关键词映射",
   traces: "链路追踪",

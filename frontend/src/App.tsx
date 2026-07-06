@@ -6,6 +6,7 @@ import { DashboardPage } from "./pages/DashboardPage";
 import { KnowledgeListPage } from "@/pages/admin/knowledge/KnowledgeListPage";
 import { KnowledgeDocumentsPage } from "@/pages/admin/knowledge/KnowledgeDocumentsPage";
 import { KnowledgeChunksPage } from "@/pages/admin/knowledge/KnowledgeChunksPage";
+import { ProjectListPage } from "@/pages/admin/project/ProjectListPage";
 import { RdTaskListPage } from "@/pages/admin/rdtask/RdTaskListPage";
 import { RdTaskDetailPage } from "@/pages/admin/rdtask/RdTaskDetailPage";
 import { IntentListPage, IntentTreePage } from "./pages/IntentPages";
@@ -30,6 +31,7 @@ export function App() {
           <Route path="knowledge" element={<KnowledgeListPage />} />
           <Route path="knowledge/:kbId" element={<KnowledgeDocumentsPage />} />
           <Route path="knowledge/:kbId/docs/:docId" element={<KnowledgeChunksPage />} />
+          <Route path="projects" element={<ProjectListPage />} />
           <Route path="rd-tasks" element={<RdTaskListPage />} />
           <Route path="rd-tasks/:taskId" element={<RdTaskDetailPage />} />
           <Route path="intent-tree" element={<IntentTreePage />} />

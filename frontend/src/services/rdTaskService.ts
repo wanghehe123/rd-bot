@@ -19,6 +19,9 @@ export interface RdTask {
   sourceType: string;
   sourceId: string;
   sourceUrl: string;
+  projectId: string;
+  projectKey: string;
+  projectName: string;
   repositoryUrl: string;
   repoOwner: string;
   repoName: string;
@@ -58,6 +61,69 @@ export interface RdTaskStatusEvent {
   enteredAtEpochMillis: number;
   durationMillis: number;
   trigger: string;
+}
+
+export interface RdTaskExecutionOverview {
+  taskId: string;
+  taskType: string;
+  status: string;
+  title: string;
+  elapsedMillis: number;
+  progressCompleted: number;
+  progressTotal: number;
+  currentRole: string;
+  currentStageStatus: string;
+  budget: RdTaskExecutionBudget;
+  stageRuns: RdTaskStageRun[];
+  runningExecutions: RdTaskRunningExecution[];
+}
+
+export interface RdTaskExecutionBudget {
+  contextUsedChars: number;
+  contextMaxChars: number;
+  contextUsageRatio: number;
+  estimatedSpendUsd: number;
+  budgetAlertUsd: number;
+  costAvailable: boolean;
+}
+
+export interface RdTaskStageRun {
+  stageRunId: string;
+  taskId: string;
+  role: string;
+  status: string;
+  attemptNo: number;
+  idempotencyKey: string;
+  contextPackageId: string;
+  promptArtifactId: string;
+  resultArtifactId: string;
+  providerName: string;
+  providerAttemptsJson: string;
+  providerAttempts: Record<string, unknown>[];
+  reviewResultJson: string;
+  resultAvailable: boolean;
+  resultSummary: string;
+  resultPreview: string;
+  errorCategory: string;
+  errorMessage: string;
+  createTimeEpochMillis: number;
+  updateTimeEpochMillis: number;
+  startedAtEpochMillis: number;
+  finishedAtEpochMillis: number;
+  elapsedMillis: number;
+  running: boolean;
+}
+
+export interface RdTaskRunningExecution {
+  repairRecordId: string;
+  taskId: string;
+  ticketId: string;
+  provider: string;
+  containerName: string;
+  startedAtEpochMillis: number;
+  lastHeartbeatEpochMillis: number;
+  elapsedMillis: number;
+  outputDirectory: string;
 }
 
 export interface TaskMaterial {
@@ -105,6 +171,7 @@ export interface CreateRdTaskPayload {
   title: string;
   priority?: string;
   promptSnapshot?: string;
+  projectId?: string;
 }
 
 export interface RequirementMaterialPayload {
@@ -120,6 +187,7 @@ export interface RequirementMaterialPayload {
 export interface CreateRequirementTaskPayload {
   title: string;
   priority?: string;
+  projectId?: string;
   repositoryUrl?: string;
   repoOwner?: string;
   repoName?: string;
@@ -175,6 +243,9 @@ export const deleteRdTask = (taskId: string): Promise<{ deleted: boolean }> =>
 
 export const getRdTaskTimeline = (taskId: string): Promise<RdTaskStatusEvent[]> =>
   api.get<RdTaskStatusEvent[], RdTaskStatusEvent[]>(`/admin/rd-tasks/${taskId}/timeline`);
+
+export const getRdTaskExecutionOverview = (taskId: string): Promise<RdTaskExecutionOverview> =>
+  api.get<RdTaskExecutionOverview, RdTaskExecutionOverview>(`/admin/rd-tasks/${taskId}/execution-overview`);
 
 export const getRdTaskMaterials = (taskId: string): Promise<TaskMaterial[]> =>
   api.get<TaskMaterial[], TaskMaterial[]>(`/admin/rd-tasks/${taskId}/materials`);

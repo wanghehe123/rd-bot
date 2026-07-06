@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { ChevronLeft, GitPullRequest, Pause, Play } from "lucide-react";
+import { Activity, ChevronDown, ChevronLeft, Clock3, FileText, GitPullRequest, Gauge, Pause, Play } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -12,6 +12,7 @@ import { cn } from "@/lib/utils";
 
 import {
   getRdTask,
+  getRdTaskExecutionOverview,
   getRdTaskMaterials,
   getRdTaskTimeline,
   pauseRdTask,
@@ -19,6 +20,8 @@ import {
   STATUS_BADGE_CLASS,
   submitRdTask,
   type RdTask,
+  type RdTaskExecutionOverview,
+  type RdTaskStageRun,
   type TaskMaterial,
   type RdTaskStatusEvent
 } from "@/services/rdTaskService";
@@ -29,6 +32,28 @@ const formatDuration = (ms?: number) => {
   if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
   if (ms < 3_600_000) return `${(ms / 60_000).toFixed(1)}min`;
   return `${(ms / 3_600_000).toFixed(1)}h`;
+};
+
+const formatMetricDuration = (ms?: number) => {
+  if (!ms || ms <= 0) return "0ms";
+  return formatDuration(ms);
+};
+
+const formatPercent = (value?: number) => `${Math.round(Math.max(0, Math.min(1, value || 0)) * 100)}%`;
+
+const formatMoney = (value?: number) => {
+  const amount = Number(value || 0);
+  return `$${amount.toFixed(2)}`;
+};
+
+const formatStageResultPreview = (value?: string) => {
+  const text = value?.trim() || "";
+  if (!text) return "";
+  try {
+    return JSON.stringify(JSON.parse(text), null, 2);
+  } catch {
+    return text;
+  }
 };
 
 const EVENT_DOT_TONE: Record<string, string> = {
@@ -60,36 +85,77 @@ const EVENT_DOT_TONE: Record<string, string> = {
   DELETED: "bg-slate-400"
 };
 
+const STAGE_BADGE_CLASS: Record<string, string> = {
+  PENDING: "border-slate-200 bg-slate-50 text-slate-600",
+  CONTEXT_READY: "border-cyan-200 bg-cyan-50 text-cyan-700",
+  DISPATCHING: "border-amber-200 bg-amber-50 text-amber-700",
+  RUNNING: "border-indigo-200 bg-indigo-50 text-indigo-700",
+  RESULT_COLLECTING: "border-blue-200 bg-blue-50 text-blue-700",
+  VERIFYING: "border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700",
+  SUCCEEDED: "border-green-200 bg-green-50 text-green-700",
+  FAILED_RETRYABLE: "border-rose-200 bg-rose-50 text-rose-700",
+  FAILED_NEEDS_HUMAN: "border-orange-200 bg-orange-50 text-orange-700",
+  SKIPPED: "border-slate-200 bg-slate-50 text-slate-600",
+  CANCELLED: "border-slate-200 bg-slate-100 text-slate-600",
+  RECOVERING: "border-cyan-200 bg-cyan-50 text-cyan-700"
+};
+
+const ROLE_LABEL: Record<string, string> = {
+  REQUIREMENT_REVIEWER: "需求评审",
+  SOLUTION_ARCHITECT: "方案设计",
+  CODING_AGENT: "编码执行",
+  QA_AGENT: "质量验证"
+};
+
 export function RdTaskDetailPage() {
   const { taskId = "" } = useParams();
   const navigate = useNavigate();
   const [task, setTask] = useState<RdTask | null>(null);
   const [events, setEvents] = useState<RdTaskStatusEvent[]>([]);
   const [materials, setMaterials] = useState<TaskMaterial[]>([]);
+  const [executionOverview, setExecutionOverview] = useState<RdTaskExecutionOverview | null>(null);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
 
-  const load = async () => {
-    setLoading(true);
+  const load = async (silent = false) => {
+    if (!silent) {
+      setLoading(true);
+    }
     try {
-      const [detail, timeline, materialList] = await Promise.all([
+      const [detail, timeline, materialList, overview] = await Promise.all([
         getRdTask(taskId),
         getRdTaskTimeline(taskId),
-        getRdTaskMaterials(taskId)
+        getRdTaskMaterials(taskId),
+        getRdTaskExecutionOverview(taskId)
       ]);
       setTask(detail);
       setEvents(timeline || []);
       setMaterials(materialList || []);
+      setExecutionOverview(overview);
     } catch (error) {
-      toast.error(getErrorMessage(error, "加载任务详情失败"));
+      if (!silent) {
+        toast.error(getErrorMessage(error, "加载任务详情失败"));
+      }
     } finally {
-      setLoading(false);
+      if (!silent) {
+        setLoading(false);
+      }
     }
   };
 
   useEffect(() => {
     load();
   }, [taskId]);
+
+  useEffect(() => {
+    if (!task || !shouldPollTask(task)) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      load(true);
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [taskId, task?.status, task?.paused]);
 
   const handleTogglePause = async () => {
     if (!task) return;
@@ -99,8 +165,12 @@ export function RdTaskDetailPage() {
         : await pauseRdTask(task.taskId);
       setTask(updated);
       toast.success(updated.paused ? "已暂停" : "已恢复并重新触发");
-      const timeline = await getRdTaskTimeline(task.taskId);
+      const [timeline, overview] = await Promise.all([
+        getRdTaskTimeline(task.taskId),
+        getRdTaskExecutionOverview(task.taskId)
+      ]);
       setEvents(timeline || []);
+      setExecutionOverview(overview);
     } catch (error) {
       toast.error(getErrorMessage(error, "操作失败"));
     }
@@ -112,12 +182,14 @@ export function RdTaskDetailPage() {
     try {
       const updated = await submitRdTask(task.taskId);
       setTask(updated);
-      const [timeline, materialList] = await Promise.all([
+      const [timeline, materialList, overview] = await Promise.all([
         getRdTaskTimeline(task.taskId),
-        getRdTaskMaterials(task.taskId)
+        getRdTaskMaterials(task.taskId),
+        getRdTaskExecutionOverview(task.taskId)
       ]);
       setEvents(timeline || []);
       setMaterials(materialList || []);
+      setExecutionOverview(overview);
       toast.success(updated.pullRequestUrl ? "需求执行完成，已生成 PR" : "需求执行已提交");
     } catch (error) {
       toast.error(getErrorMessage(error, "需求执行失败"));
@@ -185,6 +257,7 @@ export function RdTaskDetailPage() {
             <div className="grid grid-cols-2 gap-4 text-sm md:grid-cols-3">
               <InfoField label="任务 ID" value={task.taskId} mono />
               <InfoField label="任务类型" value={task.taskType} />
+              <InfoField label="项目" value={task.projectName || task.projectKey || "-"} />
               <InfoField label="优先级" value={task.priority} />
               <div>
                 <div className="mb-1 text-xs text-muted-foreground">状态</div>
@@ -231,6 +304,8 @@ export function RdTaskDetailPage() {
             ) : null}
           </CardContent>
         </Card>
+
+        {executionOverview ? <ExecutionOverviewCard overview={executionOverview} /> : null}
 
         {task.taskType === "REQUIREMENT" ? (
           <Card>
@@ -448,6 +523,200 @@ function parseCriteria(value?: string) {
   }
 }
 
+function ExecutionOverviewCard({ overview }: { overview: RdTaskExecutionOverview }) {
+  const progressRatio = overview.progressTotal > 0
+    ? overview.progressCompleted / overview.progressTotal
+    : 0;
+  const currentRole = overview.currentRole ? ROLE_LABEL[overview.currentRole] || overview.currentRole : "-";
+  const currentStatus = overview.currentStageStatus || "-";
+  const budget = overview.budget;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>执行概览</CardTitle>
+        <CardDescription>阶段进度、耗时与预算</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-5">
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
+          <MetricBlock
+            icon={<Activity className="h-4 w-4" />}
+            label="当前阶段"
+            value={currentRole}
+            detail={currentStatus}
+          />
+          <MetricBlock
+            icon={<Clock3 className="h-4 w-4" />}
+            label="总耗时"
+            value={formatMetricDuration(overview.elapsedMillis)}
+            detail={`${overview.progressCompleted}/${overview.progressTotal}`}
+          />
+          <MetricBlock
+            icon={<Gauge className="h-4 w-4" />}
+            label="上下文预算"
+            value={`${budget.contextUsedChars}/${budget.contextMaxChars || 0}`}
+            detail={formatPercent(budget.contextUsageRatio)}
+          />
+          <MetricBlock
+            icon={<Gauge className="h-4 w-4" />}
+            label="模型预算"
+            value={budget.costAvailable ? formatMoney(budget.estimatedSpendUsd) : "待采集"}
+            detail={`阈值 ${formatMoney(budget.budgetAlertUsd)}`}
+          />
+        </div>
+
+        <div>
+          <div className="mb-2 flex items-center justify-between text-xs text-muted-foreground">
+            <span>整体进度</span>
+            <span>{formatPercent(progressRatio)}</span>
+          </div>
+          <div className="h-2 overflow-hidden rounded-full bg-slate-100">
+            <div
+              className="h-full rounded-full bg-indigo-500 transition-all"
+              style={{ width: formatPercent(progressRatio) }}
+            />
+          </div>
+        </div>
+
+        <div className="overflow-x-auto rounded-md border border-slate-200">
+          <div className="min-w-[900px]">
+            <div className="grid grid-cols-[1.15fr_1fr_1.2fr_0.75fr_0.8fr] gap-3 bg-slate-50 px-3 py-2 text-xs font-medium text-slate-500">
+              <span>角色</span>
+              <span>状态</span>
+              <span>Provider</span>
+              <span>耗时</span>
+              <span>结果</span>
+            </div>
+            {overview.stageRuns.length > 0 ? (
+              overview.stageRuns.map((stage) => <StageRunRow key={stage.stageRunId} stage={stage} />)
+            ) : (
+              <div className="px-3 py-6 text-center text-sm text-muted-foreground">暂无阶段记录</div>
+            )}
+          </div>
+        </div>
+
+        {overview.runningExecutions.length > 0 ? (
+          <div className="space-y-2">
+            <div className="text-xs font-medium text-slate-500">运行中执行</div>
+            {overview.runningExecutions.map((execution) => (
+              <div
+                key={`${execution.taskId}-${execution.containerName}`}
+                className="grid grid-cols-1 gap-2 rounded-md border border-indigo-100 bg-indigo-50/50 px-3 py-2 text-sm md:grid-cols-[1.2fr_0.8fr_0.8fr]"
+              >
+                <div className="min-w-0">
+                  <div className="truncate font-medium text-slate-800">{execution.containerName}</div>
+                  <div className="truncate text-xs text-muted-foreground">{execution.outputDirectory}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-muted-foreground">Provider</div>
+                  <div className="font-mono text-xs text-slate-700">{execution.provider || "-"}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-muted-foreground">运行耗时</div>
+                  <div className="font-mono text-xs text-slate-700">
+                    {formatMetricDuration(execution.elapsedMillis)}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}
+
+function MetricBlock({
+  icon,
+  label,
+  value,
+  detail
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: React.ReactNode;
+  detail: React.ReactNode;
+}) {
+  return (
+    <div className="min-h-[88px] rounded-md border border-slate-200 bg-white px-3 py-3">
+      <div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
+        {icon}
+        <span>{label}</span>
+      </div>
+      <div className="truncate text-lg font-semibold text-slate-900">{value}</div>
+      <div className="mt-1 truncate text-xs text-muted-foreground">{detail}</div>
+    </div>
+  );
+}
+
+function StageRunRow({ stage }: { stage: RdTaskStageRun }) {
+  const [expanded, setExpanded] = useState(false);
+  const firstAttempt = stage.providerAttempts?.[0] || {};
+  const attemptStatus = firstAttempt.status ? String(firstAttempt.status) : "";
+  const provider = stage.providerName || (firstAttempt.provider ? String(firstAttempt.provider) : "-");
+  const resultPreview = formatStageResultPreview(stage.resultPreview);
+  const resultAvailable = Boolean(stage.resultAvailable && resultPreview);
+
+  return (
+    <div className="grid grid-cols-[1.15fr_1fr_1.2fr_0.75fr_0.8fr] gap-3 border-t border-slate-100 px-3 py-3 text-sm">
+      <div className="min-w-0">
+        <div className="truncate font-medium text-slate-800">{ROLE_LABEL[stage.role] || stage.role}</div>
+        <div className="mt-1 font-mono text-xs text-muted-foreground">attempt {stage.attemptNo}</div>
+      </div>
+      <div className="min-w-0">
+        <Badge variant="outline" className={STAGE_BADGE_CLASS[stage.status] || ""}>
+          {stage.status}
+        </Badge>
+        {attemptStatus ? (
+          <div className="mt-1 truncate text-xs text-muted-foreground">{attemptStatus}</div>
+        ) : null}
+      </div>
+      <div className="min-w-0">
+        <div className="truncate font-mono text-xs text-slate-700">{provider}</div>
+        {stage.contextPackageId ? (
+          <div className="mt-1 truncate font-mono text-xs text-muted-foreground">{stage.contextPackageId}</div>
+        ) : null}
+      </div>
+      <div className="min-w-0">
+        <div className="font-mono text-xs text-slate-700">{formatMetricDuration(stage.elapsedMillis)}</div>
+        {stage.running ? (
+          <div className="mt-1 text-xs text-indigo-600">运行中</div>
+        ) : null}
+      </div>
+      <div className="min-w-0">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="h-7 rounded-md px-2"
+          disabled={!resultAvailable}
+          title={resultAvailable ? "查看阶段结果" : "暂无阶段结果"}
+          onClick={() => setExpanded((value) => !value)}
+        >
+          <FileText className="h-3.5 w-3.5" />
+          {expanded ? "收起" : "查看"}
+          <ChevronDown className={cn("h-3.5 w-3.5 transition-transform", expanded && "rotate-180")} />
+        </Button>
+      </div>
+      {expanded && resultAvailable ? (
+        <div className="col-span-5 rounded-md border border-slate-200 bg-slate-50/70 p-3">
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <Badge variant="outline" className="border-slate-200 bg-white text-slate-700">
+              {stage.resultSummary || "阶段结果"}
+            </Badge>
+            {stage.resultArtifactId ? (
+              <code className="break-all text-xs text-muted-foreground">{stage.resultArtifactId}</code>
+            ) : null}
+          </div>
+          <pre className="max-h-[360px] overflow-auto whitespace-pre-wrap rounded-md bg-white p-3 text-xs leading-relaxed text-slate-700">
+            {resultPreview}
+          </pre>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function hasExecutionEvidence(task: RdTask) {
   const evidence = task.executionEvidence;
   return Boolean(
@@ -459,6 +728,18 @@ function hasExecutionEvidence(task: RdTask) {
       evidence?.testStatus ||
       evidence?.riskLevel
   );
+}
+
+function shouldPollTask(task: RdTask) {
+  return !task.paused && ![
+    "COMPLETED",
+    "MERGED",
+    "REJECTED",
+    "FAILED_NEEDS_HUMAN",
+    "CANCELLED",
+    "DEAD_LETTERED",
+    "DELETED"
+  ].includes(task.status);
 }
 
 function canSubmitRequirement(task: RdTask) {

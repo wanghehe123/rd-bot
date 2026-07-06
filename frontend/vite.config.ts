@@ -28,6 +28,10 @@ export default defineConfig({
         target: backendTarget,
         bypass: (request) => isHtmlNavigation(request) ? request.url : undefined
       },
+      "/admin/projects": {
+        target: backendTarget,
+        bypass: (request) => isHtmlNavigation(request) ? request.url : undefined
+      },
       "/intent-tree": backendTarget,
       "/users": backendTarget,
       "/user": backendTarget,
