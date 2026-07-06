@@ -125,6 +125,9 @@ RD-Bot 是研发交付编排系统，而非聊天机器人。
 - 每个阶段必须有：上下文包 ID、provider 尝试记录、产物 ID（prompt/result/log）、失败分类、阶段时间线。
 - 进入失败分支时必须保留原因并可恢复，不得无日志短路终止。
 - `REQUIREMENT_REVIEWER` 结果为 `NEED_INFO / NEEDS_HUMAN / UNSAFE / REJECTED / FAILED` 时，必须阻断后续阶段并写入人工干预事件。
+- 重试失败终态阶段时，禁止直接 transition 旧 `AgentStageRun`；必须创建新的 `attemptNo`。
+- `RequirementDeliveryEngine` 选择阶段运行记录时必须取同角色最新 attempt，不能取第一条历史记录。否则会反复触发
+  `agent stage is terminal before execution: REQUIREMENT_REVIEWER FAILED_NEEDS_HUMAN`。
 
 ---
 
@@ -140,6 +143,44 @@ RD-Bot 是研发交付编排系统，而非聊天机器人。
 - Feishu：`FEISHU_APP_ID`, `FEISHU_APP_SECRET`, `FEISHU_IM_ALERT_CHAT_ID`
 - 告警/扫描：`RD_BOT_SECRET_SCAN_NEEDLES`, `RD_BOT_SECRET_SCAN_MASK`
 - 执行/仓库：`RD_EXECUTOR_*`, `RD_GITHUB_*`, `FEISHU_*`, `ROCKETMQ_*`, `POSTGRES_*`, `REDIS_*`
+
+4. 2026-07-05 真实联调经验已固化在
+   `docs/superpowers/plans/2026-07-05-rd-bot-runtime-secrets-and-retry-lessons-spec.md`。
+   后续 Agent 处理 provider、重试、生产验收或本机启动问题前必须先读该 spec。
+5. MiniMax 当前运行模型为 `MiniMax-M3`；不得退回旧的 `MiniMax-M2.7`。本机 Docker Claude Code provider 链如需走 MiniMax，使用
+   `MINIMAX_PROTOCOL=anthropic-compatible` 和 `MINIMAX_BASE_URL=https://api.minimaxi.com/anthropic`，密钥仍只通过
+   `MINIMAX_API_KEY` 环境变量读取。
+6. 修改 `engine` 后启动 `bootstrap` 前，必须先让 bootstrap 能加载到新 engine 包；本机最小顺序为
+   `./mvnw -q -pl engine install -DskipTests` 后再 `./mvnw -q -pl bootstrap spring-boot:run`。
+   不要把 stale engine jar 导致的旧行为误判为修复无效。
+7. 遇到
+   `provider long-cat is missing required auth environment variable(s): LONGCAT_API_KEY`
+   时，根因是 **RD-Bot 后端进程自身** 没有继承 `LONGCAT_API_KEY`，不是 Docker 容器内临时缺变量，也不是需求内容被打回。
+   处理必须遵守：
+   - 不得把 LongCat key 写入 `AGENTS.md`、spec、`.env`、`application*.yaml`、命令日志或 PR 文本。
+   - 先用脱敏方式确认当前 shell 与 `launchctl` 是否为 `SET/EMPTY`，禁止打印明文：
+     `if [ -n "${LONGCAT_API_KEY:-}" ]; then echo SET; else echo EMPTY; fi`。
+   - 若本地环境允许 `launchctl setenv`，只记录变量名并重启后端；启动前再把 `launchctl` 中变量导回当前 shell。
+   - 当前代码兼容 IDEA/GUI 启动：`DockerClaudeCodeExecutor` 先读 RD-Bot 进程环境，再读 macOS `launchctl getenv <ENV_NAME>`；只要
+     `launchctl getenv LONGCAT_API_KEY` 为 `SET` 且当前构建包含最新 `exec` 代码，IDEA 后端即使自身未继承 shell `export` 也应通过预检。
+   - `ProcessContainerRunner` 需要把解析出的敏感变量写入 Docker CLI 子进程环境，让 `docker run -e LONGCAT_API_KEY` 能继承值；不得把密钥拼进 argv、metadata、日志或 `docker-meta.json`。
+   - 若 Codex 沙箱或当前终端对 `launchctl setenv` 返回 `Not privileged to set domain environment`，必须改用进程级注入：在同一个 shell 中用静默输入读取 key，`export LONGCAT_API_KEY` 后立即启动
+     `./mvnw -q -pl bootstrap spring-boot:run`；不要把 key 放进命令行参数。
+   - 启动命令至少带上：
+     `RD_CLAUDE_AUTH_TOKEN_ENV=LONGCAT_API_KEY`、
+     `LONGCAT_PROTOCOL=anthropic-compatible`、
+     `LONGCAT_ANTHROPIC_BASE_URL=https://api.longcat.chat/anthropic`。
+8. 处理 provider 密钥或 allowlist 后，必须重启 `bootstrap`，然后用真实任务反查验证：
+   - `curl -fsS 'http://127.0.0.1:18080/admin/rd-tasks/<taskId>' | jq '{status,errorMessage}'`
+   - `docker exec postgres psql -U postgres -d ragent -Atc "select role,status,attempt_no,provider_name,error_category,left(error_message,160),updated_at from rd_agent_stage_runs where task_id=<taskId> order by role,attempt_no;"`
+   - `docker ps --filter name=rd-bot-repair-<taskId>`
+   若出现新的 `REQUIREMENT_REVIEWER attempt=N RUNNING/SUCCEEDED` 或 Docker 容器已启动，说明 LongCat key 已被进程继承；此时不应再把问题归因到缺 key。
+9. 如果 `./mvnw -q -pl bootstrap spring-boot:run` 启动时报 `NoClassDefFoundError` 且类名来自 `rag`/`engine`/`exec`/`skill` 的已迁移包，先执行
+   `./mvnw -q install -DskipTests`，再启动 `bootstrap`。这是本地 Maven 仓库中的 stale module jar，不是 provider 密钥问题。
+10. 修改 `exec` 的 Docker/provider 鉴权链路后，至少运行
+    `./mvnw -q -pl exec -Dtest=DockerClaudeCodeExecutorTest test` 和
+    `./mvnw -q -pl bootstrap -Dtest=ProcessContainerRunnerTest test`；如从 IDEA 或单模块 Maven 启动仍读到旧行为，先执行
+    `./mvnw -q -pl exec install -DskipTests`，避免 stale `exec` jar 误导排查。
 
 ---
 

@@ -158,6 +158,12 @@ MVP 阶段无数据库，所有内存仓储统一用 `*Registry` 模式：
 - 特征：`DistributedLockExecutor` 保护跨实例状态推进、`LinkedHashMap` 保持插入顺序、自增 ID 序列、`inMemory()`/`withDefaults()` 静态工厂、对外返回不可变快照（`List.copyOf`）。
 - 【强制】生产路径的共享可变状态不得依赖 JVM 级 `synchronized`；多实例部署需要通过锁端口接入 Redisson 等分布式锁，读操作返回 `List.copyOf` / `Map.copyOf` 快照，禁止把内部集合引用泄露出去。
 
+### 3.5.1 项目管理持久化【强制】
+
+- 【强制】项目管理（如 RD 项目、仓库地址、默认分支、启用状态）属于生产共享配置，必须通过 `RdProjectStore` 端口落 PostgreSQL 表 `rd_projects`。
+- 【强制】禁止新增 `InMemoryRdProjectStore`、静态集合、JVM 本地缓存兜底或配置文件列表作为项目管理真值；任务创建只能读取数据库项目快照，并把项目 ID/key/name 与仓库字段写入 `rd_tasks`。
+- 【强制】项目唯一性必须依赖数据库唯一约束（`project_key` 未删除唯一），不能只靠单实例内存校验。
+
 ### 3.6 聚合根（Aggregate Root）【强制用于"强一致实体群"】
 
 - **已落地**：`KnowledgeWorkspace` 是知识域聚合根，统一管理 知识库→文档→分块→向量 的级联一致性（删除知识库级联删文档/分块/向量；更新文档同步刷新分块与向量库）。
