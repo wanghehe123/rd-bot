@@ -27,7 +27,7 @@ export interface KnowledgeBase {
 /**
  * 文档，对齐后端 KnowledgeDocument。
  * docName/fileType/fileSize/updateTime/updatedBy/processMode/chunkStrategy/pipelineId/
- * chunksEdited 为前端派生字段，供 ragent 文档页直接使用。
+ * chunksEdited 为前端派生字段，供 RD-Bot 文档页直接使用。
  */
 export interface KnowledgeDocument {
   id: string;
@@ -48,7 +48,7 @@ export interface KnowledgeDocument {
   rawPreview?: string | null;
   lastSyncedAtEpochMillis?: number;
   nextRefreshAtEpochMillis?: number;
-  /** ragent 页面使用的文档名称别名，等于 sourceName。 */
+  /** RD-Bot 页面使用的文档名称别名，等于 sourceName。 */
   docName?: string;
   /** 从 mimeType/文件名派生，如 markdown/pdf/txt。 */
   fileType?: string;
@@ -73,7 +73,7 @@ export interface KnowledgeDocument {
 
 /**
  * 分块，对齐后端 KnowledgeChunk。
- * chunkIndex/charCount/tokenCount/updateTime 为前端派生字段，供 ragent 页面直接使用。
+ * chunkIndex/charCount/tokenCount/updateTime 为前端派生字段，供 RD-Bot 页面直接使用。
  */
 export interface KnowledgeChunk {
   id: string;
@@ -85,7 +85,7 @@ export interface KnowledgeChunk {
   sourceName: string;
   enabled: number;
   metadata?: Record<string, string>;
-  /** 与 index 同义，ragent 页面用此字段渲染序号。 */
+  /** 与 index 同义，RD-Bot 页面用此字段渲染序号。 */
   chunkIndex?: number;
   charCount?: number;
   tokenCount?: number;
@@ -94,7 +94,7 @@ export interface KnowledgeChunk {
 
 /**
  * 摄取节点日志，对齐后端 IngestionNodeLog。
- * ragent 文档页的分块详情面板额外读取 status/processMode/duration 等字段，
+ * RD-Bot 文档页的分块详情面板额外读取 status/processMode/duration 等字段，
  * RD-Bot 后端不返回这些字段，保留为可选以兼容页面渲染（缺失时显示 -）。
  */
 export interface KnowledgeDocumentChunkLog {
@@ -177,7 +177,7 @@ export async function getKnowledgeBases(current = 1, size = 10, name?: string) {
   });
 }
 
-/** 分页查询知识库，保持 ragent 页面所用的函数名。 */
+/** 分页查询知识库，保持 RD-Bot 页面所用的函数名。 */
 export async function getKnowledgeBasesPage(current = 1, size = 10, name?: string) {
   return getKnowledgeBases(current, size, name);
 }
@@ -194,7 +194,7 @@ export async function updateKnowledgeBase(id: string, payload: UpdateKnowledgeBa
   return api.put<KnowledgeBase, KnowledgeBase>(`/knowledge-base/${id}`, payload);
 }
 
-/** 重命名知识库，保持 ragent 页面所用的函数名。 */
+/** 重命名知识库，保持 RD-Bot 页面所用的函数名。 */
 export async function renameKnowledgeBase(id: string, name: string) {
   return updateKnowledgeBase(id, { name });
 }
@@ -366,7 +366,7 @@ export async function batchToggleChunks(
 // ----------------------------------------------------------------------------
 
 /**
- * 将后端 KnowledgeDocument 规范化为 ragent 文档页所需形态：
+ * 将后端 KnowledgeDocument 规范化为 RD-Bot 文档页所需形态：
  * 补齐 docName/fileType/updateTime/processMode 等派生字段。
  */
 function normalizeDocument(raw: KnowledgeDocument): KnowledgeDocument {
@@ -410,7 +410,7 @@ function deriveFileType(mimeType?: string, fileName?: string): string {
 
 
 /**
- * 将后端 KnowledgeChunk（enabled 为 boolean）规范化为 ragent 页面所需形态：
+ * 将后端 KnowledgeChunk（enabled 为 boolean）规范化为 RD-Bot 页面所需形态：
  * enabled 转为 0/1，补齐 chunkIndex/charCount/tokenCount/updateTime 派生字段。
  */
 function normalizeChunk(raw: KnowledgeChunk): KnowledgeChunk {
@@ -436,7 +436,7 @@ function normalizeChunkPage(data: PageResult<KnowledgeChunk>): PageResult<Knowle
 
 /**
  * 将后端节点日志（FETCHER/PARSER/CHUNKER/INDEXER + durationMs/success）
- * 汇总成 ragent 分块详情面板所需的一条聚合记录。
+ * 汇总成 RD-Bot 分块详情面板所需的一条聚合记录。
  * 节点耗时按类型映射到 extract/chunk/embed/persist 字段。
  */
 function normalizeChunkLogPage(data: PageResult<KnowledgeDocumentChunkLog>): PageResult<KnowledgeDocumentChunkLog> {

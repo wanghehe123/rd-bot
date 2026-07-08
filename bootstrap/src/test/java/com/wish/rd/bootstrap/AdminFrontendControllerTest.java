@@ -16,6 +16,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @AutoConfigureMockMvc
 class AdminFrontendControllerTest {
 
+    private static final String ADMIN_TITLE = "RD-Bot 管理后台";
+
     @Autowired
     private MockMvc mockMvc;
 
@@ -23,34 +25,34 @@ class AdminFrontendControllerTest {
     void servesKnowledgeAdminFrontendRoutesFromSingleSpringBootService() throws Exception {
         mockMvc.perform(get("/admin/knowledge"))
                 .andExpect(status().isOk())
-                .andExpect(content().string(containsString("Ragent 管理后台")))
+                .andExpect(content().string(containsString(ADMIN_TITLE)))
                 .andExpect(content().string(containsString("id=\"root\"")))
                 .andExpect(content().string(containsString("admin-knowledge.js")));
 
         mockMvc.perform(get("/admin/knowledge/kb-1"))
                 .andExpect(status().isOk())
-                .andExpect(content().string(containsString("Ragent 管理后台")));
+                .andExpect(content().string(containsString(ADMIN_TITLE)));
 
         mockMvc.perform(get("/admin/knowledge/kb-1/docs/doc-1"))
                 .andExpect(status().isOk())
-                .andExpect(content().string(containsString("Ragent 管理后台")));
+                .andExpect(content().string(containsString(ADMIN_TITLE)));
     }
 
     @Test
     void servesMigratedIntentAndUserAdminFrontendRoutes() throws Exception {
         mockMvc.perform(get("/admin/intent-tree"))
                 .andExpect(status().isOk())
-                .andExpect(content().string(containsString("Ragent 管理后台")))
+                .andExpect(content().string(containsString(ADMIN_TITLE)))
                 .andExpect(content().string(containsString("id=\"root\"")))
                 .andExpect(content().string(containsString("admin-knowledge.js")));
 
         mockMvc.perform(get("/admin/intent-list"))
                 .andExpect(status().isOk())
-                .andExpect(content().string(containsString("Ragent 管理后台")));
+                .andExpect(content().string(containsString(ADMIN_TITLE)));
 
         mockMvc.perform(get("/admin/users"))
                 .andExpect(status().isOk())
-                .andExpect(content().string(containsString("Ragent 管理后台")));
+                .andExpect(content().string(containsString(ADMIN_TITLE)));
     }
 
     @Test
@@ -66,7 +68,7 @@ class AdminFrontendControllerTest {
         }) {
             mockMvc.perform(get(route))
                     .andExpect(status().isOk())
-                    .andExpect(content().string(containsString("Ragent 管理后台")))
+                    .andExpect(content().string(containsString(ADMIN_TITLE)))
                     .andExpect(content().string(containsString("id=\"root\"")))
                     .andExpect(content().string(containsString("admin-knowledge.css")))
                     .andExpect(content().string(containsString("admin-knowledge.js")));
@@ -89,7 +91,7 @@ class AdminFrontendControllerTest {
         }) {
             mockMvc.perform(get(route).accept(MediaType.TEXT_HTML))
                     .andExpect(status().isOk())
-                    .andExpect(content().string(containsString("Ragent 管理后台")))
+                    .andExpect(content().string(containsString(ADMIN_TITLE)))
                     .andExpect(content().string(containsString("id=\"root\"")))
                     .andExpect(content().string(containsString("admin-knowledge.css")))
                     .andExpect(content().string(containsString("admin-knowledge.js")));

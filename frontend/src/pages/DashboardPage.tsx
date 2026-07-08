@@ -42,12 +42,12 @@ function TrafficChart() {
       <svg viewBox="0 0 100 100" preserveAspectRatio="none">
         <defs>
           <linearGradient id="rdTrafficArea" x1="0" x2="0" y1="0" y2="1">
-            <stop offset="0%" stopColor="#6366f1" stopOpacity="0.24" />
-            <stop offset="100%" stopColor="#6366f1" stopOpacity="0.02" />
+            <stop offset="0%" stopColor="#14b8a6" stopOpacity="0.24" />
+            <stop offset="100%" stopColor="#2563eb" stopOpacity="0.02" />
           </linearGradient>
         </defs>
         <path d={`M0,100 L${points.join(" L")} L100,100 Z`} fill="url(#rdTrafficArea)" />
-        <polyline points={points.join(" ")} fill="none" stroke="#4f46e5" strokeWidth="2.2" vectorEffect="non-scaling-stroke" />
+        <polyline points={points.join(" ")} fill="none" stroke="#0f766e" strokeWidth="2.2" vectorEffect="non-scaling-stroke" />
       </svg>
       <div className="traffic-axis">
         <span>02/01</span>

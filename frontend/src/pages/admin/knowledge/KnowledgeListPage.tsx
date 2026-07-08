@@ -216,7 +216,7 @@ export function KnowledgeListPage() {
       return "border-blue-200 bg-blue-50 text-blue-700";
     }
     if (value.includes("group")) {
-      return "border-purple-200 bg-purple-50 text-purple-700";
+      return "border-cyan-200 bg-cyan-50 text-cyan-700";
     }
     return "border-slate-200 bg-slate-100 text-slate-600";
   };

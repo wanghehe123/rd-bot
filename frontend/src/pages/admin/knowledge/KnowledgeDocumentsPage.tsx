@@ -173,7 +173,7 @@ const renderFileTypeIcon = (fileType?: string | null, sourceType?: string | null
     return <Icon className={`h-4 w-4 shrink-0 ${color}`} />;
   }
   if (sourceType?.toLowerCase() === "url") {
-    return <LinkIcon className="h-4 w-4 shrink-0 text-purple-500" />;
+    return <LinkIcon className="h-4 w-4 shrink-0 text-teal-600" />;
   }
   return <FileText className="h-4 w-4 shrink-0 text-slate-400" />;
 };
@@ -666,7 +666,7 @@ export function KnowledgeDocumentsPage() {
                           <div className="flex items-center gap-1.5 min-w-0">
                             <button
                               type="button"
-                              className="block truncate min-w-0 text-left font-medium text-slate-900 transition-colors hover:text-indigo-600 hover:underline underline-offset-4"
+                              className="block truncate min-w-0 text-left font-medium text-slate-900 transition-colors hover:text-teal-700 hover:underline underline-offset-4"
                               title={doc.docName || ""}
                               onClick={() => navigate(`/admin/knowledge/${kbId}/docs/${doc.id}`)}
                             >
@@ -1224,7 +1224,7 @@ export function KnowledgeDocumentsPage() {
       </Dialog>
       {selectedIds.size > 0 && (
         <div className="fixed inset-x-0 bottom-6 z-50 flex justify-center">
-          <div className="animate-fade-up rounded-2xl bg-slate-900 px-5 py-3 text-sm text-white shadow-[0_10px_40px_rgba(0,0,0,0.15)]">
+          <div className="animate-fade-up rounded-lg bg-slate-900 px-5 py-3 text-sm text-white shadow-[0_10px_40px_rgba(0,0,0,0.15)]">
             <div className="flex items-center gap-3">
               <Check className="h-4 w-4 text-emerald-400" />
               <span className="tabular-nums font-medium">

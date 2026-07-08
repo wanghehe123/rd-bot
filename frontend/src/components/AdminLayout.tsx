@@ -180,11 +180,11 @@ export function AdminLayout() {
       <aside className={cn("admin-sidebar", collapsed && "admin-sidebar--collapsed")}>
         <div className="admin-sidebar__brand">
           <div className={cn("admin-brand-row", collapsed && "is-collapsed")}>
-            <div className="admin-sidebar__logo">R</div>
+            <div className="admin-sidebar__logo">RD</div>
             {!collapsed && (
               <div className="admin-brand-copy">
-                <h1 className="admin-sidebar__title">Ragent AI 管理后台</h1>
-                <p className="admin-sidebar__subtitle">Knowledge Console</p>
+                <h1 className="admin-sidebar__title">RD-Bot 管理后台</h1>
+                <p className="admin-sidebar__subtitle">Delivery Console</p>
               </div>
             )}
           </div>
@@ -280,7 +280,7 @@ export function AdminLayout() {
                     blurRef.current = window.setTimeout(() => setFocused(false), 160);
                   }}
                   onKeyDown={handleSearchKeyDown}
-                  placeholder="筛选知识库..."
+                  placeholder="搜索知识库 / 文档..."
                 />
                 <span className="admin-topbar-kbd">Ctrl K</span>
                 {focused && query.trim() && (
@@ -311,13 +311,13 @@ export function AdminLayout() {
                 <MessageSquare size={16} />
                 返回聊天
               </Button>
-              <a className="admin-star-link" href="https://github.com/nageoffer/ragent" target="_blank" rel="noreferrer">
+              <button type="button" className="admin-star-link" onClick={() => navigate("/admin/projects")}>
                 <Github size={16} />
-                <span>Star</span>
-                <Badge>--</Badge>
-              </a>
+                <span>RD-Bot</span>
+                <Badge>Ops</Badge>
+              </button>
               <button type="button" className="admin-user-pill" onClick={() => setPasswordOpen(true)}>
-                <span className="admin-avatar">R</span>
+                <span className="admin-avatar">RD</span>
                 <span>admin</span>
                 <ChevronDown size={15} />
               </button>
