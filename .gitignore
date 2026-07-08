@@ -4,6 +4,8 @@ build/
 out/
 node_modules/
 *.class
+__pycache__/
+*.py[cod]
 
 # ===== Maven =====
 !.mvn/wrapper/maven-wrapper.properties
