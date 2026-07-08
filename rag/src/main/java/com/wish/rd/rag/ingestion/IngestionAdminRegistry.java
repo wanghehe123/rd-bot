@@ -1,5 +1,6 @@
 package com.wish.rd.rag.ingestion;
 
+import com.wish.rd.rag.ingestion.impl.InMemoryIngestionPipelineStore;
 import com.wish.rd.rag.ingestion.impl.InMemoryIngestionTaskStore;
 
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
@@ -8,11 +9,9 @@ import com.wish.rd.rag.knowledge.KnowledgeWorkspace;
 import com.wish.rd.rag.vector.impl.InMemoryVectorStore;
 
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicLong;
 import org.springframework.stereotype.Component;
 import com.wish.rd.rag.ingestion.model.IngestionNodeLog;
 import com.wish.rd.rag.ingestion.model.IngestionNodeType;
@@ -32,17 +31,18 @@ import com.wish.rd.rag.ingestion.model.ManagedIngestionTaskNode;
 public final class IngestionAdminRegistry {
 
     private final KnowledgeWorkspace workspace;
+    private final IngestionPipelineStore pipelineStore;
     private final IngestionTaskStore taskStore;
     private final SnowflakeIdGenerator idGenerator;
-    private final LinkedHashMap<String, ManagedIngestionPipeline> pipelines = new LinkedHashMap<>();
-    private final AtomicLong pipelineSequence = new AtomicLong();
 
     public IngestionAdminRegistry(
             KnowledgeWorkspace workspace,
+            IngestionPipelineStore pipelineStore,
             IngestionTaskStore taskStore,
             SnowflakeIdGenerator idGenerator
     ) {
         this.workspace = workspace;
+        this.pipelineStore = pipelineStore;
         this.taskStore = taskStore;
         this.idGenerator = idGenerator;
         seedDefaultPipeline();
@@ -51,6 +51,7 @@ public final class IngestionAdminRegistry {
     public static IngestionAdminRegistry inMemory(KnowledgeWorkspace workspace) {
         return new IngestionAdminRegistry(
                 workspace,
+                new InMemoryIngestionPipelineStore(),
                 new InMemoryIngestionTaskStore(),
                 SnowflakeIdGenerator.defaultGenerator()
         );
@@ -61,15 +62,14 @@ public final class IngestionAdminRegistry {
             IngestionTaskStore taskStore,
             SnowflakeIdGenerator idGenerator
     ) {
-        return new IngestionAdminRegistry(workspace, taskStore, idGenerator);
+        return new IngestionAdminRegistry(workspace, new InMemoryIngestionPipelineStore(), taskStore, idGenerator);
     }
 
     public synchronized ManagedIngestionPipeline createPipeline(IngestionPipelineCommand command) {
-        String id = "pipeline-" + pipelineSequence.incrementAndGet();
+        String id = idGenerator.nextIdString();
         ManagedIngestionPipeline pipeline = toPipeline(id, command, System.currentTimeMillis(), System.currentTimeMillis());
         validatePipeline(pipeline);
-        pipelines.put(id, pipeline);
-        return pipeline;
+        return pipelineStore.savePipeline(pipeline);
     }
 
     public synchronized ManagedIngestionPipeline updatePipeline(String id, IngestionPipelineCommand command) {
@@ -81,23 +81,19 @@ public final class IngestionAdminRegistry {
                 System.currentTimeMillis()
         );
         validatePipeline(updated);
-        pipelines.put(id, updated);
-        return updated;
+        return pipelineStore.savePipeline(updated);
     }
 
     public synchronized ManagedIngestionPipeline getPipeline(String id) {
-        ManagedIngestionPipeline pipeline = pipelines.get(id);
-        if (pipeline == null) {
-            throw new IllegalArgumentException("ingestion pipeline not found: " + id);
-        }
-        return pipeline;
+        return pipelineStore.findPipeline(id)
+                .orElseThrow(() -> new IllegalArgumentException("ingestion pipeline not found: " + id));
     }
 
     public synchronized IngestionPipelinePage pagePipelines(String keyword, int pageNo, int pageSize) {
         int safePageNo = pageNo <= 0 ? 1 : pageNo;
         int safePageSize = pageSize <= 0 ? 10 : pageSize;
         String normalizedKeyword = normalize(keyword);
-        List<ManagedIngestionPipeline> filtered = pipelines.values().stream()
+        List<ManagedIngestionPipeline> filtered = pipelineStore.listPipelines().stream()
                 .filter(pipeline -> normalizedKeyword.isBlank()
                         || normalize(pipeline.name()).contains(normalizedKeyword)
                         || normalize(pipeline.description()).contains(normalizedKeyword))
@@ -111,7 +107,7 @@ public final class IngestionAdminRegistry {
         if ("default-document-pipeline".equals(id)) {
             throw new IllegalArgumentException("default ingestion pipeline cannot be deleted");
         }
-        return pipelines.remove(id) != null;
+        return pipelineStore.deletePipeline(id);
     }
 
     public synchronized ManagedIngestionTask executeTask(ManagedIngestionTaskCommand command) {
@@ -277,7 +273,9 @@ public final class IngestionAdminRegistry {
                 now,
                 now
         );
-        pipelines.put(pipeline.id(), pipeline);
+        if (pipelineStore.findPipeline(pipeline.id()).isEmpty()) {
+            pipelineStore.savePipeline(pipeline);
+        }
     }
 
     private String normalize(String value) {

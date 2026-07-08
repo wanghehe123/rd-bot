@@ -1,50 +1,69 @@
 package com.wish.rd.rag.intent;
 
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.NoSuchElementException;
-import java.util.concurrent.atomic.AtomicLong;
-import org.springframework.stereotype.Component;
+import com.wish.rd.framework.id.SnowflakeIdGenerator;
+import com.wish.rd.rag.intent.impl.InMemoryIntentNodeStore;
 import com.wish.rd.rag.intent.model.IntentLevel;
 import com.wish.rd.rag.intent.model.IntentNode;
 import com.wish.rd.rag.intent.model.IntentNodeCommand;
 import com.wish.rd.rag.intent.model.ManagedIntentNode;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+import java.util.NoSuchElementException;
+
+/**
+ * 意图树领域注册表。
+ *
+ * <p>负责意图树的业务校验、树形构建和启停删除编排；生产可见节点通过
+ * {@link IntentNodeStore} 持久化，避免重启后丢失管理端配置。
+ */
 @Component
 public final class IntentTreeRegistry {
 
-    private final AtomicLong sequence = new AtomicLong(0);
-    private final LinkedHashMap<String, ManagedIntentNode> nodes = new LinkedHashMap<>();
+    private final IntentNodeStore store;
+    private final SnowflakeIdGenerator idGenerator;
 
-    public IntentTreeRegistry() {
-        this(true);
+    @Autowired
+    public IntentTreeRegistry(IntentNodeStore store, SnowflakeIdGenerator idGenerator) {
+        this.store = store;
+        this.idGenerator = idGenerator;
     }
 
-    private IntentTreeRegistry(boolean seedDefaults) {
+    private IntentTreeRegistry(IntentNodeStore store, SnowflakeIdGenerator idGenerator, boolean seedDefaults) {
+        this.store = store;
+        this.idGenerator = idGenerator;
         if (seedDefaults) {
             seedDefaults();
         }
     }
 
     public static IntentTreeRegistry inMemory() {
-        return new IntentTreeRegistry(false);
+        return new IntentTreeRegistry(
+                new InMemoryIntentNodeStore(),
+                SnowflakeIdGenerator.defaultGenerator(),
+                false
+        );
     }
 
     public static IntentTreeRegistry withDefaults() {
-        return new IntentTreeRegistry(true);
+        return new IntentTreeRegistry(
+                new InMemoryIntentNodeStore(),
+                SnowflakeIdGenerator.defaultGenerator(),
+                true
+        );
     }
 
     public synchronized ManagedIntentNode create(IntentNodeCommand command) {
         validateCreate(command);
-        if (findByIntentCode(command.intentCode()) != null) {
+        if (store.findByIntentCode(command.intentCode()).isPresent()) {
             throw new IllegalArgumentException("intentCode already exists: " + command.intentCode());
         }
-        String id = Long.toString(sequence.incrementAndGet());
+        String id = idGenerator.nextIdString();
         ManagedIntentNode node = fromCommand(id, command, null);
-        nodes.put(id, node);
-        return node;
+        return store.save(node);
     }
 
     public synchronized ManagedIntentNode update(String id, IntentNodeCommand command) {
@@ -66,8 +85,7 @@ public final class IntentTreeRegistry {
                 command.sortOrder(),
                 List.of()
         );
-        nodes.put(id, updated);
-        return updated;
+        return store.save(updated);
     }
 
     public synchronized ManagedIntentNode get(String id) {
@@ -90,7 +108,7 @@ public final class IntentTreeRegistry {
         collectDescendantIds(node.intentCode(), toDelete);
         toDelete.add(id);
         for (String deleteId : toDelete) {
-            nodes.remove(deleteId);
+            store.delete(deleteId);
         }
     }
 
@@ -170,7 +188,7 @@ public final class IntentTreeRegistry {
     }
 
     private List<ManagedIntentNode> orderedNodes() {
-        return nodes.values().stream()
+        return store.list().stream()
                 .sorted(Comparator.comparingInt(ManagedIntentNode::sortOrder)
                         .thenComparing(ManagedIntentNode::id))
                 .toList();
@@ -179,7 +197,7 @@ public final class IntentTreeRegistry {
     private void setEnabled(List<String> ids, int enabled) {
         for (String id : safeIds(ids)) {
             ManagedIntentNode node = require(id);
-            nodes.put(id, new ManagedIntentNode(
+            store.save(new ManagedIntentNode(
                     node.id(),
                     node.intentCode(),
                     node.name(),
@@ -201,7 +219,7 @@ public final class IntentTreeRegistry {
     }
 
     private void collectDescendantIds(String parentCode, List<String> target) {
-        for (ManagedIntentNode node : nodes.values()) {
+        for (ManagedIntentNode node : store.list()) {
             if (parentCode.equals(node.parentCode())) {
                 collectDescendantIds(node.intentCode(), target);
                 target.add(node.id());
@@ -209,19 +227,9 @@ public final class IntentTreeRegistry {
         }
     }
 
-    private ManagedIntentNode findByIntentCode(String intentCode) {
-        return nodes.values().stream()
-                .filter(node -> node.intentCode().equals(intentCode))
-                .findFirst()
-                .orElse(null);
-    }
-
     private ManagedIntentNode require(String id) {
-        ManagedIntentNode node = nodes.get(id);
-        if (node == null) {
-            throw new NoSuchElementException("intent node not found: " + id);
-        }
-        return node;
+        return store.findById(id)
+                .orElseThrow(() -> new NoSuchElementException("intent node not found: " + id));
     }
 
     private void validateCreate(IntentNodeCommand command) {
@@ -249,7 +257,7 @@ public final class IntentTreeRegistry {
     }
 
     private void seedDefaults() {
-        create(new IntentNodeCommand(
+        seedDefault(new IntentNodeCommand(
                 "waimai",
                 "外卖平台",
                 0,
@@ -267,7 +275,7 @@ public final class IntentTreeRegistry {
                 1,
                 -10
         ));
-        create(new IntentNodeCommand(
+        seedDefault(new IntentNodeCommand(
                 "payment-system",
                 "支付系统",
                 0,
@@ -279,5 +287,11 @@ public final class IntentTreeRegistry {
                 1,
                 0
         ));
+    }
+
+    private void seedDefault(IntentNodeCommand command) {
+        if (store.findByIntentCode(command.intentCode()).isEmpty()) {
+            create(command);
+        }
     }
 }

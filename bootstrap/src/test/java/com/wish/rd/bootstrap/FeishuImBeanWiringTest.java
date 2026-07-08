@@ -25,6 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
         webEnvironment = SpringBootTest.WebEnvironment.NONE,
         properties = {
                 "rd.repair.ticket.provider=feishu-im",
+                "rd.knowledge.store=memory",
                 "rd.feishu.im.enabled=true",
                 "rd.feishu.im.write-back.enabled=true",
                 "rd.feishu.im.app-id=app-id-for-wiring-test",

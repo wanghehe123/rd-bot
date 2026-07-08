@@ -164,6 +164,13 @@ MVP 阶段无数据库，所有内存仓储统一用 `*Registry` 模式：
 - 【强制】禁止新增 `InMemoryRdProjectStore`、静态集合、JVM 本地缓存兜底或配置文件列表作为项目管理真值；任务创建只能读取数据库项目快照，并把项目 ID/key/name 与仓库字段写入 `rd_tasks`。
 - 【强制】项目唯一性必须依赖数据库唯一约束（`project_key` 未删除唯一），不能只靠单实例内存校验。
 
+### 3.5.2 管理台生产数据持久化【强制】
+
+- 【强制】管理台可新增、编辑、启停或删除的生产可见数据，必须以 PostgreSQL 为真值来源；`rd.knowledge.store=postgres` 时不得回退到 JVM 内存注册表。
+- 【强制】知识库、文档、分块、意图树、摄取管道、摄取任务、项目、RD 任务、任务材料、阶段执行记录等管理台数据必须通过端口/Store 读写 PostgreSQL；内存实现只能在显式 `rd.knowledge.store=memory`、单测或本地临时演示中使用。
+- 【强制】新增管理台页面或数据域时，必须同时提供：Store 端口、PostgreSQL 适配器、SQL DDL、以及防退化测试，证明注册表/Engine 不直接持有生产可见 `LinkedHashMap`、`AtomicLong` 等内存真值。
+- 【强制】排查“重启后数据消失/全部不可见”时，先确认后端实际配置与数据库计数：`rd.knowledge.store`、`rd.storage.mode`、PostgreSQL 表记录数、HTTP 查询结果；不得在未验证 PostgreSQL 链路前把问题归因于前端空态。
+
 ### 3.6 聚合根（Aggregate Root）【强制用于"强一致实体群"】
 
 - **已落地**：`KnowledgeWorkspace` 是知识域聚合根，统一管理 知识库→文档→分块→向量 的级联一致性（删除知识库级联删文档/分块/向量；更新文档同步刷新分块与向量库）。

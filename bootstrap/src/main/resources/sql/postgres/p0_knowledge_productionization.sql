@@ -127,6 +127,82 @@ CREATE TABLE IF NOT EXISTS ingestion_task_nodes (
 
 CREATE INDEX IF NOT EXISTS idx_ingestion_task_nodes_task ON ingestion_task_nodes (task_id, node_order);
 
+-- 管理台意图树：生产可见配置必须落 PostgreSQL，禁止只存在 JVM 内存。
+CREATE TABLE IF NOT EXISTS t_intent_node (
+    id                    VARCHAR(64) PRIMARY KEY,
+    kb_id                 VARCHAR(128) NOT NULL DEFAULT '',
+    intent_code           VARCHAR(128) NOT NULL,
+    name                  VARCHAR(128) NOT NULL,
+    level                 SMALLINT NOT NULL DEFAULT 2,
+    parent_code           VARCHAR(128) NOT NULL DEFAULT '',
+    description           VARCHAR(512) NOT NULL DEFAULT '',
+    examples              TEXT NOT NULL DEFAULT '[]',
+    collection_name       VARCHAR(128) NOT NULL DEFAULT '',
+    top_k                 INTEGER NOT NULL DEFAULT 5,
+    mcp_tool_id           VARCHAR(128) NOT NULL DEFAULT '',
+    kind                  SMALLINT NOT NULL DEFAULT 0,
+    prompt_snippet        TEXT NOT NULL DEFAULT '',
+    prompt_template       TEXT NOT NULL DEFAULT '',
+    param_prompt_template TEXT NOT NULL DEFAULT '',
+    sort_order            INTEGER NOT NULL DEFAULT 0,
+    enabled               SMALLINT NOT NULL DEFAULT 1,
+    create_by             VARCHAR(128) NOT NULL DEFAULT 'rd-bot',
+    update_by             VARCHAR(128) NOT NULL DEFAULT 'rd-bot',
+    create_time           TIMESTAMP NOT NULL DEFAULT now(),
+    update_time           TIMESTAMP NOT NULL DEFAULT now(),
+    deleted               SMALLINT NOT NULL DEFAULT 0
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uk_t_intent_node_code_active
+    ON t_intent_node (intent_code) WHERE deleted = 0;
+CREATE INDEX IF NOT EXISTS idx_t_intent_node_parent
+    ON t_intent_node (parent_code, sort_order) WHERE deleted = 0;
+
+-- 管理台摄取管道：管道定义和节点拓扑必须落 PostgreSQL，任务执行记录使用 ingestion_tasks。
+CREATE TABLE IF NOT EXISTS t_ingestion_pipeline (
+    id          VARCHAR(64) PRIMARY KEY,
+    name        VARCHAR(128) NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    created_by  VARCHAR(128) NOT NULL DEFAULT 'rd-bot',
+    updated_by  VARCHAR(128) NOT NULL DEFAULT 'rd-bot',
+    create_time TIMESTAMP NOT NULL DEFAULT now(),
+    update_time TIMESTAMP NOT NULL DEFAULT now(),
+    deleted     SMALLINT NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_t_ingestion_pipeline_active
+    ON t_ingestion_pipeline (deleted, update_time);
+
+ALTER TABLE t_ingestion_pipeline
+    ALTER COLUMN id TYPE VARCHAR(64),
+    ALTER COLUMN name TYPE VARCHAR(128),
+    ALTER COLUMN created_by TYPE VARCHAR(128),
+    ALTER COLUMN updated_by TYPE VARCHAR(128);
+
+CREATE TABLE IF NOT EXISTS t_ingestion_pipeline_node (
+    id             VARCHAR(64) PRIMARY KEY,
+    pipeline_id    VARCHAR(64) NOT NULL REFERENCES t_ingestion_pipeline(id) ON DELETE CASCADE,
+    node_id        VARCHAR(128) NOT NULL,
+    node_type      VARCHAR(64) NOT NULL,
+    next_node_id   VARCHAR(128) NOT NULL DEFAULT '',
+    settings_json  JSONB NOT NULL DEFAULT '{}'::jsonb,
+    condition_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_by     VARCHAR(128) NOT NULL DEFAULT 'rd-bot',
+    updated_by     VARCHAR(128) NOT NULL DEFAULT 'rd-bot',
+    create_time    TIMESTAMP NOT NULL DEFAULT now(),
+    update_time    TIMESTAMP NOT NULL DEFAULT now(),
+    deleted        SMALLINT NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_t_ingestion_pipeline_node_pipeline
+    ON t_ingestion_pipeline_node (pipeline_id, id) WHERE deleted = 0;
+
+ALTER TABLE t_ingestion_pipeline_node
+    ALTER COLUMN node_id TYPE VARCHAR(128),
+    ALTER COLUMN pipeline_id TYPE VARCHAR(64),
+    ALTER COLUMN node_type TYPE VARCHAR(64),
+    ALTER COLUMN next_node_id TYPE VARCHAR(128);
+
 -- 项目管理：系统可交付项目及其仓库配置。项目配置是生产共享状态，禁止使用 in-memory 兜底。
 CREATE TABLE IF NOT EXISTS rd_projects (
     id              BIGINT PRIMARY KEY,
