@@ -2,6 +2,9 @@ package com.wish.rd.bootstrap.controller.admin.rdtask;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wish.rd.engine.agent.model.AgentRole;
+import com.wish.rd.engine.bugfix.RdBotFixEngine;
+import com.wish.rd.engine.bugfix.model.RdBotFixCommand;
+import com.wish.rd.engine.bugfix.model.RdBotFixResult;
 import com.wish.rd.engine.requirement.RequirementDeliveryEngine;
 import com.wish.rd.engine.requirement.model.RequirementExecutionResult;
 import com.wish.rd.engine.requirement.model.RequirementPullRequestPublication;
@@ -33,6 +36,9 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.startsWith;
 import static org.hamcrest.Matchers.is;
@@ -322,6 +328,93 @@ class RdTaskControllerTest {
     }
 
     @Test
+    void shouldGenerateTicketIdWhenBugFixTaskCreatedWithoutExternalTicket() throws Exception {
+        RdProjectService projectService = projectService();
+        RdProject project = projectService.create(projectCommand());
+        mockMvc = MockMvcBuilders.standaloneSetup(new RdTaskController(registry, projectService)).build();
+        String body = objectMapper.writeValueAsString(Map.of(
+                "title", "RocketMQ 修复任务无法重启",
+                "ticketTitle", "No route info of topic RD_BOT_REPAIR_TICKET",
+                "priority", "P1",
+                "projectId", project.projectId(),
+                "promptSnapshot", "现象：管理台恢复任务时报 RocketMQ topic 无路由。"
+        ));
+
+        mockMvc.perform(post("/admin/rd-tasks")
+                        .contentType(APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.taskType", is("BUG_FIX")))
+                .andExpect(jsonPath("$.ticketId", startsWith("ticket-")))
+                .andExpect(jsonPath("$.ticketTitle", is("No route info of topic RD_BOT_REPAIR_TICKET")));
+    }
+
+    @Test
+    void shouldSubmitBugFixTaskThroughFixEngine() throws Exception {
+        String promptSnapshot = "现象：localhost:5174 白屏；控制台报 useAuth 返回 null。";
+        String taskId = createTask("ticket-admin-bugfix", "外卖配送管理系统启动后白屏", "P1", promptSnapshot);
+        AtomicReference<RdBotFixCommand> submitted = new AtomicReference<>();
+        RdBotFixEngine fixEngine = new RdBotFixEngine(null, null, registry, null, null) {
+            @Override
+            public RdBotFixResult runBugFix(RdBotFixCommand command) {
+                submitted.set(command);
+                registry.markSearching(taskId, "管理台提交 Bug 修复任务");
+                return null;
+            }
+        };
+        mockMvc = MockMvcBuilders.standaloneSetup(controllerWithBugFixEngine(fixEngine)).build();
+
+        mockMvc.perform(post("/admin/rd-tasks/{taskId}/submit", taskId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.taskType", is("BUG_FIX")))
+                .andExpect(jsonPath("$.status", is("SEARCHING")));
+
+        RdBotFixCommand command = submitted.get();
+        assertNotNull(command);
+        assertEquals("ticket-admin-bugfix", command.ticket().ticketId());
+        assertEquals("外卖配送管理系统启动后白屏", command.ticket().title());
+        assertTrue(command.ticket().description().contains(promptSnapshot));
+        assertEquals(List.of(promptSnapshot), command.logs());
+        assertEquals("P1", command.priority());
+    }
+
+    @Test
+    void shouldAutoExecuteBugFixTaskWhenRequested() throws Exception {
+        AtomicReference<RdBotFixCommand> submitted = new AtomicReference<>();
+        RdBotFixEngine fixEngine = new RdBotFixEngine(null, null, registry, null, null) {
+            @Override
+            public RdBotFixResult runBugFix(RdBotFixCommand command) {
+                submitted.set(command);
+                RdBugFixTask task = registry.listBugFixTasks().stream()
+                        .filter(candidate -> candidate.ticketId().equals(command.ticket().ticketId()))
+                        .findFirst()
+                        .orElseThrow();
+                registry.markSearching(task.taskId(), "管理台自动提交 Bug 修复任务");
+                return null;
+            }
+        };
+        mockMvc = MockMvcBuilders.standaloneSetup(controllerWithBugFixEngine(fixEngine)).build();
+        String body = objectMapper.writeValueAsString(Map.of(
+                "title", "外卖配送管理系统启动后白屏",
+                "ticketId", "ticket-auto-bugfix",
+                "ticketTitle", "App.tsx 读取 useAuth 返回 null",
+                "priority", "P1",
+                "promptSnapshot", "现象：#root 为空，控制台 React 运行时错误。",
+                "autoExecute", true
+        ));
+
+        mockMvc.perform(post("/admin/rd-tasks")
+                        .contentType(APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.taskType", is("BUG_FIX")))
+                .andExpect(jsonPath("$.status", is("SEARCHING")));
+
+        assertNotNull(submitted.get());
+        assertEquals("ticket-auto-bugfix", submitted.get().ticket().ticketId());
+    }
+
+    @Test
     void shouldRejectTaskWhenSelectedProjectMissing() throws Exception {
         mockMvc = MockMvcBuilders.standaloneSetup(new RdTaskController(registry, projectService())).build();
         String body = objectMapper.writeValueAsString(Map.of(
@@ -533,6 +626,165 @@ class RdTaskControllerTest {
     }
 
     @Test
+    void shouldApproveWaitingRequirementTaskAndContinueExecution() throws Exception {
+        InMemoryTaskMaterialStore materialStore = new InMemoryTaskMaterialStore();
+        RequirementDeliveryEngine deliveryEngine = new RequirementDeliveryEngine(
+                registry,
+                materialStore,
+                request -> {
+                    if (request.role() == AgentRole.QA_AGENT) {
+                        return RequirementExecutionResult.success(
+                                request.taskId(),
+                                "QA 验收通过",
+                                "",
+                                """
+                                        {
+                                          "status": "PASSED",
+                                          "summary": "QA 验收通过",
+                                          "acceptanceResults": [
+                                            {"criteria":"前端构建通过","command":"npm run build","status":"PASSED","logArtifactId":"qa-log-77"}
+                                          ]
+                                        }
+                                        """
+                        );
+                    }
+                    return RequirementExecutionResult.success(
+                            request.taskId(),
+                            "已完成商品管理功能",
+                            "",
+                            """
+                                    {
+                                      "status": "SUCCESS",
+                                      "summary": "已完成商品管理功能",
+                                      "prBody": "## 改动介绍\\n- 新增商品管理页面",
+                                      "changedFiles": ["client/src/pages/admin/Products.tsx"],
+                                      "testCommands": ["npm run build"],
+                                      "testStatus": "PASSED",
+                                      "riskLevel": "LOW"
+                                    }
+                                    """
+                    );
+                },
+                command -> RequirementPullRequestPublication.success(
+                        command.taskId(),
+                        "https://github.com/example/waimai/pull/77",
+                        "77",
+                        "{\"provider\":\"controller-test\"}"
+                )
+        );
+        mockMvc = MockMvcBuilders.standaloneSetup(controllerWithRequirementEngine(materialStore, deliveryEngine))
+                .build();
+        String body = objectMapper.writeValueAsString(Map.of(
+                "title", "开发管理后台商品管理功能",
+                "priority", "P2",
+                "repositoryUrl", "https://github.com/example/waimai.git",
+                "baseBranch", "main",
+                "expectedResult", "管理员可管理商品",
+                "acceptanceCriteria", List.of("前端构建通过"),
+                "materials", List.of(Map.of(
+                        "sourceType", "MANUAL_TEXT",
+                        "title", "需求正文",
+                        "content", "保持现有登录入口可用，新增商品管理页面。"
+                )),
+                "autoExecute", true
+        ));
+        String response = mockMvc.perform(post("/admin/rd-tasks/requirements")
+                        .contentType(APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status", is("WAITING_APPROVAL")))
+                .andReturn().getResponse().getContentAsString();
+        String taskId = com.jayway.jsonpath.JsonPath.read(response, "$.taskId");
+
+        mockMvc.perform(post("/admin/rd-tasks/{taskId}/approve", taskId)
+                        .contentType(APPLICATION_JSON)
+                        .content("{\"message\":\"人工确认商品管理需求可以进入沙箱执行\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status", is("COMPLETED")))
+                .andExpect(jsonPath("$.pullRequestUrl", is("https://github.com/example/waimai/pull/77")))
+                .andExpect(jsonPath("$.executionEvidence.summary", is("已完成商品管理功能")));
+
+        assertEquals(List.of(
+                "CREATED",
+                "MATERIAL_COLLECTING",
+                "MATERIAL_READY",
+                "CONTEXT_BUILDING",
+                "CONTEXT_READY",
+                "PLAN_GENERATING",
+                "PLAN_GENERATED",
+                "WAITING_POLICY",
+                "WAITING_APPROVAL",
+                "APPROVED",
+                "EXECUTING",
+                "VALIDATING",
+                "PR_CREATING",
+                "COMMITTED",
+                "REPORTING",
+                "COMPLETED"
+        ), registry.timeline(taskId).stream().map(event -> event.status()).toList());
+    }
+
+    @Test
+    void shouldNotBypassApprovalWhenWaitingRequirementIsSubmittedDirectly() throws Exception {
+        InMemoryTaskMaterialStore materialStore = new InMemoryTaskMaterialStore();
+        AtomicReference<AgentRole> executedRole = new AtomicReference<>();
+        RequirementDeliveryEngine deliveryEngine = new RequirementDeliveryEngine(
+                registry,
+                materialStore,
+                request -> {
+                    executedRole.set(request.role());
+                    return RequirementExecutionResult.success(
+                            request.taskId(),
+                            "不应执行",
+                            "",
+                            "{\"status\":\"SUCCESS\"}"
+                    );
+                },
+                command -> RequirementPullRequestPublication.failure(command.taskId(), "不应发布 PR")
+        );
+        mockMvc = MockMvcBuilders.standaloneSetup(controllerWithRequirementEngine(materialStore, deliveryEngine))
+                .build();
+        String body = objectMapper.writeValueAsString(Map.of(
+                "title", "开发管理后台商品管理功能",
+                "priority", "P2",
+                "repositoryUrl", "https://github.com/example/waimai.git",
+                "baseBranch", "main",
+                "expectedResult", "管理员可管理商品",
+                "acceptanceCriteria", List.of("前端构建通过"),
+                "materials", List.of(Map.of(
+                        "sourceType", "MANUAL_TEXT",
+                        "title", "需求正文",
+                        "content", "保持现有登录入口可用，新增商品管理页面。"
+                )),
+                "autoExecute", true
+        ));
+        String response = mockMvc.perform(post("/admin/rd-tasks/requirements")
+                        .contentType(APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status", is("WAITING_APPROVAL")))
+                .andReturn().getResponse().getContentAsString();
+        String taskId = com.jayway.jsonpath.JsonPath.read(response, "$.taskId");
+
+        mockMvc.perform(post("/admin/rd-tasks/{taskId}/submit", taskId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status", is("WAITING_APPROVAL")));
+
+        assertNull(executedRole.get());
+        assertEquals(List.of(
+                "CREATED",
+                "MATERIAL_COLLECTING",
+                "MATERIAL_READY",
+                "CONTEXT_BUILDING",
+                "CONTEXT_READY",
+                "PLAN_GENERATING",
+                "PLAN_GENERATED",
+                "WAITING_POLICY",
+                "WAITING_APPROVAL"
+        ), registry.timeline(taskId).stream().map(event -> event.status()).toList());
+    }
+
+    @Test
     void shouldNotCancelTaskWhenExecutionStopFails() throws Exception {
         String taskId = createTask("FS-3009", "待停止任务", "P1");
 
@@ -549,10 +801,15 @@ class RdTaskControllerTest {
     }
 
     private String createTask(String ticketId, String title, String priority) throws Exception {
+        return createTask(ticketId, title, priority, "");
+    }
+
+    private String createTask(String ticketId, String title, String priority, String promptSnapshot) throws Exception {
         String body = objectMapper.writeValueAsString(Map.of(
                 "ticketId", ticketId,
                 "title", title,
-                "priority", priority));
+                "priority", priority,
+                "promptSnapshot", promptSnapshot));
         String response = mockMvc.perform(post("/admin/rd-tasks")
                         .contentType(APPLICATION_JSON)
                         .content(body))
@@ -625,6 +882,27 @@ class RdTaskControllerTest {
                 beans.getBeanProvider(SnowflakeIdGenerator.class),
                 beans.getBeanProvider(RequirementDeliveryEngine.class),
                 beans.getBeanProvider(com.wish.rd.bootstrap.threading.RequirementDeliveryDispatchService.class),
+                beans.getBeanProvider(RdBotFixEngine.class),
+                beans.getBeanProvider(com.wish.rd.bootstrap.threading.BugFixExecutionDispatchService.class),
+                beans.getBeanProvider(RdProjectService.class)
+        );
+    }
+
+    private RdTaskController controllerWithBugFixEngine(RdBotFixEngine fixEngine) {
+        StaticListableBeanFactory beans = new StaticListableBeanFactory();
+        beans.addBean("idGenerator", generator());
+        beans.addBean("bugFixEngine", fixEngine);
+        return new RdTaskController(
+                registry,
+                beans.getBeanProvider(com.wish.rd.exec.repair.execution.RepairExecutionControlPort.class),
+                beans.getBeanProvider(com.wish.rd.engine.audit.RepairAuditSinkPort.class),
+                beans.getBeanProvider(RdTaskRestartEngine.class),
+                beans.getBeanProvider(com.wish.rd.rag.runtime.TaskMaterialStore.class),
+                beans.getBeanProvider(SnowflakeIdGenerator.class),
+                beans.getBeanProvider(RequirementDeliveryEngine.class),
+                beans.getBeanProvider(com.wish.rd.bootstrap.threading.RequirementDeliveryDispatchService.class),
+                beans.getBeanProvider(RdBotFixEngine.class),
+                beans.getBeanProvider(com.wish.rd.bootstrap.threading.BugFixExecutionDispatchService.class),
                 beans.getBeanProvider(RdProjectService.class)
         );
     }

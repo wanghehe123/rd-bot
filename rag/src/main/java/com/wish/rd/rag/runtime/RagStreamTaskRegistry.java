@@ -886,6 +886,29 @@ public final class RagStreamTaskRegistry {
     }
 
     /**
+     * 管理台审批通过等待人工确认的需求任务。
+     *
+     * <p>审批本身只追加审计事件，不直接改变主状态；后续由需求交付引擎通过
+     * {@code WAITING_APPROVAL -> EXECUTING} 的合法状态机边继续执行。
+     *
+     * @param taskId  任务 ID
+     * @param message 审批说明
+     * @return 审批后的任务快照
+     */
+    public RdRequirementTask approveRequirementTask(String taskId, String message) {
+        return withLock(() -> {
+            RdRequirementTask existing = getRequirementTask(taskId);
+            if (existing.status() != RdTaskStatus.WAITING_APPROVAL) {
+                throw new IllegalStateException("requirement task is not waiting approval: " + existing.status());
+            }
+            RdRequirementTask saved = taskStore.saveRequirementTask(existing);
+            String approvalMessage = message == null || message.isBlank() ? "管理台审批通过" : message;
+            recordEvent(saved, RdTaskStatusEvent.ACTION_APPROVED, saved.title(), approvalMessage, RdTaskEventTrigger.API);
+            return saved;
+        });
+    }
+
+    /**
      * 管理台逻辑删除任务（状态置 DELETED）并清理状态事件。
      *
      * @param taskId 任务 ID

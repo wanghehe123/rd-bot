@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { Activity, ChevronDown, ChevronLeft, Clock3, FileText, GitPullRequest, Gauge, Pause, Play } from "lucide-react";
+import { Activity, CheckCircle2, ChevronDown, ChevronLeft, Clock3, FileText, GitPullRequest, Gauge, Pause, Play } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -15,6 +15,7 @@ import {
   getRdTaskExecutionOverview,
   getRdTaskMaterials,
   getRdTaskTimeline,
+  approveRdTask,
   pauseRdTask,
   resumeRdTask,
   STATUS_BADGE_CLASS,
@@ -62,13 +63,13 @@ const EVENT_DOT_TONE: Record<string, string> = {
   MATERIAL_READY: "bg-teal-500",
   CONTEXT_BUILDING: "bg-cyan-500",
   CONTEXT_READY: "bg-teal-500",
-  PLAN_GENERATING: "bg-violet-500",
-  PLAN_GENERATED: "bg-purple-500",
+  PLAN_GENERATING: "bg-blue-500",
+  PLAN_GENERATED: "bg-cyan-500",
   WAITING_POLICY: "bg-amber-500",
   WAITING_APPROVAL: "bg-orange-500",
   SEARCHING: "bg-amber-500",
-  EXECUTING: "bg-indigo-500",
-  VALIDATING: "bg-fuchsia-500",
+  EXECUTING: "bg-teal-500",
+  VALIDATING: "bg-sky-500",
   PR_CREATING: "bg-emerald-500",
   COMMITTED: "bg-emerald-500",
   MERGED: "bg-green-600",
@@ -89,9 +90,9 @@ const STAGE_BADGE_CLASS: Record<string, string> = {
   PENDING: "border-slate-200 bg-slate-50 text-slate-600",
   CONTEXT_READY: "border-cyan-200 bg-cyan-50 text-cyan-700",
   DISPATCHING: "border-amber-200 bg-amber-50 text-amber-700",
-  RUNNING: "border-indigo-200 bg-indigo-50 text-indigo-700",
+  RUNNING: "border-teal-200 bg-teal-50 text-teal-700",
   RESULT_COLLECTING: "border-blue-200 bg-blue-50 text-blue-700",
-  VERIFYING: "border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700",
+  VERIFYING: "border-sky-200 bg-sky-50 text-sky-700",
   SUCCEEDED: "border-green-200 bg-green-50 text-green-700",
   FAILED_RETRYABLE: "border-rose-200 bg-rose-50 text-rose-700",
   FAILED_NEEDS_HUMAN: "border-orange-200 bg-orange-50 text-orange-700",
@@ -116,6 +117,7 @@ export function RdTaskDetailPage() {
   const [executionOverview, setExecutionOverview] = useState<RdTaskExecutionOverview | null>(null);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [approving, setApproving] = useState(false);
 
   const load = async (silent = false) => {
     if (!silent) {
@@ -176,7 +178,7 @@ export function RdTaskDetailPage() {
     }
   };
 
-  const handleSubmitRequirement = async () => {
+  const handleSubmitTask = async () => {
     if (!task) return;
     setSubmitting(true);
     try {
@@ -190,11 +192,33 @@ export function RdTaskDetailPage() {
       setEvents(timeline || []);
       setMaterials(materialList || []);
       setExecutionOverview(overview);
-      toast.success(updated.pullRequestUrl ? "需求执行完成，已生成 PR" : "需求执行已提交");
+      toast.success(updated.pullRequestUrl ? "执行完成，已生成 PR" : "执行已提交");
     } catch (error) {
-      toast.error(getErrorMessage(error, "需求执行失败"));
+      toast.error(getErrorMessage(error, "执行失败"));
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleApproveTask = async () => {
+    if (!task) return;
+    setApproving(true);
+    try {
+      const updated = await approveRdTask(task.taskId, "管理台审批通过，继续执行需求交付");
+      setTask(updated);
+      const [timeline, materialList, overview] = await Promise.all([
+        getRdTaskTimeline(task.taskId),
+        getRdTaskMaterials(task.taskId),
+        getRdTaskExecutionOverview(task.taskId)
+      ]);
+      setEvents(timeline || []);
+      setMaterials(materialList || []);
+      setExecutionOverview(overview);
+      toast.success(updated.pullRequestUrl ? "审批通过，已生成 PR" : "审批通过，已继续执行");
+    } catch (error) {
+      toast.error(getErrorMessage(error, "审批失败"));
+    } finally {
+      setApproving(false);
     }
   };
 
@@ -240,9 +264,21 @@ export function RdTaskDetailPage() {
               )}
             </Button>
             {task.taskType === "REQUIREMENT" && canSubmitRequirement(task) ? (
-              <Button onClick={handleSubmitRequirement} disabled={submitting}>
+              <Button onClick={handleSubmitTask} disabled={submitting}>
                 <Play className="mr-2 h-4 w-4" />
                 {submitting ? "执行中..." : "执行需求"}
+              </Button>
+            ) : null}
+            {task.taskType === "REQUIREMENT" && canApproveRequirement(task) ? (
+              <Button onClick={handleApproveTask} disabled={approving || submitting}>
+                <CheckCircle2 className="mr-2 h-4 w-4" />
+                {approving ? "审批中..." : "审批通过并继续"}
+              </Button>
+            ) : null}
+            {task.taskType === "BUG_FIX" && canSubmitBugFix(task) ? (
+              <Button onClick={handleSubmitTask} disabled={submitting}>
+                <Play className="mr-2 h-4 w-4" />
+                {submitting ? "执行中..." : "执行修复"}
               </Button>
             ) : null}
           </div>
@@ -572,7 +608,7 @@ function ExecutionOverviewCard({ overview }: { overview: RdTaskExecutionOverview
           </div>
           <div className="h-2 overflow-hidden rounded-full bg-slate-100">
             <div
-              className="h-full rounded-full bg-indigo-500 transition-all"
+              className="h-full rounded-full bg-teal-600 transition-all"
               style={{ width: formatPercent(progressRatio) }}
             />
           </div>
@@ -601,7 +637,7 @@ function ExecutionOverviewCard({ overview }: { overview: RdTaskExecutionOverview
             {overview.runningExecutions.map((execution) => (
               <div
                 key={`${execution.taskId}-${execution.containerName}`}
-                className="grid grid-cols-1 gap-2 rounded-md border border-indigo-100 bg-indigo-50/50 px-3 py-2 text-sm md:grid-cols-[1.2fr_0.8fr_0.8fr]"
+                className="grid grid-cols-1 gap-2 rounded-md border border-teal-100 bg-teal-50/50 px-3 py-2 text-sm md:grid-cols-[1.2fr_0.8fr_0.8fr]"
               >
                 <div className="min-w-0">
                   <div className="truncate font-medium text-slate-800">{execution.containerName}</div>
@@ -680,7 +716,7 @@ function StageRunRow({ stage }: { stage: RdTaskStageRun }) {
       <div className="min-w-0">
         <div className="font-mono text-xs text-slate-700">{formatMetricDuration(stage.elapsedMillis)}</div>
         {stage.running ? (
-          <div className="mt-1 text-xs text-indigo-600">运行中</div>
+          <div className="mt-1 text-xs text-teal-700">运行中</div>
         ) : null}
       </div>
       <div className="min-w-0">
@@ -751,6 +787,25 @@ function canSubmitRequirement(task: RdTask) {
     "COMMITTED",
     "MERGED",
     "COMPLETED",
+    "DELETED"
+  ].includes(task.status);
+}
+
+function canApproveRequirement(task: RdTask) {
+  return !task.paused && task.status === "WAITING_APPROVAL";
+}
+
+function canSubmitBugFix(task: RdTask) {
+  return !task.paused && ![
+    "SEARCHING",
+    "EXECUTING",
+    "VALIDATING",
+    "PR_CREATING",
+    "COMMITTED",
+    "MERGED",
+    "COMPLETED",
+    "CANCELLED",
+    "DEAD_LETTERED",
     "DELETED"
   ].includes(task.status);
 }

@@ -4,7 +4,7 @@ package com.wish.rd.rag.runtime.model;
  * RD 任务状态事件：任务进入某状态（或触发某管理动作）时落库的审计记录。
  *
  * <p>{@code status} 取 {@link RdTaskStatus} 枚举名，或管理动作名
- * {@code PAUSED} / {@code RESUMED} / {@code DELETED}（这些不是状态机节点，
+ * {@code PAUSED} / {@code RESUMED} / {@code APPROVED} / {@code DELETED}（这些不是状态机节点，
  * 不进 {@link RdTaskStatus}）。{@code durationMillis} 表示相对上一事件进入时刻
  * 的耗时，首条事件为 0。
  *
@@ -30,6 +30,7 @@ public record RdTaskStatusEvent(
 
     public static final String ACTION_PAUSED = "PAUSED";
     public static final String ACTION_RESUMED = "RESUMED";
+    public static final String ACTION_APPROVED = "APPROVED";
     public static final String ACTION_DELETED = "DELETED";
 
     public RdTaskStatusEvent {

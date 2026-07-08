@@ -172,6 +172,7 @@ export interface CreateRdTaskPayload {
   priority?: string;
   promptSnapshot?: string;
   projectId?: string;
+  autoExecute?: boolean;
 }
 
 export interface RequirementMaterialPayload {
@@ -238,6 +239,9 @@ export const resumeRdTask = (taskId: string, message?: string): Promise<RdTask> 
 export const submitRdTask = (taskId: string): Promise<RdTask> =>
   api.post<RdTask, RdTask>(`/admin/rd-tasks/${taskId}/submit`, {});
 
+export const approveRdTask = (taskId: string, message?: string): Promise<RdTask> =>
+  api.post<RdTask, RdTask>(`/admin/rd-tasks/${taskId}/approve`, message ? { message } : {});
+
 export const deleteRdTask = (taskId: string): Promise<{ deleted: boolean }> =>
   api.delete<{ deleted: boolean }, { deleted: boolean }>(`/admin/rd-tasks/${taskId}`);
 
@@ -291,13 +295,13 @@ export const STATUS_BADGE_CLASS: Record<string, string> = {
   MATERIAL_READY: "border-teal-200 bg-teal-50 text-teal-700",
   CONTEXT_BUILDING: "border-cyan-200 bg-cyan-50 text-cyan-700",
   CONTEXT_READY: "border-teal-200 bg-teal-50 text-teal-700",
-  PLAN_GENERATING: "border-violet-200 bg-violet-50 text-violet-700",
-  PLAN_GENERATED: "border-purple-200 bg-purple-50 text-purple-700",
+  PLAN_GENERATING: "border-blue-200 bg-blue-50 text-blue-700",
+  PLAN_GENERATED: "border-cyan-200 bg-cyan-50 text-cyan-700",
   WAITING_POLICY: "border-amber-200 bg-amber-50 text-amber-700",
   WAITING_APPROVAL: "border-orange-200 bg-orange-50 text-orange-700",
   SEARCHING: "border-amber-200 bg-amber-50 text-amber-700",
-  EXECUTING: "border-indigo-200 bg-indigo-50 text-indigo-700",
-  VALIDATING: "border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700",
+  EXECUTING: "border-teal-200 bg-teal-50 text-teal-700",
+  VALIDATING: "border-sky-200 bg-sky-50 text-sky-700",
   PR_CREATING: "border-emerald-200 bg-emerald-50 text-emerald-700",
   COMMITTED: "border-emerald-200 bg-emerald-50 text-emerald-700",
   MERGED: "border-green-300 bg-green-100 text-green-800",

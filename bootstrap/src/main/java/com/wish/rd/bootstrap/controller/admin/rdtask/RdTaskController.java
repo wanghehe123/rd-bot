@@ -2,11 +2,15 @@ package com.wish.rd.bootstrap.controller.admin.rdtask;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.wish.rd.adapter.model.TicketSnapshot;
+import com.wish.rd.bootstrap.threading.BugFixExecutionDispatchService;
 import com.wish.rd.bootstrap.threading.RequirementDeliveryDispatchService;
 import com.wish.rd.engine.audit.impl.NoopRepairAuditSink;
 import com.wish.rd.engine.audit.model.RepairAuditEvent;
 import com.wish.rd.engine.audit.model.RepairAuditEventType;
 import com.wish.rd.engine.audit.RepairAuditSinkPort;
+import com.wish.rd.engine.bugfix.RdBotFixEngine;
+import com.wish.rd.engine.bugfix.model.RdBotFixCommand;
 import com.wish.rd.engine.ticket.RdTaskRestartEngine;
 import com.wish.rd.engine.requirement.RequirementDeliveryEngine;
 import com.wish.rd.exec.repair.execution.RepairExecutionControlPort;
@@ -49,6 +53,8 @@ import org.springframework.web.multipart.MultipartFile;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
@@ -79,6 +85,8 @@ public class RdTaskController {
     private final SnowflakeIdGenerator idGenerator;
     private final RequirementDeliveryEngine requirementDeliveryEngine;
     private final RequirementDeliveryDispatchService requirementDeliveryDispatchService;
+    private final RdBotFixEngine bugFixEngine;
+    private final BugFixExecutionDispatchService bugFixExecutionDispatchService;
     private final RdProjectService projectService;
 
     public RdTaskController(RagStreamTaskRegistry registry) {
@@ -94,6 +102,8 @@ public class RdTaskController {
                 null,
                 new InMemoryTaskMaterialStore(),
                 SnowflakeIdGenerator.defaultGenerator(),
+                null,
+                null,
                 null,
                 null,
                 null
@@ -115,6 +125,8 @@ public class RdTaskController {
                 SnowflakeIdGenerator.defaultGenerator(),
                 null,
                 null,
+                null,
+                null,
                 null
         );
     }
@@ -134,6 +146,8 @@ public class RdTaskController {
                 SnowflakeIdGenerator.defaultGenerator(),
                 null,
                 null,
+                null,
+                null,
                 projectService
         );
     }
@@ -148,6 +162,8 @@ public class RdTaskController {
             ObjectProvider<SnowflakeIdGenerator> idGeneratorProvider,
             ObjectProvider<RequirementDeliveryEngine> requirementDeliveryEngineProvider,
             ObjectProvider<RequirementDeliveryDispatchService> requirementDeliveryDispatchServiceProvider,
+            ObjectProvider<RdBotFixEngine> bugFixEngineProvider,
+            ObjectProvider<BugFixExecutionDispatchService> bugFixExecutionDispatchServiceProvider,
             ObjectProvider<RdProjectService> projectServiceProvider
     ) {
         this(
@@ -164,6 +180,8 @@ public class RdTaskController {
                 idGeneratorProvider.getIfAvailable(SnowflakeIdGenerator::defaultGenerator),
                 requirementDeliveryEngineProvider.getIfAvailable(),
                 requirementDeliveryDispatchServiceProvider.getIfAvailable(),
+                bugFixEngineProvider.getIfAvailable(),
+                bugFixExecutionDispatchServiceProvider.getIfAvailable(),
                 projectServiceProvider.getIfAvailable()
         );
     }
@@ -177,6 +195,8 @@ public class RdTaskController {
             SnowflakeIdGenerator idGenerator,
             RequirementDeliveryEngine requirementDeliveryEngine,
             RequirementDeliveryDispatchService requirementDeliveryDispatchService,
+            RdBotFixEngine bugFixEngine,
+            BugFixExecutionDispatchService bugFixExecutionDispatchService,
             RdProjectService projectService
     ) {
         this.registry = registry;
@@ -187,6 +207,8 @@ public class RdTaskController {
         this.idGenerator = idGenerator == null ? SnowflakeIdGenerator.defaultGenerator() : idGenerator;
         this.requirementDeliveryEngine = requirementDeliveryEngine;
         this.requirementDeliveryDispatchService = requirementDeliveryDispatchService;
+        this.bugFixEngine = bugFixEngine;
+        this.bugFixExecutionDispatchService = bugFixExecutionDispatchService;
         this.projectService = projectService;
     }
 
@@ -244,7 +266,7 @@ public class RdTaskController {
         }
         ProjectSnapshot project = resolveProject(request.projectId());
         RdBugFixTask task = registry.createTaskManually(
-                request.ticketId(),
+                generatedTicketId(request.ticketId()),
                 request.ticketTitle(),
                 request.title(),
                 request.priority(),
@@ -257,7 +279,18 @@ public class RdTaskController {
                 project.repoName(),
                 project.baseBranch()
         );
+        if (request.autoExecute()) {
+            submitBugFixTask(task);
+            return toDetailView(registry.getTask(task.taskId()));
+        }
         return toDetailView(task);
+    }
+
+    private String generatedTicketId(String ticketId) {
+        if (ticketId != null && !ticketId.isBlank()) {
+            return ticketId.strip();
+        }
+        return "ticket-" + idGenerator.nextIdString();
     }
 
     /**
@@ -353,6 +386,24 @@ public class RdTaskController {
     }
 
     /**
+     * 审批通过等待人工确认的需求任务，并继续提交进入交付链路。
+     *
+     * @param taskId  任务 ID
+     * @param request 动作请求（可选 message）
+     * @return 审批并重新提交后的任务视图
+     */
+    @PostMapping("/admin/rd-tasks/{taskId}/approve")
+    public RdTaskView approve(
+            @PathVariable("taskId") String taskId,
+            @RequestBody(required = false) RdTaskActionRequest request
+    ) {
+        String message = request == null ? "管理台审批通过" : request.message();
+        registry.approveRequirementTask(taskId, message);
+        submitRequirementTask(taskId);
+        return toDetailView(registry.getTask(taskId));
+    }
+
+    /**
      * 手动停止正在执行的任务。
      *
      * @param taskId  任务 ID
@@ -420,7 +471,7 @@ public class RdTaskController {
     }
 
     /**
-     * 提交需求任务进入编码、测试和 PR 生成链路。
+     * 提交任务进入执行链路。
      *
      * @param taskId 任务 ID
      * @return 最新任务视图
@@ -428,11 +479,15 @@ public class RdTaskController {
     @PostMapping("/admin/rd-tasks/{taskId}/submit")
     public RdTaskView submit(@PathVariable("taskId") String taskId) {
         RdTask task = registry.getTask(taskId);
-        if (!(task instanceof RdRequirementTask)) {
-            throw new IllegalArgumentException("only requirement task can be submitted: " + taskId);
+        if (task instanceof RdRequirementTask) {
+            submitRequirementTask(taskId);
+            return toDetailView(registry.getTask(taskId));
         }
-        submitRequirementTask(taskId);
-        return toDetailView(registry.getTask(taskId));
+        if (task instanceof RdBugFixTask bugFixTask) {
+            submitBugFixTask(bugFixTask);
+            return toDetailView(registry.getTask(taskId));
+        }
+        throw new IllegalArgumentException("unsupported rd task type: " + task.taskType());
     }
 
     /**
@@ -955,6 +1010,95 @@ public class RdTaskController {
         requirementDeliveryEngine.submit(taskId);
     }
 
+    private void submitBugFixTask(RdBugFixTask task) {
+        RdBotFixCommand command = toBugFixCommand(task);
+        if (bugFixExecutionDispatchService != null) {
+            bugFixExecutionDispatchService.submit(command);
+            return;
+        }
+        if (bugFixEngine == null) {
+            throw new IllegalStateException("bug-fix execution engine unavailable");
+        }
+        bugFixEngine.runBugFix(command);
+    }
+
+    private RdBotFixCommand toBugFixCommand(RdBugFixTask task) {
+        Instant now = Instant.now();
+        return new RdBotFixCommand(
+                new TicketSnapshot(
+                        task.ticketId(),
+                        firstNonBlank(task.ticketTitle(), task.title()),
+                        bugFixDescription(task),
+                        bugFixLabels(task),
+                        task.createTimeEpochMillis() > 0 ? Instant.ofEpochMilli(task.createTimeEpochMillis()) : now,
+                        task.priority(),
+                        task.status().name(),
+                        "",
+                        "admin-rd-task",
+                        "",
+                        bugFixCustomFields(task),
+                        task.updateTimeEpochMillis() > 0 ? Instant.ofEpochMilli(task.updateTimeEpochMillis()) : now,
+                        Instant.EPOCH
+                ),
+                bugFixLogs(task),
+                false,
+                task.priority()
+        );
+    }
+
+    private List<String> bugFixLogs(RdBugFixTask task) {
+        String prompt = task.promptSnapshot() == null ? "" : task.promptSnapshot().strip();
+        return prompt.isBlank() ? List.of() : List.of(prompt);
+    }
+
+    private List<String> bugFixLabels(RdBugFixTask task) {
+        if (task.projectKey() == null || task.projectKey().isBlank()) {
+            return List.of("admin", "bugfix");
+        }
+        return List.of("admin", "bugfix", task.projectKey().strip());
+    }
+
+    private Map<String, String> bugFixCustomFields(RdBugFixTask task) {
+        Map<String, String> fields = new LinkedHashMap<>();
+        putIfNotBlank(fields, "taskId", task.taskId());
+        putIfNotBlank(fields, "projectId", task.projectId());
+        putIfNotBlank(fields, "projectKey", task.projectKey());
+        putIfNotBlank(fields, "projectName", task.projectName());
+        putIfNotBlank(fields, "repositoryUrl", task.repositoryUrl());
+        putIfNotBlank(fields, "repoOwner", task.repoOwner());
+        putIfNotBlank(fields, "repoName", task.repoName());
+        putIfNotBlank(fields, "baseBranch", task.baseBranch());
+        return Map.copyOf(fields);
+    }
+
+    private void putIfNotBlank(Map<String, String> fields, String key, String value) {
+        if (value != null && !value.isBlank()) {
+            fields.put(key, value.strip());
+        }
+    }
+
+    private String bugFixDescription(RdBugFixTask task) {
+        StringBuilder description = new StringBuilder();
+        appendDescriptionLine(description, "任务标题", task.title());
+        appendDescriptionLine(description, "工单标题", task.ticketTitle());
+        appendDescriptionLine(description, "项目", firstNonBlank(task.projectName(), task.projectKey()));
+        appendDescriptionLine(description, "仓库", task.repositoryUrl());
+        appendDescriptionLine(description, "基准分支", task.baseBranch());
+        appendDescriptionLine(description, "Prompt 快照", task.promptSnapshot());
+        String value = description.toString().strip();
+        return value.isBlank() ? task.title() : value;
+    }
+
+    private void appendDescriptionLine(StringBuilder builder, String label, String value) {
+        if (value == null || value.isBlank()) {
+            return;
+        }
+        if (!builder.isEmpty()) {
+            builder.append('\n');
+        }
+        builder.append(label).append("：").append(value.strip());
+    }
+
     private static TaskMaterialType parseMaterialType(String value) {
         if (value == null || value.isBlank()) {
             return TaskMaterialType.REQUIREMENT_DOC;
@@ -1014,7 +1158,8 @@ public class RdTaskController {
             String title,
             String priority,
             String promptSnapshot,
-            String projectId
+            String projectId,
+            boolean autoExecute
     ) {
     }
 

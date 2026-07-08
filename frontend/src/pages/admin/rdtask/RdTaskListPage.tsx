@@ -1,6 +1,19 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ClipboardList, Pencil, Play, Pause, Plus, RefreshCw, Trash2 } from "lucide-react";
+import {
+  AlertTriangle,
+  ClipboardList,
+  FileText,
+  GitBranch,
+  ListChecks,
+  Pencil,
+  Play,
+  Pause,
+  Plus,
+  RefreshCw,
+  Terminal,
+  Trash2
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -92,6 +105,72 @@ const TASK_TYPE_OPTIONS = [
   { value: "BUG_FIX", label: "修 Bug" },
   { value: "REQUIREMENT", label: "做需求" }
 ];
+
+const REPAIR_QUEUE_TOPIC = "RD_BOT_REPAIR_TICKET";
+
+interface BugFixPromptInput {
+  title: string;
+  ticketTitle: string;
+  ticketId: string;
+  priority: string;
+  project: RdProject | null;
+  baseBranch: string;
+  actualBehavior: string;
+  expectedBehavior: string;
+  reproductionSteps: string;
+  errorLog: string;
+  affectedScope: string;
+  acceptanceCriteriaText: string;
+  extraContext: string;
+}
+
+const createAutoTicketId = () => {
+  const randomId = globalThis.crypto?.randomUUID?.();
+  if (randomId) {
+    return `ticket-${randomId}`;
+  }
+  return `ticket-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+};
+
+const splitNonEmptyLines = (value: string) =>
+  value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+const bulletLines = (value: string) => {
+  const lines = splitNonEmptyLines(value);
+  return lines.length > 0 ? lines.map((line) => `- ${line}`).join("\n") : "- 未填写";
+};
+
+const buildBugFixPromptSnapshot = (input: BugFixPromptInput) => {
+  const projectText = input.project
+    ? [
+        `- 项目：${input.project.name} (${input.project.projectKey})`,
+        `- 仓库：${input.project.repositoryUrl}`,
+        `- 基准分支：${input.baseBranch || input.project.defaultBranch || "main"}`
+      ].join("\n")
+    : "- 项目：未选择";
+  const sections = [
+    "# Bug 修复启动上下文",
+    [
+      `- 工单 ID：${input.ticketId}`,
+      `- 优先级：${input.priority}`,
+      `- 任务标题：${input.title}`,
+      `- 问题摘要：${input.ticketTitle}`
+    ].join("\n"),
+    `## 项目与仓库\n${projectText}`,
+    `## 实际现象\n${input.actualBehavior.trim()}`,
+    `## 期望表现\n${input.expectedBehavior.trim()}`,
+    `## 复现步骤\n${bulletLines(input.reproductionSteps)}`,
+    `## 错误日志或异常栈\n\`\`\`text\n${input.errorLog.trim()}\n\`\`\``,
+    input.affectedScope.trim() ? `## 影响范围\n${input.affectedScope.trim()}` : "",
+    `## 验收标准\n${bulletLines(input.acceptanceCriteriaText)}`,
+    input.extraContext.trim() ? `## 补充上下文\n${input.extraContext.trim()}` : "",
+    `## 启动依赖\n- 修复队列 Topic：${REPAIR_QUEUE_TOPIC}`
+  ];
+  return sections.filter(Boolean).join("\n\n");
+};
 
 const formatDuration = (ms?: number) => {
   if (!ms || ms <= 0) return "-";
@@ -465,6 +544,7 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
   const [taskKind, setTaskKind] = useState<"BUG_FIX" | "REQUIREMENT">("BUG_FIX");
   const [title, setTitle] = useState("");
   const [ticketId, setTicketId] = useState("");
+  const [autoTicketId, setAutoTicketId] = useState(createAutoTicketId);
   const [ticketTitle, setTicketTitle] = useState("");
   const [priority, setPriority] = useState("P2");
   const [promptSnapshot, setPromptSnapshot] = useState("");
@@ -479,6 +559,11 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
   const [feishuDocumentUrl, setFeishuDocumentUrl] = useState("");
   const [localRequirementFile, setLocalRequirementFile] = useState<File | null>(null);
   const [autoExecute, setAutoExecute] = useState(true);
+  const [bugActualBehavior, setBugActualBehavior] = useState("");
+  const [bugExpectedBehavior, setBugExpectedBehavior] = useState("");
+  const [bugReproductionSteps, setBugReproductionSteps] = useState("");
+  const [bugErrorLog, setBugErrorLog] = useState("");
+  const [bugAffectedScope, setBugAffectedScope] = useState("");
   const [saving, setSaving] = useState(false);
 
   const selectedProject = projectOptions.find((project) => project.projectId === selectedProjectId) || null;
@@ -488,6 +573,7 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
     if (mode === "edit" && task) {
       setTitle(task.title || "");
       setTicketId(task.ticketId || "");
+      setAutoTicketId(task.ticketId || createAutoTicketId());
       setTicketTitle(task.ticketTitle || "");
       setPriority(task.priority || "P2");
       setPromptSnapshot("");
@@ -496,6 +582,7 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
       setTaskKind("BUG_FIX");
       setTitle("");
       setTicketId("");
+      setAutoTicketId(createAutoTicketId());
       setTicketTitle("");
       setPriority("P2");
       setPromptSnapshot("");
@@ -508,6 +595,11 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
       setFeishuDocumentUrl("");
       setLocalRequirementFile(null);
       setAutoExecute(true);
+      setBugActualBehavior("");
+      setBugExpectedBehavior("");
+      setBugReproductionSteps("");
+      setBugErrorLog("");
+      setBugAffectedScope("");
     }
   }, [open, mode, task]);
 
@@ -624,15 +716,62 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
           toast.error("请选择项目");
           return;
         }
+        const summary = ticketTitle.trim();
+        const actualBehavior = bugActualBehavior.trim();
+        const expectedBehavior = bugExpectedBehavior.trim();
+        const reproductionSteps = bugReproductionSteps.trim();
+        const errorLog = bugErrorLog.trim();
+        const acceptanceCriteria = splitNonEmptyLines(acceptanceCriteriaText);
+        if (!summary) {
+          toast.error("请输入问题摘要");
+          return;
+        }
+        if (!actualBehavior) {
+          toast.error("请输入实际现象");
+          return;
+        }
+        if (!expectedBehavior) {
+          toast.error("请输入期望表现");
+          return;
+        }
+        if (!reproductionSteps) {
+          toast.error("请输入复现步骤");
+          return;
+        }
+        if (!errorLog) {
+          toast.error("请输入错误日志或异常栈");
+          return;
+        }
+        if (acceptanceCriteria.length === 0) {
+          toast.error("请输入验收标准");
+          return;
+        }
+        const generatedTicketId = autoTicketId || createAutoTicketId();
+        setAutoTicketId(generatedTicketId);
         await createRdTask({
           title: trimmed,
-          ticketId: ticketId.trim(),
-          ticketTitle: ticketTitle.trim(),
+          ticketId: generatedTicketId,
+          ticketTitle: summary,
           priority,
-          promptSnapshot: promptSnapshot.trim(),
-          projectId: selectedProjectId
+          promptSnapshot: buildBugFixPromptSnapshot({
+            title: trimmed,
+            ticketTitle: summary,
+            ticketId: generatedTicketId,
+            priority,
+            project: selectedProject,
+            baseBranch,
+            actualBehavior,
+            expectedBehavior,
+            reproductionSteps,
+            errorLog,
+            affectedScope: bugAffectedScope,
+            acceptanceCriteriaText,
+            extraContext: promptSnapshot
+          }),
+          projectId: selectedProjectId,
+          autoExecute
         });
-        toast.success("创建成功");
+        toast.success(autoExecute ? "创建成功，已提交修复执行" : "创建成功");
       } else if (task) {
         await updateRdTask(task.taskId, {
           title: trimmed,
@@ -652,11 +791,11 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-[640px]" onOpenAutoFocus={(event) => event.preventDefault()}>
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-[860px]" onOpenAutoFocus={(event) => event.preventDefault()}>
         <DialogHeader>
           <DialogTitle>{mode === "create" ? "新建任务" : "编辑任务"}</DialogTitle>
           <DialogDescription>
-            {mode === "create" ? "创建一个 RD 任务，初始状态为 CREATED" : "修改任务标题 / 优先级 / 工单"}
+            {mode === "create" ? "创建可进入启动链路的 RD 任务，初始状态为 CREATED" : "修改任务标题 / 优先级 / 工单"}
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
@@ -713,43 +852,109 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
               ) : null}
             </div>
           ) : null}
-          <div className="grid gap-4 sm:grid-cols-2">
-            {mode === "create" && taskKind === "REQUIREMENT" ? (
-              <div>
-                <label className="mb-2 block text-sm font-medium">基准分支</label>
-                <Input
-                  value={baseBranch}
-                  onChange={(event) => setBaseBranch(event.target.value)}
-                  placeholder="main"
-                />
+          {mode === "create" && taskKind === "BUG_FIX" ? (
+            <>
+              <div className="grid gap-3 rounded-2xl border border-border/80 bg-muted/30 p-4 sm:grid-cols-[1.2fr_1fr]">
+                <div className="flex min-w-0 items-start gap-3">
+                  <ClipboardList className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+                  <div className="min-w-0">
+                    <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      自动工单 ID
+                    </div>
+                    <div className="mt-1 truncate font-mono text-sm" title={autoTicketId}>
+                      {autoTicketId}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      <Terminal className="h-3.5 w-3.5" />
+                      启动队列
+                    </div>
+                    <div className="mt-1 truncate font-mono text-sm" title={REPAIR_QUEUE_TOPIC}>
+                      {REPAIR_QUEUE_TOPIC}
+                    </div>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setAutoTicketId(createAutoTicketId())}
+                  >
+                    <RefreshCw className="h-3.5 w-3.5" />
+                    重新生成
+                  </Button>
+                </div>
               </div>
-            ) : (
-              <div>
-                <label className="mb-2 block text-sm font-medium">工单 ID</label>
-                <Input
-                  value={ticketId}
-                  onChange={(event) => setTicketId(event.target.value)}
-                  placeholder="FS-1001"
-                  disabled={mode === "edit"}
-                />
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label className="mb-2 flex items-center gap-2 text-sm font-medium">
+                    <GitBranch className="h-4 w-4 text-muted-foreground" />
+                    基准分支
+                  </label>
+                  <Input
+                    value={baseBranch || selectedProject?.defaultBranch || "main"}
+                    readOnly
+                    className="bg-muted/40"
+                  />
+                </div>
+                <div>
+                  <label className="mb-2 block text-sm font-medium">优先级</label>
+                  <Select value={priority} onValueChange={setPriority}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {PRIORITY_OPTIONS.map((value) => (
+                        <SelectItem key={value} value={value}>
+                          {value}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
-            )}
-            <div>
-              <label className="mb-2 block text-sm font-medium">优先级</label>
-              <Select value={priority} onValueChange={setPriority}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {PRIORITY_OPTIONS.map((value) => (
-                    <SelectItem key={value} value={value}>
-                      {value}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+            </>
+          ) : (
+            <div className="grid gap-4 sm:grid-cols-2">
+              {mode === "create" && taskKind === "REQUIREMENT" ? (
+                <div>
+                  <label className="mb-2 block text-sm font-medium">基准分支</label>
+                  <Input
+                    value={baseBranch}
+                    onChange={(event) => setBaseBranch(event.target.value)}
+                    placeholder="main"
+                  />
+                </div>
+              ) : (
+                <div>
+                  <label className="mb-2 block text-sm font-medium">工单 ID</label>
+                  <Input
+                    value={ticketId}
+                    onChange={(event) => setTicketId(event.target.value)}
+                    placeholder="自动生成"
+                    disabled={mode === "edit"}
+                  />
+                </div>
+              )}
+              <div>
+                <label className="mb-2 block text-sm font-medium">优先级</label>
+                <Select value={priority} onValueChange={setPriority}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {PRIORITY_OPTIONS.map((value) => (
+                      <SelectItem key={value} value={value}>
+                        {value}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
-          </div>
+          )}
           {mode === "create" && taskKind === "REQUIREMENT" ? (
             <>
               <div>
@@ -830,6 +1035,110 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
                 创建后自动执行
               </label>
             </>
+          ) : mode === "create" ? (
+            <>
+              <div>
+                <label className="mb-2 flex items-center gap-2 text-sm font-medium">
+                  <FileText className="h-4 w-4 text-muted-foreground" />
+                  问题摘要
+                </label>
+                <Input
+                  value={ticketTitle}
+                  onChange={(event) => setTicketTitle(event.target.value)}
+                  placeholder="例如：恢复任务时报 No route info of topic RD_BOT_REPAIR_TICKET"
+                />
+              </div>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label className="mb-2 block text-sm font-medium">实际现象</label>
+                  <Textarea
+                    value={bugActualBehavior}
+                    onChange={(event) => setBugActualBehavior(event.target.value)}
+                    className="min-h-[110px] resize-y"
+                    placeholder="用户操作、接口响应、页面状态或任务状态的异常表现"
+                  />
+                </div>
+                <div>
+                  <label className="mb-2 block text-sm font-medium">期望表现</label>
+                  <Textarea
+                    value={bugExpectedBehavior}
+                    onChange={(event) => setBugExpectedBehavior(event.target.value)}
+                    className="min-h-[110px] resize-y"
+                    placeholder="修复后应当达到的状态、返回值或可观测结果"
+                  />
+                </div>
+              </div>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label className="mb-2 block text-sm font-medium">复现步骤</label>
+                  <Textarea
+                    value={bugReproductionSteps}
+                    onChange={(event) => setBugReproductionSteps(event.target.value)}
+                    className="min-h-[132px] resize-y"
+                    placeholder={"1. 打开任务管理\n2. 点击暂停任务的重启\n3. 观察接口返回和任务状态"}
+                  />
+                </div>
+                <div>
+                  <label className="mb-2 flex items-center gap-2 text-sm font-medium">
+                    <Terminal className="h-4 w-4 text-muted-foreground" />
+                    错误日志或异常栈
+                  </label>
+                  <Textarea
+                    value={bugErrorLog}
+                    onChange={(event) => setBugErrorLog(event.target.value)}
+                    className="min-h-[132px] resize-y font-mono text-xs"
+                    placeholder={`org.apache.rocketmq.client.exception.MQClientException: No route info of this topic: ${REPAIR_QUEUE_TOPIC}`}
+                  />
+                </div>
+              </div>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label className="mb-2 block text-sm font-medium">影响范围</label>
+                  <Textarea
+                    value={bugAffectedScope}
+                    onChange={(event) => setBugAffectedScope(event.target.value)}
+                    className="min-h-[90px] resize-y"
+                    placeholder="涉及页面、接口、状态机节点、队列或外部依赖"
+                  />
+                </div>
+                <div>
+                  <label className="mb-2 flex items-center gap-2 text-sm font-medium">
+                    <ListChecks className="h-4 w-4 text-muted-foreground" />
+                    验收标准
+                  </label>
+                  <Textarea
+                    value={acceptanceCriteriaText}
+                    onChange={(event) => setAcceptanceCriteriaText(event.target.value)}
+                    className="min-h-[90px] resize-y"
+                    placeholder={"每行一条，例如：\n重启任务不再返回队列发布失败\n任务详情能看到失败原因或恢复后的状态"}
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="mb-2 block text-sm font-medium">补充上下文（可选）</label>
+                <Textarea
+                  value={promptSnapshot}
+                  onChange={(event) => setPromptSnapshot(event.target.value)}
+                  className="min-h-[90px] resize-y"
+                  placeholder="相关提交、配置、临时绕过方式、排查命令或备注"
+                />
+              </div>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={autoExecute}
+                  onChange={(event) => setAutoExecute(event.target.checked)}
+                  className="h-4 w-4 rounded border-slate-300"
+                />
+                创建后自动执行
+              </label>
+              <div className="flex gap-3 rounded-2xl border border-amber-200 bg-amber-50/70 p-4 text-sm text-amber-800">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                <div>
+                  报错中出现的 {REPAIR_QUEUE_TOPIC} 无路由属于启动依赖问题；本表单会把队列、项目、分支、复现步骤与异常栈写入启动上下文。
+                </div>
+              </div>
+            </>
           ) : (
             <>
               <div>
@@ -840,16 +1149,6 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
                   placeholder="工单摘要"
                 />
               </div>
-              {mode === "create" ? (
-                <div>
-                  <label className="mb-2 block text-sm font-medium">Prompt 快照（可选）</label>
-                  <Input
-                    value={promptSnapshot}
-                    onChange={(event) => setPromptSnapshot(event.target.value)}
-                    placeholder="发送给执行器的初始 Prompt"
-                  />
-                </div>
-              ) : null}
             </>
           )}
         </div>

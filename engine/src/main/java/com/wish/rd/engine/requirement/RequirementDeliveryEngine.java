@@ -28,6 +28,7 @@ import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
 import com.wish.rd.rag.runtime.model.RdRequirementTask;
 import com.wish.rd.rag.runtime.model.RdTask;
 import com.wish.rd.rag.runtime.model.RdTaskStatus;
+import com.wish.rd.rag.runtime.model.RdTaskStatusEvent;
 import com.wish.rd.rag.runtime.model.TaskMaterial;
 import com.wish.rd.rag.runtime.TaskMaterialStore;
 import com.wish.rd.rag.runtime.model.TaskMaterialSourceType;
@@ -587,7 +588,12 @@ public class RequirementDeliveryEngine {
         }
 
         // PLAN_GENERATED -> WAITING_POLICY：策略门控执行，决定继续执行、等待审批或人工失败。
-        RequirementPolicyDecision policyDecision = policyGate.decide(requirementTask, context, plan, materials);
+        // 已由管理台审批过的 WAITING_APPROVAL 任务再次提交时，视为人工放行，避免同一规则反复拦截。
+        boolean approvedByHuman = requirementTask.status() == RdTaskStatus.WAITING_APPROVAL
+                && hasApprovalEvent(requirementTask.taskId());
+        RequirementPolicyDecision policyDecision = approvedByHuman
+                ? new RequirementPolicyDecision("ALLOWED", "APPROVED", "人工审批通过，允许进入沙箱执行")
+                : policyGate.decide(requirementTask, context, plan, materials);
         if (requirementTask.status().name().equals("PLAN_GENERATED")) {
             // WAITING_POLICY：写入策略决策快照，保证可追溯与可重试。
             requirementTask = taskRegistry.markRequirementWaitingPolicy(requirementTask.taskId(), policyDecision.toJson());
@@ -752,6 +758,11 @@ public class RequirementDeliveryEngine {
                 task.executionResultJson(),
                 task.errorMessage()
         );
+    }
+
+    private boolean hasApprovalEvent(String taskId) {
+        return taskRegistry.timeline(taskId).stream()
+                .anyMatch(event -> RdTaskStatusEvent.ACTION_APPROVED.equals(event.status()));
     }
 
     private boolean isNonRetryableTerminalRequirementStatus(RdTaskStatus status) {
