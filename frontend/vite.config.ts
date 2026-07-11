@@ -24,6 +24,9 @@ export default defineConfig({
     proxy: {
       "/knowledge-base": backendTarget,
       "/admin/overview": backendTarget,
+      "/admin/dashboard/overview": backendTarget,
+      "/admin/execution-traces": backendTarget,
+      "/admin/operations": backendTarget,
       "/admin/rd-tasks": {
         target: backendTarget,
         bypass: (request) => isHtmlNavigation(request) ? request.url : undefined
@@ -32,6 +35,7 @@ export default defineConfig({
         target: backendTarget,
         bypass: (request) => isHtmlNavigation(request) ? request.url : undefined
       },
+      "/admin/rd-task-drafts": backendTarget,
       "/intent-tree": backendTarget,
       "/users": backendTarget,
       "/user": backendTarget,

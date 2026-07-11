@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { FolderOpen, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Bell, Database, FolderOpen, LayoutTemplate, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import {
@@ -40,17 +40,26 @@ import {
   TableRow
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { RelativeTime } from "@/components/RelativeTime";
 import { getErrorMessage } from "@/utils/error";
+import { normalizeAlertRecipients } from "./alertRecipients";
+import { normalizeProjectKnowledgeBaseId, UNBOUND_KNOWLEDGE_BASE_VALUE } from "./projectKnowledgeBinding";
 
 import {
   createProject,
   deleteProject,
   getProjectsPage,
+  getProjectAlertConfig,
+  getProjectTaskTemplate,
+  updateProjectAlertConfig,
+  updateProjectTaskTemplate,
   updateProject,
   type RdProject,
+  type ProjectAlertEventType,
   type RdProjectPayload
 } from "@/services/projectService";
+import { getKnowledgeBases, type KnowledgeBase } from "@/services/knowledgeService";
 
 const PAGE_SIZE = 10;
 
@@ -75,6 +84,11 @@ export function ProjectListPage() {
   const [editTarget, setEditTarget] = useState<RdProject | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<RdProject | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [alertTarget, setAlertTarget] = useState<RdProject | null>(null);
+  const [templateTarget, setTemplateTarget] = useState<RdProject | null>(null);
+  const [knowledgeTarget, setKnowledgeTarget] = useState<RdProject | null>(null);
+  const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
+  const [knowledgeBasesLoading, setKnowledgeBasesLoading] = useState(false);
 
   const enabledParam = useMemo(() => {
     if (enabledFilter === "enabled") return true;
@@ -104,7 +118,25 @@ export function ProjectListPage() {
 
   useEffect(() => {
     loadProjects(1);
+    void loadKnowledgeBases();
   }, []);
+
+  const loadKnowledgeBases = async () => {
+    setKnowledgeBasesLoading(true);
+    try {
+      const data = await getKnowledgeBases(1, 100);
+      setKnowledgeBases(data.records || []);
+    } catch (error) {
+      toast.error(getErrorMessage(error, "加载知识库失败"));
+    } finally {
+      setKnowledgeBasesLoading(false);
+    }
+  };
+
+  const knowledgeBaseById = useMemo(
+    () => new Map(knowledgeBases.map((knowledgeBase) => [knowledgeBase.id, knowledgeBase])),
+    [knowledgeBases]
+  );
 
   const handleSearch = () => {
     const nextKeyword = searchInput.trim();
@@ -138,7 +170,8 @@ export function ProjectListPage() {
   };
 
   return (
-    <div className="admin-page">
+    <TooltipProvider delayDuration={300}>
+      <div className="admin-page">
       <div className="admin-page-header">
         <div>
           <h1 className="admin-page-title">项目管理</h1>
@@ -180,16 +213,18 @@ export function ProjectListPage() {
           ) : records.length === 0 ? (
             <div className="py-8 text-center text-muted-foreground">暂无项目</div>
           ) : (
-            <Table className="min-w-[1040px] table-fixed">
+            <div className="overflow-x-auto">
+              <Table className="min-w-[1180px] table-fixed">
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-[180px]">项目</TableHead>
                   <TableHead className="w-[150px]">标识</TableHead>
                   <TableHead className="w-[220px]">仓库</TableHead>
                   <TableHead className="w-[120px]">默认分支</TableHead>
+                  <TableHead className="w-[150px]">项目知识库</TableHead>
                   <TableHead className="w-[90px]">状态</TableHead>
                   <TableHead className="w-[130px]">更新时间</TableHead>
-                  <TableHead className="w-[150px] text-left">操作</TableHead>
+                  <TableHead className="w-[270px] text-left">操作</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -227,6 +262,13 @@ export function ProjectListPage() {
                         {project.defaultBranch || "-"}
                       </code>
                     </TableCell>
+                    <TableCell className="truncate">
+                      {project.knowledgeBaseId ? (
+                        <span title={knowledgeBaseById.get(project.knowledgeBaseId)?.name || project.knowledgeBaseId}>
+                          {knowledgeBaseById.get(project.knowledgeBaseId)?.name || project.knowledgeBaseId}
+                        </span>
+                      ) : "-"}
+                    </TableCell>
                     <TableCell>
                       <Badge
                         variant="outline"
@@ -240,6 +282,30 @@ export function ProjectListPage() {
                     </TableCell>
                     <TableCell>
                       <div className="flex gap-2">
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button size="icon" variant="outline" aria-label="绑定项目知识库" onClick={() => setKnowledgeTarget(project)}>
+                              <Database className="h-4 w-4" />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>绑定项目知识库</TooltipContent>
+                        </Tooltip>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button size="icon" variant="outline" aria-label="任务模板" onClick={() => setTemplateTarget(project)}>
+                              <LayoutTemplate className="h-4 w-4" />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>任务模板</TooltipContent>
+                        </Tooltip>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button size="icon" variant="outline" aria-label="飞书告警" onClick={() => setAlertTarget(project)}>
+                              <Bell className="h-4 w-4" />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>飞书告警</TooltipContent>
+                        </Tooltip>
                         <Button size="sm" variant="outline" onClick={() => setEditTarget(project)}>
                           <Pencil className="mr-1 h-4 w-4" />
                           编辑
@@ -258,7 +324,8 @@ export function ProjectListPage() {
                   </TableRow>
                 ))}
               </TableBody>
-            </Table>
+              </Table>
+            </div>
           )}
 
           <div className="mt-4 flex flex-wrap items-center justify-between gap-2 text-sm text-slate-500">
@@ -292,6 +359,15 @@ export function ProjectListPage() {
         onOpenChange={setCreateOpen}
         onSuccess={() => loadProjects(1, keyword, enabledParam)}
       />
+      <ProjectAlertDialog project={alertTarget} onOpenChange={(open) => !open && setAlertTarget(null)} />
+      <ProjectTemplateDialog project={templateTarget} onOpenChange={(open) => !open && setTemplateTarget(null)} />
+      <ProjectKnowledgeBindingDialog
+        project={knowledgeTarget}
+        knowledgeBases={knowledgeBases}
+        loading={knowledgeBasesLoading}
+        onOpenChange={(open) => !open && setKnowledgeTarget(null)}
+        onSuccess={() => loadProjects(page, keyword, enabledParam)}
+      />
       <ProjectEditDialog
         open={!!editTarget}
         mode="edit"
@@ -316,7 +392,8 @@ export function ProjectListPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </div>
+      </div>
+    </TooltipProvider>
   );
 }
 
@@ -354,6 +431,7 @@ function ProjectEditDialog({ open, mode, project, onOpenChange, onSuccess }: Pro
       description: description.trim(),
       repositoryUrl: repositoryUrl.trim(),
       defaultBranch: defaultBranch.trim(),
+      knowledgeBaseId: project?.knowledgeBaseId || "",
       enabled
     };
     if (!payload.projectKey) {
@@ -449,5 +527,273 @@ function ProjectEditDialog({ open, mode, project, onOpenChange, onSuccess }: Pro
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function ProjectKnowledgeBindingDialog({
+  project,
+  knowledgeBases,
+  loading,
+  onOpenChange,
+  onSuccess
+}: {
+  project: RdProject | null;
+  knowledgeBases: KnowledgeBase[];
+  loading: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSuccess: () => void;
+}) {
+  const [knowledgeBaseId, setKnowledgeBaseId] = useState(UNBOUND_KNOWLEDGE_BASE_VALUE);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!project) return;
+    setKnowledgeBaseId(project.knowledgeBaseId || UNBOUND_KNOWLEDGE_BASE_VALUE);
+  }, [project]);
+
+  const save = async () => {
+    if (!project) return;
+    setSaving(true);
+    try {
+      const normalizedKnowledgeBaseId = normalizeProjectKnowledgeBaseId(knowledgeBaseId, knowledgeBases);
+      const payload: RdProjectPayload = {
+        projectKey: project.projectKey,
+        name: project.name,
+        description: project.description,
+        repositoryUrl: project.repositoryUrl,
+        repoOwner: project.repoOwner,
+        repoName: project.repoName,
+        defaultBranch: project.defaultBranch,
+        knowledgeBaseId: normalizedKnowledgeBaseId,
+        enabled: project.enabled
+      };
+      await updateProject(project.projectId, payload);
+      toast.success(normalizedKnowledgeBaseId ? "项目知识库已绑定" : "项目知识库已清除");
+      onOpenChange(false);
+      onSuccess();
+    } catch (error) {
+      toast.error(getErrorMessage(error, "保存项目知识库失败"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Dialog open={!!project} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-[480px]">
+        <DialogHeader>
+          <DialogTitle>项目知识库</DialogTitle>
+          <DialogDescription>{project?.name}</DialogDescription>
+        </DialogHeader>
+        <Select value={knowledgeBaseId} onValueChange={setKnowledgeBaseId} disabled={loading || saving}>
+          <SelectTrigger>
+            <SelectValue placeholder={loading ? "加载中..." : "选择知识库"} />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={UNBOUND_KNOWLEDGE_BASE_VALUE}>不绑定知识库</SelectItem>
+            {knowledgeBases.map((knowledgeBase) => (
+              <SelectItem key={knowledgeBase.id} value={knowledgeBase.id} disabled={!knowledgeBase.enabled}>
+                {knowledgeBase.name}{knowledgeBase.enabled ? "" : "（已停用）"}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>取消</Button>
+          <Button onClick={() => void save()} disabled={saving || loading}>{saving ? "保存中..." : "保存"}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+const ALERT_EVENTS: Array<{ value: ProjectAlertEventType; label: string }> = [
+  { value: "TASK_COMPLETED", label: "任务完成" },
+  { value: "TASK_BLOCKED", label: "任务阻塞" },
+  { value: "TASK_FAILED", label: "任务失败" },
+  { value: "RETRY_EXHAUSTED", label: "失败过多" },
+  { value: "BUDGET_EXCEEDED", label: "预算超限" },
+  { value: "QA_FAILED", label: "QA 失败" }
+];
+
+function ProjectAlertDialog({ project, onOpenChange }: { project: RdProject | null; onOpenChange: (open: boolean) => void }) {
+  const [enabled, setEnabled] = useState(false);
+  const [chatRecipients, setChatRecipients] = useState<string[]>([]);
+  const [userRecipients, setUserRecipients] = useState<string[]>([]);
+  const [events, setEvents] = useState<ProjectAlertEventType[]>([]);
+  const [budget, setBudget] = useState("36");
+  const [failureThreshold, setFailureThreshold] = useState("2");
+  const [saving, setSaving] = useState(false);
+  const loadSequence = useRef(0);
+
+  useEffect(() => {
+    const sequence = ++loadSequence.current;
+    if (!project) return () => { loadSequence.current++; };
+    getProjectAlertConfig(project.projectId).then((config) => {
+      if (sequence !== loadSequence.current) return;
+      setEnabled(config.enabled);
+      setChatRecipients(config.recipients.filter((item) => item.type === "CHAT_ID").map((item) => item.value));
+      setUserRecipients(config.recipients.filter((item) => item.type === "OPEN_ID").map((item) => item.value));
+      setEvents(config.eventTypes || []);
+      setBudget(String(config.budgetThresholdCny ?? 36));
+      setFailureThreshold(String(config.failureThreshold ?? 2));
+    }).catch((error) => {
+      if (sequence === loadSequence.current) toast.error(getErrorMessage(error, "加载告警配置失败"));
+    });
+    return () => { loadSequence.current++; };
+  }, [project?.projectId]);
+
+  const save = async () => {
+    if (!project) return;
+    setSaving(true);
+    try {
+      const recipients = normalizeAlertRecipients(chatRecipients, userRecipients);
+      await updateProjectAlertConfig(project.projectId, {
+        enabled, recipients, eventTypes: events,
+        budgetThresholdCny: Number(budget), failureThreshold: Number(failureThreshold)
+      });
+      toast.success("告警配置已保存");
+      onOpenChange(false);
+    } catch (error) {
+      toast.error(getErrorMessage(error, "保存告警配置失败"));
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <TooltipProvider delayDuration={300}>
+      <Dialog open={!!project} onOpenChange={onOpenChange}>
+        <DialogContent className="flex max-h-[calc(100vh-2rem)] flex-col sm:max-w-[620px]">
+          <DialogHeader><DialogTitle>飞书告警</DialogTitle><DialogDescription>{project?.name} 的任务通知路由</DialogDescription></DialogHeader>
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
+            <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />启用项目告警</label>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <RecipientListEditor
+                label="群聊告警"
+                values={chatRecipients}
+                placeholder="oc_xxx"
+                addLabel="添加群聊告警"
+                removeLabel="删除群聊告警"
+                onChange={setChatRecipients}
+              />
+              <RecipientListEditor
+                label="个人用户告警"
+                values={userRecipients}
+                placeholder="ou_xxx"
+                addLabel="添加个人用户告警"
+                removeLabel="删除个人用户告警"
+                onChange={setUserRecipients}
+              />
+            </div>
+            <div><label className="mb-2 block text-sm font-medium">事件</label><div className="grid gap-2 sm:grid-cols-2">{ALERT_EVENTS.map((item) => <label key={item.value} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={events.includes(item.value)} onChange={(e) => setEvents(e.target.checked ? [...events, item.value] : events.filter((event) => event !== item.value))} />{item.label}</label>)}</div></div>
+            <div className="grid gap-4 sm:grid-cols-2"><div><label className="mb-2 block text-sm font-medium">预算阈值（元）</label><Input type="number" min="0" step="0.1" value={budget} onChange={(e) => setBudget(e.target.value)} /></div><div><label className="mb-2 block text-sm font-medium">失败次数阈值</label><Input type="number" min="1" value={failureThreshold} onChange={(e) => setFailureThreshold(e.target.value)} /></div></div>
+          </div>
+          <DialogFooter className="shrink-0"><Button variant="outline" onClick={() => onOpenChange(false)}>取消</Button><Button onClick={() => void save()} disabled={saving}>{saving ? "保存中" : "保存"}</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </TooltipProvider>
+  );
+}
+
+function RecipientListEditor({
+  label,
+  values,
+  placeholder,
+  addLabel,
+  removeLabel,
+  onChange
+}: {
+  label: string;
+  values: string[];
+  placeholder: string;
+  addLabel: string;
+  removeLabel: string;
+  onChange: (values: string[]) => void;
+}) {
+  const updateValue = (index: number, nextValue: string) => {
+    onChange(values.map((value, currentIndex) => currentIndex === index ? nextValue : value));
+  };
+
+  return (
+    <section className="space-y-2 rounded-md border border-slate-200 p-3">
+      <div className="flex items-center justify-between gap-3">
+        <label className="text-sm font-medium">{label}</label>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button type="button" variant="outline" size="icon" className="h-8 w-8" aria-label={addLabel} onClick={() => onChange([...values, ""])}>
+              <Plus className="h-4 w-4" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>{addLabel}</TooltipContent>
+        </Tooltip>
+      </div>
+      {values.map((value, index) => (
+        <div className="flex items-center gap-2" key={`${placeholder}-${index}`}>
+          <Input value={value} placeholder={placeholder} onChange={(event) => updateValue(index, event.target.value)} className="font-mono text-xs" />
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button type="button" variant="ghost" size="icon" className="h-8 w-8 shrink-0 text-slate-500 hover:text-destructive" aria-label={removeLabel} onClick={() => onChange(values.filter((_, currentIndex) => currentIndex !== index))}>
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{removeLabel}</TooltipContent>
+          </Tooltip>
+        </div>
+      ))}
+    </section>
+  );
+}
+
+function ProjectTemplateDialog({ project, onOpenChange }: { project: RdProject | null; onOpenChange: (open: boolean) => void }) {
+  const [taskType, setTaskType] = useState<"BUG_FIX" | "REQUIREMENT">("BUG_FIX");
+  const [name, setName] = useState("");
+  const [actual, setActual] = useState("");
+  const [expected, setExpected] = useState("");
+  const [steps, setSteps] = useState("");
+  const [scope, setScope] = useState("");
+  const [criteria, setCriteria] = useState("");
+  const [body, setBody] = useState("");
+  const [result, setResult] = useState("");
+  const [saving, setSaving] = useState(false);
+  const loadSequence = useRef(0);
+
+  useEffect(() => {
+    const sequence = ++loadSequence.current;
+    if (!project) return () => { loadSequence.current++; };
+    getProjectTaskTemplate(project.projectId, taskType).then((template) => {
+      if (sequence !== loadSequence.current) return;
+      setName(template.name || ""); setActual(template.actualBehavior || ""); setExpected(template.expectedBehavior || "");
+      setSteps(template.reproductionSteps || ""); setScope(template.affectedScope || "");
+      setCriteria((template.acceptanceCriteria || []).join("\n")); setBody(template.requirementBody || ""); setResult(template.expectedResult || "");
+    }).catch((error) => {
+      if (sequence === loadSequence.current) toast.error(getErrorMessage(error, "加载任务模板失败"));
+    });
+    return () => { loadSequence.current++; };
+  }, [project?.projectId, taskType]);
+
+  const save = async () => {
+    if (!project) return;
+    setSaving(true);
+    try {
+      await updateProjectTaskTemplate(project.projectId, taskType, {
+        name, actualBehavior: actual, expectedBehavior: expected, reproductionSteps: steps,
+        affectedScope: scope, acceptanceCriteria: criteria.split("\n").map((line) => line.trim()).filter(Boolean),
+        requirementBody: body, expectedResult: result
+      });
+      toast.success("任务模板已保存"); onOpenChange(false);
+    } catch (error) { toast.error(getErrorMessage(error, "保存任务模板失败")); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <Dialog open={!!project} onOpenChange={onOpenChange}><DialogContent className="flex max-h-[calc(100vh-2rem)] flex-col overflow-hidden sm:max-w-[720px]">
+      <DialogHeader><DialogTitle>任务模板</DialogTitle><DialogDescription>{project?.name} 的默认表单内容</DialogDescription></DialogHeader>
+      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
+        <Select value={taskType} onValueChange={(value) => setTaskType(value as "BUG_FIX" | "REQUIREMENT")}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="BUG_FIX">修 Bug</SelectItem><SelectItem value="REQUIREMENT">做需求</SelectItem></SelectContent></Select>
+        <div><label className="mb-2 block text-sm font-medium">模板名称</label><Input value={name} onChange={(e) => setName(e.target.value)} /></div>
+        {taskType === "BUG_FIX" ? <><div className="grid gap-4 sm:grid-cols-2"><Textarea value={actual} onChange={(e) => setActual(e.target.value)} placeholder="实际现象" /><Textarea value={expected} onChange={(e) => setExpected(e.target.value)} placeholder="期望表现" /></div><Textarea value={steps} onChange={(e) => setSteps(e.target.value)} placeholder="复现步骤" /><Textarea value={scope} onChange={(e) => setScope(e.target.value)} placeholder="影响范围" /></> : <><Textarea value={body} onChange={(e) => setBody(e.target.value)} placeholder="需求正文" /><Textarea value={result} onChange={(e) => setResult(e.target.value)} placeholder="预期结果" /></>}
+        <Textarea value={criteria} onChange={(e) => setCriteria(e.target.value)} placeholder="验收标准，每行一条" />
+      </div>
+      <DialogFooter className="shrink-0 border-t border-slate-200 pt-4"><Button variant="outline" onClick={() => onOpenChange(false)}>取消</Button><Button onClick={() => void save()} disabled={saving}>{saving ? "保存中" : "保存"}</Button></DialogFooter>
+    </DialogContent></Dialog>
   );
 }

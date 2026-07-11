@@ -9,6 +9,7 @@ export interface RdProject {
   repoOwner: string;
   repoName: string;
   defaultBranch: string;
+  knowledgeBaseId: string;
   enabled: boolean;
   createTimeEpochMillis: number;
   updateTimeEpochMillis: number;
@@ -37,7 +38,35 @@ export interface RdProjectPayload {
   repoOwner?: string;
   repoName?: string;
   defaultBranch: string;
+  knowledgeBaseId?: string;
   enabled: boolean;
+}
+
+export type AlertRecipientType = "CHAT_ID" | "OPEN_ID";
+export type ProjectAlertEventType =
+  | "TASK_COMPLETED" | "TASK_BLOCKED" | "TASK_FAILED"
+  | "RETRY_EXHAUSTED" | "BUDGET_EXCEEDED" | "QA_FAILED";
+
+export interface ProjectAlertConfig {
+  projectId: string;
+  enabled: boolean;
+  recipients: Array<{ type: AlertRecipientType; value: string }>;
+  eventTypes: ProjectAlertEventType[];
+  budgetThresholdCny: number;
+  failureThreshold: number;
+}
+
+export interface ProjectTaskTemplate {
+  projectId: string;
+  taskType: "BUG_FIX" | "REQUIREMENT";
+  name: string;
+  actualBehavior: string;
+  expectedBehavior: string;
+  reproductionSteps: string;
+  affectedScope: string;
+  acceptanceCriteria: string[];
+  requirementBody: string;
+  expectedResult: string;
 }
 
 export const getProjectsPage = (query: RdProjectListQuery = {}): Promise<RdProjectPage> =>
@@ -58,3 +87,25 @@ export const updateProject = (projectId: string, payload: RdProjectPayload): Pro
 
 export const deleteProject = (projectId: string): Promise<{ deleted: boolean }> =>
   api.delete<{ deleted: boolean }, { deleted: boolean }>(`/admin/projects/${projectId}`);
+
+export const getProjectAlertConfig = (projectId: string): Promise<ProjectAlertConfig> =>
+  api.get<ProjectAlertConfig, ProjectAlertConfig>(`/admin/projects/${projectId}/alert-config`);
+
+export const updateProjectAlertConfig = (
+  projectId: string,
+  payload: Omit<ProjectAlertConfig, "projectId">
+): Promise<ProjectAlertConfig> =>
+  api.put<ProjectAlertConfig, ProjectAlertConfig>(`/admin/projects/${projectId}/alert-config`, payload);
+
+export const getProjectTaskTemplate = (
+  projectId: string,
+  taskType: "BUG_FIX" | "REQUIREMENT"
+): Promise<ProjectTaskTemplate> =>
+  api.get<ProjectTaskTemplate, ProjectTaskTemplate>(`/admin/projects/${projectId}/task-templates/${taskType}`);
+
+export const updateProjectTaskTemplate = (
+  projectId: string,
+  taskType: "BUG_FIX" | "REQUIREMENT",
+  payload: Omit<ProjectTaskTemplate, "projectId" | "taskType">
+): Promise<ProjectTaskTemplate> =>
+  api.put<ProjectTaskTemplate, ProjectTaskTemplate>(`/admin/projects/${projectId}/task-templates/${taskType}`, payload);

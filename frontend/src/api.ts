@@ -132,23 +132,5 @@ export const api = {
   listTasks: (status = "") =>
     request<PageResponse<AnyRecord>>(`/ingestion/tasks?pageNo=1&pageSize=20&status=${enc(status)}`),
   createTask: (payload: AnyRecord) => request<AnyRecord>("/ingestion/tasks", { method: "POST", body: jsonBody(payload) }),
-  listTaskNodes: (id: string) => request<AnyRecord[]>(`/ingestion/tasks/${enc(id)}/nodes`),
-
-  listMappings: () => request<AnyRecord[]>("/mappings"),
-  createMapping: (payload: AnyRecord) => request<AnyRecord>("/mappings", { method: "POST", body: jsonBody(payload) }),
-  updateMapping: (id: string, payload: AnyRecord) =>
-    request<AnyRecord>(`/mappings/${enc(id)}`, { method: "PUT", body: jsonBody(payload) }),
-  deleteMapping: (id: string) => request<AnyRecord>(`/mappings/${enc(id)}`, { method: "DELETE" }),
-
-  listSampleQuestions: (keyword = "") =>
-    request<PageResponse<AnyRecord>>(`/sample-questions?keyword=${enc(keyword)}&current=1&size=20`),
-  createSampleQuestion: (payload: AnyRecord) =>
-    request<AnyRecord>("/sample-questions", { method: "POST", body: jsonBody(payload) }),
-  updateSampleQuestion: (id: string, payload: AnyRecord) =>
-    request<AnyRecord>(`/sample-questions/${enc(id)}`, { method: "PUT", body: jsonBody(payload) }),
-  deleteSampleQuestion: (id: string) => request<AnyRecord>(`/sample-questions/${enc(id)}`, { method: "DELETE" }),
-
-  listTraces: () => request<AnyRecord[]>("/rag/traces/runs"),
-  getTrace: (id: string) => request<AnyRecord>(`/rag/traces/runs/${enc(id)}`),
-  listTraceNodes: (id: string) => request<AnyRecord[]>(`/rag/traces/runs/${enc(id)}/nodes`)
+  listTaskNodes: (id: string) => request<AnyRecord[]>(`/ingestion/tasks/${enc(id)}/nodes`)
 };

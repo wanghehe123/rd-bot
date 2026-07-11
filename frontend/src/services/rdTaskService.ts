@@ -82,8 +82,8 @@ export interface RdTaskExecutionBudget {
   contextUsedChars: number;
   contextMaxChars: number;
   contextUsageRatio: number;
-  estimatedSpendUsd: number;
-  budgetAlertUsd: number;
+  estimatedSpendCny: number;
+  budgetAlertCny: number;
   costAvailable: boolean;
 }
 
@@ -159,6 +159,7 @@ export interface RdTaskListQuery {
   taskType?: string;
   status?: string;
   priority?: string;
+  projectId?: string;
   ticketId?: string;
   keyword?: string;
   page?: number;
@@ -205,12 +206,29 @@ export interface UpdateRdTaskPayload {
   ticketTitle?: string;
 }
 
+export interface TaskDraftResult {
+  available: boolean;
+  reason: string;
+  actualBehavior: string;
+  expectedBehavior: string;
+  reproductionSteps: string;
+  affectedScope: string;
+  requirementBody: string;
+  expectedResult: string;
+  acceptanceCriteria: string[];
+  missingFields: string[];
+  evidence: string[];
+  confidence: number;
+  aiGenerated: boolean;
+}
+
 export const getRdTasksPage = (query: RdTaskListQuery = {}): Promise<RdTaskPage> =>
   api.get<RdTaskPage, RdTaskPage>("/admin/rd-tasks", {
     params: {
       taskType: query.taskType || undefined,
       status: query.status || undefined,
       priority: query.priority || undefined,
+      projectId: query.projectId || undefined,
       ticketId: query.ticketId || undefined,
       keyword: query.keyword || undefined,
       page: query.page ?? 1,
@@ -287,6 +305,17 @@ export const getTaskMaterialPreview = (
   materialId: string
 ): Promise<TaskMaterialPreview> =>
   api.get<TaskMaterialPreview, TaskMaterialPreview>(`/admin/rd-tasks/${taskId}/materials/${materialId}/preview`);
+
+export const taskMaterialContentUrl = (taskId: string, materialId: string) =>
+  `/admin/rd-tasks/${taskId}/materials/${materialId}/content`;
+
+export const completeTaskDraft = (payload: {
+  taskType: "BUG_FIX" | "REQUIREMENT";
+  projectId?: string;
+  currentValues: Record<string, string>;
+  materialSummaries?: string[];
+}): Promise<TaskDraftResult> =>
+  api.post<TaskDraftResult, TaskDraftResult>("/admin/rd-task-drafts/complete", payload);
 
 /** 状态 → 徽标颜色类（Tailwind），用于 shadcn Badge 的 variant=outline + className。 */
 export const STATUS_BADGE_CLASS: Record<string, string> = {

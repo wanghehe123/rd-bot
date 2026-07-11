@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 import {
   ChevronDown,
@@ -6,7 +6,6 @@ import {
   ChevronRight,
   ClipboardList,
   Database,
-  FileQuestion,
   GitBranch,
   Github,
   KeyRound,
@@ -15,7 +14,7 @@ import {
   ListChecks,
   Menu,
   MessageSquare,
-  Search,
+  Plus,
   Settings,
   Upload,
   Users,
@@ -24,8 +23,7 @@ import {
 
 import { api } from "../api";
 import { Badge, Button, Field, Input } from "./Ui";
-import { cn, notify, recordsOf, runAction } from "../utils";
-import type { KnowledgeBase, KnowledgeDocument } from "../types";
+import { cn, notify, runAction } from "../utils";
 
 type MenuChild = {
   path: string;
@@ -61,15 +59,14 @@ const menuGroups: Array<{ title: string; items: MenuItem[] }> = [
       { path: "/admin/ingestion", label: "数据通道", icon: Upload },
       { path: "/admin/projects", label: "项目管理", icon: Github },
       { path: "/admin/rd-tasks", label: "任务管理", icon: ListChecks },
-      { path: "/admin/mappings", label: "关键词映射", icon: KeyRound },
-      { path: "/admin/traces", label: "链路追踪", icon: Workflow }
+      { path: "/admin/mappings", label: "检索规则", icon: KeyRound },
+      { path: "/admin/traces", label: "执行追踪", icon: Workflow }
     ]
   },
   {
     title: "设置",
     items: [
       { path: "/admin/users", label: "用户管理", icon: Users },
-      { path: "/admin/sample-questions", label: "示例问题", icon: FileQuestion },
       { path: "/admin/settings", label: "系统设置", icon: Settings }
     ]
   }
@@ -83,27 +80,30 @@ const breadcrumbMap: Record<string, string> = {
   ingestion: "数据通道",
   projects: "项目管理",
   "rd-tasks": "任务管理",
-  mappings: "关键词映射",
-  traces: "链路追踪",
+  mappings: "检索规则",
+  traces: "执行追踪",
   users: "用户管理",
-  "sample-questions": "示例问题",
   settings: "系统设置"
 };
+
+function AdminContentFallback() {
+  return (
+    <div className="admin-route-fallback" role="status">
+      <span className="admin-route-fallback__signal" aria-hidden="true" />
+      <span>加载页面...</span>
+    </div>
+  );
+}
 
 export function AdminLayout() {
   const location = useLocation();
   const navigate = useNavigate();
   const [collapsed, setCollapsed] = useState(false);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({ intent: true });
-  const [query, setQuery] = useState("");
-  const [focused, setFocused] = useState(false);
-  const [kbOptions, setKbOptions] = useState<KnowledgeBase[]>([]);
-  const [docOptions, setDocOptions] = useState<KnowledgeDocument[]>([]);
-  const [searchLoading, setSearchLoading] = useState(false);
   const [passwordOpen, setPasswordOpen] = useState(false);
   const [passwordForm, setPasswordForm] = useState({ currentPassword: "", newPassword: "", confirmPassword: "" });
-  const blurRef = useRef<number | null>(null);
-  const inputRef = useRef<HTMLInputElement | null>(null);
+  const sidebarCompact = collapsed && !mobileSidebarOpen;
 
   const breadcrumbs = useMemo(() => {
     const parts = location.pathname.split("/").filter(Boolean);
@@ -126,62 +126,44 @@ export function AdminLayout() {
   }, [location.pathname]);
 
   useEffect(() => {
-    if (!focused || !query.trim()) {
-      setKbOptions([]);
-      setDocOptions([]);
-      return;
-    }
-    let active = true;
-    const handle = window.setTimeout(() => {
-      setSearchLoading(true);
-      Promise.all([api.listKnowledgeBases(query, 6), api.searchDocuments(query, 6)])
-        .then(([bases, docs]) => {
-          if (!active) return;
-          setKbOptions(recordsOf(bases));
-          setDocOptions(docs);
-        })
-        .catch(() => {
-          if (!active) return;
-          setKbOptions([]);
-          setDocOptions([]);
-        })
-        .finally(() => active && setSearchLoading(false));
-    }, 180);
-    return () => {
-      active = false;
-      window.clearTimeout(handle);
+    setMobileSidebarOpen(false);
+  }, [location.pathname]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setMobileSidebarOpen(false);
+      }
     };
-  }, [focused, query]);
-
-  const handleSearchSelect = (path: string) => {
-    inputRef.current?.blur();
-    setFocused(false);
-    setQuery("");
-    navigate(path);
-  };
-
-  const handleSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === "Enter") {
-      if (kbOptions[0]) return handleSearchSelect(`/admin/knowledge/${kbOptions[0].id}`);
-      if (docOptions[0]) return handleSearchSelect(`/admin/knowledge/${docOptions[0].knowledgeBaseId}/docs/${docOptions[0].id}`);
-      if (query.trim()) return handleSearchSelect(`/admin/knowledge?name=${encodeURIComponent(query.trim())}`);
-    }
-    if (event.key === "Escape") {
-      inputRef.current?.blur();
-      setFocused(false);
-    }
-  };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
 
   const isLeafActive = (path: string) => location.pathname === path || location.pathname.startsWith(`${path}/`);
   const isGroupActive = (item: MenuItem) => item.children?.some((child) => isLeafActive(child.path)) || false;
 
   return (
     <div className="admin-layout">
-      <aside className={cn("admin-sidebar", collapsed && "admin-sidebar--collapsed")}>
+      {mobileSidebarOpen ? (
+        <button
+          type="button"
+          className="admin-sidebar-backdrop"
+          aria-label="关闭导航"
+          onClick={() => setMobileSidebarOpen(false)}
+        />
+      ) : null}
+      <aside
+        id="admin-sidebar"
+        className={cn(
+          "admin-sidebar",
+          collapsed && "admin-sidebar--collapsed",
+          mobileSidebarOpen && "admin-sidebar--mobile-open"
+        )}
+      >
         <div className="admin-sidebar__brand">
-          <div className={cn("admin-brand-row", collapsed && "is-collapsed")}>
+          <div className={cn("admin-brand-row", sidebarCompact && "is-collapsed")}>
             <div className="admin-sidebar__logo">RD</div>
-            {!collapsed && (
+            {!sidebarCompact && (
               <div className="admin-brand-copy">
                 <h1 className="admin-sidebar__title">RD-Bot 管理后台</h1>
                 <p className="admin-sidebar__subtitle">Delivery Console</p>
@@ -193,7 +175,7 @@ export function AdminLayout() {
         <nav className="admin-sidebar__nav">
           {menuGroups.map((group) => (
             <div key={group.title} className="admin-sidebar__group">
-              {!collapsed && <p className="admin-sidebar__group-title">{group.title}</p>}
+              {!sidebarCompact && <p className="admin-sidebar__group-title">{group.title}</p>}
               <div className="admin-sidebar__items">
                 {group.items.map((item) => {
                   const Icon = item.icon;
@@ -203,12 +185,12 @@ export function AdminLayout() {
                       <Link
                         key={item.path}
                         to={item.path}
-                        title={collapsed ? item.label : undefined}
-                        className={cn("admin-sidebar__item", active && "admin-sidebar__item--active", collapsed && "is-collapsed")}
+                        title={sidebarCompact ? item.label : undefined}
+                        className={cn("admin-sidebar__item", active && "admin-sidebar__item--active", sidebarCompact && "is-collapsed")}
                       >
                         <span className={cn("admin-sidebar__item-indicator", active && "is-active")} />
                         <Icon className="admin-sidebar__item-icon" />
-                        {!collapsed && <span>{item.label}</span>}
+                        {!sidebarCompact && <span>{item.label}</span>}
                       </Link>
                     );
                   }
@@ -219,16 +201,16 @@ export function AdminLayout() {
                     <div key={item.label} className="admin-sidebar__tree">
                       <button
                         type="button"
-                        className={cn("admin-sidebar__item", "admin-sidebar__item--group", groupActive && "admin-sidebar__item--group-active", collapsed && "is-collapsed")}
+                        className={cn("admin-sidebar__item", "admin-sidebar__item--group", groupActive && "admin-sidebar__item--group-active", sidebarCompact && "is-collapsed")}
                         onClick={() => setOpenGroups((current) => ({ ...current, [item.id || item.label]: !open }))}
-                        title={collapsed ? item.label : undefined}
+                        title={sidebarCompact ? item.label : undefined}
                       >
                         <span className={cn("admin-sidebar__item-indicator", groupActive && "is-group-active")} />
                         <Icon className="admin-sidebar__item-icon" />
-                        {!collapsed && <span className="admin-sidebar__item-label">{item.label}</span>}
-                        {!collapsed && (open ? <ChevronDown className="admin-sidebar__chevron" /> : <ChevronRight className="admin-sidebar__chevron" />)}
+                        {!sidebarCompact && <span className="admin-sidebar__item-label">{item.label}</span>}
+                        {!sidebarCompact && (open ? <ChevronDown className="admin-sidebar__chevron" /> : <ChevronRight className="admin-sidebar__chevron" />)}
                       </button>
-                      {open && !collapsed && (
+                      {open && !sidebarCompact && (
                         <div className="admin-sidebar__children">
                           {item.children.map((child) => {
                             const ChildIcon = child.icon;
@@ -252,7 +234,12 @@ export function AdminLayout() {
         </nav>
 
         <div className="admin-sidebar__footer">
-          <button className="admin-sidebar__collapse" type="button" onClick={() => setCollapsed((value) => !value)}>
+          <button
+            className="admin-sidebar__collapse"
+            type="button"
+            aria-label={collapsed ? "展开侧边栏" : "收起侧边栏"}
+            onClick={() => setCollapsed((value) => !value)}
+          >
             {collapsed ? <ChevronRight /> : <ChevronLeft />}
             {!collapsed && <span>收起侧边栏</span>}
           </button>
@@ -263,50 +250,28 @@ export function AdminLayout() {
         <header className="admin-topbar">
           <div className="admin-topbar-inner">
             <div className="admin-topbar-left">
-              <Button variant="ghost" className="admin-mobile-toggle" onClick={() => setCollapsed((value) => !value)} aria-label="切换侧边栏">
+              <Button
+                variant="ghost"
+                className="admin-mobile-toggle"
+                onClick={() => setMobileSidebarOpen((value) => !value)}
+                aria-label="切换侧边栏"
+                aria-controls="admin-sidebar"
+                aria-expanded={mobileSidebarOpen}
+              >
                 <Menu size={18} />
               </Button>
-              <div className="admin-topbar-search">
-                <Search className="admin-topbar-search-icon" />
-                <Input
-                  ref={inputRef}
-                  value={query}
-                  onChange={(event) => setQuery(event.target.value)}
-                  onFocus={() => {
-                    if (blurRef.current) window.clearTimeout(blurRef.current);
-                    setFocused(true);
-                  }}
-                  onBlur={() => {
-                    blurRef.current = window.setTimeout(() => setFocused(false), 160);
-                  }}
-                  onKeyDown={handleSearchKeyDown}
-                  placeholder="搜索知识库 / 文档..."
-                />
-                <span className="admin-topbar-kbd">Ctrl K</span>
-                {focused && query.trim() && (
-                  <div className="admin-topbar-suggest" onMouseDown={(event) => event.preventDefault()}>
-                    {searchLoading && <div className="admin-topbar-suggest-item muted">搜索中...</div>}
-                    {kbOptions.length > 0 && <div className="admin-topbar-suggest-group">知识库</div>}
-                    {kbOptions.map((kb) => (
-                      <button key={kb.id} type="button" className="admin-topbar-suggest-item" onMouseDown={() => handleSearchSelect(`/admin/knowledge/${kb.id}`)}>
-                        <span>{kb.name}</span>
-                        <small>{kb.collectionName || "in-memory"}</small>
-                      </button>
-                    ))}
-                    {docOptions.length > 0 && <div className="admin-topbar-suggest-group">文档</div>}
-                    {docOptions.map((doc) => (
-                      <button key={doc.id} type="button" className="admin-topbar-suggest-item" onMouseDown={() => handleSearchSelect(`/admin/knowledge/${doc.knowledgeBaseId}/docs/${doc.id}`)}>
-                        <span>{doc.sourceName}</span>
-                        <small>{doc.knowledgeType}</small>
-                      </button>
-                    ))}
-                    {!searchLoading && kbOptions.length === 0 && docOptions.length === 0 && <div className="admin-topbar-suggest-item muted">暂无匹配结果</div>}
-                  </div>
-                )}
+              <div className="admin-topbar-context" aria-label="当前工作区">
+                <span className="admin-topbar-context__eyebrow">交付控制台</span>
+                <span className="admin-topbar-context__divider" aria-hidden="true" />
+                <strong className="admin-topbar-context__page">{breadcrumbs[breadcrumbs.length - 1]?.label || "Dashboard"}</strong>
               </div>
             </div>
 
             <div className="admin-topbar-actions">
+              <Button className="admin-topbar-create-task" onClick={() => navigate("/admin/rd-tasks?create=true")}>
+                <Plus size={16} />
+                新建任务
+              </Button>
               <Button variant="ghost" onClick={() => notify("聊天端尚未迁移到当前单服务后台", "info")}>
                 <MessageSquare size={16} />
                 返回聊天
@@ -337,7 +302,9 @@ export function AdminLayout() {
               );
             })}
           </nav>
-          <Outlet />
+          <Suspense fallback={<AdminContentFallback />}>
+            <Outlet />
+          </Suspense>
         </div>
       </main>
 

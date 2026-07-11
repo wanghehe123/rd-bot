@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { Check, FileUp, Image, PlayCircle, RefreshCw, Trash2, Pencil, FileBarChart, X, Eye, MoreHorizontal, FileText, Link as LinkIcon } from "lucide-react";
 import { toast } from "sonner";
@@ -37,10 +37,10 @@ import {
 } from "@/services/knowledgeService";
 import { getIngestionPipelines, type IngestionPipeline } from "@/services/ingestionService";
 import { getSystemSettings } from "@/services/settingsService";
-import { MarkdownRenderer } from "@/components/chat/MarkdownRenderer";
 import { getErrorMessage } from "@/utils/error";
 
 const PAGE_SIZE = 10;
+const MarkdownRenderer = lazy(() => import("@/components/chat/MarkdownRenderer").then((module) => ({ default: module.MarkdownRenderer })));
 
 const STATUS_OPTIONS = [
   { value: "indexed", label: "已索引" },
@@ -772,7 +772,7 @@ export function KnowledgeDocumentsPage() {
                         </Button>
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
-                            <Button size="icon" variant="ghost" className="h-8 w-8" title="更多">
+                            <Button size="icon" variant="ghost" className="h-8 w-8" aria-label="更多操作" title="更多操作">
                               <MoreHorizontal className="h-3.5 w-3.5" />
                             </Button>
                           </DropdownMenuTrigger>
@@ -912,13 +912,13 @@ export function KnowledgeDocumentsPage() {
       </AlertDialog>
 
       <Dialog open={Boolean(detailTarget)} onOpenChange={(open) => (!open ? setDetailTarget(null) : null)}>
-        <DialogContent className="max-h-[90vh] overflow-y-auto sidebar-scroll sm:max-w-[620px]" onOpenAutoFocus={(e) => e.preventDefault()} onCloseAutoFocus={(e) => { e.preventDefault(); requestAnimationFrame(() => (document.activeElement as HTMLElement)?.blur()); }}>
+        <DialogContent className="flex max-h-[calc(100vh-2rem)] flex-col overflow-hidden sm:max-w-[620px]" onOpenAutoFocus={(e) => e.preventDefault()} onCloseAutoFocus={(e) => { e.preventDefault(); requestAnimationFrame(() => (document.activeElement as HTMLElement)?.blur()); }}>
           <DialogHeader>
             <DialogTitle>编辑文档</DialogTitle>
             <DialogDescription>修改文档配置，保存后需重新分块才会生效</DialogDescription>
           </DialogHeader>
           {detailTarget ? (
-            <div className="space-y-4">
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
               <div>
                 <div className="text-sm font-medium mb-2">来源类型</div>
                 <div className="flex h-9 items-center rounded-md border border-input bg-muted px-3 text-sm text-muted-foreground">
@@ -1076,7 +1076,7 @@ export function KnowledgeDocumentsPage() {
               ) : null}
             </div>
           ) : null}
-          <DialogFooter>
+          <DialogFooter className="shrink-0 border-t border-slate-200 pt-4">
             <Button variant="outline" onClick={() => setDetailTarget(null)} disabled={detailSaving}>
               关闭
             </Button>
@@ -1115,7 +1115,9 @@ export function KnowledgeDocumentsPage() {
                     </pre>
                   ) : null}
                   <div className="px-6 py-4">
-                    <MarkdownRenderer content={body} />
+                    <Suspense fallback={<div className="admin-inline-loading">加载预览组件...</div>}>
+                      <MarkdownRenderer content={body} />
+                    </Suspense>
                   </div>
                 </div>
               );
@@ -1125,7 +1127,7 @@ export function KnowledgeDocumentsPage() {
       </Dialog>
 
       <Dialog open={Boolean(logTarget)} onOpenChange={(open) => (!open ? setLogTarget(null) : null)}>
-        <DialogContent className="max-h-[90vh] overflow-y-auto sidebar-scroll sm:max-w-[800px]" onOpenAutoFocus={(e) => e.preventDefault()} onCloseAutoFocus={(e) => { e.preventDefault(); requestAnimationFrame(() => (document.activeElement as HTMLElement)?.blur()); }}>
+        <DialogContent className="flex max-h-[calc(100vh-2rem)] flex-col overflow-hidden sm:max-w-[800px]" onOpenAutoFocus={(e) => e.preventDefault()} onCloseAutoFocus={(e) => { e.preventDefault(); requestAnimationFrame(() => (document.activeElement as HTMLElement)?.blur()); }}>
           <DialogHeader>
             <DialogTitle>分块详情</DialogTitle>
             <DialogDescription>
@@ -1135,7 +1137,7 @@ export function KnowledgeDocumentsPage() {
           {logLoading ? (
             <div className="py-8 text-center text-muted-foreground">加载中...</div>
           ) : logData && logData.records.length > 0 ? (
-            <div className="space-y-4">
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
               {logData.records.slice(0, 1).map((log) => {
                 const isPipelineLog = log.processMode?.toLowerCase() === "pipeline";
                 const chunkLabel = isPipelineLog ? "数据通道耗时" : "分块耗时";
@@ -1215,7 +1217,7 @@ export function KnowledgeDocumentsPage() {
           ) : (
             <div className="py-8 text-center text-muted-foreground">暂无分块日志</div>
           )}
-          <DialogFooter>
+          <DialogFooter className="shrink-0 border-t border-slate-200 pt-4">
             <Button variant="outline" onClick={() => setLogTarget(null)}>
               关闭
             </Button>
@@ -1373,7 +1375,7 @@ function UploadDialog({ open, onOpenChange, onSubmit }: UploadDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="max-h-[90vh] overflow-y-auto sidebar-scroll sm:max-w-[560px]"
+        className="flex max-h-[calc(100vh-2rem)] flex-col overflow-hidden sm:max-w-[560px]"
         onOpenAutoFocus={(e) => e.preventDefault()}
         onCloseAutoFocus={(e) => { e.preventDefault(); requestAnimationFrame(() => (document.activeElement as HTMLElement)?.blur()); }}
       >
@@ -1382,7 +1384,8 @@ function UploadDialog({ open, onOpenChange, onSubmit }: UploadDialogProps) {
           <DialogDescription>上传本地文件并选择分块策略</DialogDescription>
         </DialogHeader>
         <Form {...form}>
-          <form className="space-y-4" onSubmit={form.handleSubmit(handleSubmit)}>
+          <form className="min-h-0 flex flex-1 flex-col" onSubmit={form.handleSubmit(handleSubmit)}>
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
             <FormItem>
               <FormLabel>本地文件</FormLabel>
               <FormControl>
@@ -1491,7 +1494,8 @@ function UploadDialog({ open, onOpenChange, onSubmit }: UploadDialogProps) {
               </div>
             </div>
 
-            <DialogFooter>
+            </div>
+            <DialogFooter className="shrink-0 border-t border-slate-200 pt-4">
               <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
                 取消
               </Button>

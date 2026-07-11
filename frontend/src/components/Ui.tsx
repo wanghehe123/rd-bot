@@ -79,7 +79,12 @@ export function Select(props: SelectHTMLAttributes<HTMLSelectElement>) {
 }
 
 export function Empty({ children }: { children: ReactNode }) {
-  return <div className="empty-state">{children}</div>;
+  return (
+    <div className="empty-state" role="status">
+      <span className="empty-state__signal" aria-hidden="true" />
+      <span>{children}</span>
+    </div>
+  );
 }
 
 export function PageHeader({

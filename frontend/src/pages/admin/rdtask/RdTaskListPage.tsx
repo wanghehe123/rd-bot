@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   AlertTriangle,
   ClipboardList,
@@ -11,6 +11,8 @@ import {
   Pause,
   Plus,
   RefreshCw,
+  ImagePlus,
+  Sparkles,
   Terminal,
   Trash2
 } from "lucide-react";
@@ -60,16 +62,25 @@ import { getErrorMessage } from "@/utils/error";
 import {
   createRequirementTask,
   createRdTask,
+  completeTaskDraft,
   deleteRdTask,
   getRdTasksPage,
   pauseRdTask,
   resumeRdTask,
+  submitRdTask,
+  uploadTaskMaterial,
   updateRdTask,
   STATUS_BADGE_CLASS,
   type RdTask,
   type RequirementMaterialPayload
 } from "@/services/rdTaskService";
-import { getProjectsPage, type RdProject } from "@/services/projectService";
+import { getProjectsPage, getProjectTaskTemplate, type RdProject } from "@/services/projectService";
+import {
+  imageAttachmentKey,
+  mergeImageAttachments,
+  removeImageAttachment
+} from "./imageAttachments";
+import { taskListFiltersFromSearchParams } from "./taskListFilters";
 
 const PAGE_SIZE = 10;
 
@@ -107,6 +118,47 @@ const TASK_TYPE_OPTIONS = [
 ];
 
 const REPAIR_QUEUE_TOPIC = "RD_BOT_REPAIR_TICKET";
+
+const formatAttachmentSize = (bytes: number) => {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
+};
+
+function PendingImageCard({ file, onRemove }: { file: File; onRemove: () => void }) {
+  const [previewUrl, setPreviewUrl] = useState("");
+
+  useEffect(() => {
+    const url = URL.createObjectURL(file);
+    setPreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [file]);
+
+  return (
+    <figure className="min-w-0 overflow-hidden rounded-md border border-slate-200 bg-white">
+      <div className="relative aspect-[4/3] bg-slate-100">
+        {previewUrl ? (
+          <img src={previewUrl} alt={file.name} className="h-full w-full object-contain" />
+        ) : null}
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          className="absolute right-1.5 top-1.5 h-7 w-7 bg-white/95 text-slate-600 shadow-sm hover:text-destructive"
+          aria-label={`删除图片 ${file.name}`}
+          title="删除图片"
+          onClick={onRemove}
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </Button>
+      </div>
+      <figcaption className="p-2">
+        <div className="truncate text-xs font-medium text-slate-800" title={file.name}>{file.name}</div>
+        <div className="mt-0.5 text-[11px] tabular-nums text-muted-foreground">{formatAttachmentSize(file.size)}</div>
+      </figcaption>
+    </figure>
+  );
+}
 
 interface BugFixPromptInput {
   title: string;
@@ -187,32 +239,45 @@ const truncate = (value?: string | null, max = 40) => {
 
 export function RdTaskListPage() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const urlFilters = taskListFiltersFromSearchParams(searchParams);
   const [records, setRecords] = useState<RdTask[]>([]);
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [pages, setPages] = useState(0);
   const [loading, setLoading] = useState(false);
 
-  const [statusFilter, setStatusFilter] = useState<string | undefined>();
-  const [taskTypeFilter, setTaskTypeFilter] = useState<string | undefined>();
-  const [keyword, setKeyword] = useState("");
-  const [searchInput, setSearchInput] = useState("");
+  const [statusFilter, setStatusFilter] = useState<string | undefined>(urlFilters.status);
+  const [taskTypeFilter, setTaskTypeFilter] = useState<string | undefined>(urlFilters.taskType);
+  const [projectIdFilter, setProjectIdFilter] = useState<string | undefined>(urlFilters.projectId);
+  const [keyword, setKeyword] = useState(urlFilters.keyword || "");
+  const [searchInput, setSearchInput] = useState(urlFilters.keyword || "");
 
   const [createOpen, setCreateOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<RdTask | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<RdTask | null>(null);
 
+  useEffect(() => {
+    if (searchParams.get("create") !== "true") return;
+    setCreateOpen(true);
+    const nextSearchParams = new URLSearchParams(searchParams);
+    nextSearchParams.delete("create");
+    setSearchParams(nextSearchParams, { replace: true });
+  }, [searchParams, setSearchParams]);
+
   const loadTasks = async (
     nextPage = page,
     nextStatus = statusFilter,
     nextKeyword = keyword,
-    nextTaskType = taskTypeFilter
+    nextTaskType = taskTypeFilter,
+    nextProjectId = projectIdFilter
   ) => {
     setLoading(true);
     try {
       const data = await getRdTasksPage({
         taskType: nextTaskType,
         status: nextStatus,
+        projectId: nextProjectId,
         keyword: nextKeyword,
         page: nextPage,
         pageSize: PAGE_SIZE
@@ -229,26 +294,38 @@ export function RdTaskListPage() {
   };
 
   useEffect(() => {
-    loadTasks(1);
-  }, []);
+    setStatusFilter(urlFilters.status);
+    setTaskTypeFilter(urlFilters.taskType);
+    setProjectIdFilter(urlFilters.projectId);
+    setKeyword(urlFilters.keyword || "");
+    setSearchInput(urlFilters.keyword || "");
+    loadTasks(1, urlFilters.status, urlFilters.keyword || "", urlFilters.taskType, urlFilters.projectId);
+  }, [urlFilters.keyword, urlFilters.projectId, urlFilters.status, urlFilters.taskType]);
+
+  const updateUrlFilters = (updates: Record<string, string | undefined>) => {
+    const nextSearchParams = new URLSearchParams(searchParams);
+    Object.entries(updates).forEach(([key, value]) => {
+      if (value?.trim()) {
+        nextSearchParams.set(key, value.trim());
+      } else {
+        nextSearchParams.delete(key);
+      }
+    });
+    setSearchParams(nextSearchParams);
+  };
 
   const handleSearch = () => {
-    setKeyword(searchInput.trim());
-    loadTasks(1, statusFilter, searchInput.trim(), taskTypeFilter);
+    updateUrlFilters({ keyword: searchInput });
   };
 
   const handleStatusChange = (value: string) => {
     const next = value === "all" ? undefined : value;
-    setStatusFilter(next);
-    setPage(1);
-    loadTasks(1, next, keyword, taskTypeFilter);
+    updateUrlFilters({ status: next });
   };
 
   const handleTaskTypeChange = (value: string) => {
     const next = value === "all" ? undefined : value;
-    setTaskTypeFilter(next);
-    setPage(1);
-    loadTasks(1, statusFilter, keyword, next);
+    updateUrlFilters({ taskType: next });
   };
 
   const handleRefresh = () => {
@@ -564,9 +641,37 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
   const [bugReproductionSteps, setBugReproductionSteps] = useState("");
   const [bugErrorLog, setBugErrorLog] = useState("");
   const [bugAffectedScope, setBugAffectedScope] = useState("");
+  const [attachmentFiles, setAttachmentFiles] = useState<File[]>([]);
+  const [drafting, setDrafting] = useState(false);
+  const [applyingTemplate, setApplyingTemplate] = useState(false);
   const [saving, setSaving] = useState(false);
+  const formContextKey = `${open}:${taskKind}:${selectedProjectId}`;
+  const formContextRef = useRef({ key: formContextKey, version: 0, open, taskKind, selectedProjectId });
+  if (formContextRef.current.key !== formContextKey) {
+    formContextRef.current = {
+      key: formContextKey,
+      version: formContextRef.current.version + 1,
+      open,
+      taskKind,
+      selectedProjectId
+    };
+  }
 
   const selectedProject = projectOptions.find((project) => project.projectId === selectedProjectId) || null;
+
+  const selectAttachmentFiles = (incoming: File[]) => {
+    const merged = mergeImageAttachments(attachmentFiles, incoming);
+    setAttachmentFiles(merged.files);
+    if (merged.rejected.length === 0) return;
+
+    const reasons = new Set(merged.rejected.map((item) => item.reason));
+    const messages = [
+      reasons.has("TYPE") ? "仅支持 PNG、JPEG、WebP、GIF" : "",
+      reasons.has("SIZE") ? "单张图片不能超过 10 MiB" : "",
+      reasons.has("COUNT") ? "最多添加 10 张图片" : ""
+    ].filter(Boolean);
+    toast.error(`部分图片未添加：${messages.join("；")}`);
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -600,6 +705,7 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
       setBugReproductionSteps("");
       setBugErrorLog("");
       setBugAffectedScope("");
+      setAttachmentFiles([]);
     }
   }, [open, mode, task]);
 
@@ -629,6 +735,86 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
     if (!selectedProject) return;
     setBaseBranch(selectedProject.defaultBranch || "main");
   }, [selectedProject?.projectId]);
+
+  const applyProjectTemplate = async () => {
+    if (!selectedProjectId) {
+      toast.error("请先选择项目");
+      return;
+    }
+    const requestedContext = { taskKind, selectedProjectId, version: formContextRef.current.version };
+    setApplyingTemplate(true);
+    try {
+      const template = await getProjectTaskTemplate(selectedProjectId, taskKind);
+      const currentContext = formContextRef.current;
+      if (!currentContext.open
+          || currentContext.version !== requestedContext.version
+          || currentContext.taskKind !== requestedContext.taskKind
+          || currentContext.selectedProjectId !== requestedContext.selectedProjectId) {
+        toast.info("表单上下文已变化，请重新应用模板");
+        return;
+      }
+      if (taskKind === "BUG_FIX") {
+        setBugActualBehavior((current) => current.trim() ? current : template.actualBehavior || "");
+        setBugExpectedBehavior((current) => current.trim() ? current : template.expectedBehavior || "");
+        setBugReproductionSteps((current) => current.trim() ? current : template.reproductionSteps || "");
+        setBugAffectedScope((current) => current.trim() ? current : template.affectedScope || "");
+      } else {
+        setManualRequirementText((current) => current.trim() ? current : template.requirementBody || "");
+        setExpectedResult((current) => current.trim() ? current : template.expectedResult || "");
+      }
+      setAcceptanceCriteriaText((current) => current.trim() ? current : (template.acceptanceCriteria || []).join("\n"));
+      toast.success("已应用项目模板，现有内容未被覆盖");
+    } catch (error) {
+      toast.error(getErrorMessage(error, "读取项目模板失败"));
+    } finally {
+      setApplyingTemplate(false);
+    }
+  };
+
+  const completeWithAi = async () => {
+    const requestedContext = { taskKind, selectedProjectId, version: formContextRef.current.version };
+    setDrafting(true);
+    try {
+      const result = await completeTaskDraft({
+        taskType: taskKind,
+        projectId: selectedProjectId,
+        currentValues: {
+          title, summary: ticketTitle, actualBehavior: bugActualBehavior,
+          expectedBehavior: bugExpectedBehavior, reproductionSteps: bugReproductionSteps,
+          affectedScope: bugAffectedScope, requirementBody: manualRequirementText,
+          expectedResult, acceptanceCriteria: acceptanceCriteriaText
+        },
+        materialSummaries: attachmentFiles.map((file) => `${file.name} ${file.type} ${file.size}`)
+      });
+      const currentContext = formContextRef.current;
+      if (!currentContext.open
+          || currentContext.version !== requestedContext.version
+          || currentContext.taskKind !== requestedContext.taskKind
+          || currentContext.selectedProjectId !== requestedContext.selectedProjectId) {
+        toast.info("表单上下文已变化，请重新执行 AI 补全");
+        return;
+      }
+      if (!result.available) {
+        toast.error(result.reason || "AI 补全当前不可用");
+        return;
+      }
+      if (taskKind === "BUG_FIX") {
+        setBugActualBehavior((current) => current.trim() ? current : result.actualBehavior);
+        setBugExpectedBehavior((current) => current.trim() ? current : result.expectedBehavior);
+        setBugReproductionSteps((current) => current.trim() ? current : result.reproductionSteps);
+        setBugAffectedScope((current) => current.trim() ? current : result.affectedScope);
+      } else {
+        setManualRequirementText((current) => current.trim() ? current : result.requirementBody);
+        setExpectedResult((current) => current.trim() ? current : result.expectedResult);
+      }
+      setAcceptanceCriteriaText((current) => current.trim() ? current : result.acceptanceCriteria.join("\n"));
+      toast.success("AI 草稿已填入，请确认后再保存");
+    } catch (error) {
+      toast.error(getErrorMessage(error, "AI 补全失败"));
+    } finally {
+      setDrafting(false);
+    }
+  };
 
   const handleSubmit = async () => {
     const trimmed = title.trim();
@@ -697,7 +883,7 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
             mimeType: localFile!.type || "text/plain"
           };
         }
-        await createRequirementTask({
+        const created = await createRequirementTask({
           title: trimmed,
           priority,
           projectId: selectedProjectId,
@@ -708,8 +894,12 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
             .map((line) => line.trim())
             .filter(Boolean),
           materials: [material],
-          autoExecute
+          autoExecute: autoExecute && attachmentFiles.length === 0
         });
+        for (const file of attachmentFiles) {
+          await uploadTaskMaterial(created.taskId, file, { materialType: "REFERENCE_IMAGE" });
+        }
+        if (autoExecute && attachmentFiles.length > 0) await submitRdTask(created.taskId);
         toast.success("需求任务创建成功");
       } else if (mode === "create") {
         if (!selectedProjectId) {
@@ -748,7 +938,7 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
         }
         const generatedTicketId = autoTicketId || createAutoTicketId();
         setAutoTicketId(generatedTicketId);
-        await createRdTask({
+        const created = await createRdTask({
           title: trimmed,
           ticketId: generatedTicketId,
           ticketTitle: summary,
@@ -769,8 +959,12 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
             extraContext: promptSnapshot
           }),
           projectId: selectedProjectId,
-          autoExecute
+          autoExecute: autoExecute && attachmentFiles.length === 0
         });
+        for (const file of attachmentFiles) {
+          await uploadTaskMaterial(created.taskId, file, { materialType: "SCREENSHOT" });
+        }
+        if (autoExecute && attachmentFiles.length > 0) await submitRdTask(created.taskId);
         toast.success(autoExecute ? "创建成功，已提交修复执行" : "创建成功");
       } else if (task) {
         await updateRdTask(task.taskId, {
@@ -791,14 +985,14 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-[860px]" onOpenAutoFocus={(event) => event.preventDefault()}>
+      <DialogContent className="flex max-h-[calc(100vh-2rem)] flex-col overflow-hidden sm:max-w-[860px]" onOpenAutoFocus={(event) => event.preventDefault()}>
         <DialogHeader>
           <DialogTitle>{mode === "create" ? "新建任务" : "编辑任务"}</DialogTitle>
           <DialogDescription>
             {mode === "create" ? "创建可进入启动链路的 RD 任务，初始状态为 CREATED" : "修改任务标题 / 优先级 / 工单"}
           </DialogDescription>
         </DialogHeader>
-        <div className="space-y-4">
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
           {mode === "create" ? (
             <div>
               <label className="mb-2 block text-sm font-medium">任务类型</label>
@@ -814,6 +1008,50 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
                   ))}
                 </SelectContent>
               </Select>
+            </div>
+          ) : null}
+          {mode === "create" ? (
+            <div className="space-y-3 border-y border-slate-200 py-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <Button type="button" variant="outline" size="sm" onClick={() => void applyProjectTemplate()} disabled={applyingTemplate}>
+                  <ClipboardList className="mr-2 h-4 w-4" />{applyingTemplate ? "应用中" : "应用模板"}
+                </Button>
+                <Button type="button" variant="outline" size="sm" onClick={() => void completeWithAi()} disabled={drafting}>
+                  <Sparkles className="mr-2 h-4 w-4" />{drafting ? "补全中" : "AI 补全"}
+                </Button>
+                <Button asChild type="button" variant="outline" size="sm">
+                  <label className="cursor-pointer">
+                    <ImagePlus className="mr-2 h-4 w-4" />添加图片
+                    <input
+                      type="file"
+                      multiple
+                      accept="image/png,image/jpeg,image/webp,image/gif"
+                      className="sr-only"
+                      onChange={(event) => {
+                        selectAttachmentFiles(Array.from(event.currentTarget.files || []));
+                        event.currentTarget.value = "";
+                      }}
+                    />
+                  </label>
+                </Button>
+                {attachmentFiles.length > 0 ? (
+                  <span className="text-xs text-muted-foreground">已选 {attachmentFiles.length}/10 张，单张不超过 10 MiB</span>
+                ) : null}
+              </div>
+              {attachmentFiles.length > 0 ? (
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-5">
+                  {attachmentFiles.map((file) => {
+                    const key = imageAttachmentKey(file);
+                    return (
+                      <PendingImageCard
+                        key={key}
+                        file={file}
+                        onRemove={() => setAttachmentFiles((current) => removeImageAttachment(current, key))}
+                      />
+                    );
+                  })}
+                </div>
+              ) : null}
             </div>
           ) : null}
           <div>
@@ -854,7 +1092,7 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
           ) : null}
           {mode === "create" && taskKind === "BUG_FIX" ? (
             <>
-              <div className="grid gap-3 rounded-2xl border border-border/80 bg-muted/30 p-4 sm:grid-cols-[1.2fr_1fr]">
+              <div className="grid gap-3 rounded-lg border border-border/80 bg-muted/30 p-4 sm:grid-cols-[1.2fr_1fr]">
                 <div className="flex min-w-0 items-start gap-3">
                   <ClipboardList className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
                   <div className="min-w-0">
@@ -1132,7 +1370,7 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
                 />
                 创建后自动执行
               </label>
-              <div className="flex gap-3 rounded-2xl border border-amber-200 bg-amber-50/70 p-4 text-sm text-amber-800">
+              <div className="flex gap-3 rounded-lg border border-amber-200 bg-amber-50/70 p-4 text-sm text-amber-800">
                 <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
                 <div>
                   报错中出现的 {REPAIR_QUEUE_TOPIC} 无路由属于启动依赖问题；本表单会把队列、项目、分支、复现步骤与异常栈写入启动上下文。
@@ -1152,7 +1390,7 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
             </>
           )}
         </div>
-        <DialogFooter>
+        <DialogFooter className="shrink-0 border-t border-slate-200 pt-4">
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
             取消
           </Button>

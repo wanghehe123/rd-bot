@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { Activity, CheckCircle2, ChevronDown, ChevronLeft, Clock3, FileText, GitPullRequest, Gauge, Pause, Play } from "lucide-react";
+import { Activity, CheckCircle2, ChevronDown, ChevronLeft, Clock3, FileText, GitPullRequest, Gauge, Image as ImageIcon, Pause, Play, Upload } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -20,6 +20,8 @@ import {
   resumeRdTask,
   STATUS_BADGE_CLASS,
   submitRdTask,
+  taskMaterialContentUrl,
+  uploadTaskMaterial,
   type RdTask,
   type RdTaskExecutionOverview,
   type RdTaskStageRun,
@@ -44,7 +46,12 @@ const formatPercent = (value?: number) => `${Math.round(Math.max(0, Math.min(1, 
 
 const formatMoney = (value?: number) => {
   const amount = Number(value || 0);
-  return `$${amount.toFixed(2)}`;
+  return new Intl.NumberFormat("zh-CN", {
+    style: "currency",
+    currency: "CNY",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  }).format(amount);
 };
 
 const formatStageResultPreview = (value?: string) => {
@@ -101,7 +108,18 @@ const STAGE_BADGE_CLASS: Record<string, string> = {
   RECOVERING: "border-cyan-200 bg-cyan-50 text-cyan-700"
 };
 
+const STAGE_STATUS_LABEL: Record<string, string> = {
+  PENDING: "待开始", CONTEXT_READY: "上下文就绪", DISPATCHING: "调度中", RUNNING: "执行中",
+  RESULT_COLLECTING: "收集结果", VERIFYING: "验证中", SUCCEEDED: "已成功",
+  FAILED_RETRYABLE: "可重试失败", FAILED_NEEDS_HUMAN: "需人工处理",
+  SKIPPED: "已跳过", CANCELLED: "已取消", RECOVERING: "恢复中"
+};
+
 const ROLE_LABEL: Record<string, string> = {
+  BUG_EVIDENCE_COLLECTOR: "证据收集",
+  BUG_RAG_RETRIEVER: "RAG 检索",
+  BUG_ACCEPTANCE_PLANNER: "验收规划",
+  BUG_CODING_AGENT: "修复执行",
   REQUIREMENT_REVIEWER: "需求评审",
   SOLUTION_ARCHITECT: "方案设计",
   CODING_AGENT: "编码执行",
@@ -118,6 +136,23 @@ export function RdTaskDetailPage() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [approving, setApproving] = useState(false);
+  const [uploading, setUploading] = useState(false);
+
+  const uploadScreenshots = async (files: FileList | null) => {
+    if (!task || !files?.length) return;
+    setUploading(true);
+    try {
+      for (const file of Array.from(files)) {
+        await uploadTaskMaterial(task.taskId, file, { materialType: "SCREENSHOT" });
+      }
+      setMaterials(await getRdTaskMaterials(task.taskId));
+      toast.success("图片材料已上传");
+    } catch (error) {
+      toast.error(getErrorMessage(error, "上传图片失败"));
+    } finally {
+      setUploading(false);
+    }
+  };
 
   const load = async (silent = false) => {
     if (!silent) {
@@ -290,7 +325,7 @@ export function RdTaskDetailPage() {
             <CardDescription>任务元数据与当前状态</CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="grid grid-cols-2 gap-4 text-sm md:grid-cols-3">
+            <div className="grid grid-cols-1 gap-4 text-sm sm:grid-cols-2 md:grid-cols-3">
               <InfoField label="任务 ID" value={task.taskId} mono />
               <InfoField label="任务类型" value={task.taskType} />
               <InfoField label="项目" value={task.projectName || task.projectKey || "-"} />
@@ -322,7 +357,7 @@ export function RdTaskDetailPage() {
                       href={task.pullRequestUrl}
                       target="_blank"
                       rel="noreferrer"
-                      className="text-primary underline"
+                      className="break-all text-primary underline"
                     >
                       {task.pullRequestUrl}
                     </a>
@@ -453,43 +488,64 @@ export function RdTaskDetailPage() {
           </Card>
         ) : null}
 
-        {materials.length > 0 ? (
-          <Card>
-            <CardHeader>
-              <CardTitle>需求材料</CardTitle>
-              <CardDescription>任务输入文档与内容预览</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              {materials.map((material) => (
-                <div key={material.materialId} className="rounded-lg border border-slate-200 p-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-medium text-slate-800">{material.title || material.materialId}</div>
-                      <div className="mt-1 flex flex-wrap gap-2 text-xs text-muted-foreground">
-                        <span>{material.sourceType}</span>
-                        <span>{material.materialType}</span>
-                        <span className="break-all">{material.contentHash}</span>
-                      </div>
+        <Card>
+          <CardHeader className="flex flex-row items-start justify-between gap-3">
+            <div>
+              <CardTitle>任务材料</CardTitle>
+              <CardDescription>输入文档、截图与安全预览</CardDescription>
+            </div>
+            <Button asChild variant="outline" size="sm" disabled={uploading}>
+              <label className="cursor-pointer">
+                <Upload className="mr-2 h-4 w-4" />
+                {uploading ? "上传中" : "补充图片"}
+                <input
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp,image/gif"
+                  multiple
+                  className="sr-only"
+                  onChange={(event) => void uploadScreenshots(event.target.files)}
+                />
+              </label>
+            </Button>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {materials.length === 0 ? (
+              <div className="py-6 text-center text-sm text-muted-foreground">暂无材料</div>
+            ) : materials.map((material) => (
+              <div key={material.materialId} className="rounded-md border border-slate-200 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 truncate text-sm font-medium text-slate-800">
+                      {material.mimeType.startsWith("image/") ? <ImageIcon className="h-4 w-4 shrink-0" /> : null}
+                      {material.title || material.materialId}
                     </div>
-                    {material.sourceUri ? (
-                      <a
-                        href={material.sourceUri}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-sm text-primary underline"
-                      >
-                        打开来源
-                      </a>
-                    ) : null}
+                    <div className="mt-1 flex flex-wrap gap-2 text-xs text-muted-foreground">
+                      <span>{material.sourceType}</span><span>{material.materialType}</span>
+                      <span className="break-all">{material.contentHash}</span>
+                    </div>
                   </div>
+                </div>
+                {material.mimeType.startsWith("image/") ? (
+                  <img
+                    src={taskMaterialContentUrl(task.taskId, material.materialId)}
+                    alt={material.title || "任务截图"}
+                    className="mt-3 max-h-[360px] w-auto max-w-full rounded-md border border-slate-200 object-contain"
+                    loading="lazy"
+                  />
+                ) : (
                   <pre className="mt-3 max-h-[220px] overflow-auto whitespace-pre-wrap rounded-md bg-slate-50 p-3 text-xs leading-relaxed text-slate-600">
                     {material.contentPreview || "-"}
                   </pre>
-                </div>
-              ))}
-            </CardContent>
-          </Card>
-        ) : null}
+                )}
+                <a
+                  href={taskMaterialContentUrl(task.taskId, material.materialId)}
+                  download
+                  className="mt-3 inline-flex text-xs font-medium text-primary underline"
+                >下载原文件</a>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
 
         <Card>
           <CardHeader>
@@ -564,7 +620,8 @@ function ExecutionOverviewCard({ overview }: { overview: RdTaskExecutionOverview
     ? overview.progressCompleted / overview.progressTotal
     : 0;
   const currentRole = overview.currentRole ? ROLE_LABEL[overview.currentRole] || overview.currentRole : "-";
-  const currentStatus = overview.currentStageStatus || "-";
+  const currentStatus = overview.currentStageStatus
+    ? STAGE_STATUS_LABEL[overview.currentStageStatus] || overview.currentStageStatus : "-";
   const budget = overview.budget;
 
   return (
@@ -596,8 +653,8 @@ function ExecutionOverviewCard({ overview }: { overview: RdTaskExecutionOverview
           <MetricBlock
             icon={<Gauge className="h-4 w-4" />}
             label="模型预算"
-            value={budget.costAvailable ? formatMoney(budget.estimatedSpendUsd) : "待采集"}
-            detail={`阈值 ${formatMoney(budget.budgetAlertUsd)}`}
+            value={budget.costAvailable ? formatMoney(budget.estimatedSpendCny) : "待采集"}
+            detail={`阈值 ${formatMoney(budget.budgetAlertCny)}`}
           />
         </div>
 
@@ -701,10 +758,15 @@ function StageRunRow({ stage }: { stage: RdTaskStageRun }) {
       </div>
       <div className="min-w-0">
         <Badge variant="outline" className={STAGE_BADGE_CLASS[stage.status] || ""}>
-          {stage.status}
+          {STAGE_STATUS_LABEL[stage.status] || stage.status}
         </Badge>
         {attemptStatus ? (
           <div className="mt-1 truncate text-xs text-muted-foreground">{attemptStatus}</div>
+        ) : null}
+        {stage.errorMessage ? (
+          <div className="mt-1 line-clamp-2 break-words text-xs text-red-700" title={stage.errorMessage}>
+            {stage.errorCategory ? `${stage.errorCategory}: ` : ""}{stage.errorMessage}
+          </div>
         ) : null}
       </div>
       <div className="min-w-0">
