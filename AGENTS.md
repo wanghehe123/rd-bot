@@ -147,13 +147,16 @@ RD-Bot 是研发交付编排系统，而非聊天机器人。
 4. 2026-07-05 真实联调经验已固化在
    `docs/superpowers/plans/2026-07-05-rd-bot-runtime-secrets-and-retry-lessons-spec.md`。
    后续 Agent 处理 provider、重试、生产验收或本机启动问题前必须先读该 spec。
-5. MiniMax 当前运行模型为 `MiniMax-M3`；不得退回旧的 `MiniMax-M2.7`。本机 Docker Claude Code provider 链如需走 MiniMax，使用
+5. 2026-07-10 任务控制面增强经验已固化在
+   `docs/superpowers/specs/2026-07-10-rd-task-control-plane-enhancements-lessons-spec.md`。
+   后续 Agent 修改阶段记录、图片材料、项目告警、项目模板、AI 草稿、静态 bundle 或相关 SQL 前必须先读该 spec。
+6. MiniMax 当前运行模型为 `MiniMax-M3`；不得退回旧的 `MiniMax-M2.7`。本机 Docker Claude Code provider 链如需走 MiniMax，使用
    `MINIMAX_PROTOCOL=anthropic-compatible` 和 `MINIMAX_BASE_URL=https://api.minimaxi.com/anthropic`，密钥仍只通过
    `MINIMAX_API_KEY` 环境变量读取。
-6. 修改 `engine` 后启动 `bootstrap` 前，必须先让 bootstrap 能加载到新 engine 包；本机最小顺序为
+7. 修改 `engine` 后启动 `bootstrap` 前，必须先让 bootstrap 能加载到新 engine 包；本机最小顺序为
    `./mvnw -q -pl engine install -DskipTests` 后再 `./mvnw -q -pl bootstrap spring-boot:run`。
    不要把 stale engine jar 导致的旧行为误判为修复无效。
-7. 遇到
+8. 遇到
    `provider long-cat is missing required auth environment variable(s): LONGCAT_API_KEY`
    时，根因是 **RD-Bot 后端进程自身** 没有继承 `LONGCAT_API_KEY`，不是 Docker 容器内临时缺变量，也不是需求内容被打回。
    处理必须遵守：
@@ -170,17 +173,21 @@ RD-Bot 是研发交付编排系统，而非聊天机器人。
      `RD_CLAUDE_AUTH_TOKEN_ENV=LONGCAT_API_KEY`、
      `LONGCAT_PROTOCOL=anthropic-compatible`、
      `LONGCAT_ANTHROPIC_BASE_URL=https://api.longcat.chat/anthropic`。
-8. 处理 provider 密钥或 allowlist 后，必须重启 `bootstrap`，然后用真实任务反查验证：
+9. 处理 provider 密钥或 allowlist 后，必须重启 `bootstrap`，然后用真实任务反查验证：
    - `curl -fsS 'http://127.0.0.1:18080/admin/rd-tasks/<taskId>' | jq '{status,errorMessage}'`
    - `docker exec postgres psql -U postgres -d ragent -Atc "select role,status,attempt_no,provider_name,error_category,left(error_message,160),updated_at from rd_agent_stage_runs where task_id=<taskId> order by role,attempt_no;"`
    - `docker ps --filter name=rd-bot-repair-<taskId>`
    若出现新的 `REQUIREMENT_REVIEWER attempt=N RUNNING/SUCCEEDED` 或 Docker 容器已启动，说明 LongCat key 已被进程继承；此时不应再把问题归因到缺 key。
-9. 如果 `./mvnw -q -pl bootstrap spring-boot:run` 启动时报 `NoClassDefFoundError` 且类名来自 `rag`/`engine`/`exec`/`skill` 的已迁移包，先执行
+10. 如果 `./mvnw -q -pl bootstrap spring-boot:run` 启动时报 `NoClassDefFoundError` 且类名来自 `rag`/`engine`/`exec`/`skill` 的已迁移包，先执行
    `./mvnw -q install -DskipTests`，再启动 `bootstrap`。这是本地 Maven 仓库中的 stale module jar，不是 provider 密钥问题。
-10. 修改 `exec` 的 Docker/provider 鉴权链路后，至少运行
+11. 修改 `exec` 的 Docker/provider 鉴权链路后，至少运行
     `./mvnw -q -pl exec -Dtest=DockerClaudeCodeExecutorTest test` 和
     `./mvnw -q -pl bootstrap -Dtest=ProcessContainerRunnerTest test`；如从 IDEA 或单模块 Maven 启动仍读到旧行为，先执行
     `./mvnw -q -pl exec install -DskipTests`，避免 stale `exec` jar 误导排查。
+12. PostgreSQL 生产化 store 使用的表由
+    `bootstrap/src/main/resources/sql/postgres` 管理，但本地数据库不会因代码启动自动补表。新增或启用持久化 store 后，必须先执行对应 SQL，至少连续执行两次验证幂等，再用 `to_regclass`、记录数和真实 HTTP 请求确认表与数据可用；不能把前端的空列表或 500 误判为业务无数据。
+13. 前端新增或调整 `/admin/*` 请求时，必须同步检查 `frontend/vite.config.ts` 的代理表。缺少代理时 Vite 可能以 `200` 返回 SPA `index.html`，客户端随后因响应形状错误白屏；每条新增代理都要补配置测试，并在改完代理后重启开发服务器再做 HTTP/浏览器验证。
+14. 管理端顶栏的全局搜索若被移除，必须替换为真实可执行的当前工作区动作（例如“新建任务”并支持 `?create=true`），同时保留窄屏访问侧边栏的入口；不能为了视觉简化而牺牲核心导航或把按钮做成无效装饰。
 
 ---
 
