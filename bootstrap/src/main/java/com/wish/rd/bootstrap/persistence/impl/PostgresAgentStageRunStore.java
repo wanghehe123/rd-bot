@@ -74,6 +74,29 @@ public class PostgresAgentStageRunStore implements AgentStageRunStore {
     }
 
     @Override
+    public List<AgentStageRun> listByTasks(List<String> taskIds) {
+        if (taskIds == null || taskIds.isEmpty()) {
+            return List.of();
+        }
+        List<Long> rawTaskIds = taskIds.stream()
+                .filter(taskId -> taskId != null && !taskId.isBlank())
+                .map(PostgresPersistenceSupport::parseId)
+                .distinct()
+                .toList();
+        if (rawTaskIds.isEmpty()) {
+            return List.of();
+        }
+        return mapper.selectList(new QueryWrapper<RdAgentStageRunRow>()
+                        .in("task_id", rawTaskIds))
+                .stream()
+                .sorted(Comparator
+                        .comparing((RdAgentStageRunRow row) -> row.createdAt)
+                        .thenComparing(row -> row.id))
+                .map(this::toStageRun)
+                .toList();
+    }
+
+    @Override
     @Transactional
     public AgentStageRun transition(
             String stageRunId,

@@ -20,6 +20,7 @@ public final class RepairExecutionWatchdog {
 
     private final Policy policy;
     private final RepairAlertSinkPort alertSink;
+    private final RepairBudgetObservationSinkPort budgetObservationSink;
     private final Set<AlertKey> publishedAlertKeys = new LinkedHashSet<>();
 
     /**
@@ -29,8 +30,18 @@ public final class RepairExecutionWatchdog {
      * @param alertSink 告警输出端口
      */
     public RepairExecutionWatchdog(Policy policy, RepairAlertSinkPort alertSink) {
+        this(policy, alertSink, RepairBudgetObservationSinkPort.noop());
+    }
+
+    public RepairExecutionWatchdog(
+            Policy policy,
+            RepairAlertSinkPort alertSink,
+            RepairBudgetObservationSinkPort budgetObservationSink
+    ) {
         this.policy = Objects.requireNonNull(policy, "policy must not be null");
         this.alertSink = Objects.requireNonNull(alertSink, "alertSink must not be null");
+        this.budgetObservationSink = budgetObservationSink == null
+                ? RepairBudgetObservationSinkPort.noop() : budgetObservationSink;
     }
 
     /**
@@ -39,7 +50,7 @@ public final class RepairExecutionWatchdog {
      * @param repairRecordId       修复记录 ID
      * @param taskId               RD 任务 ID
      * @param elapsedMillis        已执行毫秒数
-     * @param estimatedSpend       当前预估花费
+     * @param estimatedSpendCny    当前预估人民币花费
      * @param createdAtEpochMillis 告警创建时间
      * @return 本次评估结果，告警命中时仍默认继续执行
      */
@@ -47,13 +58,21 @@ public final class RepairExecutionWatchdog {
             String repairRecordId,
             String taskId,
             long elapsedMillis,
-            BigDecimal estimatedSpend,
+            BigDecimal estimatedSpendCny,
             long createdAtEpochMillis
     ) {
         String normalizedRepairRecordId = requireId(repairRecordId, "repairRecordId");
         String normalizedTaskId = requireId(taskId, "taskId");
-        BigDecimal normalizedSpend = estimatedSpend == null ? BigDecimal.ZERO : estimatedSpend;
+        BigDecimal normalizedSpend = estimatedSpendCny == null ? BigDecimal.ZERO : estimatedSpendCny;
         List<RepairAlert> alerts = new ArrayList<>();
+
+        budgetObservationSink.observe(
+                normalizedRepairRecordId,
+                normalizedTaskId,
+                normalizedSpend,
+                policy.budgetWarningAmount(),
+                createdAtEpochMillis
+        );
 
         if (elapsedMillis > policy.timeoutWarningMillis()) {
             publishIfFirst(
@@ -80,8 +99,9 @@ public final class RepairExecutionWatchdog {
                             RepairAlertType.BUDGET_WARNING,
                             BUDGET_MESSAGE,
                             Map.of(
-                                    "estimatedSpend", normalizedSpend.toPlainString(),
-                                    "thresholdSpend", policy.budgetWarningAmount().toPlainString()
+                                    "currency", "CNY",
+                                    "estimatedSpendCny", normalizedSpend.toPlainString(),
+                                    "thresholdSpendCny", policy.budgetWarningAmount().toPlainString()
                             ),
                             createdAtEpochMillis
                     )

@@ -3,11 +3,13 @@ package com.wish.rd.exec.repair.docker;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wish.rd.exec.repair.execution.model.RepairJobCommand;
+import com.wish.rd.exec.repair.execution.model.RepairInputAttachment;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.regex.Pattern;
@@ -79,11 +81,70 @@ public class RepairWorkspaceFactory {
                 outputDirectory.resolve("claude-events.jsonl"),
                 outputDirectory.resolve("docker-meta.json")
         );
-        Files.writeString(files.prompt(), command.prompt(), StandardCharsets.UTF_8);
+        writeAttachments(inputDirectory, command);
+        Files.writeString(files.prompt(), promptWithAttachmentHint(command), StandardCharsets.UTF_8);
         Files.writeString(files.context(), toContextJson(command), StandardCharsets.UTF_8);
         Files.writeString(files.resultSchema(), resultSchemaJson(command), StandardCharsets.UTF_8);
 
         return new RepairWorkspace(taskRoot, inputDirectory, repoDirectory, outputDirectory, files);
+    }
+
+    private static void writeAttachments(Path inputDirectory, RepairJobCommand command) throws IOException {
+        if (command.attachments().isEmpty()) {
+            return;
+        }
+        Path attachmentDirectory = inputDirectory.resolve("attachments").normalize();
+        rejectSymlink(attachmentDirectory);
+        Files.createDirectories(attachmentDirectory);
+        if (Files.isSymbolicLink(attachmentDirectory)) {
+            throw new IllegalArgumentException("attachment directory must not be a symbolic link");
+        }
+        for (RepairInputAttachment attachment : command.attachments()) {
+            String filename = safeAttachmentFilename(attachment.filename());
+            Path target = attachmentDirectory.resolve(filename).normalize();
+            if (!target.startsWith(attachmentDirectory)) {
+                throw new IllegalArgumentException("attachment path escapes input directory: " + attachment.filename());
+            }
+            if (Files.isSymbolicLink(target)) {
+                throw new IllegalArgumentException("attachment target must not be a symbolic link: " + filename);
+            }
+            writeAttachmentAtomically(attachmentDirectory, target, attachment.content());
+        }
+    }
+
+    private static void writeAttachmentAtomically(Path attachmentDirectory, Path target, byte[] content)
+            throws IOException {
+        Path temporaryFile = Files.createTempFile(attachmentDirectory, ".rd-upload-", ".tmp");
+        try {
+            Files.write(temporaryFile, content);
+            try {
+                Files.move(temporaryFile, target,
+                        StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            } catch (java.nio.file.AtomicMoveNotSupportedException ignored) {
+                Files.move(temporaryFile, target, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } finally {
+            Files.deleteIfExists(temporaryFile);
+        }
+    }
+
+    private static String promptWithAttachmentHint(RepairJobCommand command) {
+        if (command.attachments().isEmpty()) {
+            return command.prompt();
+        }
+        return command.prompt().stripTrailing()
+                + "\n\n附件位于 /work/input/attachments，请先检查 context.json 中的附件 manifest。\n";
+    }
+
+    private static String safeAttachmentFilename(String filename) {
+        String normalized = filename == null ? "" : filename.replace('\\', '/').strip();
+        int separator = normalized.lastIndexOf('/');
+        String basename = separator >= 0 ? normalized.substring(separator + 1) : normalized;
+        basename = basename.replaceAll("[^A-Za-z0-9._-]", "_");
+        if (basename.isBlank() || ".".equals(basename) || "..".equals(basename)) {
+            throw new IllegalArgumentException("attachment filename is unsafe: " + filename);
+        }
+        return basename;
     }
 
     private String resultSchemaJson(RepairJobCommand command) {
@@ -260,6 +321,12 @@ public class RepairWorkspaceFactory {
         context.put("workBranch", command.workBranch());
         context.put("contextJson", command.contextJson());
         context.put("policyJson", command.policyJson());
+        context.put("attachments", command.attachments().stream().map(attachment -> Map.of(
+                "filename", safeAttachmentFilename(attachment.filename()),
+                "mimeType", attachment.mimeType(),
+                "size", attachment.content().length,
+                "path", "/work/input/attachments/" + safeAttachmentFilename(attachment.filename())
+        )).toList());
         return OBJECT_MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(context);
     }
 }

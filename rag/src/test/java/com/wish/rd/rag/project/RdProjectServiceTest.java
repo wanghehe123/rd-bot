@@ -13,6 +13,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import com.wish.rd.rag.knowledge.model.KnowledgeBase;
+import com.wish.rd.rag.knowledge.store.KnowledgeBaseStore;
 import com.wish.rd.rag.project.model.RdProject;
 import com.wish.rd.rag.project.model.RdProjectCommand;
 import com.wish.rd.rag.project.model.RdProjectPage;
@@ -92,7 +94,34 @@ class RdProjectServiceTest {
         assertEquals("waimai", page.records().getFirst().projectKey());
     }
 
+    @Test
+    void shouldBindEnabledKnowledgeBaseAndRejectUnavailableBindings() {
+        FakeKnowledgeBaseStore knowledgeBases = new FakeKnowledgeBaseStore();
+        knowledgeBases.save(new KnowledgeBase("waimai-kb", "waimai", "", true, 1L));
+        knowledgeBases.save(new KnowledgeBase("disabled-kb", "停用知识库", "", false, 1L));
+        RdProjectService service = new RdProjectService(generator(), new FakeRdProjectStore(), knowledgeBases);
+
+        RdProject project = service.create(command("waimai", "waimai-kb"));
+
+        assertEquals("waimai-kb", project.knowledgeBaseId());
+        assertEquals("", service.update(project.projectId(), command("waimai", "")).knowledgeBaseId());
+        IllegalArgumentException missing = assertThrows(
+                IllegalArgumentException.class,
+                () -> service.create(command("missing", "not-found"))
+        );
+        assertTrue(missing.getMessage().contains("knowledge base not found"));
+        IllegalArgumentException disabled = assertThrows(
+                IllegalArgumentException.class,
+                () -> service.create(command("disabled", "disabled-kb"))
+        );
+        assertTrue(disabled.getMessage().contains("knowledge base is disabled"));
+    }
+
     private static RdProjectCommand command(String projectKey) {
+        return command(projectKey, "");
+    }
+
+    private static RdProjectCommand command(String projectKey, String knowledgeBaseId) {
         return new RdProjectCommand(
                 projectKey,
                 "外卖系统",
@@ -101,7 +130,8 @@ class RdProjectServiceTest {
                 "",
                 "",
                 "main",
-                true
+                true,
+                knowledgeBaseId
         );
     }
 
@@ -135,6 +165,32 @@ class RdProjectServiceTest {
         @Override
         public List<RdProject> list() {
             return List.copyOf(projects.values());
+        }
+    }
+
+    private static final class FakeKnowledgeBaseStore implements KnowledgeBaseStore {
+
+        private final LinkedHashMap<String, KnowledgeBase> bases = new LinkedHashMap<>();
+
+        @Override
+        public KnowledgeBase save(KnowledgeBase base) {
+            bases.put(base.id(), base);
+            return base;
+        }
+
+        @Override
+        public Optional<KnowledgeBase> findById(String id) {
+            return Optional.ofNullable(bases.get(id));
+        }
+
+        @Override
+        public List<KnowledgeBase> list() {
+            return List.copyOf(bases.values());
+        }
+
+        @Override
+        public void delete(String id) {
+            bases.remove(id);
         }
     }
 }

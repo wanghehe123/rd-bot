@@ -547,12 +547,13 @@ class RequirementDeliveryEngineTest {
                         .findFirst()
                         .orElseThrow()
                         .status());
-        assertEquals(1, alertSink.alerts().size());
+        assertEquals(2, alertSink.alerts().size());
         AgentWorkflowAlert alert = alertSink.alerts().getFirst();
         assertEquals(AgentWorkflowAlertType.QA_FAILED, alert.type());
         assertEquals(task.taskId(), alert.taskId());
         assertEquals("QA_AGENT", alert.metadata().get("role"));
         assertTrue(alert.message().contains("QA 未通过真实验收"));
+        assertEquals(AgentWorkflowAlertType.TASK_BLOCKED, alertSink.alerts().get(1).type());
     }
 
     @Test
@@ -709,10 +710,11 @@ class RequirementDeliveryEngineTest {
         assertTrue(stageRunStore.listByTask(task.taskId()).stream()
                 .filter(stage -> stage.role() != AgentRole.REQUIREMENT_REVIEWER)
                 .allMatch(stage -> stage.status() == AgentStageStatus.PENDING));
-        assertEquals(1, alertSink.alerts().size());
+        assertEquals(2, alertSink.alerts().size());
         AgentWorkflowAlert alert = alertSink.alerts().getFirst();
         assertEquals(AgentWorkflowAlertType.STAGE_FAILED_NEEDS_HUMAN, alert.type());
         assertEquals("REQUIREMENT_REVIEWER", alert.metadata().get("role"));
+        assertEquals(AgentWorkflowAlertType.TASK_BLOCKED, alertSink.alerts().get(1).type());
     }
 
     @Test

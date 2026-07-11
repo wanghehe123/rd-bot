@@ -40,6 +40,30 @@ class InMemoryAgentStageRunStoreTest {
     }
 
     @Test
+    void shouldBatchListOnlyTheRequestedTaskRuns() {
+        AgentStageRunStore store = new InMemoryAgentStageRunStore();
+        AgentStageRun first = store.save(AgentStageRun.pending(
+                "stage-1001",
+                "task-1001",
+                AgentRole.REQUIREMENT_REVIEWER,
+                1,
+                "task-1001:REQUIREMENT_REVIEWER:1",
+                1_783_000_000_000L
+        ));
+        store.save(AgentStageRun.pending(
+                "stage-1002",
+                "task-1002",
+                AgentRole.CODING_AGENT,
+                1,
+                "task-1002:CODING_AGENT:1",
+                1_783_000_000_001L
+        ));
+
+        assertEquals(List.of(first), store.listByTasks(List.of("task-1001", "missing")));
+        assertEquals(List.of(), store.listByTasks(List.of()));
+    }
+
+    @Test
     void shouldProtectStageStatusTransitions() {
         AgentStageRunStore store = new InMemoryAgentStageRunStore();
         AgentStageRun run = store.save(AgentStageRun.pending(

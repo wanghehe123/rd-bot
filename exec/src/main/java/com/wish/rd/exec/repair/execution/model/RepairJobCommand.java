@@ -2,6 +2,7 @@ package com.wish.rd.exec.repair.execution.model;
 
 import com.wish.rd.exec.repair.execution.ExecutionJsonMaps;
 import java.util.Map;
+import java.util.List;
 
 /**
  * 修复执行命令，承载 RAG 上下文、工单信息、仓库信息和执行策略。
@@ -18,6 +19,7 @@ import java.util.Map;
  * @param workBranch     修复工作分支
  * @param contextJson    RAG 上下文字段
  * @param policyJson     执行策略字段
+ * @param attachments    binary input attachments
  */
 public record RepairJobCommand(
         String repairRecordId,
@@ -31,7 +33,8 @@ public record RepairJobCommand(
         String baseBranch,
         String workBranch,
         Map<String, String> contextJson,
-        Map<String, String> policyJson
+        Map<String, String> policyJson,
+        List<RepairInputAttachment> attachments
 ) {
 
     public RepairJobCommand {
@@ -47,6 +50,28 @@ public record RepairJobCommand(
         workBranch = normalize(workBranch);
         contextJson = ExecutionJsonMaps.copy(contextJson);
         policyJson = ExecutionJsonMaps.copy(policyJson);
+        attachments = attachments == null ? List.of() : List.copyOf(attachments);
+    }
+
+    /** Backward-compatible constructor for jobs without binary inputs. */
+    public RepairJobCommand(
+            String repairRecordId,
+            String taskId,
+            String ticketId,
+            String ticketTitle,
+            String prompt,
+            String repositoryUrl,
+            String repoOwner,
+            String repoName,
+            String baseBranch,
+            String workBranch,
+            Map<String, String> contextJson,
+            Map<String, String> policyJson
+    ) {
+        this(
+                repairRecordId, taskId, ticketId, ticketTitle, prompt, repositoryUrl,
+                repoOwner, repoName, baseBranch, workBranch, contextJson, policyJson, List.of()
+        );
     }
 
     private static String requireId(String value, String fieldName) {

@@ -215,6 +215,55 @@ class RepairRagPipelineMockTest {
     }
 
     @Test
+    void scopesUnknownIntentRetrievalToProjectKnowledgeBase() {
+        InMemoryVectorStore vectorStore = new InMemoryVectorStore();
+        IngestionPipeline ingestionPipeline = RagRuntimeFactory.ingestionPipeline(vectorStore);
+        ingestionPipeline.ingest(DocumentSource.systemDocument(
+                "waimai-order-flow.md",
+                "waimai-kb",
+                "code-snippet",
+                """
+                外卖订单由顾客创建后，商家接单、骑手接单并更新配送状态。
+                订单接口位于 server/src/routes/orders.ts。
+                """.getBytes(StandardCharsets.UTF_8)
+        ));
+        ingestionPipeline.ingest(DocumentSource.systemDocument(
+                "inventory-order-flow.md",
+                "inventory-kb",
+                "code-snippet",
+                """
+                库存订单扣减完成后更新库存预留状态。
+                订单接口位于 inventory/OrderReservationService.java。
+                """.getBytes(StandardCharsets.UTF_8)
+        ));
+        IntentTree intentTree = new IntentTree(List.of(
+                IntentNode.builder()
+                        .id("user-system")
+                        .name("用户系统")
+                        .description("登录、注册、用户资料")
+                        .level(IntentLevel.SYSTEM)
+                        .knowledgeBaseIds(List.of("user-kb"))
+                        .examples(List.of("用户登录失败"))
+                        .build()
+        ));
+        RepairRagPipeline pipeline = RagRuntimeFactory.repairRagPipeline(vectorStore, intentTree, context -> {});
+
+        RepairContextPackage result = pipeline.prepareContext(new RepairRagRequest(
+                "ticket-project-kb",
+                "订单接口状态异常，骑手无法更新配送",
+                List.of(),
+                List.of("waimai-kb")
+        ));
+
+        assertTrue(result.primaryIntent().isEmpty());
+        assertTrue(result.searchChannels().contains("IntentDirectedVectorSearch"));
+        assertFalse(result.searchChannels().contains("GlobalVectorSearch"));
+        assertFalse(result.retrievedChunks().isEmpty());
+        assertTrue(result.retrievedChunks().stream()
+                .allMatch(chunk -> "waimai-kb".equals(chunk.knowledgeBaseId())));
+    }
+
+    @Test
     void promptsForMoreInformationWhenTicketIsAmbiguous() {
         InMemoryVectorStore vectorStore = new InMemoryVectorStore();
         IntentTree intentTree = new IntentTree(List.of(
@@ -247,5 +296,49 @@ class RepairRagPipelineMockTest {
         assertTrue(result.guidanceDecision().prompt().contains("支付系统"));
         assertTrue(result.guidanceDecision().prompt().contains("订单系统"));
         assertTrue(result.retrievedChunks().isEmpty());
+    }
+
+    @Test
+    void retrievesProjectKnowledgeBaseWhenIntentIsAmbiguous() {
+        InMemoryVectorStore vectorStore = new InMemoryVectorStore();
+        IngestionPipeline ingestionPipeline = RagRuntimeFactory.ingestionPipeline(vectorStore);
+        ingestionPipeline.ingest(DocumentSource.systemDocument(
+                "waimai-orders.md",
+                "waimai-kb",
+                "code-snippet",
+                "外卖订单创建接口为 POST /api/orders，路由位于 server/src/routes/orders.ts。".getBytes(StandardCharsets.UTF_8)
+        ));
+        IntentTree intentTree = new IntentTree(List.of(
+                IntentNode.builder()
+                        .id("payment-system")
+                        .name("支付系统")
+                        .description("接口 500 超时 异常")
+                        .level(IntentLevel.SYSTEM)
+                        .knowledgeBaseIds(List.of("payment-system"))
+                        .examples(List.of("接口 500"))
+                        .build(),
+                IntentNode.builder()
+                        .id("order-system")
+                        .name("订单系统")
+                        .description("接口 500 超时 异常")
+                        .level(IntentLevel.SYSTEM)
+                        .knowledgeBaseIds(List.of("order-system"))
+                        .examples(List.of("接口 500"))
+                        .build()
+        ));
+        RepairRagPipeline pipeline = RagRuntimeFactory.repairRagPipeline(vectorStore, intentTree, context -> { });
+
+        RepairContextPackage result = pipeline.prepareContext(new RepairRagRequest(
+                "ticket-project-ambiguous",
+                "接口 500，帮忙看一下",
+                List.of(),
+                List.of("waimai-kb")
+        ));
+
+        assertEquals(GuidanceDecision.Action.PROMPT, result.guidanceDecision().action());
+        assertTrue(result.searchChannels().contains("IntentDirectedVectorSearch"));
+        assertFalse(result.retrievedChunks().isEmpty());
+        assertTrue(result.retrievedChunks().stream()
+                .allMatch(chunk -> "waimai-kb".equals(chunk.knowledgeBaseId())));
     }
 }

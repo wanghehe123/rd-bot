@@ -22,4 +22,17 @@ public interface RepairAuditQueryPort {
      * @return audit event snapshot
      */
     List<RepairAuditEvent> eventsByRepairRecordId(String repairRecordId);
+
+    /**
+     * Lists audit events for one RD task.
+     *
+     * @param taskId RD task ID
+     * @return audit event snapshot
+     */
+    default List<RepairAuditEvent> eventsByTaskId(String taskId) {
+        String safeTaskId = taskId == null ? "" : taskId.strip();
+        return events().stream()
+                .filter(event -> safeTaskId.equals(event.taskId()))
+                .toList();
+    }
 }

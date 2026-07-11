@@ -11,6 +11,7 @@ package com.wish.rd.rag.project.model;
  * @param repoName      仓库名，留空时从 repositoryUrl 解析
  * @param defaultBranch 默认基准分支
  * @param enabled       是否启用
+ * @param knowledgeBaseId 可选的项目知识库 ID
  */
 public record RdProjectCommand(
         String projectKey,
@@ -20,7 +21,8 @@ public record RdProjectCommand(
         String repoOwner,
         String repoName,
         String defaultBranch,
-        boolean enabled
+        boolean enabled,
+        String knowledgeBaseId
 ) {
 
     public RdProjectCommand {
@@ -31,6 +33,23 @@ public record RdProjectCommand(
         repoOwner = safe(repoOwner);
         repoName = safe(repoName);
         defaultBranch = safe(defaultBranch);
+        knowledgeBaseId = safe(knowledgeBaseId);
+    }
+
+    /**
+     * 兼容未绑定知识库的既有项目调用方。
+     */
+    public RdProjectCommand(
+            String projectKey,
+            String name,
+            String description,
+            String repositoryUrl,
+            String repoOwner,
+            String repoName,
+            String defaultBranch,
+            boolean enabled
+    ) {
+        this(projectKey, name, description, repositoryUrl, repoOwner, repoName, defaultBranch, enabled, "");
     }
 
     private static String normalizeKey(String value) {

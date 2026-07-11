@@ -79,6 +79,9 @@ public final class PostgresRdProjectStore implements RdProjectStore {
         row.repoOwner = project.repoOwner();
         row.repoName = project.repoName();
         row.defaultBranch = project.defaultBranch();
+        row.knowledgeBaseId = project.knowledgeBaseId().isBlank()
+                ? null
+                : PostgresPersistenceSupport.parseId(project.knowledgeBaseId());
         row.enabled = project.enabled();
         row.deleted = project.deleted();
         row.createdAt = PostgresPersistenceSupport.toDateTime(project.createTimeEpochMillis());
@@ -99,7 +102,8 @@ public final class PostgresRdProjectStore implements RdProjectStore {
                 row.enabled != null && row.enabled,
                 row.deleted != null && row.deleted,
                 PostgresPersistenceSupport.toEpochMillis(row.createdAt),
-                PostgresPersistenceSupport.toEpochMillis(row.updatedAt)
+                PostgresPersistenceSupport.toEpochMillis(row.updatedAt),
+                row.knowledgeBaseId == null ? "" : PostgresPersistenceSupport.idString(row.knowledgeBaseId)
         );
     }
 }

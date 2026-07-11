@@ -27,8 +27,8 @@ import com.wish.rd.rag.pipeline.model.RepairRagRequest;
  * <ol>
  *   <li>用 {@link TextAnalyzer} 把描述与日志合并成查询文本；</li>
  *   <li>调用 {@link IntentClassifier#rank} 对意图节点评分排序，取首个得分为正者作为主意图；</li>
- *   <li>调用 {@link IntentGuidanceService#decide} 判断是否需要"歧义引导"——
- *       当头部意图得分过于接近时，直接返回提示语而不进入检索；</li>
+     *   <li>调用 {@link IntentGuidanceService#decide} 判断是否需要"歧义引导"——
+     *       当头部意图得分过于接近且项目未绑定知识库时，直接返回提示语而不进入检索；</li>
  *   <li>否则触发 {@link MultiChannelRetrievalEngine} 并行检索并去重排序，打包成上下文；</li>
  *   <li>最后通过 {@link RepairTaskContextPort} 把上下文交给执行层（当前 MVP 为空实现，作为后续交接边界）。</li>
  * </ol>
@@ -61,7 +61,7 @@ public final class RepairRagPipeline {
      * <p>标注 {@link RagTraceNode} 表示该方法会被纳入链路追踪记录。
      *
      * @param request 修复请求，含工单 ID、描述与日志
-     * @return 打包好的修复上下文；歧义引导命中时只携带提示语，不携带检索结果
+     * @return 打包好的修复上下文；未绑定项目知识库的歧义引导命中时只携带提示语
      */
     @RagTraceNode(value = "repair-rag-pipeline", category = "rag")
     public RepairContextPackage prepareContext(RepairRagRequest request) {
@@ -74,9 +74,10 @@ public final class RepairRagPipeline {
                 .filter(score -> score.score() > 0.0d)
                 .findFirst();
 
-        // 4. 歧义引导：头部意图得分过于接近时，要求用户补充信息，直接返回提示
+        // 4. 歧义引导：无项目范围时要求补充信息；项目已绑定知识库时仍在受限范围内检索证据。
         GuidanceDecision guidanceDecision = guidanceService.decide(rankedIntents);
-        if (guidanceDecision.action() == GuidanceDecision.Action.PROMPT) {
+        if (guidanceDecision.action() == GuidanceDecision.Action.PROMPT
+                && request.projectKnowledgeBaseIds().isEmpty()) {
             return new RepairContextPackage(
                     request.ticketId(),
                     primaryIntent,
@@ -88,7 +89,12 @@ public final class RepairRagPipeline {
         }
 
         // 5. 触发多通道并行检索（向量/关键词/日志/代码），返回去重排序后的证据块
-        RetrievalBundle retrievalBundle = retrievalEngine.retrieve(new RetrievalRequest(query, primaryIntent, 8));
+        RetrievalBundle retrievalBundle = retrievalEngine.retrieve(new RetrievalRequest(
+                query,
+                primaryIntent,
+                request.projectKnowledgeBaseIds(),
+                8
+        ));
         // 6. 打包为上下文并回调执行层端口（当前 MVP 为空实现）
         RepairContextPackage contextPackage = new RepairContextPackage(
                 request.ticketId(),

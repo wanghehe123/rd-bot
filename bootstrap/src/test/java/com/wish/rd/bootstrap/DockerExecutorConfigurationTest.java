@@ -50,7 +50,7 @@ class DockerExecutorConfigurationTest {
         assertEquals("bridge", properties.getNetworkMode());
         assertTrue(properties.isRemoveAfterExit());
         assertEquals(1_800_000L, properties.getTimeoutAlertMillis());
-        assertEquals(0, new BigDecimal("5.00").compareTo(properties.getBudgetAlertUsd()));
+        assertEquals(0, new BigDecimal("36.00").compareTo(properties.getBudgetAlertCny()));
         assertTrue(properties.getCircuitBreaker().isEnabled());
         assertEquals(3, properties.getCircuitBreaker().getFailureThreshold());
         assertEquals(60_000L, properties.getCircuitBreaker().getOpenDurationMillis());

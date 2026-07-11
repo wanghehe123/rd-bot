@@ -114,14 +114,22 @@ public class RepairOperationController {
      */
     @GetMapping("/admin/operations/audit-events")
     public List<RepairAuditEventView> auditEvents(
-            @RequestParam(value = "repairRecordId", required = false) String repairRecordId
+            @RequestParam(value = "repairRecordId", required = false) String repairRecordId,
+            @RequestParam(value = "taskId", required = false) String taskId
     ) {
         if (auditQueryPort == null) {
             return List.of();
         }
-        List<RepairAuditEvent> events = repairRecordId == null || repairRecordId.isBlank()
-                ? auditQueryPort.events()
-                : auditQueryPort.eventsByRepairRecordId(repairRecordId);
+        boolean hasRepairRecordId = repairRecordId != null && !repairRecordId.isBlank();
+        boolean hasTaskId = taskId != null && !taskId.isBlank();
+        if (hasRepairRecordId && hasTaskId) {
+            throw new IllegalArgumentException("repairRecordId and taskId cannot be used together");
+        }
+        List<RepairAuditEvent> events = hasTaskId
+                ? auditQueryPort.eventsByTaskId(taskId)
+                : hasRepairRecordId
+                        ? auditQueryPort.eventsByRepairRecordId(repairRecordId)
+                        : auditQueryPort.events();
         return events.stream()
                 .map(RepairOperationController::toAuditView)
                 .toList();
@@ -178,6 +186,11 @@ public class RepairOperationController {
     @ExceptionHandler(IllegalStateException.class)
     public ResponseEntity<Map<String, String>> conflict(IllegalStateException exception) {
         return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of("message", exception.getMessage()));
+    }
+
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<Map<String, String>> badRequest(IllegalArgumentException exception) {
+        return ResponseEntity.badRequest().body(Map.of("message", exception.getMessage()));
     }
 
     /**

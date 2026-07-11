@@ -3,6 +3,8 @@ package com.wish.rd.bootstrap.controller.admin.rdtask;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wish.rd.bootstrap.executor.DockerExecutorProperties;
+import com.wish.rd.bootstrap.financial.FinancialProperties;
+import com.wish.rd.engine.agent.AgentStageProgressCalculator;
 import com.wish.rd.engine.agent.AgentStageArtifactStore;
 import com.wish.rd.engine.agent.AgentStageRunStore;
 import com.wish.rd.engine.agent.impl.InMemoryAgentStageArtifactStore;
@@ -10,8 +12,8 @@ import com.wish.rd.engine.agent.impl.InMemoryAgentStageRunStore;
 import com.wish.rd.engine.agent.model.AgentRole;
 import com.wish.rd.engine.agent.model.AgentStageArtifact;
 import com.wish.rd.engine.agent.model.AgentStageRun;
-import com.wish.rd.engine.agent.model.AgentStageStatus;
 import com.wish.rd.exec.repair.docker.impl.DockerExecutionRegistry;
+import com.wish.rd.exec.repair.alert.BudgetCurrencyConverter;
 import com.wish.rd.rag.context.RoleContextPackageStore;
 import com.wish.rd.rag.context.impl.InMemoryRoleContextPackageStore;
 import com.wish.rd.rag.context.model.RoleContextPackage;
@@ -47,14 +49,14 @@ public class RdTaskExecutionOverviewController {
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     private static final TypeReference<List<Map<String, Object>>> ATTEMPTS_TYPE = new TypeReference<>() {
     };
-    private static final int ROLE_STAGE_STEP_COUNT = 6;
-
     private final RagStreamTaskRegistry registry;
     private final AgentStageRunStore stageRunStore;
     private final AgentStageArtifactStore artifactStore;
     private final RoleContextPackageStore contextPackageStore;
     private final DockerExecutionRegistry executionRegistry;
     private final DockerExecutorProperties dockerExecutorProperties;
+    private final BudgetCurrencyConverter budgetCurrencyConverter;
+    private final AgentStageProgressCalculator stageProgressCalculator;
 
     @Autowired
     public RdTaskExecutionOverviewController(
@@ -63,7 +65,8 @@ public class RdTaskExecutionOverviewController {
             ObjectProvider<AgentStageArtifactStore> artifactStoreProvider,
             ObjectProvider<RoleContextPackageStore> contextPackageStoreProvider,
             ObjectProvider<DockerExecutionRegistry> executionRegistryProvider,
-            ObjectProvider<DockerExecutorProperties> dockerExecutorPropertiesProvider
+            ObjectProvider<DockerExecutorProperties> dockerExecutorPropertiesProvider,
+            ObjectProvider<FinancialProperties> financialPropertiesProvider
     ) {
         this(
                 registry,
@@ -71,7 +74,8 @@ public class RdTaskExecutionOverviewController {
                 artifactStoreProvider.getIfAvailable(InMemoryAgentStageArtifactStore::new),
                 contextPackageStoreProvider.getIfAvailable(InMemoryRoleContextPackageStore::new),
                 executionRegistryProvider.getIfAvailable(DockerExecutionRegistry::noop),
-                dockerExecutorPropertiesProvider.getIfAvailable(DockerExecutorProperties::new)
+                dockerExecutorPropertiesProvider.getIfAvailable(DockerExecutorProperties::new),
+                financialPropertiesProvider.getIfAvailable(FinancialProperties::new).toBudgetCurrencyConverter()
         );
     }
 
@@ -88,7 +92,8 @@ public class RdTaskExecutionOverviewController {
                 new InMemoryAgentStageArtifactStore(),
                 contextPackageStore,
                 executionRegistry,
-                dockerExecutorProperties
+                dockerExecutorProperties,
+                new FinancialProperties().toBudgetCurrencyConverter()
         );
     }
 
@@ -100,6 +105,26 @@ public class RdTaskExecutionOverviewController {
             DockerExecutionRegistry executionRegistry,
             DockerExecutorProperties dockerExecutorProperties
     ) {
+        this(
+                registry,
+                stageRunStore,
+                artifactStore,
+                contextPackageStore,
+                executionRegistry,
+                dockerExecutorProperties,
+                new FinancialProperties().toBudgetCurrencyConverter()
+        );
+    }
+
+    public RdTaskExecutionOverviewController(
+            RagStreamTaskRegistry registry,
+            AgentStageRunStore stageRunStore,
+            AgentStageArtifactStore artifactStore,
+            RoleContextPackageStore contextPackageStore,
+            DockerExecutionRegistry executionRegistry,
+            DockerExecutorProperties dockerExecutorProperties,
+            BudgetCurrencyConverter budgetCurrencyConverter
+    ) {
         this.registry = registry;
         this.stageRunStore = stageRunStore == null ? new InMemoryAgentStageRunStore() : stageRunStore;
         this.artifactStore = artifactStore == null ? new InMemoryAgentStageArtifactStore() : artifactStore;
@@ -110,15 +135,23 @@ public class RdTaskExecutionOverviewController {
         this.dockerExecutorProperties = dockerExecutorProperties == null
                 ? new DockerExecutorProperties()
                 : dockerExecutorProperties;
+        this.budgetCurrencyConverter = budgetCurrencyConverter == null
+                ? new FinancialProperties().toBudgetCurrencyConverter()
+                : budgetCurrencyConverter;
+        this.stageProgressCalculator = new AgentStageProgressCalculator();
     }
 
     @GetMapping("/admin/rd-tasks/{taskId}/execution-overview")
     public RdTaskExecutionOverviewView getExecutionOverview(@PathVariable("taskId") String taskId) {
         RdTask task = findTask(taskId);
         long now = System.currentTimeMillis();
-        List<AgentStageRun> stageRuns = sortedStageRuns(task.taskId());
+        List<AgentRole> stageOrder = stageOrder(task);
+        List<AgentStageRun> stageRuns = sortedStageRuns(task.taskId(), stageOrder);
         Map<String, AgentStageArtifact> artifactById = artifactsById(task.taskId());
-        Map<AgentRole, AgentStageRun> latestByRole = latestByRole(stageRuns);
+        AgentStageProgressCalculator.AgentStageProgress stageProgress = stageProgressCalculator.calculate(
+                task.taskType(),
+                stageRuns
+        );
         List<RoleContextPackage> contextPackages = contextPackageStore.listByTask(task.taskId());
         ExecutionBudgetView budget = budget(contextPackages, stageRuns);
         List<StageRunView> stageViews = stageRuns.stream()
@@ -138,9 +171,6 @@ public class RdTaskExecutionOverviewController {
                         execution.outputDirectory() == null ? "" : execution.outputDirectory().toString()
                 ))
                 .toList();
-        AgentStageRun current = currentStageRun(latestByRole);
-        int progressTotal = AgentRole.requirementDeliveryOrder().size() * ROLE_STAGE_STEP_COUNT;
-        int progressCompleted = progressCompleted(latestByRole);
         long elapsedMillis = Math.max(0L, (isTaskTerminal(task.status()) ? task.updateTimeEpochMillis() : now)
                 - task.createTimeEpochMillis());
 
@@ -150,10 +180,10 @@ public class RdTaskExecutionOverviewController {
                 task.status().name(),
                 task.title(),
                 elapsedMillis,
-                progressCompleted,
-                progressTotal,
-                current == null ? "" : current.role().name(),
-                current == null ? "" : current.status().name(),
+                stageProgress.completedSteps(),
+                stageProgress.totalSteps(),
+                stageProgress.currentRole(),
+                stageProgress.currentStatus(),
                 budget,
                 stageViews,
                 runningExecutions
@@ -168,25 +198,16 @@ public class RdTaskExecutionOverviewController {
         }
     }
 
-    private List<AgentStageRun> sortedStageRuns(String taskId) {
-        Map<AgentRole, Integer> roleOrder = roleOrder();
+    private List<AgentStageRun> sortedStageRuns(String taskId, List<AgentRole> stageOrder) {
+        Map<AgentRole, Integer> roleOrder = roleOrder(stageOrder);
         return stageRunStore.listByTask(taskId).stream()
+                .filter(run -> stageOrder.contains(run.role()))
                 .sorted(Comparator
                         .comparingInt((AgentStageRun run) -> roleOrder.getOrDefault(run.role(), 99))
                         .thenComparingInt(AgentStageRun::attemptNo)
                         .thenComparingLong(AgentStageRun::createTimeEpochMillis)
                         .thenComparing(AgentStageRun::stageRunId))
                 .toList();
-    }
-
-    private Map<AgentRole, AgentStageRun> latestByRole(List<AgentStageRun> stageRuns) {
-        return stageRuns.stream()
-                .collect(Collectors.toMap(
-                        AgentStageRun::role,
-                        Function.identity(),
-                        (left, right) -> compareAttempt(left, right) >= 0 ? left : right,
-                        LinkedHashMap::new
-                ));
     }
 
     private Map<String, AgentStageArtifact> artifactsById(String taskId) {
@@ -199,47 +220,14 @@ public class RdTaskExecutionOverviewController {
                 ));
     }
 
-    private AgentStageRun currentStageRun(Map<AgentRole, AgentStageRun> latestByRole) {
-        for (AgentRole role : AgentRole.requirementDeliveryOrder()) {
-            AgentStageRun run = latestByRole.get(role);
-            if (run != null && run.status() != AgentStageStatus.SUCCEEDED) {
-                return run;
-            }
-        }
-        return latestByRole.values().stream()
-                .max(RdTaskExecutionOverviewController::compareAttempt)
-                .orElse(null);
-    }
-
-    private int progressCompleted(Map<AgentRole, AgentStageRun> latestByRole) {
-        int completed = 0;
-        for (AgentRole role : AgentRole.requirementDeliveryOrder()) {
-            completed += progressStep(latestByRole.get(role));
-        }
-        return Math.min(completed, AgentRole.requirementDeliveryOrder().size() * ROLE_STAGE_STEP_COUNT);
-    }
-
-    private int progressStep(AgentStageRun run) {
-        if (run == null || run.status() == null) {
-            return 0;
-        }
-        return switch (run.status()) {
-            case PENDING -> 0;
-            case CONTEXT_READY -> 1;
-            case DISPATCHING, RECOVERING -> 2;
-            case RUNNING -> 3;
-            case RESULT_COLLECTING -> 4;
-            case VERIFYING -> 5;
-            case SUCCEEDED, FAILED_RETRYABLE, FAILED_NEEDS_HUMAN, SKIPPED, CANCELLED -> 6;
-        };
-    }
-
     private StageRunView toStageRunView(
             AgentStageRun stageRun,
             long now,
             Map<String, AgentStageArtifact> artifactById
     ) {
-        List<Map<String, Object>> providerAttempts = providerAttempts(stageRun.providerAttemptsJson());
+        List<Map<String, Object>> providerAttempts = providerAttemptsCny(
+                providerAttempts(stageRun.providerAttemptsJson())
+        );
         long elapsedMillis = elapsedMillis(stageRun, now);
         AgentStageArtifact resultArtifact = artifactById.get(stageRun.resultArtifactId());
         String resultPreview = resultPreview(stageRun, resultArtifact);
@@ -255,7 +243,7 @@ public class RdTaskExecutionOverviewController {
                 stageRun.promptArtifactId(),
                 stageRun.resultArtifactId(),
                 stageRun.providerName(),
-                stageRun.providerAttemptsJson(),
+                providerAttemptsJson(providerAttempts),
                 providerAttempts,
                 stageRun.reviewResultJson(),
                 !resultPreview.isBlank(),
@@ -290,13 +278,14 @@ public class RdTaskExecutionOverviewController {
         int contextMaxChars = contextPackages.stream()
                 .mapToInt(RoleContextPackage::maxChars)
                 .sum();
-        BigDecimal estimatedSpend = stageRuns.stream()
+        BigDecimal estimatedSpendCny = stageRuns.stream()
                 .flatMap(run -> providerAttempts(run.providerAttemptsJson()).stream())
                 .map(RdTaskExecutionOverviewController::estimatedSpend)
+                .map(budgetCurrencyConverter::usdToCny)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
-        BigDecimal budgetAlertUsd = dockerExecutorProperties.getBudgetAlertUsd() == null
+        BigDecimal budgetAlertCny = dockerExecutorProperties.getBudgetAlertCny() == null
                 ? BigDecimal.ZERO
-                : dockerExecutorProperties.getBudgetAlertUsd();
+                : dockerExecutorProperties.getBudgetAlertCny();
         double contextUsageRatio = contextMaxChars <= 0
                 ? 0D
                 : BigDecimal.valueOf(contextUsedChars)
@@ -306,9 +295,9 @@ public class RdTaskExecutionOverviewController {
                 contextUsedChars,
                 contextMaxChars,
                 contextUsageRatio,
-                estimatedSpend,
-                budgetAlertUsd,
-                estimatedSpend.compareTo(BigDecimal.ZERO) > 0
+                estimatedSpendCny,
+                budgetAlertCny,
+                estimatedSpendCny.compareTo(BigDecimal.ZERO) > 0
         );
     }
 
@@ -345,6 +334,31 @@ public class RdTaskExecutionOverviewController {
         return BigDecimal.ZERO;
     }
 
+    private List<Map<String, Object>> providerAttemptsCny(List<Map<String, Object>> rawAttempts) {
+        return rawAttempts.stream().map(rawAttempt -> {
+            Map<String, Object> visibleAttempt = new LinkedHashMap<>(rawAttempt);
+            BigDecimal estimatedSpendCny = budgetCurrencyConverter.usdToCny(estimatedSpend(rawAttempt));
+            visibleAttempt.remove("estimatedSpendUsd");
+            visibleAttempt.remove("estimatedSpend");
+            visibleAttempt.remove("costUsd");
+            visibleAttempt.remove("totalCostUsd");
+            visibleAttempt.remove("cost");
+            if (estimatedSpendCny.signum() > 0) {
+                visibleAttempt.put("currency", "CNY");
+                visibleAttempt.put("estimatedSpendCny", estimatedSpendCny);
+            }
+            return visibleAttempt;
+        }).toList();
+    }
+
+    private static String providerAttemptsJson(List<Map<String, Object>> providerAttempts) {
+        try {
+            return OBJECT_MAPPER.writeValueAsString(providerAttempts);
+        } catch (Exception exception) {
+            return "[]";
+        }
+    }
+
     private static BigDecimal decimal(Object value) {
         if (value instanceof Number number) {
             return BigDecimal.valueOf(number.doubleValue());
@@ -369,18 +383,6 @@ public class RdTaskExecutionOverviewController {
                 || status == RdTaskStatus.DELETED;
     }
 
-    private static int compareAttempt(AgentStageRun left, AgentStageRun right) {
-        int attempt = Integer.compare(left.attemptNo(), right.attemptNo());
-        if (attempt != 0) {
-            return attempt;
-        }
-        int created = Long.compare(left.createTimeEpochMillis(), right.createTimeEpochMillis());
-        if (created != 0) {
-            return created;
-        }
-        return left.stageRunId().compareTo(right.stageRunId());
-    }
-
     private static int compareArtifact(AgentStageArtifact left, AgentStageArtifact right) {
         int created = Long.compare(left.createdAtEpochMillis(), right.createdAtEpochMillis());
         if (created != 0) {
@@ -389,9 +391,14 @@ public class RdTaskExecutionOverviewController {
         return left.artifactId().compareTo(right.artifactId());
     }
 
-    private static Map<AgentRole, Integer> roleOrder() {
+    private static List<AgentRole> stageOrder(RdTask task) {
+        return "BUG_FIX".equals(task.taskType())
+                ? AgentRole.bugFixOrder()
+                : AgentRole.requirementDeliveryOrder();
+    }
+
+    private static Map<AgentRole, Integer> roleOrder(List<AgentRole> roles) {
         Map<AgentRole, Integer> order = new LinkedHashMap<>();
-        List<AgentRole> roles = AgentRole.requirementDeliveryOrder();
         for (int index = 0; index < roles.size(); index++) {
             order.put(roles.get(index), index);
         }
@@ -418,8 +425,8 @@ public class RdTaskExecutionOverviewController {
             int contextUsedChars,
             int contextMaxChars,
             double contextUsageRatio,
-            BigDecimal estimatedSpendUsd,
-            BigDecimal budgetAlertUsd,
+            BigDecimal estimatedSpendCny,
+            BigDecimal budgetAlertCny,
             boolean costAvailable
     ) {
     }

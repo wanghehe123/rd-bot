@@ -26,7 +26,7 @@ class RepairExecutionWatchdogTest {
     void shouldEmitTimeoutWarningWhenElapsedMillisExceedsThreshold() {
         RecordingAlertSink alertSink = new RecordingAlertSink();
         RepairExecutionWatchdog watchdog = new RepairExecutionWatchdog(
-                new RepairExecutionWatchdog.Policy(1_000L, new BigDecimal("5.00")),
+                new RepairExecutionWatchdog.Policy(1_000L, new BigDecimal("36.00")),
                 alertSink
         );
 
@@ -55,7 +55,7 @@ class RepairExecutionWatchdogTest {
     void shouldEmitBudgetWarningWhenEstimatedSpendExceedsThreshold() {
         RecordingAlertSink alertSink = new RecordingAlertSink();
         RepairExecutionWatchdog watchdog = new RepairExecutionWatchdog(
-                new RepairExecutionWatchdog.Policy(1_000L, new BigDecimal("5.00")),
+                new RepairExecutionWatchdog.Policy(1_000L, new BigDecimal("36.00")),
                 alertSink
         );
 
@@ -63,7 +63,7 @@ class RepairExecutionWatchdogTest {
                 "repair-1001",
                 "task-1001",
                 100L,
-                new BigDecimal("5.01"),
+                new BigDecimal("36.01"),
                 10_000L
         );
 
@@ -72,15 +72,16 @@ class RepairExecutionWatchdogTest {
         RepairAlert alert = result.alerts().getFirst();
         assertEquals(RepairAlertType.BUDGET_WARNING, alert.type());
         assertEquals("repair execution estimated spend exceeded warning threshold", alert.message());
-        assertEquals("5.01", alert.metadata().get("estimatedSpend"));
-        assertEquals("5.00", alert.metadata().get("thresholdSpend"));
+        assertEquals("CNY", alert.metadata().get("currency"));
+        assertEquals("36.01", alert.metadata().get("estimatedSpendCny"));
+        assertEquals("36.00", alert.metadata().get("thresholdSpendCny"));
     }
 
     @Test
     void shouldNotEmitWarningsAtExactThresholds() {
         RecordingAlertSink alertSink = new RecordingAlertSink();
         RepairExecutionWatchdog watchdog = new RepairExecutionWatchdog(
-                new RepairExecutionWatchdog.Policy(1_000L, new BigDecimal("5.00")),
+                new RepairExecutionWatchdog.Policy(1_000L, new BigDecimal("36.00")),
                 alertSink
         );
 
@@ -88,7 +89,7 @@ class RepairExecutionWatchdogTest {
                 "repair-1001",
                 "task-1001",
                 1_000L,
-                new BigDecimal("5.00"),
+                new BigDecimal("36.00"),
                 10_000L
         );
 
@@ -101,7 +102,7 @@ class RepairExecutionWatchdogTest {
     void shouldNotEmitDuplicateAlertsForSameTaskAndAlertType() {
         RecordingAlertSink alertSink = new RecordingAlertSink();
         RepairExecutionWatchdog watchdog = new RepairExecutionWatchdog(
-                new RepairExecutionWatchdog.Policy(1_000L, new BigDecimal("5.00")),
+                new RepairExecutionWatchdog.Policy(1_000L, new BigDecimal("36.00")),
                 alertSink
         );
 
@@ -109,14 +110,14 @@ class RepairExecutionWatchdogTest {
                 "repair-1001",
                 "task-1001",
                 2_000L,
-                new BigDecimal("10.00"),
+                new BigDecimal("40.00"),
                 10_000L
         );
         RepairExecutionWatchdog.EvaluationResult second = watchdog.evaluate(
                 "repair-1001",
                 "task-1001",
                 3_000L,
-                new BigDecimal("11.00"),
+                new BigDecimal("41.00"),
                 11_000L
         );
 
@@ -129,7 +130,7 @@ class RepairExecutionWatchdogTest {
     void shouldRetryAlertWhenSinkPublishFails() {
         FailsOnceAlertSink alertSink = new FailsOnceAlertSink();
         RepairExecutionWatchdog watchdog = new RepairExecutionWatchdog(
-                new RepairExecutionWatchdog.Policy(1_000L, new BigDecimal("5.00")),
+                new RepairExecutionWatchdog.Policy(1_000L, new BigDecimal("36.00")),
                 alertSink
         );
 

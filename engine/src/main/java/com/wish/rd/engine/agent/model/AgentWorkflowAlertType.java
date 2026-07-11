@@ -4,6 +4,10 @@ package com.wish.rd.engine.agent.model;
  * 多 Agent 工作流告警类型。
  */
 public enum AgentWorkflowAlertType {
+    TASK_COMPLETED,
+    TASK_BLOCKED,
+    TASK_FAILED,
+    RETRY_EXHAUSTED,
     STAGE_FAILED_RETRYABLE,
     STAGE_FAILED_NEEDS_HUMAN,
     PROVIDER_FALLBACK,

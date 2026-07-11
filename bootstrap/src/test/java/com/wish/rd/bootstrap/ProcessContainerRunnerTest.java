@@ -43,7 +43,7 @@ class ProcessContainerRunnerTest {
         assertEquals("bridge", properties.getNetworkMode());
         assertTrue(properties.isRemoveAfterExit());
         assertEquals(1_800_000L, properties.getTimeoutAlertMillis());
-        assertEquals(0, new BigDecimal("5.00").compareTo(properties.getBudgetAlertUsd()));
+        assertEquals(0, new BigDecimal("36.00").compareTo(properties.getBudgetAlertCny()));
         assertEquals(
                 List.of("claude", "-p", "--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose"),
                 properties.claudeCommand()

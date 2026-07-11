@@ -2,6 +2,8 @@ package com.wish.rd.bootstrap.controller.admin.project;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
+import com.wish.rd.rag.knowledge.model.KnowledgeBase;
+import com.wish.rd.rag.knowledge.store.KnowledgeBaseStore;
 import com.wish.rd.rag.project.model.RdProject;
 import com.wish.rd.rag.project.model.RdProjectCommand;
 import com.wish.rd.rag.project.RdProjectService;
@@ -38,7 +40,10 @@ class RdProjectControllerTest {
 
     @BeforeEach
     void setUp() {
-        RdProjectService service = new RdProjectService(generator(), new FakeRdProjectStore());
+        FakeKnowledgeBaseStore knowledgeBases = new FakeKnowledgeBaseStore();
+        knowledgeBases.save(new KnowledgeBase("waimai-kb", "waimai", "", true, 1L));
+        knowledgeBases.save(new KnowledgeBase("disabled-kb", "停用知识库", "", false, 1L));
+        RdProjectService service = new RdProjectService(generator(), new FakeRdProjectStore(), knowledgeBases);
         mockMvc = MockMvcBuilders.standaloneSetup(new RdProjectController(service)).build();
     }
 
@@ -50,7 +55,8 @@ class RdProjectControllerTest {
                 "description", "外卖订单验收仓库",
                 "repositoryUrl", "https://github.com/example/waimai.git",
                 "defaultBranch", "main",
-                "enabled", true
+                "enabled", true,
+                "knowledgeBaseId", "waimai-kb"
         ));
 
         String response = mockMvc.perform(post("/admin/projects")
@@ -60,6 +66,7 @@ class RdProjectControllerTest {
                 .andExpect(jsonPath("$.projectKey", is("waimai")))
                 .andExpect(jsonPath("$.repoOwner", is("example")))
                 .andExpect(jsonPath("$.repoName", is("waimai")))
+                .andExpect(jsonPath("$.knowledgeBaseId", is("waimai-kb")))
                 .andReturn().getResponse().getContentAsString();
         String projectId = com.jayway.jsonpath.JsonPath.read(response, "$.projectId");
 
@@ -76,11 +83,13 @@ class RdProjectControllerTest {
                                 "description", "更新描述",
                                 "repositoryUrl", "https://github.com/example/waimai.git",
                                 "defaultBranch", "develop",
-                                "enabled", true
+                                "enabled", true,
+                                "knowledgeBaseId", ""
                         ))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.name", is("外卖系统 Pro")))
-                .andExpect(jsonPath("$.defaultBranch", is("develop")));
+                .andExpect(jsonPath("$.defaultBranch", is("develop")))
+                .andExpect(jsonPath("$.knowledgeBaseId", is("")));
 
         mockMvc.perform(delete("/admin/projects/{projectId}", projectId))
                 .andExpect(status().isOk())
@@ -102,6 +111,30 @@ class RdProjectControllerTest {
                         ))))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.message", containsString("repositoryUrl")));
+    }
+
+    @Test
+    void shouldRejectUnknownOrDisabledKnowledgeBase() throws Exception {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("projectKey", "waimai");
+        payload.put("name", "外卖系统");
+        payload.put("repositoryUrl", "https://github.com/example/waimai.git");
+        payload.put("defaultBranch", "main");
+        payload.put("enabled", true);
+        payload.put("knowledgeBaseId", "not-found");
+
+        mockMvc.perform(post("/admin/projects")
+                        .contentType(APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(payload)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message", containsString("knowledge base not found")));
+
+        payload.put("knowledgeBaseId", "disabled-kb");
+        mockMvc.perform(post("/admin/projects")
+                        .contentType(APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(payload)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message", containsString("knowledge base is disabled")));
     }
 
     private static SnowflakeIdGenerator generator() {
@@ -134,6 +167,32 @@ class RdProjectControllerTest {
         @Override
         public List<RdProject> list() {
             return List.copyOf(projects.values());
+        }
+    }
+
+    private static final class FakeKnowledgeBaseStore implements KnowledgeBaseStore {
+
+        private final Map<String, KnowledgeBase> bases = new LinkedHashMap<>();
+
+        @Override
+        public KnowledgeBase save(KnowledgeBase base) {
+            bases.put(base.id(), base);
+            return base;
+        }
+
+        @Override
+        public Optional<KnowledgeBase> findById(String id) {
+            return Optional.ofNullable(bases.get(id));
+        }
+
+        @Override
+        public List<KnowledgeBase> list() {
+            return List.copyOf(bases.values());
+        }
+
+        @Override
+        public void delete(String id) {
+            bases.remove(id);
         }
     }
 }

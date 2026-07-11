@@ -198,10 +198,13 @@ CREATE INDEX IF NOT EXISTS idx_t_ingestion_pipeline_node_pipeline
     ON t_ingestion_pipeline_node (pipeline_id, id) WHERE deleted = 0;
 
 ALTER TABLE t_ingestion_pipeline_node
+    ALTER COLUMN id TYPE VARCHAR(64),
     ALTER COLUMN node_id TYPE VARCHAR(128),
     ALTER COLUMN pipeline_id TYPE VARCHAR(64),
     ALTER COLUMN node_type TYPE VARCHAR(64),
-    ALTER COLUMN next_node_id TYPE VARCHAR(128);
+    ALTER COLUMN next_node_id TYPE VARCHAR(128),
+    ALTER COLUMN created_by TYPE VARCHAR(128),
+    ALTER COLUMN updated_by TYPE VARCHAR(128);
 
 -- 项目管理：系统可交付项目及其仓库配置。项目配置是生产共享状态，禁止使用 in-memory 兜底。
 CREATE TABLE IF NOT EXISTS rd_projects (
@@ -223,6 +226,19 @@ CREATE UNIQUE INDEX IF NOT EXISTS uk_rd_projects_project_key_active
     ON rd_projects (project_key) WHERE deleted = FALSE;
 CREATE INDEX IF NOT EXISTS idx_rd_projects_enabled ON rd_projects (enabled, deleted, updated_at);
 CREATE INDEX IF NOT EXISTS idx_rd_projects_repo ON rd_projects (repo_owner, repo_name);
+ALTER TABLE rd_projects ADD COLUMN IF NOT EXISTS knowledge_base_id BIGINT;
+CREATE INDEX IF NOT EXISTS idx_rd_projects_knowledge_base ON rd_projects (knowledge_base_id)
+    WHERE knowledge_base_id IS NOT NULL;
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'fk_rd_projects_knowledge_base'
+    ) THEN
+        ALTER TABLE rd_projects
+            ADD CONSTRAINT fk_rd_projects_knowledge_base
+            FOREIGN KEY (knowledge_base_id) REFERENCES knowledge_bases(id) ON DELETE SET NULL;
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS rd_tasks (
     id                 BIGINT PRIMARY KEY,
@@ -296,6 +312,21 @@ CREATE TABLE IF NOT EXISTS rd_task_materials (
 
 CREATE INDEX IF NOT EXISTS idx_rd_task_materials_task ON rd_task_materials (task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_rd_task_materials_source ON rd_task_materials (source_type, source_uri);
+
+CREATE OR REPLACE FUNCTION enforce_rd_task_material_limit() RETURNS trigger AS $$
+BEGIN
+    PERFORM pg_advisory_xact_lock(NEW.task_id);
+    IF (SELECT count(*) FROM rd_task_materials WHERE task_id = NEW.task_id AND id <> NEW.id) >= 10 THEN
+        RAISE EXCEPTION 'task material limit exceeded: 10';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_rd_task_material_limit ON rd_task_materials;
+CREATE TRIGGER trg_rd_task_material_limit
+    BEFORE INSERT ON rd_task_materials
+    FOR EACH ROW EXECUTE FUNCTION enforce_rd_task_material_limit();
 
 CREATE TABLE IF NOT EXISTS repair_records (
     id             BIGINT PRIMARY KEY,
@@ -401,3 +432,93 @@ CREATE TABLE IF NOT EXISTS knowledge_refresh_metrics (
 
 CREATE INDEX IF NOT EXISTS idx_knowledge_refresh_metrics_doc ON knowledge_refresh_metrics (document_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_knowledge_refresh_metrics_success ON knowledge_refresh_metrics (success, created_at);
+
+-- Project-scoped Feishu alert routing and durable delivery audit.
+CREATE TABLE IF NOT EXISTS rd_project_alert_configs (
+    project_id            BIGINT PRIMARY KEY REFERENCES rd_projects(id) ON DELETE CASCADE,
+    enabled               BOOLEAN NOT NULL DEFAULT false,
+    recipients_json       JSONB NOT NULL DEFAULT '[]'::jsonb,
+    event_types_json      JSONB NOT NULL DEFAULT '[]'::jsonb,
+    budget_threshold_usd  NUMERIC(12, 4) NOT NULL DEFAULT 0,
+    failure_threshold     INTEGER NOT NULL DEFAULT 1 CHECK (failure_threshold > 0),
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- CNY is the production budget truth. The legacy USD value is retained solely
+-- as an idempotent migration source for databases created before this change.
+ALTER TABLE rd_project_alert_configs
+    ADD COLUMN IF NOT EXISTS budget_threshold_cny NUMERIC(12, 4);
+
+UPDATE rd_project_alert_configs
+SET budget_threshold_cny = ROUND(budget_threshold_usd * 7.20, 4)
+WHERE budget_threshold_cny IS NULL;
+
+ALTER TABLE rd_project_alert_configs
+    ALTER COLUMN budget_threshold_cny SET DEFAULT 0;
+ALTER TABLE rd_project_alert_configs
+    ALTER COLUMN budget_threshold_cny SET NOT NULL;
+
+CREATE TABLE IF NOT EXISTS rd_alert_deliveries (
+    id                    BIGINT PRIMARY KEY,
+    task_id               BIGINT NOT NULL REFERENCES rd_tasks(id) ON DELETE CASCADE,
+    project_id            BIGINT NOT NULL REFERENCES rd_projects(id) ON DELETE CASCADE,
+    alert_type            VARCHAR(64) NOT NULL,
+    recipient_type        VARCHAR(32) NOT NULL,
+    recipient_id          VARCHAR(256) NOT NULL,
+    status                VARCHAR(32) NOT NULL,
+    provider_message_id   VARCHAR(256) NOT NULL DEFAULT '',
+    failure_code          VARCHAR(128) NOT NULL DEFAULT '',
+    failure_message       TEXT NOT NULL DEFAULT '',
+    idempotency_key       VARCHAR(768) NOT NULL,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uk_rd_alert_deliveries_idempotency
+    ON rd_alert_deliveries (idempotency_key);
+CREATE INDEX IF NOT EXISTS idx_rd_alert_deliveries_task
+    ON rd_alert_deliveries (task_id, created_at);
+
+CREATE TABLE IF NOT EXISTS rd_project_task_templates (
+    project_id                 BIGINT NOT NULL REFERENCES rd_projects(id) ON DELETE CASCADE,
+    task_type                  VARCHAR(32) NOT NULL,
+    name                       VARCHAR(256) NOT NULL DEFAULT '',
+    actual_behavior            TEXT NOT NULL DEFAULT '',
+    expected_behavior          TEXT NOT NULL DEFAULT '',
+    reproduction_steps         TEXT NOT NULL DEFAULT '',
+    affected_scope             TEXT NOT NULL DEFAULT '',
+    acceptance_criteria_json   JSONB NOT NULL DEFAULT '[]'::jsonb,
+    requirement_body           TEXT NOT NULL DEFAULT '',
+    expected_result            TEXT NOT NULL DEFAULT '',
+    created_at                 TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at                 TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (project_id, task_type)
+);
+
+-- Query rewrite rules are shared project configuration. PostgreSQL is the production truth;
+-- the two historical defaults are explicitly GLOBAL and are seeded idempotently.
+CREATE TABLE IF NOT EXISTS rd_query_term_mappings (
+    id          BIGINT PRIMARY KEY,
+    project_id  BIGINT NULL REFERENCES rd_projects(id) ON DELETE CASCADE,
+    scope       VARCHAR(16) NOT NULL CHECK (scope IN ('GLOBAL', 'PROJECT')),
+    source_term VARCHAR(256) NOT NULL,
+    target_term TEXT NOT NULL,
+    priority    INTEGER NOT NULL,
+    enabled     BOOLEAN NOT NULL,
+    remark      TEXT NOT NULL DEFAULT '',
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK ((scope = 'GLOBAL' AND project_id IS NULL) OR (scope = 'PROJECT' AND project_id IS NOT NULL))
+);
+
+CREATE INDEX IF NOT EXISTS idx_rd_query_term_mappings_project_enabled_priority
+    ON rd_query_term_mappings (project_id, enabled, priority DESC);
+CREATE INDEX IF NOT EXISTS idx_rd_query_term_mappings_scope_enabled_priority
+    ON rd_query_term_mappings (scope, enabled, priority DESC);
+
+INSERT INTO rd_query_term_mappings (
+    id, project_id, scope, source_term, target_term, priority, enabled, remark, created_at, updated_at
+) VALUES
+    (7482000000000000301, NULL, 'GLOBAL', '下单', 'POST /api/orders', 10, TRUE, 'default payment api', now(), now()),
+    (7482000000000000302, NULL, 'GLOBAL', '金额', 'orders.amount', 9, TRUE, 'default payment amount field', now(), now())
+ON CONFLICT (id) DO NOTHING;

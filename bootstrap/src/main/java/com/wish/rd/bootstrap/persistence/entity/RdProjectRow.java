@@ -23,6 +23,7 @@ public class RdProjectRow {
     public String repoOwner;
     public String repoName;
     public String defaultBranch;
+    public Long knowledgeBaseId;
     public Boolean enabled;
     public Boolean deleted;
     public OffsetDateTime createdAt;

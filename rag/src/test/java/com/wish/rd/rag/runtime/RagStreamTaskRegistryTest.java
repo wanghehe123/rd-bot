@@ -14,9 +14,29 @@ import java.util.concurrent.atomic.AtomicLong;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import com.wish.rd.rag.runtime.model.RdBugFixTask;
+import com.wish.rd.rag.runtime.model.RdTaskPage;
+import com.wish.rd.rag.runtime.model.RdTaskQuery;
 import com.wish.rd.rag.runtime.model.RdTaskStatus;
 
 class RagStreamTaskRegistryTest {
+
+    @Test
+    void shouldFilterTaskPageByProjectId() {
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(), new InMemoryRdTaskStatusEventStore(), generatorWithMovingClock());
+        RdBugFixTask projectOne = registry.createTaskManually(
+                "ticket-1", "项目一问题", "项目一问题", "P1", "", "project-1", "p1", "项目一",
+                "https://example.test/p1.git", "example", "p1", "main");
+        registry.createTaskManually(
+                "ticket-2", "项目二问题", "项目二问题", "P1", "", "project-2", "p2", "项目二",
+                "https://example.test/p2.git", "example", "p2", "main");
+
+        RdTaskPage page = registry.queryTasks(new RdTaskQuery(
+                "BUG_FIX", null, null, "project-1", null, null, 1, 20));
+
+        assertEquals(1, page.total());
+        assertEquals(projectOne.taskId(), page.records().getFirst().taskId());
+    }
 
     @Test
     void shouldPersistAndReloadBugFixTaskStateMachine() {
@@ -78,6 +98,21 @@ class RagStreamTaskRegistryTest {
         assertEquals(RdTaskStatus.REJECTED, rejected.status());
         assertEquals(executionResultJson, rejected.executionResultJson());
         assertEquals("修复执行失败: status=FAILED, reason=git clone failed", rejected.errorMessage());
+    }
+
+    @Test
+    void shouldAllowSearchingTaskToBecomeRetryableAfterRagFailure() {
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(), new InMemoryRdTaskStatusEventStore(), generatorWithMovingClock());
+        RdBugFixTask created = registry.createBugFixTask(ticket(), "P1");
+
+        registry.markSearching(created.taskId(), "RAG 检索中");
+        RdBugFixTask failed = registry.markFailedRetryable(created.taskId(), "RAG unavailable");
+        RdBugFixTask searchingAgain = registry.markSearching(created.taskId(), "RAG 重试中");
+
+        assertEquals(RdTaskStatus.FAILED_RETRYABLE, failed.status());
+        assertEquals("RAG unavailable", failed.errorMessage());
+        assertEquals(RdTaskStatus.SEARCHING, searchingAgain.status());
     }
 
     @Test

@@ -50,6 +50,14 @@ rustfs:
   secret-access-key: ${RUSTFS_SECRET_ACCESS_KEY:rustfsadmin}
 
 rd:
+  financial:
+    cny-per-usd: ${RD_FINANCIAL_CNY_PER_USD:7.20}
+  task-draft:
+    enabled: ${RD_TASK_DRAFT_ENABLED:false}
+    base-url: ${RD_TASK_DRAFT_BASE_URL:https://api.longcat.chat/anthropic}
+    model: ${RD_TASK_DRAFT_MODEL:}
+    auth-token-env: ${RD_TASK_DRAFT_AUTH_TOKEN_ENV:LONGCAT_API_KEY}
+    max-tokens: ${RD_TASK_DRAFT_MAX_TOKENS:2048}
   thread-pools:
     requirement-delivery:
       core-size: ${RD_THREAD_REQUIREMENT_CORE_SIZE:2}
@@ -143,7 +151,7 @@ rd:
       network-mode: bridge
       remove-after-exit: true
       timeout-alert-millis: 1800000
-      budget-alert-usd: 5.00
+      budget-alert-cny: 36.00
       circuit-breaker:
         enabled: ${RD_EXECUTOR_DOCKER_CIRCUIT_BREAKER_ENABLED:true}
         failure-threshold: ${RD_EXECUTOR_DOCKER_CIRCUIT_BREAKER_FAILURE_THRESHOLD:3}
@@ -232,6 +240,7 @@ rd:
       alert:
         enabled: ${FEISHU_IM_ALERT_ENABLED:false}
         chat-id: ${FEISHU_IM_ALERT_CHAT_ID:}
+        admin-base-url: ${RD_ADMIN_BASE_URL:http://127.0.0.1:5173}
       http:
         connect-timeout-millis: 3000
         request-timeout-millis: 10000

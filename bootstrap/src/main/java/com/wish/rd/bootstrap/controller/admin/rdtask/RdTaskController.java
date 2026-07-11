@@ -33,9 +33,13 @@ import com.wish.rd.rag.runtime.TaskMaterialStore;
 import com.wish.rd.rag.runtime.model.TaskMaterialType;
 import com.wish.rd.rag.project.model.RdProject;
 import com.wish.rd.rag.project.RdProjectService;
+import com.wish.rd.rag.ingestion.ObjectStorageService;
+import com.wish.rd.rag.ingestion.impl.InMemoryObjectStorageService;
+import com.wish.rd.rag.ingestion.model.StoredIngestionFile;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -59,6 +63,7 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.Set;
 
 /**
  * RD 任务管理 REST 控制器。
@@ -75,6 +80,13 @@ public class RdTaskController {
 
     /** 列表视图中文本字段的截断长度，避免大块 prompt/结果 JSON 透出列表。 */
     private static final int PREVIEW_MAX_CHARS = 120;
+    private static final long MAX_MATERIAL_SIZE = 10L * 1024L * 1024L;
+    private static final int MAX_MATERIALS_PER_TASK = 10;
+    private static final Set<String> ALLOWED_UPLOAD_TYPES = Set.of(
+            "image/png", "image/jpeg", "image/webp", "image/gif",
+            "text/plain", "text/markdown", "text/csv", "text/xml", "text/html",
+            "application/json", "application/xml"
+    );
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     private final RagStreamTaskRegistry registry;
@@ -88,6 +100,15 @@ public class RdTaskController {
     private final RdBotFixEngine bugFixEngine;
     private final BugFixExecutionDispatchService bugFixExecutionDispatchService;
     private final RdProjectService projectService;
+    private final Object materialUploadMonitor = new Object();
+    private ObjectStorageService objectStorageService = new InMemoryObjectStorageService();
+
+    @Autowired(required = false)
+    void setObjectStorageService(ObjectStorageService objectStorageService) {
+        if (objectStorageService != null) {
+            this.objectStorageService = objectStorageService;
+        }
+    }
 
     public RdTaskController(RagStreamTaskRegistry registry) {
         this(
@@ -218,6 +239,7 @@ public class RdTaskController {
      * @param taskType 任务类型过滤
      * @param status   状态过滤
      * @param priority 优先级过滤
+     * @param projectId 项目 ID 过滤
      * @param ticketId 工单 ID 子串
      * @param keyword  关键词（匹配标题 / 工单标题 / 工单 ID）
      * @param page     页码（默认 1）
@@ -229,12 +251,13 @@ public class RdTaskController {
             @RequestParam(value = "taskType", required = false) String taskType,
             @RequestParam(value = "status", required = false) String status,
             @RequestParam(value = "priority", required = false) String priority,
+            @RequestParam(value = "projectId", required = false) String projectId,
             @RequestParam(value = "ticketId", required = false) String ticketId,
             @RequestParam(value = "keyword", required = false) String keyword,
             @RequestParam(value = "page", defaultValue = "1") int page,
             @RequestParam(value = "pageSize", defaultValue = "20") int pageSize
     ) {
-        RdTaskQuery query = new RdTaskQuery(taskType, status, priority, ticketId, keyword, page, pageSize);
+        RdTaskQuery query = new RdTaskQuery(taskType, status, priority, projectId, ticketId, keyword, page, pageSize);
         RdTaskPage result = registry.queryTasks(query);
         List<RdTaskView> views = result.records().stream()
                 .map(RdTaskController::toListView)
@@ -539,7 +562,7 @@ public class RdTaskController {
     }
 
     /**
-     * 为需求任务上传本地材料文件。
+     * 为 Bug 修复或需求任务上传本地材料文件。
      *
      * @param taskId       任务 ID
      * @param title        展示标题
@@ -558,29 +581,61 @@ public class RdTaskController {
             @RequestParam(value = "materialType", required = false) String materialType,
             @RequestPart("file") MultipartFile file
     ) {
-        registry.getRequirementTask(taskId);
+        registry.getTask(taskId);
         if (file == null || file.isEmpty()) {
             throw new IllegalArgumentException("upload file must not be empty");
         }
+        if (file.getSize() > MAX_MATERIAL_SIZE) {
+            throw new IllegalArgumentException("upload file exceeds 10 MiB limit");
+        }
         String filename = safeFilename(file.getOriginalFilename());
-        String content;
+        String mimeType = normalizeUploadMimeType(file.getContentType());
+        byte[] bytes;
         try {
-            content = new String(file.getBytes(), StandardCharsets.UTF_8);
+            bytes = file.getBytes();
         } catch (Exception exception) {
             throw new IllegalArgumentException("upload file cannot be read");
         }
-        TaskMaterial material = saveMaterial(
-                taskId,
-                parseMaterialType(materialType),
-                TaskMaterialSourceType.LOCAL_UPLOAD,
-                title == null || title.isBlank() ? filename : title,
-                "local-upload://" + filename,
-                content,
-                file.getContentType(),
-                "",
-                "{\"filename\":\"" + jsonEscape(filename) + "\",\"size\":" + file.getSize() + "}"
-        );
-        return toMaterialView(material);
+        if (bytes.length > MAX_MATERIAL_SIZE) {
+            throw new IllegalArgumentException("upload file exceeds 10 MiB limit");
+        }
+        validateUploadContent(filename, mimeType, bytes);
+        synchronized (materialUploadMonitor) {
+            // Local memory mode needs an atomic count/save section; PostgreSQL also enforces this with a trigger.
+            if (materialStore.listByTask(taskId).size() >= MAX_MATERIALS_PER_TASK) {
+                throw new IllegalArgumentException("task material limit exceeded: 10");
+            }
+            StoredIngestionFile stored = objectStorageService.upload(
+                    "rd-task-materials",
+                    new java.io.ByteArrayInputStream(bytes),
+                    bytes.length,
+                    filename,
+                    mimeType
+            );
+            boolean image = mimeType.startsWith("image/");
+            String contentPreview = image
+                    ? "图片附件: " + filename + " (" + mimeType + ", " + bytes.length + " bytes)"
+                    : preview(new String(bytes, StandardCharsets.UTF_8).strip(), 2000);
+            long now = System.currentTimeMillis();
+            TaskMaterial material = materialStore.save(new TaskMaterial(
+                    idGenerator.nextIdString(),
+                    taskId,
+                    parseMaterialType(materialType),
+                    TaskMaterialSourceType.LOCAL_UPLOAD,
+                    title == null || title.isBlank() ? filename : title,
+                    "local-upload://" + filename,
+                    mimeType,
+                    sha256(bytes),
+                    contentPreview,
+                    stored.url(),
+                    "",
+                    "",
+                    "{\"filename\":\"" + jsonEscape(filename) + "\",\"size\":" + bytes.length + "}",
+                    now,
+                    now
+            ));
+            return toMaterialView(material);
+        }
     }
 
     /**
@@ -640,6 +695,43 @@ public class RdTaskController {
                 .filter(candidate -> candidate.taskId().equals(taskId))
                 .orElseThrow(() -> new NoSuchElementException("task material not found: " + materialId));
         return toMaterialPreviewView(material);
+    }
+
+    /** Returns the original object bytes after enforcing task ownership. */
+    @GetMapping("/admin/rd-tasks/{taskId}/materials/{materialId}/content")
+    public ResponseEntity<byte[]> materialContent(
+            @PathVariable("taskId") String taskId,
+            @PathVariable("materialId") String materialId
+    ) {
+        registry.getTask(taskId);
+        TaskMaterial material = materialStore.findById(materialId)
+                .filter(candidate -> candidate.taskId().equals(taskId))
+                .orElseThrow(() -> new NoSuchElementException("task material not found: " + materialId));
+        if (material.artifactUri().isBlank()) {
+            throw new NoSuchElementException("task material content not found: " + materialId);
+        }
+        try (java.io.InputStream input = objectStorageService.openStream(material.artifactUri())) {
+            byte[] bytes = input.readAllBytes();
+            if (material.contentHash().isBlank()) {
+                throw new IllegalStateException("task material content hash missing: " + materialId);
+            }
+            if (!sha256(bytes).equalsIgnoreCase(material.contentHash())) {
+                throw new IllegalStateException("task material content hash mismatch: " + materialId);
+            }
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.parseMediaType(material.mimeType()));
+            String disposition = material.mimeType().startsWith("image/") ? "inline" : "attachment";
+            headers.set(HttpHeaders.CONTENT_DISPOSITION,
+                    disposition + "; filename=\"" + safeFilename(material.title()) + "\"");
+            headers.setCacheControl("private, max-age=300");
+            return new ResponseEntity<>(bytes, headers, HttpStatus.OK);
+        } catch (NoSuchElementException exception) {
+            throw exception;
+        } catch (IllegalStateException exception) {
+            throw exception;
+        } catch (Exception exception) {
+            throw new IllegalStateException("task material content cannot be read");
+        }
     }
 
     @ExceptionHandler(NoSuchElementException.class)
@@ -977,7 +1069,71 @@ public class RdTaskController {
             return "uploaded-file";
         }
         int index = safe.lastIndexOf('/');
-        return index >= 0 ? safe.substring(index + 1) : safe;
+        String basename = index >= 0 ? safe.substring(index + 1) : safe;
+        String sanitized = basename.replaceAll("[\\p{Cntrl}\"']", "_");
+        return sanitized.isBlank() ? "uploaded-file" : sanitized;
+    }
+
+    private static String normalizeUploadMimeType(String mimeType) {
+        String normalized = mimeType == null ? "" : mimeType.strip().toLowerCase(java.util.Locale.ROOT);
+        if (!ALLOWED_UPLOAD_TYPES.contains(normalized)) {
+            throw new IllegalArgumentException("unsupported upload content type: " + normalized);
+        }
+        return normalized;
+    }
+
+    private static void validateUploadContent(String filename, String mimeType, byte[] bytes) {
+        String lower = filename.toLowerCase(java.util.Locale.ROOT);
+        boolean extensionMatches = switch (mimeType) {
+            case "image/png" -> lower.endsWith(".png");
+            case "image/jpeg" -> lower.endsWith(".jpg") || lower.endsWith(".jpeg");
+            case "image/webp" -> lower.endsWith(".webp");
+            case "image/gif" -> lower.endsWith(".gif");
+            case "text/markdown" -> lower.endsWith(".md") || lower.endsWith(".markdown");
+            case "text/csv" -> lower.endsWith(".csv");
+            case "application/json" -> lower.endsWith(".json");
+            case "application/xml", "text/xml" -> lower.endsWith(".xml");
+            case "text/html" -> lower.endsWith(".html") || lower.endsWith(".htm");
+            case "text/plain" -> true;
+            default -> false;
+        };
+        if (!extensionMatches) {
+            throw new IllegalArgumentException("upload filename extension does not match content type");
+        }
+        boolean signatureMatches = switch (mimeType) {
+            case "image/png" -> startsWith(bytes, new int[]{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a});
+            case "image/jpeg" -> startsWith(bytes, new int[]{0xff, 0xd8, 0xff});
+            case "image/gif" -> startsWith(bytes, "GIF8".getBytes(StandardCharsets.US_ASCII));
+            case "image/webp" -> bytes.length >= 12
+                    && startsWith(bytes, "RIFF".getBytes(StandardCharsets.US_ASCII))
+                    && new String(bytes, 8, 4, StandardCharsets.US_ASCII).equals("WEBP");
+            default -> !containsNullByte(bytes);
+        };
+        if (!signatureMatches) {
+            throw new IllegalArgumentException("upload content does not match declared content type");
+        }
+    }
+
+    private static boolean startsWith(byte[] value, int[] prefix) {
+        if (value == null || value.length < prefix.length) return false;
+        for (int index = 0; index < prefix.length; index++) {
+            if ((value[index] & 0xff) != prefix[index]) return false;
+        }
+        return true;
+    }
+
+    private static boolean startsWith(byte[] value, byte[] prefix) {
+        if (value == null || value.length < prefix.length) return false;
+        for (int index = 0; index < prefix.length; index++) {
+            if (value[index] != prefix[index]) return false;
+        }
+        return true;
+    }
+
+    private static boolean containsNullByte(byte[] value) {
+        if (value == null) return false;
+        for (byte item : value) if (item == 0) return true;
+        return false;
     }
 
     private static String jsonEscape(String value) {
@@ -1125,6 +1281,15 @@ public class RdTaskController {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             byte[] hash = digest.digest((value == null ? "" : value).getBytes(StandardCharsets.UTF_8));
+            return "sha256:" + HexFormat.of().formatHex(hash);
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 unavailable", exception);
+        }
+    }
+
+    private static String sha256(byte[] value) {
+        try {
+            byte[] hash = MessageDigest.getInstance("SHA-256").digest(value == null ? new byte[0] : value);
             return "sha256:" + HexFormat.of().formatHex(hash);
         } catch (NoSuchAlgorithmException exception) {
             throw new IllegalStateException("SHA-256 unavailable", exception);

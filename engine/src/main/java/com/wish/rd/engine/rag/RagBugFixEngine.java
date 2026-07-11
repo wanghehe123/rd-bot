@@ -16,6 +16,8 @@ import com.wish.rd.rag.rewrite.QueryTermMappingRegistry;
 import com.wish.rd.rag.runtime.RagRuntimeFactory;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
 import com.wish.rd.rag.runtime.model.RdBugFixTask;
+import com.wish.rd.rag.runtime.model.RdRequirementTask;
+import com.wish.rd.rag.runtime.model.RdTask;
 import com.wish.rd.rag.vector.impl.InMemoryVectorStore;
 import com.wish.rd.rag.vector.VectorStore;
 
@@ -23,6 +25,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.NoSuchElementException;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -141,12 +144,33 @@ public final class RagBugFixEngine {
             boolean deepThinking,
             String taskId
     ) {
+        return findBugFixMessgaesForAgent(ticket, logs, deepThinking, taskId, List.of());
+    }
+
+    /**
+     * 使用上游已创建的任务 ID 和项目知识库范围构建 Bug 修复 RAG 消息。
+     *
+     * @param ticket                  工单快照
+     * @param logs                    日志列表
+     * @param deepThinking            是否启用深度思考
+     * @param taskId                  上游任务 ID
+     * @param projectKnowledgeBaseIds 项目绑定的知识库 ID；为空时沿用意图或全局检索
+     * @return RAG 上下文消息
+     */
+    public BugFixMessage findBugFixMessgaesForAgent(
+            TicketSnapshot ticket,
+            List<String> logs,
+            boolean deepThinking,
+            String taskId,
+            List<String> projectKnowledgeBaseIds
+    ) {
         TicketSnapshot safeTicket = normalizeTicket(ticket);
         List<String> safeLogs = logs == null ? List.of() : List.copyOf(logs);
         String safeTaskId = taskId == null || taskId.isBlank()
                 ? streamTaskRegistry.createBugFixTask(safeTicket, "P2").taskId()
                 : taskId.strip();
-        return buildBugFixRagMessage(safeTicket, safeLogs, safeTaskId, deepThinking);
+        List<String> safeKnowledgeBaseIds = projectKnowledgeBaseIds == null ? List.of() : List.copyOf(projectKnowledgeBaseIds);
+        return buildBugFixRagMessage(safeTicket, safeLogs, safeTaskId, deepThinking, safeKnowledgeBaseIds);
     }
 
     public BugFixStopResult stop(String taskId) {
@@ -166,7 +190,7 @@ public final class RagBugFixEngine {
             String userQuestion
     ) {
         streamTaskRegistry.markSearching(taskId, "RAG 检索中");
-        BugFixMessage message = buildBugFixRagMessage(ticket, logs, taskId, deepThinking);
+        BugFixMessage message = buildBugFixRagMessage(ticket, logs, taskId, deepThinking, List.of());
         streamTaskRegistry.markExecuting(taskId, message.agentUserMessage());
         streamTaskRegistry.complete(taskId, "", titleFrom(userQuestion));
         return message;
@@ -176,16 +200,41 @@ public final class RagBugFixEngine {
             TicketSnapshot ticket,
             List<String> logs,
             String taskId,
-            boolean deepThinking
+            boolean deepThinking,
+            List<String> projectKnowledgeBaseIds
     ) {
-        RepairRagRequest request = new RepairRagRequest(ticket.ticketId(), ticketFieldsText(ticket), logs);
+        RepairRagRequest request = new RepairRagRequest(
+                ticket.ticketId(),
+                ticketFieldsText(ticket),
+                logs,
+                projectKnowledgeBaseIds
+        );
         RepairContextPackage context = repairPipeline().prepareContext(request);
         appendRetrievalLog(ticket, logs, taskId, deepThinking, context);
         RepairPromptPlan promptPlan = RepairPromptService
-                .defaultService(queryTermMappingRegistry.rewriteService())
+                .defaultService(queryTermMappingRegistry.rewriteService(projectIdFor(taskId)))
                 .build(request, context);
         String answer = deterministicAnswer(request, context, promptPlan);
         return toMessage(ticket, taskId, deepThinking, context, promptPlan, answer, false);
+    }
+
+    /**
+     * Rules follow the task's persisted project boundary only. A legacy or unknown task ID has no
+     * project scope and therefore receives global rules alone.
+     */
+    private String projectIdFor(String taskId) {
+        try {
+            RdTask task = streamTaskRegistry.getTask(taskId);
+            if (task instanceof RdBugFixTask bugFixTask) {
+                return safe(bugFixTask.projectId()).strip();
+            }
+            if (task instanceof RdRequirementTask requirementTask) {
+                return safe(requirementTask.projectId()).strip();
+            }
+        } catch (NoSuchElementException ignored) {
+            // Compatibility with upstream callers that only have a task ID during migration.
+        }
+        return "";
     }
 
     private void appendRetrievalLog(

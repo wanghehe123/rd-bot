@@ -14,6 +14,7 @@ package com.wish.rd.rag.project.model;
  * @param repoOwner             仓库 owner
  * @param repoName              仓库名
  * @param defaultBranch         默认基准分支
+ * @param knowledgeBaseId       可选的项目知识库 ID
  * @param enabled               是否启用
  * @param deleted               是否逻辑删除
  * @param createTimeEpochMillis 创建时间
@@ -31,7 +32,8 @@ public record RdProject(
         boolean enabled,
         boolean deleted,
         long createTimeEpochMillis,
-        long updateTimeEpochMillis
+        long updateTimeEpochMillis,
+        String knowledgeBaseId
 ) {
 
     public RdProject {
@@ -43,6 +45,41 @@ public record RdProject(
         repoOwner = safe(repoOwner);
         repoName = safe(repoName);
         defaultBranch = safe(defaultBranch);
+        knowledgeBaseId = safe(knowledgeBaseId);
+    }
+
+    /**
+     * 兼容未绑定知识库的既有项目调用方。
+     */
+    public RdProject(
+            String projectId,
+            String projectKey,
+            String name,
+            String description,
+            String repositoryUrl,
+            String repoOwner,
+            String repoName,
+            String defaultBranch,
+            boolean enabled,
+            boolean deleted,
+            long createTimeEpochMillis,
+            long updateTimeEpochMillis
+    ) {
+        this(
+                projectId,
+                projectKey,
+                name,
+                description,
+                repositoryUrl,
+                repoOwner,
+                repoName,
+                defaultBranch,
+                enabled,
+                deleted,
+                createTimeEpochMillis,
+                updateTimeEpochMillis,
+                ""
+        );
     }
 
     /**
@@ -72,7 +109,8 @@ public record RdProject(
                 command.enabled(),
                 deleted,
                 createTimeEpochMillis,
-                updateTimeEpochMillis
+                updateTimeEpochMillis,
+                command.knowledgeBaseId()
         );
     }
 
@@ -95,7 +133,8 @@ public record RdProject(
                 false,
                 true,
                 createTimeEpochMillis,
-                updateTimeEpochMillis
+                updateTimeEpochMillis,
+                knowledgeBaseId
         );
     }
 

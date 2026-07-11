@@ -2,6 +2,7 @@ package com.wish.rd.engine.agent;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.LinkedHashSet;
 import com.wish.rd.engine.agent.model.AgentStageRun;
 import com.wish.rd.engine.agent.model.AgentStageStatus;
 
@@ -35,6 +36,26 @@ public interface AgentStageRunStore {
      * @return 阶段运行列表
      */
     List<AgentStageRun> listByTask(String taskId);
+
+    /**
+     * Queries stage runs for multiple tasks.
+     *
+     * <p>Persistent adapters should override this method with a batched query. The default keeps
+     * in-memory and small test implementations compatible while preserving a deterministic task
+     * order.
+     *
+     * @param taskIds RD task IDs
+     * @return stage runs for requested tasks
+     */
+    default List<AgentStageRun> listByTasks(List<String> taskIds) {
+        if (taskIds == null || taskIds.isEmpty()) {
+            return List.of();
+        }
+        return new LinkedHashSet<>(taskIds).stream()
+                .filter(taskId -> taskId != null && !taskId.isBlank())
+                .flatMap(taskId -> listByTask(taskId).stream())
+                .toList();
+    }
 
     /**
      * 推进阶段状态。

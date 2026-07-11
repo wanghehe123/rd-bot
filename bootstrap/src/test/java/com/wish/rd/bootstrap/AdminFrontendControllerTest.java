@@ -63,7 +63,6 @@ class AdminFrontendControllerTest {
                 "/admin/mappings",
                 "/admin/traces",
                 "/admin/traces/trace-ticket-prompt-flow",
-                "/admin/sample-questions",
                 "/admin/settings"
         }) {
             mockMvc.perform(get(route))
@@ -73,6 +72,9 @@ class AdminFrontendControllerTest {
                     .andExpect(content().string(containsString("admin-knowledge.css")))
                     .andExpect(content().string(containsString("admin-knowledge.js")));
         }
+
+        mockMvc.perform(get("/admin/sample-questions"))
+                .andExpect(status().isNotFound());
 
         mockMvc.perform(get("/admin/admin-knowledge.css"))
                 .andExpect(status().isOk())

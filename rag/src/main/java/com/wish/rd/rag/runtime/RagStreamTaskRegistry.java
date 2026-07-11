@@ -363,6 +363,23 @@ public final class RagStreamTaskRegistry {
         });
     }
 
+    /** Marks a Bug task retryable so a later submit creates fresh stage attempts. */
+    public RdBugFixTask markFailedRetryable(String taskId, String errorMessage) {
+        return withLock(() -> {
+            RdBugFixTask existing = get(taskId);
+            return transitionAndSave(
+                    existing,
+                    RdTaskStatus.FAILED_RETRYABLE,
+                    "",
+                    "",
+                    "",
+                    existing.executionResultJson(),
+                    existing.pullRequestUrl(),
+                    errorMessage
+            );
+        });
+    }
+
     /**
      * 兼容旧 RAG 流：注册任务进入 SEARCHING。
      *
@@ -513,6 +530,7 @@ public final class RagStreamTaskRegistry {
                     RdTaskType.BUG_FIX.name(),
                     oldQuery.status(),
                     oldQuery.priority(),
+                    oldQuery.projectId(),
                     oldQuery.ticketId(),
                     oldQuery.keyword(),
                     oldQuery.page(),
@@ -536,6 +554,7 @@ public final class RagStreamTaskRegistry {
                     .filter(task -> safeQuery.matchesTaskType(task.taskType()))
                     .filter(task -> safeQuery.matchesStatus(task.status()))
                     .filter(task -> safeQuery.matchesPriority(task.priority()))
+                    .filter(task -> safeQuery.matchesProjectId(projectId(task)))
                     .filter(task -> matchesKeywords(safeQuery, task))
                     .sorted(Comparator.comparingLong(RdTask::updateTimeEpochMillis).reversed()
                             .thenComparing(RdTask::taskId))
@@ -547,6 +566,16 @@ public final class RagStreamTaskRegistry {
             int toIndex = Math.min(fromIndex + pageSize, total);
             return new RdTaskPage(filtered.subList(fromIndex, toIndex), total, safeQuery.page(), pageSize, pages);
         });
+    }
+
+    private static String projectId(RdTask task) {
+        if (task instanceof RdBugFixTask bugFixTask) {
+            return bugFixTask.projectId();
+        }
+        if (task instanceof RdRequirementTask requirementTask) {
+            return requirementTask.projectId();
+        }
+        return "";
     }
 
     /**
@@ -981,7 +1010,9 @@ public final class RagStreamTaskRegistry {
             case WAITING_APPROVAL -> target == RdTaskStatus.EXECUTING
                     || target == RdTaskStatus.REJECTED
                     || target == RdTaskStatus.FAILED_NEEDS_HUMAN;
-            case SEARCHING -> target == RdTaskStatus.EXECUTING || target == RdTaskStatus.REJECTED;
+            case SEARCHING -> target == RdTaskStatus.EXECUTING
+                    || target == RdTaskStatus.REJECTED
+                    || target == RdTaskStatus.FAILED_RETRYABLE;
             case EXECUTING -> target == RdTaskStatus.VALIDATING
                     || target == RdTaskStatus.COMMITTED
                     || target == RdTaskStatus.REJECTED

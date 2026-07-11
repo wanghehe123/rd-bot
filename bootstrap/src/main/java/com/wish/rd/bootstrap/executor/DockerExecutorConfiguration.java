@@ -1,6 +1,7 @@
 package com.wish.rd.bootstrap.executor;
 
 import com.wish.rd.bootstrap.executor.impl.InMemoryRepairAlertSink;
+import com.wish.rd.bootstrap.financial.FinancialProperties;
 
 import com.wish.rd.exec.repair.alert.RepairAlertSinkPort;
 import com.wish.rd.exec.repair.alert.RepairExecutionWatchdog;
@@ -56,14 +57,17 @@ public class DockerExecutorConfiguration {
     @ConditionalOnMissingBean
     public RepairExecutionWatchdog repairExecutionWatchdog(
             DockerExecutorProperties properties,
-            ObjectProvider<RepairAlertSinkPort> alertSinkProvider
+            ObjectProvider<RepairAlertSinkPort> alertSinkProvider,
+            ObjectProvider<com.wish.rd.exec.repair.alert.RepairBudgetObservationSinkPort> budgetObservationSinkProvider
     ) {
         return new RepairExecutionWatchdog(
                 new RepairExecutionWatchdog.Policy(
                         properties.getTimeoutAlertMillis(),
-                        properties.getBudgetAlertUsd() == null ? BigDecimal.ZERO : properties.getBudgetAlertUsd()
+                        properties.getBudgetAlertCny() == null ? BigDecimal.ZERO : properties.getBudgetAlertCny()
                 ),
-                alertSinkProvider.getIfAvailable(InMemoryRepairAlertSink::new)
+                alertSinkProvider.getIfAvailable(InMemoryRepairAlertSink::new),
+                budgetObservationSinkProvider.getIfAvailable(
+                        com.wish.rd.exec.repair.alert.RepairBudgetObservationSinkPort::noop)
         );
     }
 
@@ -142,7 +146,8 @@ public class DockerExecutorConfiguration {
             ModelHealthStore modelHealthStore,
             DockerExecutionRegistry executionRegistry,
             ExecutionAllowlistPolicy executionAllowlistPolicy,
-            ObjectProvider<RepairWorkspaceRepositoryPort> repositoryPortProvider
+            ObjectProvider<RepairWorkspaceRepositoryPort> repositoryPortProvider,
+            ObjectProvider<FinancialProperties> financialPropertiesProvider
     ) {
         return new DockerClaudeCodeExecutor(
                 workspaceFactory,
@@ -153,7 +158,8 @@ public class DockerExecutorConfiguration {
                 watchdog,
                 modelHealthStore,
                 executionRegistry,
-                executionAllowlistPolicy
+                executionAllowlistPolicy,
+                financialPropertiesProvider.getIfAvailable(FinancialProperties::new).toBudgetCurrencyConverter()
         );
     }
 

@@ -16,6 +16,9 @@ import com.wish.rd.rag.runtime.impl.InMemoryRdTaskStore;
 import com.wish.rd.rag.runtime.impl.InMemoryTaskMaterialStore;
 import com.wish.rd.rag.runtime.model.RdBugFixTask;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
+import com.wish.rd.rag.ingestion.ObjectStorageService;
+import com.wish.rd.rag.ingestion.impl.InMemoryObjectStorageService;
+import com.wish.rd.rag.ingestion.model.StoredIngestionFile;
 import com.wish.rd.rag.project.model.RdProject;
 import com.wish.rd.rag.project.model.RdProjectCommand;
 import com.wish.rd.rag.project.RdProjectService;
@@ -32,6 +35,8 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.List;
 import java.util.Optional;
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -225,6 +230,21 @@ class RdTaskControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.records", hasSize(1)))
                 .andExpect(jsonPath("$.records[0].taskId", is(searching)));
+    }
+
+    @Test
+    void shouldForwardProjectIdToCanonicalTaskQuery() throws Exception {
+        RdBugFixTask projectOne = registry.createTaskManually(
+                "FS-P1", "项目一任务", "项目一任务", "P1", "", "project-1", "p1", "项目一",
+                "https://example.test/p1.git", "example", "p1", "main");
+        registry.createTaskManually(
+                "FS-P2", "项目二任务", "项目二任务", "P1", "", "project-2", "p2", "项目二",
+                "https://example.test/p2.git", "example", "p2", "main");
+
+        mockMvc.perform(get("/admin/rd-tasks").param("projectId", "project-1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.total", is(1)))
+                .andExpect(jsonPath("$.records[0].taskId", is(projectOne.taskId())));
     }
 
     @Test
@@ -505,6 +525,51 @@ class RdTaskControllerTest {
                 .andExpect(jsonPath("$.sourceUri", is("local-upload://requirement.md")))
                 .andExpect(jsonPath("$.mimeType", is("text/markdown")))
                 .andExpect(jsonPath("$.contentPreview").value(org.hamcrest.Matchers.containsString("用户可在待接单时催单")));
+    }
+
+    @Test
+    void shouldUploadAndReadBinaryScreenshotForBugFixTask() throws Exception {
+        String taskId = createTask("FS-IMAGE-1", "页面错位", "P1");
+        byte[] png = new byte[]{(byte) 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3};
+        MockMultipartFile file = new MockMultipartFile("file", "broken.png", "image/png", png);
+
+        String response = mockMvc.perform(multipart("/admin/rd-tasks/{taskId}/materials/upload", taskId)
+                        .file(file)
+                        .param("materialType", "SCREENSHOT"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.taskId", is(taskId)))
+                .andExpect(jsonPath("$.materialType", is("SCREENSHOT")))
+                .andExpect(jsonPath("$.mimeType", is("image/png")))
+                .andExpect(jsonPath("$.artifactUri", startsWith("s3://rd-task-materials/")))
+                .andExpect(jsonPath("$.contentHash", startsWith("sha256:")))
+                .andExpect(jsonPath("$.contentPreview").value(org.hamcrest.Matchers.containsString("broken.png")))
+                .andReturn().getResponse().getContentAsString();
+        String materialId = com.jayway.jsonpath.JsonPath.read(response, "$.materialId");
+
+        mockMvc.perform(get("/admin/rd-tasks/{taskId}/materials/{materialId}/content", taskId, materialId))
+                .andExpect(status().isOk())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.content().contentType("image/png"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.content().bytes(png));
+    }
+
+    @Test
+    void shouldRejectDownloadedObjectWhenContentHashDoesNotMatch() throws Exception {
+        String taskId = createTask("FS-IMAGE-HASH-1", "截图损坏", "P1");
+        RdTaskController controller = new RdTaskController(registry);
+        controller.setObjectStorageService(new CorruptingObjectStorageService());
+        mockMvc = MockMvcBuilders.standaloneSetup(controller).build();
+        byte[] png = new byte[]{(byte) 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3};
+
+        String response = mockMvc.perform(multipart("/admin/rd-tasks/{taskId}/materials/upload", taskId)
+                        .file(new MockMultipartFile("file", "broken.png", "image/png", png))
+                        .param("materialType", "SCREENSHOT"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        String materialId = com.jayway.jsonpath.JsonPath.read(response, "$.materialId");
+
+        mockMvc.perform(get("/admin/rd-tasks/{taskId}/materials/{materialId}/content", taskId, materialId))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message", org.hamcrest.Matchers.containsString("content hash mismatch")));
     }
 
     @Test
@@ -932,6 +997,33 @@ class RdTaskControllerTest {
         @Override
         public List<RdProject> list() {
             return List.copyOf(projects.values());
+        }
+    }
+
+    private static final class CorruptingObjectStorageService implements ObjectStorageService {
+
+        private final InMemoryObjectStorageService delegate = new InMemoryObjectStorageService();
+
+        @Override
+        public StoredIngestionFile upload(
+                String bucketName,
+                InputStream content,
+                long size,
+                String originalFilename,
+                String contentType
+        ) {
+            return delegate.upload(bucketName, content, size, originalFilename, contentType);
+        }
+
+        @Override
+        public InputStream openStream(String url) {
+            try {
+                byte[] bytes = delegate.openStream(url).readAllBytes();
+                bytes[bytes.length - 1] ^= 1;
+                return new ByteArrayInputStream(bytes);
+            } catch (Exception exception) {
+                throw new IllegalStateException(exception);
+            }
         }
     }
 }

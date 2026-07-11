@@ -8,6 +8,7 @@ import com.wish.rd.engine.bugfix.BugFixPromptBuilder;
 import com.wish.rd.engine.bugfix.model.RdBotFixCommand;
 import com.wish.rd.engine.bugfix.RdBotFixEngine;
 import com.wish.rd.engine.bugfix.model.RdBotFixResult;
+import com.wish.rd.engine.bugfix.observability.BugFixStageRecorder;
 import com.wish.rd.engine.bugfix.acceptance.model.AcceptanceAssertion;
 import com.wish.rd.engine.bugfix.acceptance.model.AcceptancePlan;
 import com.wish.rd.engine.bugfix.acceptance.model.AcceptancePlanGenerationCommand;
@@ -17,6 +18,10 @@ import com.wish.rd.engine.bugfix.acceptance.model.AcceptancePlanStatus;
 import com.wish.rd.engine.bugfix.acceptance.model.AcceptancePlanStep;
 import com.wish.rd.engine.rag.ChatQueueLimiter;
 import com.wish.rd.engine.rag.RagBugFixEngine;
+import com.wish.rd.engine.agent.impl.InMemoryAgentStageArtifactStore;
+import com.wish.rd.engine.agent.impl.InMemoryAgentStageRunStore;
+import com.wish.rd.engine.agent.model.AgentRole;
+import com.wish.rd.engine.agent.model.AgentStageStatus;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
 import com.wish.rd.rag.intent.IntentTreeRegistry;
 import com.wish.rd.rag.rewrite.QueryTermMappingRegistry;
@@ -36,9 +41,46 @@ import java.util.function.Supplier;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class RdBotFixEngineTest {
+
+    @Test
+    void shouldRecordFourRealBugFixStagesWhenExecutionSucceeds() {
+        RagStreamTaskRegistry registry = registry();
+        InMemoryAgentStageRunStore runStore = new InMemoryAgentStageRunStore();
+        BugFixStageRecorder recorder = new BugFixStageRecorder(
+                runStore,
+                new InMemoryAgentStageArtifactStore(),
+                new SnowflakeIdGenerator(2, 3, new AtomicLong(1_784_100_000_000L)::getAndIncrement)
+        );
+        BugFixExecutor executor = request -> new BugFixExecutionResult(
+                request.taskId(),
+                "bug",
+                "solution",
+                "https://github.example/rd/pr/300",
+                "{\"status\":\"SUCCESS\",\"providerName\":\"long-cat\",\"providerAttempts\":[{\"provider\":\"long-cat\",\"status\":\"SUCCESS\"}]}"
+        );
+        RdBotFixEngine engine = new RdBotFixEngine(
+                ChatQueueLimiter.passThrough(),
+                ragEngine(registry),
+                registry,
+                BugFixPromptBuilder.defaultBuilder(),
+                executor,
+                AcceptancePlanGeneratorPort.disabled(),
+                recorder
+        );
+
+        RdBotFixResult result = engine.runBugFix(new RdBotFixCommand(ticket(), List.of("stack trace"), false, "P1"));
+
+        assertEquals(RdTaskStatus.COMMITTED, result.status());
+        assertEquals(AgentRole.bugFixOrder(), runStore.listByTask(result.taskId()).stream()
+                .map(stage -> stage.role())
+                .toList());
+        assertTrue(runStore.listByTask(result.taskId()).stream()
+                .allMatch(stage -> stage.status() == AgentStageStatus.SUCCEEDED));
+    }
 
     @Test
     void shouldRunBugFixThroughQueueRagPromptExecutorAndCommittedState() {
@@ -231,6 +273,43 @@ class RdBotFixEngineTest {
         assertEquals(RdTaskStatus.COMMITTED, retry.status());
         assertEquals("https://github.example/rd/pr/203", registry.get(retry.taskId()).pullRequestUrl());
         assertEquals(2, executions.get());
+    }
+
+    @Test
+    void shouldCreateNewStageAttemptsWhenRetryingAfterAcceptancePlannerFailure() {
+        RagStreamTaskRegistry registry = registry();
+        InMemoryAgentStageRunStore runStore = new InMemoryAgentStageRunStore();
+        BugFixStageRecorder recorder = new BugFixStageRecorder(
+                runStore,
+                new InMemoryAgentStageArtifactStore(),
+                new SnowflakeIdGenerator(2, 3, new AtomicLong(1_784_100_000_000L)::getAndIncrement)
+        );
+        AtomicLong plannerCalls = new AtomicLong();
+        AcceptancePlanGeneratorPort generator = command -> {
+            if (plannerCalls.incrementAndGet() == 1) {
+                throw new IllegalStateException("planner unavailable");
+            }
+            return new AcceptancePlanGenerationResult(null);
+        };
+        BugFixExecutor executor = request -> new BugFixExecutionResult(
+                request.taskId(), "bug", "fixed", "https://github.example/rd/pr/304", "{\"status\":\"SUCCESS\"}");
+        RdBotFixEngine engine = new RdBotFixEngine(
+                ChatQueueLimiter.passThrough(), ragEngine(registry), registry,
+                BugFixPromptBuilder.defaultBuilder(), executor, generator, recorder);
+        RdBotFixCommand command = new RdBotFixCommand(ticket(), List.of(), false, "P1");
+
+        assertThrows(IllegalStateException.class, () -> engine.runBugFix(command));
+        RdBugFixTask failed = registry.listBugFixTasks().get(0);
+        assertEquals(RdTaskStatus.FAILED_RETRYABLE, failed.status());
+
+        RdBotFixResult retry = engine.runBugFix(command);
+
+        assertEquals(failed.taskId(), retry.taskId());
+        assertEquals(RdTaskStatus.COMMITTED, retry.status());
+        assertEquals(List.of(1, 2), runStore.listByTask(retry.taskId()).stream()
+                .filter(stage -> stage.role() == AgentRole.BUG_ACCEPTANCE_PLANNER)
+                .map(stage -> stage.attemptNo())
+                .toList());
     }
 
     @Test

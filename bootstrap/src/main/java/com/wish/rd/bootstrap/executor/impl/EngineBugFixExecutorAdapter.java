@@ -40,6 +40,7 @@ public class EngineBugFixExecutorAdapter implements BugFixExecutor {
     private final CodePlatformPort codePlatform;
     private final RepositoryConfig repositoryConfig;
     private final RepairAuditSinkPort auditSink;
+    private final TaskMaterialAttachmentResolver attachmentResolver;
 
     /**
      * 创建可直接测试的桥接适配器。
@@ -53,7 +54,7 @@ public class EngineBugFixExecutorAdapter implements BugFixExecutor {
             CodePlatformPort codePlatform,
             RepositoryConfig repositoryConfig
     ) {
-        this(repairExecutor, codePlatform, repositoryConfig, NoopRepairAuditSink.instance(), null);
+        this(repairExecutor, codePlatform, repositoryConfig, NoopRepairAuditSink.instance(), null, null);
     }
 
     /**
@@ -70,7 +71,7 @@ public class EngineBugFixExecutorAdapter implements BugFixExecutor {
             RepositoryConfig repositoryConfig,
             RepairAuditSinkPort auditSink
     ) {
-        this(repairExecutor, codePlatform, repositoryConfig, auditSink, null);
+        this(repairExecutor, codePlatform, repositoryConfig, auditSink, null, null);
     }
 
     /**
@@ -89,11 +90,23 @@ public class EngineBugFixExecutorAdapter implements BugFixExecutor {
             RepairAuditSinkPort auditSink,
             AsyncTaskExecutor executorIoTaskExecutor
     ) {
+        this(repairExecutor, codePlatform, repositoryConfig, auditSink, executorIoTaskExecutor, null);
+    }
+
+    public EngineBugFixExecutorAdapter(
+            RepairExecutorPort repairExecutor,
+            CodePlatformPort codePlatform,
+            RepositoryConfig repositoryConfig,
+            RepairAuditSinkPort auditSink,
+            AsyncTaskExecutor executorIoTaskExecutor,
+            TaskMaterialAttachmentResolver attachmentResolver
+    ) {
         this.repairExecutor = Objects.requireNonNull(repairExecutor, "repairExecutor must not be null");
         this.executorIoTaskExecutor = executorIoTaskExecutor;
         this.codePlatform = Objects.requireNonNull(codePlatform, "codePlatform must not be null");
         this.repositoryConfig = Objects.requireNonNull(repositoryConfig, "repositoryConfig must not be null");
         this.auditSink = auditSink == null ? NoopRepairAuditSink.instance() : auditSink;
+        this.attachmentResolver = attachmentResolver;
     }
 
     @Override
@@ -185,7 +198,8 @@ public class EngineBugFixExecutorAdapter implements BugFixExecutor {
                 repositoryConfig.baseBranch(),
                 workBranch,
                 contextJson(request),
-                Map.of("bridge", "engine-bugfix-executor")
+                Map.of("bridge", "engine-bugfix-executor"),
+                attachmentResolver == null ? List.of() : attachmentResolver.resolveByTask(request.taskId())
         );
     }
 

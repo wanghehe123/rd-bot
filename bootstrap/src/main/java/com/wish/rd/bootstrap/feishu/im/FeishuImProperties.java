@@ -217,6 +217,7 @@ public class FeishuImProperties {
     public static class Alert {
         private boolean enabled = false;
         private String chatId = "";
+        private String adminBaseUrl = "http://127.0.0.1:5173";
 
         public boolean isEnabled() {
             return enabled;
@@ -232,6 +233,14 @@ public class FeishuImProperties {
 
         public void setChatId(String chatId) {
             this.chatId = safe(chatId, "");
+        }
+
+        public String getAdminBaseUrl() {
+            return adminBaseUrl;
+        }
+
+        public void setAdminBaseUrl(String adminBaseUrl) {
+            this.adminBaseUrl = safe(adminBaseUrl, "http://127.0.0.1:5173").replaceAll("/+$", "");
         }
     }
 }

@@ -600,7 +600,7 @@ class DockerClaudeCodeExecutorTest {
                 .withMetadata("estimatedSpend", "7.25");
         RecordingAlertSink alertSink = new RecordingAlertSink();
         RepairExecutionWatchdog watchdog = new RepairExecutionWatchdog(
-                new RepairExecutionWatchdog.Policy(1_000L, new BigDecimal("5.00")),
+                new RepairExecutionWatchdog.Policy(1_000L, new BigDecimal("36.00")),
                 alertSink
         );
         DockerClaudeCodeExecutor executor = executor(
@@ -617,7 +617,9 @@ class DockerClaudeCodeExecutorTest {
         assertEquals(RepairAlertType.TIMEOUT_WARNING, alertSink.alerts().get(0).type());
         assertEquals("2500", alertSink.alerts().get(0).metadata().get("elapsedMillis"));
         assertEquals(RepairAlertType.BUDGET_WARNING, alertSink.alerts().get(1).type());
-        assertEquals("7.25", alertSink.alerts().get(1).metadata().get("estimatedSpend"));
+        assertEquals("CNY", alertSink.alerts().get(1).metadata().get("currency"));
+        assertEquals("52.2000", alertSink.alerts().get(1).metadata().get("estimatedSpendCny"));
+        assertEquals("36.00", alertSink.alerts().get(1).metadata().get("thresholdSpendCny"));
     }
 
     @Test

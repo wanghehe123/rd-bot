@@ -63,6 +63,16 @@ public final class PostgresRepairAuditStore implements RepairAuditSinkPort, Repa
                 .toList();
     }
 
+    @Override
+    public List<RepairAuditEvent> eventsByTaskId(String taskId) {
+        return mapper.selectList(new QueryWrapper<RepairAuditEventRow>()
+                        .eq("task_id", taskId == null ? "" : taskId.strip())
+                        .orderByDesc("created_at", "id"))
+                .stream()
+                .map(this::toEvent)
+                .toList();
+    }
+
     private RepairAuditEventRow toRow(RepairAuditEvent event) {
         RepairAuditEvent safe = event == null
                 ? RepairAuditEvent.now("", "", "", RepairAuditEventType.EXECUTION_FINISHED, "", "", Map.of())

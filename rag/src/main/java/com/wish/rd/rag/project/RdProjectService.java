@@ -1,6 +1,9 @@
 package com.wish.rd.rag.project;
 
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
+import com.wish.rd.rag.knowledge.model.KnowledgeBase;
+import com.wish.rd.rag.knowledge.store.KnowledgeBaseStore;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
@@ -28,10 +31,28 @@ public class RdProjectService {
 
     private final SnowflakeIdGenerator idGenerator;
     private final RdProjectStore store;
+    private final KnowledgeBaseStore knowledgeBaseStore;
 
     public RdProjectService(SnowflakeIdGenerator idGenerator, RdProjectStore store) {
+        this(idGenerator, store, null);
+    }
+
+    /**
+     * 创建项目服务。
+     *
+     * @param idGenerator        项目 ID 生成器
+     * @param store              项目持久化端口
+     * @param knowledgeBaseStore 知识库目录，用于校验项目绑定
+     */
+    @Autowired
+    public RdProjectService(
+            SnowflakeIdGenerator idGenerator,
+            RdProjectStore store,
+            KnowledgeBaseStore knowledgeBaseStore
+    ) {
         this.idGenerator = idGenerator == null ? SnowflakeIdGenerator.defaultGenerator() : idGenerator;
         this.store = java.util.Objects.requireNonNull(store, "rd project store must not be null");
+        this.knowledgeBaseStore = knowledgeBaseStore;
     }
 
     /**
@@ -44,6 +65,7 @@ public class RdProjectService {
         RdProjectCommand safeCommand = requireCommand(command);
         ensureProjectKeyAvailable(safeCommand.projectKey(), "");
         RepositoryParts parts = repositoryParts(safeCommand);
+        String knowledgeBaseId = requireKnowledgeBaseId(safeCommand.knowledgeBaseId());
         long now = System.currentTimeMillis();
         RdProject project = new RdProject(
                 idGenerator.nextIdString(),
@@ -57,7 +79,8 @@ public class RdProjectService {
                 safeCommand.enabled(),
                 false,
                 now,
-                now
+                now,
+                knowledgeBaseId
         );
         return store.save(project);
     }
@@ -74,8 +97,19 @@ public class RdProjectService {
         RdProjectCommand safeCommand = requireCommand(command);
         ensureProjectKeyAvailable(safeCommand.projectKey(), existing.projectId());
         RepositoryParts parts = repositoryParts(safeCommand);
+        String knowledgeBaseId = requireKnowledgeBaseId(safeCommand.knowledgeBaseId());
         return store.save(existing.withUpdatedFields(
-                safeCommand,
+                new RdProjectCommand(
+                        safeCommand.projectKey(),
+                        safeCommand.name(),
+                        safeCommand.description(),
+                        safeCommand.repositoryUrl(),
+                        safeCommand.repoOwner(),
+                        safeCommand.repoName(),
+                        safeCommand.defaultBranch(),
+                        safeCommand.enabled(),
+                        knowledgeBaseId
+                ),
                 parts.owner(),
                 parts.name(),
                 System.currentTimeMillis()
@@ -172,6 +206,22 @@ public class RdProjectService {
             throw new IllegalArgumentException("defaultBranch must not be blank");
         }
         return command;
+    }
+
+    private String requireKnowledgeBaseId(String knowledgeBaseId) {
+        String safeKnowledgeBaseId = knowledgeBaseId == null ? "" : knowledgeBaseId.strip();
+        if (safeKnowledgeBaseId.isBlank()) {
+            return "";
+        }
+        if (knowledgeBaseStore == null) {
+            throw new IllegalStateException("knowledge base store must not be null when binding a knowledge base");
+        }
+        KnowledgeBase knowledgeBase = knowledgeBaseStore.findById(safeKnowledgeBaseId)
+                .orElseThrow(() -> new IllegalArgumentException("knowledge base not found: " + safeKnowledgeBaseId));
+        if (!knowledgeBase.enabled()) {
+            throw new IllegalArgumentException("knowledge base is disabled: " + safeKnowledgeBaseId);
+        }
+        return knowledgeBase.id();
     }
 
     private void ensureProjectKeyAvailable(String projectKey, String currentProjectId) {

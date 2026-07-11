@@ -14,6 +14,9 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class FeishuImRepairAlertSinkTest {
 
@@ -84,6 +87,29 @@ class FeishuImRepairAlertSinkTest {
         assertFalse(sink.deliveryAttempts().getFirst().success());
         assertEquals("FEISHU_IM_ERROR", sink.deliveryAttempts().getFirst().code());
         assertTrue(sink.deliveryAttempts().getFirst().message().contains("code=999"));
+    }
+
+    @Test
+    void shouldRedactGlobalFallbackProviderResultBeforeRecordingIt() {
+        FeishuImProperties properties = properties();
+        FeishuImClient client = mock(FeishuImClient.class);
+        when(client.sendTextMessage(anyString(), anyString()))
+                .thenReturn(FeishuImClient.FeishuImSendResult.failure("PROVIDER_ERROR", "provider token=secret-value"));
+        FeishuImRepairAlertSink sink = new FeishuImRepairAlertSink(client, properties);
+
+        sink.publish(new RepairAlert(
+                "stage-global-error",
+                "task-global-error",
+                RepairAlertType.TASK_FAILED,
+                "failed",
+                Map.of(),
+                1_788_201_600_000L
+        ));
+
+        assertEquals(1, sink.deliveryAttempts().size());
+        assertEquals("PROVIDER_ERROR", sink.deliveryAttempts().getFirst().code());
+        assertFalse(sink.deliveryAttempts().getFirst().message().contains("secret-value"));
+        assertTrue(sink.deliveryAttempts().getFirst().message().contains("token=[REDACTED]"));
     }
 
     private static FeishuImProperties properties() {

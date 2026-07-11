@@ -21,6 +21,20 @@ import org.springframework.core.task.AsyncTaskExecutor;
 @Configuration(proxyBeanMethods = false)
 public class EngineRequirementExecutorConfiguration {
 
+    RequirementExecutorPort requirementExecutor(
+            ObjectProvider<RepairExecutorPort> repairExecutorProvider,
+            ObjectProvider<CodePlatformPort> codePlatformProvider,
+            AsyncTaskExecutor executorIoTaskExecutor
+    ) {
+        return requirementExecutor(
+                repairExecutorProvider,
+                codePlatformProvider,
+                new org.springframework.beans.factory.support.StaticListableBeanFactory()
+                        .getBeanProvider(com.wish.rd.bootstrap.executor.impl.TaskMaterialAttachmentResolver.class),
+                executorIoTaskExecutor
+        );
+    }
+
     /**
      * 创建需求执行器桥接端口。
      *
@@ -32,6 +46,7 @@ public class EngineRequirementExecutorConfiguration {
     public RequirementExecutorPort requirementExecutor(
             ObjectProvider<RepairExecutorPort> repairExecutorProvider,
             ObjectProvider<CodePlatformPort> codePlatformProvider,
+            ObjectProvider<com.wish.rd.bootstrap.executor.impl.TaskMaterialAttachmentResolver> attachmentResolverProvider,
             @Qualifier(RdBotThreadPoolConfiguration.EXECUTOR_IO_EXECUTOR_BEAN)
             AsyncTaskExecutor executorIoTaskExecutor
     ) {
@@ -39,7 +54,11 @@ public class EngineRequirementExecutorConfiguration {
         if (repairExecutor == null) {
             return RequirementExecutorPort.unavailable();
         }
-        return new EngineRequirementExecutorAdapter(repairExecutor, executorIoTaskExecutor);
+        return new EngineRequirementExecutorAdapter(
+                repairExecutor,
+                executorIoTaskExecutor,
+                attachmentResolverProvider.getIfAvailable()
+        );
     }
 
     /**

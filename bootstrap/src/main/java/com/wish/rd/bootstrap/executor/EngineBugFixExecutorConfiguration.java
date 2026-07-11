@@ -22,6 +22,25 @@ import org.springframework.core.task.AsyncTaskExecutor;
 @Configuration(proxyBeanMethods = false)
 public class EngineBugFixExecutorConfiguration {
 
+    @Bean
+    @ConditionalOnMissingBean(com.wish.rd.engine.bugfix.observability.BugFixStageRecorder.class)
+    public com.wish.rd.engine.bugfix.observability.BugFixStageRecorder bugFixStageRecorder(
+            ObjectProvider<com.wish.rd.engine.agent.AgentStageRunStore> runStoreProvider,
+            ObjectProvider<com.wish.rd.engine.agent.AgentStageArtifactStore> artifactStoreProvider,
+            ObjectProvider<com.wish.rd.rag.context.RoleContextPackageStore> contextPackageStoreProvider,
+            ObjectProvider<com.wish.rd.framework.id.SnowflakeIdGenerator> idGeneratorProvider
+    ) {
+        com.wish.rd.engine.agent.AgentStageRunStore runStore = runStoreProvider.getIfAvailable();
+        com.wish.rd.engine.agent.AgentStageArtifactStore artifactStore = artifactStoreProvider.getIfAvailable();
+        com.wish.rd.rag.context.RoleContextPackageStore contextPackageStore = contextPackageStoreProvider.getIfAvailable();
+        com.wish.rd.framework.id.SnowflakeIdGenerator idGenerator = idGeneratorProvider.getIfAvailable();
+        if (runStore == null || artifactStore == null || contextPackageStore == null || idGenerator == null) {
+            return com.wish.rd.engine.bugfix.observability.BugFixStageRecorder.inMemory();
+        }
+        return new com.wish.rd.engine.bugfix.observability.BugFixStageRecorder(
+                runStore, artifactStore, contextPackageStore, idGenerator);
+    }
+
     /**
      * Creates the engine-facing bug-fix executor when execution and code-platform ports are available.
      *
@@ -41,6 +60,7 @@ public class EngineBugFixExecutorConfiguration {
             ObjectProvider<RepairExecutorPort> repairExecutorProvider,
             ObjectProvider<CodePlatformPort> codePlatformProvider,
             ObjectProvider<RepairAuditSinkPort> auditSinkProvider,
+            ObjectProvider<com.wish.rd.bootstrap.executor.impl.TaskMaterialAttachmentResolver> attachmentResolverProvider,
             @Value("${rd.executor.repository.owner:local}") String repoOwner,
             @Value("${rd.executor.repository.name:repository}") String repoName,
             @Value("${rd.executor.repository.url:}") String repositoryUrl,
@@ -65,7 +85,8 @@ public class EngineBugFixExecutorConfiguration {
                         workBranchPrefix
                 ),
                 auditSinkProvider.getIfAvailable(NoopRepairAuditSink::instance),
-                executorIoTaskExecutor
+                executorIoTaskExecutor,
+                attachmentResolverProvider.getIfAvailable()
         );
     }
 }

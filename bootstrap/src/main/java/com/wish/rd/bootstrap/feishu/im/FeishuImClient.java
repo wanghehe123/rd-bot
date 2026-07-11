@@ -52,19 +52,48 @@ public class FeishuImClient {
      * @return 飞书消息发送结果
      */
     public FeishuImSendResult sendTextMessage(String chatId, String text) {
-        if (chatId == null || chatId.isBlank()) {
-            return FeishuImSendResult.failure("INVALID_CHAT_ID", "chatId must not be blank");
+        return sendTextMessage("chat_id", chatId, text);
+    }
+
+    /**
+     * Sends text to a supported Feishu recipient identity.
+     *
+     * @param receiveIdType {@code chat_id} or {@code open_id}
+     * @param receiveId     recipient id
+     * @param text          text body
+     * @return provider result
+     */
+    public FeishuImSendResult sendTextMessage(String receiveIdType, String receiveId, String text) {
+        return sendTextMessage(receiveIdType, receiveId, text, "");
+    }
+
+    /** Sends text with an optional provider idempotency UUID. */
+    public FeishuImSendResult sendTextMessage(
+            String receiveIdType,
+            String receiveId,
+            String text,
+            String idempotencyUuid
+    ) {
+        String safeType = receiveIdType == null ? "" : receiveIdType.strip().toLowerCase(java.util.Locale.ROOT);
+        if (!safeType.equals("chat_id") && !safeType.equals("open_id")) {
+            return FeishuImSendResult.failure("INVALID_RECEIVE_ID_TYPE", "receiveIdType must be chat_id or open_id");
+        }
+        if (receiveId == null || receiveId.isBlank()) {
+            return FeishuImSendResult.failure("INVALID_RECEIVE_ID", "receiveId must not be blank");
         }
         String token = tenantAccessToken();
         String url = properties.getBaseUrl()
                 + "/open-apis/im/v1/messages?receive_id_type="
-                + URLEncoder.encode("chat_id", StandardCharsets.UTF_8);
+                + URLEncoder.encode(safeType, StandardCharsets.UTF_8);
         String contentJson = toJson(Map.of("text", text == null ? "" : text));
-        String body = toJson(Map.of(
-                "receive_id", chatId,
-                "msg_type", "text",
-                "content", contentJson
-        ));
+        Map<String, String> payload = new java.util.LinkedHashMap<>();
+        payload.put("receive_id", receiveId);
+        payload.put("msg_type", "text");
+        payload.put("content", contentJson);
+        if (idempotencyUuid != null && !idempotencyUuid.isBlank()) {
+            payload.put("uuid", idempotencyUuid.strip());
+        }
+        String body = toJson(payload);
         HttpRequest request = baseRequest(url, "POST", body)
                 .header("Authorization", "Bearer " + token)
                 .build();

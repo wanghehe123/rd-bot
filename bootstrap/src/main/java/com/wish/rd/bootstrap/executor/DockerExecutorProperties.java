@@ -38,8 +38,8 @@ public class DockerExecutorProperties {
     public static final String DEFAULT_NETWORK_MODE = "bridge";
     /** 默认超时告警阈值，单位毫秒。 */
     public static final long DEFAULT_TIMEOUT_ALERT_MILLIS = 1_800_000L;
-    /** 默认预算告警阈值，单位美元。 */
-    public static final BigDecimal DEFAULT_BUDGET_ALERT_USD = new BigDecimal("5.00");
+    /** 默认预算告警阈值，单位人民币元。 */
+    public static final BigDecimal DEFAULT_BUDGET_ALERT_CNY = new BigDecimal("36.00");
     /** 默认模型熔断连续失败阈值。 */
     public static final int DEFAULT_CIRCUIT_BREAKER_FAILURE_THRESHOLD = 3;
     /** 默认模型熔断 OPEN 持续时间。 */
@@ -54,7 +54,7 @@ public class DockerExecutorProperties {
     private String networkMode = DEFAULT_NETWORK_MODE;
     private boolean removeAfterExit = true;
     private long timeoutAlertMillis = DEFAULT_TIMEOUT_ALERT_MILLIS;
-    private BigDecimal budgetAlertUsd = DEFAULT_BUDGET_ALERT_USD;
+    private BigDecimal budgetAlertCny = DEFAULT_BUDGET_ALERT_CNY;
     private GitProperties git = new GitProperties();
     private CircuitBreakerProperties circuitBreaker = new CircuitBreakerProperties();
     private SecurityProperties security = new SecurityProperties();
@@ -132,12 +132,12 @@ public class DockerExecutorProperties {
         this.timeoutAlertMillis = Math.max(0L, timeoutAlertMillis);
     }
 
-    public BigDecimal getBudgetAlertUsd() {
-        return budgetAlertUsd;
+    public BigDecimal getBudgetAlertCny() {
+        return budgetAlertCny;
     }
 
-    public void setBudgetAlertUsd(BigDecimal budgetAlertUsd) {
-        this.budgetAlertUsd = budgetAlertUsd == null ? DEFAULT_BUDGET_ALERT_USD : budgetAlertUsd;
+    public void setBudgetAlertCny(BigDecimal budgetAlertCny) {
+        this.budgetAlertCny = budgetAlertCny == null ? DEFAULT_BUDGET_ALERT_CNY : budgetAlertCny;
     }
 
     public GitProperties getGit() {

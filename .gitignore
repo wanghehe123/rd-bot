@@ -35,15 +35,24 @@ frontend/test-results/
 docs/
 !docs/
 docs/*
+!docs/qa/
+docs/qa/*
+!docs/qa/rd-task-control-plane-enhancements-acceptance-plan-2026-07-10.md
+!docs/qa/rd-task-control-plane-enhancements-acceptance-report-2026-07-10.md
 !docs/superpowers/
 docs/superpowers/*
 !docs/superpowers/plans/
 !docs/superpowers/plans/*.md
+!docs/superpowers/specs/
+docs/superpowers/specs/*
+!docs/superpowers/specs/2026-07-10-rd-task-control-plane-enhancements-design.md
+!docs/superpowers/specs/2026-07-10-rd-task-control-plane-enhancements-lessons-spec.md
 
 # ===== 生成产物 / 本地输出 =====
 lark-output/
 qa-runs/
 .codegraph/
+.superpowers/
 
 # ===== 本地环境与密钥 =====
 *.env

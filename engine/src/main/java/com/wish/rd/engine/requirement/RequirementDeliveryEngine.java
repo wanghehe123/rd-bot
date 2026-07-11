@@ -605,6 +605,8 @@ public class RequirementDeliveryEngine {
                         requirementTask.taskId(),
                         policyDecision.toJson()
                 );
+                publishTaskLifecycleAlert(waitingApproval.taskId(), AgentWorkflowAlertType.TASK_BLOCKED,
+                        "需求任务等待策略审批", "完成策略审批后恢复任务");
                 return new RequirementDeliveryResult(
                         waitingApproval.taskId(),
                         waitingApproval.status(),
@@ -620,6 +622,8 @@ public class RequirementDeliveryEngine {
                     policyDecision.reason(),
                     resultJson
             );
+            publishTaskLifecycleAlert(failed.taskId(), AgentWorkflowAlertType.TASK_BLOCKED,
+                    policyDecision.reason(), "人工复核策略门控");
             return new RequirementDeliveryResult(
                     failed.taskId(),
                     failed.status(),
@@ -649,6 +653,8 @@ public class RequirementDeliveryEngine {
                         reason,
                         executionResult.resultJson()
                 );
+                publishTaskLifecycleAlert(failed.taskId(), AgentWorkflowAlertType.TASK_BLOCKED,
+                        reason, "人工处理阶段阻塞");
                 return new RequirementDeliveryResult(
                         failed.taskId(),
                         failed.status(),
@@ -663,6 +669,8 @@ public class RequirementDeliveryEngine {
                     reason,
                     executionResult.resultJson()
             );
+            publishTaskLifecycleAlert(rejected.taskId(), AgentWorkflowAlertType.TASK_FAILED,
+                    reason, "检查阶段产物和失败日志");
             return new RequirementDeliveryResult(
                     rejected.taskId(),
                     rejected.status(),
@@ -741,6 +749,8 @@ public class RequirementDeliveryEngine {
                 reviewedExecutionResult.pullRequestUrl(),
                 reviewedExecutionResult.resultJson()
         );
+        publishTaskLifecycleAlert(completed.taskId(), AgentWorkflowAlertType.TASK_COMPLETED,
+                "需求交付已完成", "打开任务详情并检查 PR 与交付报告");
         return new RequirementDeliveryResult(
                 completed.taskId(),
                 completed.status(),
@@ -748,6 +758,19 @@ public class RequirementDeliveryEngine {
                 completed.executionResultJson(),
                 completed.errorMessage()
         );
+    }
+
+    private void publishTaskLifecycleAlert(
+            String taskId,
+            AgentWorkflowAlertType type,
+            String message,
+            String nextAction
+    ) {
+        alertSink.publish(new AgentWorkflowAlert(
+                taskId, "", type, message,
+                Map.of("nextAction", nextAction, "status", type.name()),
+                System.currentTimeMillis()
+        ));
     }
 
     private RequirementDeliveryResult currentResult(RdRequirementTask task) {
@@ -1567,6 +1590,7 @@ public class RequirementDeliveryEngine {
             case SOLUTION_ARCHITECT -> WorkflowExperienceType.TECHNICAL_DESIGN;
             case CODING_AGENT -> WorkflowExperienceType.CODE_CHANGE;
             case QA_AGENT -> WorkflowExperienceType.QA_REPORT;
+            default -> throw new IllegalArgumentException("unsupported requirement role: " + role);
         };
     }
 
@@ -1585,6 +1609,7 @@ public class RequirementDeliveryEngine {
             case SOLUTION_ARCHITECT -> "技术方案";
             case CODING_AGENT -> "代码交付";
             case QA_AGENT -> "QA 验收";
+            default -> throw new IllegalArgumentException("unsupported requirement role: " + role);
         };
     }
 
@@ -1807,6 +1832,7 @@ public class RequirementDeliveryEngine {
                     - 全部通过时 status=PASSED；任一命令失败时 status=FAILED；无法真实执行时 status=SKIPPED。
                     - acceptanceResults 每项必须包含 criteria、command、status、logArtifactId。
                     """.strip();
+            default -> throw new IllegalArgumentException("unsupported requirement role: " + role);
         };
     }
 
@@ -1860,6 +1886,7 @@ public class RequirementDeliveryEngine {
                       ]
                     }
                     """.strip();
+            default -> throw new IllegalArgumentException("unsupported requirement role: " + role);
         };
     }
 

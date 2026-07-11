@@ -115,6 +115,35 @@ class PostgresAgentStageRunStoreTest {
     }
 
     @Test
+    void shouldLoadMultipleTasksWithOneBatchQuery() {
+        AgentStageRun first = AgentStageRun.pending(
+                "7478000000000000201",
+                "7478000000000000200",
+                AgentRole.REQUIREMENT_REVIEWER,
+                1,
+                "7478000000000000200:REQUIREMENT_REVIEWER:1",
+                1_783_000_000_000L
+        );
+        AgentStageRun second = AgentStageRun.pending(
+                "7478000000000000301",
+                "7478000000000000300",
+                AgentRole.CODING_AGENT,
+                1,
+                "7478000000000000300:CODING_AGENT:1",
+                1_783_000_000_000L
+        );
+        when(mapper.selectList(any())).thenReturn(List.of(
+                row(first.stageRunId(), first.taskId(), first.role().name(), first.status().name()),
+                row(second.stageRunId(), second.taskId(), second.role().name(), second.status().name())
+        ));
+
+        List<AgentStageRun> result = store.listByTasks(List.of(first.taskId(), second.taskId()));
+
+        assertEquals(List.of(first, second), result);
+        verify(mapper, times(1)).selectList(any());
+    }
+
+    @Test
     void shouldWireStoreThroughSpringWhenUsingPostgresProfile() {
         try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
             context.getEnvironment().getSystemProperties().put("rd.knowledge.store", "postgres");

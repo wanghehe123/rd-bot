@@ -31,11 +31,24 @@ public final class RuleBasedQueryRewriteService implements QueryRewriteService {
      * @param mappings 原始映射列表（含禁用项），允许为空
      */
     public RuleBasedQueryRewriteService(List<QueryTermMapping> mappings) {
-        this.mappings = mappings == null ? List.of() : mappings.stream()
+        this(mappings, false);
+    }
+
+    private RuleBasedQueryRewriteService(List<QueryTermMapping> mappings, boolean preserveInputOrder) {
+        List<QueryTermMapping> enabledMappings = mappings == null ? List.of() : mappings.stream()
                 .filter(QueryTermMapping::enabled)
-                .sorted(Comparator.comparingInt(QueryTermMapping::priority).reversed()
-                        .thenComparing(mapping -> mapping.sourceTerm().length(), Comparator.reverseOrder()))
                 .toList();
+        this.mappings = preserveInputOrder
+                ? enabledMappings
+                : enabledMappings.stream()
+                        .sorted(Comparator.comparingInt(QueryTermMapping::priority).reversed()
+                                .thenComparing(mapping -> mapping.sourceTerm().length(), Comparator.reverseOrder()))
+                        .toList();
+    }
+
+    /** Keeps a caller-provided deterministic policy order, such as project rules before globals. */
+    public static RuleBasedQueryRewriteService inOrder(List<QueryTermMapping> mappings) {
+        return new RuleBasedQueryRewriteService(mappings, true);
     }
 
     /** 创建一个空映射的改写服务（不做任何替换）。 */

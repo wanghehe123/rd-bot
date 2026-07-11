@@ -7,5 +7,7 @@ public enum TaskMaterialType {
     REQUIREMENT_DOC,
     ACCEPTANCE_CRITERIA,
     DESIGN_DOC,
-    REFERENCE_DOC
+    REFERENCE_DOC,
+    SCREENSHOT,
+    REFERENCE_IMAGE
 }

@@ -10,6 +10,7 @@ import java.util.Optional;
  * @param taskType 任务类型过滤（BUG_FIX/REQUIREMENT/QNA），空表示不过滤
  * @param status   状态过滤（{@link RdTaskStatus} 名），空表示不过滤
  * @param priority 优先级过滤（P0/P1/P2），空表示不过滤
+ * @param projectId 项目 ID 过滤，空表示不过滤
  * @param ticketId 工单 ID 子串
  * @param keyword  关键词（匹配标题/工单标题/工单 ID）
  * @param page     页码，从 1 开始
@@ -19,6 +20,7 @@ public record RdTaskQuery(
         String taskType,
         String status,
         String priority,
+        String projectId,
         String ticketId,
         String keyword,
         int page,
@@ -27,6 +29,7 @@ public record RdTaskQuery(
 
     public RdTaskQuery {
         taskType = taskType == null ? null : taskType.strip();
+        projectId = projectId == null ? null : projectId.strip();
         page = Math.max(1, page);
         pageSize = pageSize <= 0 ? 20 : pageSize;
     }
@@ -35,7 +38,30 @@ public record RdTaskQuery(
      * 兼容旧调用方：默认不过滤任务类型。
      */
     public RdTaskQuery(String status, String priority, String ticketId, String keyword, int page, int pageSize) {
-        this(null, status, priority, ticketId, keyword, page, pageSize);
+        this(null, status, priority, null, ticketId, keyword, page, pageSize);
+    }
+
+    /**
+     * 兼容既有所有任务类型查询调用方。
+     *
+     * @param taskType 任务类型过滤
+     * @param status 状态过滤
+     * @param priority 优先级过滤
+     * @param ticketId 工单 ID 子串
+     * @param keyword 标题和工单关键字
+     * @param page 页码
+     * @param pageSize 页大小
+     */
+    public RdTaskQuery(
+            String taskType,
+            String status,
+            String priority,
+            String ticketId,
+            String keyword,
+            int page,
+            int pageSize
+    ) {
+        this(taskType, status, priority, null, ticketId, keyword, page, pageSize);
     }
 
     /** 是否要求任务类型等于给定值。 */
@@ -54,6 +80,14 @@ public record RdTaskQuery(
             return true;
         }
         return priority.strip().equalsIgnoreCase(candidate);
+    }
+
+    /** 是否要求任务归属指定项目。 */
+    public boolean matchesProjectId(String candidate) {
+        if (projectId == null || projectId.isBlank()) {
+            return true;
+        }
+        return projectId.equals(candidate == null ? "" : candidate.strip());
     }
 
     /** 是否要求工单 ID / 关键词命中（关键词命中标题、工单标题、工单 ID 任一即可）。 */

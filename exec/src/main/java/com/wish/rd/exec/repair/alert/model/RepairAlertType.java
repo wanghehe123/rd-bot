@@ -5,6 +5,18 @@ package com.wish.rd.exec.repair.alert.model;
  */
 public enum RepairAlertType {
 
+    /** Task reached its configured successful terminal state. */
+    TASK_COMPLETED,
+
+    /** Task is waiting for human intervention. */
+    TASK_BLOCKED,
+
+    /** Task reached a failed terminal state. */
+    TASK_FAILED,
+
+    /** Task or stage exhausted its configured retries. */
+    RETRY_EXHAUSTED,
+
     /**
      * 执行耗时超过告警阈值，但默认不终止执行。
      */

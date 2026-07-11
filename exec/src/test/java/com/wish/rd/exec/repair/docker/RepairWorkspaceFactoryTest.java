@@ -3,6 +3,7 @@ package com.wish.rd.exec.repair.docker;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wish.rd.exec.repair.execution.model.RepairJobCommand;
+import com.wish.rd.exec.repair.execution.model.RepairInputAttachment;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -13,6 +14,7 @@ import java.nio.file.Path;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -20,6 +22,27 @@ import com.wish.rd.exec.repair.docker.model.RepairWorkspace;
 import com.wish.rd.exec.repair.docker.model.RepairWorkspaceFiles;
 
 class RepairWorkspaceFactoryTest {
+
+    @Test
+    void shouldWriteAttachmentsAndManifestInsideInputDirectory() throws Exception {
+        RepairWorkspaceFactory factory = new RepairWorkspaceFactory(temporaryDirectory, "{}");
+        RepairJobCommand base = command("task-attachments");
+        RepairJobCommand command = new RepairJobCommand(
+                base.repairRecordId(), base.taskId(), base.ticketId(), base.ticketTitle(), base.prompt(),
+                base.repositoryUrl(), base.repoOwner(), base.repoName(), base.baseBranch(), base.workBranch(),
+                base.contextJson(), base.policyJson(),
+                java.util.List.of(new RepairInputAttachment("../broken.png", "image/png", new byte[]{1, 2, 3}))
+        );
+
+        RepairWorkspace workspace = factory.create(command);
+
+        Path attachment = workspace.inputDirectory().resolve("attachments/broken.png");
+        assertTrue(Files.exists(attachment));
+        assertArrayEquals(new byte[]{1, 2, 3}, Files.readAllBytes(attachment));
+        String context = Files.readString(workspace.files().context());
+        assertTrue(context.contains("/work/input/attachments/broken.png"));
+        assertTrue(Files.readString(workspace.files().prompt()).contains("/work/input/attachments"));
+    }
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     private static final String RESULT_SCHEMA_JSON = """
@@ -132,6 +155,27 @@ class RepairWorkspaceFactoryTest {
 
         assertThrows(IllegalArgumentException.class, () -> factory.create(command("task-1001")));
         assertFalse(Files.exists(outsideRoot.resolve("input").resolve("prompt.md")));
+    }
+
+    @Test
+    void shouldRejectAttachmentTargetSymlinkWithoutWritingOutsideWorkspace() throws IOException {
+        Path workspaceRoot = temporaryDirectory.resolve("root");
+        Path outsideFile = temporaryDirectory.resolve("outside.png");
+        Path attachmentDirectory = workspaceRoot.resolve("task-attachment-link/input/attachments");
+        Files.createDirectories(attachmentDirectory);
+        Files.write(outsideFile, new byte[]{9, 9, 9});
+        Files.createSymbolicLink(attachmentDirectory.resolve("broken.png"), outsideFile);
+        RepairWorkspaceFactory factory = new RepairWorkspaceFactory(workspaceRoot, RESULT_SCHEMA_JSON);
+        RepairJobCommand base = command("task-attachment-link");
+        RepairJobCommand withAttachment = new RepairJobCommand(
+                base.repairRecordId(), base.taskId(), base.ticketId(), base.ticketTitle(), base.prompt(),
+                base.repositoryUrl(), base.repoOwner(), base.repoName(), base.baseBranch(), base.workBranch(),
+                base.contextJson(), base.policyJson(),
+                java.util.List.of(new RepairInputAttachment("broken.png", "image/png", new byte[]{1, 2, 3}))
+        );
+
+        assertThrows(IllegalArgumentException.class, () -> factory.create(withAttachment));
+        assertArrayEquals(new byte[]{9, 9, 9}, Files.readAllBytes(outsideFile));
     }
 
     private static void assertProtocolPathsInside(RepairWorkspace workspace, Path normalizedRoot) {

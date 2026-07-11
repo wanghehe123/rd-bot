@@ -40,17 +40,27 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
 
     private final RepairExecutorPort repairExecutor;
     private final AsyncTaskExecutor executorIoTaskExecutor;
+    private final TaskMaterialAttachmentResolver attachmentResolver;
 
     public EngineRequirementExecutorAdapter(RepairExecutorPort repairExecutor) {
-        this(repairExecutor, (AsyncTaskExecutor) null);
+        this(repairExecutor, null, null);
     }
 
     public EngineRequirementExecutorAdapter(
             RepairExecutorPort repairExecutor,
             AsyncTaskExecutor executorIoTaskExecutor
     ) {
+        this(repairExecutor, executorIoTaskExecutor, null);
+    }
+
+    public EngineRequirementExecutorAdapter(
+            RepairExecutorPort repairExecutor,
+            AsyncTaskExecutor executorIoTaskExecutor,
+            TaskMaterialAttachmentResolver attachmentResolver
+    ) {
         this.repairExecutor = Objects.requireNonNull(repairExecutor, "repairExecutor must not be null");
         this.executorIoTaskExecutor = executorIoTaskExecutor;
+        this.attachmentResolver = attachmentResolver;
     }
 
     public EngineRequirementExecutorAdapter(
@@ -132,7 +142,8 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
                 task.baseBranch(),
                 workBranch(task),
                 contextJson(request),
-                policyJson(request)
+                policyJson(request),
+                attachmentResolver == null ? List.of() : attachmentResolver.resolve(request.materials())
         );
     }
 

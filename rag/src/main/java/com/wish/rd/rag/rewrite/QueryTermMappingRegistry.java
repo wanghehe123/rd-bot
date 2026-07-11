@@ -1,132 +1,166 @@
 package com.wish.rd.rag.rewrite;
 
+import com.wish.rd.rag.rewrite.impl.InMemoryQueryTermMappingStore;
 import com.wish.rd.rag.rewrite.impl.RuleBasedQueryRewriteService;
+import com.wish.rd.rag.rewrite.model.ManagedQueryTermMapping;
+import com.wish.rd.rag.rewrite.model.QueryRewriteMatch;
+import com.wish.rd.rag.rewrite.model.QueryRewritePreview;
+import com.wish.rd.rag.rewrite.model.QueryTermMappingCommand;
+import com.wish.rd.rag.rewrite.model.QueryTermMappingScope;
 
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
+import java.util.Comparator;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.concurrent.atomic.AtomicLong;
-import org.springframework.stereotype.Component;
-import com.wish.rd.rag.rewrite.model.ManagedQueryTermMapping;
-import com.wish.rd.rag.rewrite.model.QueryTermMapping;
-import com.wish.rd.rag.rewrite.model.QueryTermMappingCommand;
+import java.util.function.Supplier;
 
 /**
- * 查询术语映射注册表：内存中管理"源术语→目标术语"的映射 CRUD。
+ * Project-aware query rewrite registry.
  *
- * <p>这是 /mappings 系列接口的后端存储，也是 /rag/v3/chat 改写逻辑的数据源。
- * 所有写操作加 synchronized 保证并发安全；{@link #rewriteService()} 每次返回基于当前快照的新实例。
+ * <p>The registry owns validation and rule selection, while the configured store owns persistence.
+ * A project can read only its own rules plus global rules; a task without a project can read global
+ * rules only.
  */
-@Component
 public final class QueryTermMappingRegistry {
 
-    /** 自增 ID 序列，作为映射主键。 */
-    private final AtomicLong sequence = new AtomicLong(0);
-    /** 映射存储，LinkedHashMap 保持插入顺序以便稳定分页。 */
-    private final LinkedHashMap<String, ManagedQueryTermMapping> mappings = new LinkedHashMap<>();
+    private static final Comparator<ManagedQueryTermMapping> EFFECTIVE_ORDER = Comparator
+            .comparingInt((ManagedQueryTermMapping mapping) -> mapping.scope() == QueryTermMappingScope.PROJECT ? 0 : 1)
+            .thenComparing(ManagedQueryTermMapping::priority, Comparator.reverseOrder())
+            .thenComparing(mapping -> mapping.sourceTerm().length(), Comparator.reverseOrder())
+            .thenComparing(ManagedQueryTermMapping::id);
 
-    public QueryTermMappingRegistry() {
-        this(true);
+    private final QueryTermMappingStore store;
+    private final Supplier<String> idSupplier;
+
+    public QueryTermMappingRegistry(QueryTermMappingStore store, Supplier<String> idSupplier) {
+        this.store = store == null ? new InMemoryQueryTermMappingStore() : store;
+        this.idSupplier = idSupplier == null ? sequenceSupplier(this.store) : idSupplier;
     }
 
-    private QueryTermMappingRegistry(boolean seedDefaults) {
-        if (seedDefaults) {
-            seedDefaults();
-        }
-    }
-
-    /** 空注册表工厂方法。 */
+    /** Empty in-memory registry for focused unit tests. */
     public static QueryTermMappingRegistry inMemory() {
-        return new QueryTermMappingRegistry(false);
+        InMemoryQueryTermMappingStore store = new InMemoryQueryTermMappingStore();
+        return new QueryTermMappingRegistry(store, sequenceSupplier(store));
     }
 
-    /**
-     * 内置默认映射的工厂方法：预置支付域两条映射（下单→接口、金额→字段），
-     * 让 /rag/v3/chat 在零配置下也能演示改写效果。
-     */
+    /** Compatibility registry containing the two historical global defaults. */
     public static QueryTermMappingRegistry withDefaults() {
-        return new QueryTermMappingRegistry(true);
+        QueryTermMappingRegistry registry = inMemory();
+        registry.seedDefaults();
+        return registry;
     }
 
-    /**
-     * 新建映射：校验后分配自增 ID 并存入。
-     *
-     * @return 含 ID 的受管映射对象
-     */
-    public synchronized ManagedQueryTermMapping create(QueryTermMappingCommand command) {
+    public ManagedQueryTermMapping create(QueryTermMappingCommand command) {
         validate(command);
-        String id = Long.toString(sequence.incrementAndGet());
-        ManagedQueryTermMapping mapping = new ManagedQueryTermMapping(
-                id,
+        long now = System.currentTimeMillis();
+        return store.save(new ManagedQueryTermMapping(
+                idSupplier.get(),
+                command.projectId(),
+                command.scope(),
                 command.sourceTerm(),
                 command.targetTerm(),
                 command.priority(),
                 command.enabled(),
-                command.remark()
-        );
-        mappings.put(id, mapping);
-        return mapping;
+                command.remark(),
+                now,
+                now
+        ));
     }
 
-    /**
-     * 更新映射：要求 ID 存在且新内容合法，整体替换。
-     */
-    public synchronized ManagedQueryTermMapping update(String id, QueryTermMappingCommand command) {
-        require(id);
+    public ManagedQueryTermMapping update(String id, QueryTermMappingCommand command) {
+        ManagedQueryTermMapping existing = require(id);
         validate(command);
-        ManagedQueryTermMapping mapping = new ManagedQueryTermMapping(
-                id,
+        return store.save(new ManagedQueryTermMapping(
+                existing.id(),
+                command.projectId(),
+                command.scope(),
                 command.sourceTerm(),
                 command.targetTerm(),
                 command.priority(),
                 command.enabled(),
-                command.remark()
-        );
-        mappings.put(id, mapping);
-        return mapping;
+                command.remark(),
+                existing.createdAtEpochMillis(),
+                System.currentTimeMillis()
+        ));
     }
 
-    /** 按 ID 查询单条映射，不存在抛异常。 */
-    public synchronized ManagedQueryTermMapping get(String id) {
+    public ManagedQueryTermMapping get(String id) {
         return require(id);
     }
 
-    /** 返回全部映射的不可变快照。 */
-    public synchronized List<ManagedQueryTermMapping> list() {
-        return List.copyOf(mappings.values());
-    }
-
-    /** 删除映射，不存在抛异常。 */
-    public synchronized void delete(String id) {
-        require(id);
-        mappings.remove(id);
+    public List<ManagedQueryTermMapping> list() {
+        return store.list();
     }
 
     /**
-     * 基于当前映射快照构建一个 {@link RuleBasedQueryRewriteService}。
-     *
-     * <p>改写服务的排序与过滤逻辑在构造时固化，因此每次调用都基于最新快照新建实例，
-     * 保证管理员对映射的增删改能即时生效。
+     * Lists rules visible in the requested management scope. A concrete project sees its project
+     * rules and global rules; the all-project view may inspect every stored project rule.
      */
-    public synchronized QueryRewriteService rewriteService() {
-        List<QueryTermMapping> snapshot = new ArrayList<>();
-        for (ManagedQueryTermMapping mapping : mappings.values()) {
-            snapshot.add(mapping.toRewriteMapping());
-        }
-        return new RuleBasedQueryRewriteService(snapshot);
+    public List<ManagedQueryTermMapping> list(
+            String projectId,
+            QueryTermMappingScope scope,
+            Boolean enabled,
+            String keyword
+    ) {
+        String safeProjectId = normalizeProjectId(projectId);
+        String safeKeyword = keyword == null ? "" : keyword.strip().toLowerCase();
+        return store.list().stream()
+                .filter(mapping -> isVisible(mapping, safeProjectId))
+                .filter(mapping -> scope == null || mapping.scope() == scope)
+                .filter(mapping -> enabled == null || mapping.enabled() == enabled)
+                .filter(mapping -> safeKeyword.isBlank() || containsKeyword(mapping, safeKeyword))
+                .sorted(EFFECTIVE_ORDER)
+                .toList();
     }
 
-    /** 校验映射存在，不存在抛 NoSuchElementException。 */
+    public void delete(String id) {
+        require(id);
+        store.delete(id);
+    }
+
+    /** Existing callers retain global-only behavior unless they pass an explicit task project. */
+    public QueryRewriteService rewriteService() {
+        return rewriteService(null);
+    }
+
+    public QueryRewriteService rewriteService(String projectId) {
+        return RuleBasedQueryRewriteService.inOrder(effectiveMappings(projectId).stream()
+                .map(ManagedQueryTermMapping::toRewriteMapping)
+                .toList());
+    }
+
+    /** Applies only effective enabled rules and records the rule order that changed the input. */
+    public QueryRewritePreview preview(String projectId, String text) {
+        String original = text == null ? "" : text;
+        String rewritten = original;
+        List<QueryRewriteMatch> matches = new java.util.ArrayList<>();
+        for (ManagedQueryTermMapping mapping : effectiveMappings(projectId)) {
+            String next = QueryTermMappingUtil.applyMapping(rewritten, mapping.sourceTerm(), mapping.targetTerm());
+            if (!next.equals(rewritten)) {
+                matches.add(new QueryRewriteMatch(
+                        mapping.id(), mapping.sourceTerm(), mapping.targetTerm(), mapping.scope()));
+                rewritten = next;
+            }
+        }
+        return new QueryRewritePreview(original, rewritten, matches);
+    }
+
+    private List<ManagedQueryTermMapping> effectiveMappings(String projectId) {
+        String safeProjectId = normalizeProjectId(projectId);
+        return store.list().stream()
+                .filter(ManagedQueryTermMapping::enabled)
+                .filter(mapping -> mapping.scope() == QueryTermMappingScope.GLOBAL
+                        || (!safeProjectId.isBlank() && safeProjectId.equals(mapping.projectId())))
+                .sorted(EFFECTIVE_ORDER)
+                .toList();
+    }
+
     private ManagedQueryTermMapping require(String id) {
-        ManagedQueryTermMapping mapping = mappings.get(id);
-        if (mapping == null) {
-            throw new NoSuchElementException("mapping not found: " + id);
-        }
-        return mapping;
+        String safeId = id == null ? "" : id.strip();
+        return store.findById(safeId)
+                .orElseThrow(() -> new NoSuchElementException("mapping not found: " + safeId));
     }
 
-    /** 校验映射命令：非空且源/目标术语均非空白。 */
     private void validate(QueryTermMappingCommand command) {
         if (command == null) {
             throw new IllegalArgumentException("mapping command must not be null");
@@ -136,6 +170,46 @@ public final class QueryTermMappingRegistry {
         }
         if (command.targetTerm().isBlank()) {
             throw new IllegalArgumentException("targetTerm must not be blank");
+        }
+        if (command.scope() == QueryTermMappingScope.PROJECT && command.projectId().isBlank()) {
+            throw new IllegalArgumentException("projectId must not be blank for PROJECT scope");
+        }
+        if (command.scope() == QueryTermMappingScope.GLOBAL && !command.projectId().isBlank()) {
+            throw new IllegalArgumentException("projectId must be blank for GLOBAL scope");
+        }
+    }
+
+    private static boolean isVisible(ManagedQueryTermMapping mapping, String projectId) {
+        return projectId.isBlank()
+                || mapping.scope() == QueryTermMappingScope.GLOBAL
+                || projectId.equals(mapping.projectId());
+    }
+
+    private static boolean containsKeyword(ManagedQueryTermMapping mapping, String keyword) {
+        return mapping.sourceTerm().toLowerCase().contains(keyword)
+                || mapping.targetTerm().toLowerCase().contains(keyword)
+                || mapping.remark().toLowerCase().contains(keyword);
+    }
+
+    private static String normalizeProjectId(String projectId) {
+        return projectId == null ? "" : projectId.strip();
+    }
+
+    private static Supplier<String> sequenceSupplier(QueryTermMappingStore store) {
+        long initial = store.list().stream()
+                .map(ManagedQueryTermMapping::id)
+                .mapToLong(QueryTermMappingRegistry::numericIdOrZero)
+                .max()
+                .orElse(0L);
+        AtomicLong sequence = new AtomicLong(initial);
+        return () -> Long.toString(sequence.incrementAndGet());
+    }
+
+    private static long numericIdOrZero(String id) {
+        try {
+            return Long.parseLong(id);
+        } catch (RuntimeException ignored) {
+            return 0L;
         }
     }
 

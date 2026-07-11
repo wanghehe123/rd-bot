@@ -66,6 +66,25 @@ public final class InMemoryAgentStageRunStore implements AgentStageRunStore {
     }
 
     @Override
+    public List<AgentStageRun> listByTasks(List<String> taskIds) {
+        return withLock(() -> {
+            if (taskIds == null || taskIds.isEmpty()) {
+                return List.of();
+            }
+            java.util.Set<String> requestedTaskIds = taskIds.stream()
+                    .filter(taskId -> taskId != null && !taskId.isBlank())
+                    .map(InMemoryAgentStageRunStore::safe)
+                    .collect(java.util.stream.Collectors.toCollection(java.util.LinkedHashSet::new));
+            if (requestedTaskIds.isEmpty()) {
+                return List.of();
+            }
+            return runs.values().stream()
+                    .filter(run -> requestedTaskIds.contains(run.taskId()))
+                    .toList();
+        });
+    }
+
+    @Override
     public AgentStageRun transition(
             String stageRunId,
             AgentStageStatus targetStatus,

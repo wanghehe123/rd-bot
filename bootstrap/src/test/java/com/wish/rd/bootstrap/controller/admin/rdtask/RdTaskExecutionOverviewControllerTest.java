@@ -9,6 +9,7 @@ import com.wish.rd.engine.agent.model.AgentRole;
 import com.wish.rd.engine.agent.model.AgentStageArtifact;
 import com.wish.rd.engine.agent.model.AgentStageRun;
 import com.wish.rd.engine.agent.model.AgentStageStatus;
+import com.wish.rd.engine.bugfix.observability.BugFixStageRecorder;
 import com.wish.rd.exec.repair.docker.impl.DockerExecutionRegistry;
 import com.wish.rd.exec.repair.docker.model.ContainerRunRequest;
 import com.wish.rd.exec.repair.execution.model.RepairJobCommand;
@@ -21,6 +22,7 @@ import com.wish.rd.rag.runtime.impl.InMemoryRdTaskStatusEventStore;
 import com.wish.rd.rag.runtime.impl.InMemoryRdTaskStore;
 import com.wish.rd.rag.runtime.model.CreateRequirementTaskCommand;
 import com.wish.rd.rag.runtime.model.RdRequirementTask;
+import com.wish.rd.rag.runtime.model.RdBugFixTask;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.web.servlet.MockMvc;
@@ -34,6 +36,8 @@ import java.util.concurrent.atomic.AtomicLong;
 import static org.hamcrest.Matchers.greaterThanOrEqualTo;
 import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.not;
+import static org.hamcrest.Matchers.containsString;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -58,7 +62,7 @@ class RdTaskExecutionOverviewControllerTest {
         contextPackageStore = new InMemoryRoleContextPackageStore();
         executionRegistry = DockerExecutionRegistry.noop();
         DockerExecutorProperties properties = new DockerExecutorProperties();
-        properties.setBudgetAlertUsd(new java.math.BigDecimal("7.50"));
+        properties.setBudgetAlertCny(new java.math.BigDecimal("54.00"));
         mockMvc = MockMvcBuilders.standaloneSetup(new RdTaskExecutionOverviewController(
                 registry,
                 stageRunStore,
@@ -212,15 +216,67 @@ class RdTaskExecutionOverviewControllerTest {
                 .andExpect(jsonPath("$.currentStageStatus", is("RUNNING")))
                 .andExpect(jsonPath("$.budget.contextUsedChars", is(400)))
                 .andExpect(jsonPath("$.budget.contextMaxChars", is(1000)))
-                .andExpect(jsonPath("$.budget.budgetAlertUsd", is(7.50)))
-                .andExpect(jsonPath("$.budget.estimatedSpendUsd", is(0.12)))
+                .andExpect(jsonPath("$.budget.budgetAlertCny", is(54.00)))
+                .andExpect(jsonPath("$.budget.estimatedSpendCny", is(0.8640)))
                 .andExpect(jsonPath("$.stageRuns", hasSize(1)))
                 .andExpect(jsonPath("$.stageRuns[0].role", is("CODING_AGENT")))
                 .andExpect(jsonPath("$.stageRuns[0].running", is(true)))
                 .andExpect(jsonPath("$.stageRuns[0].elapsedMillis", greaterThanOrEqualTo(0)))
                 .andExpect(jsonPath("$.stageRuns[0].providerAttempts[0].provider", is("long-cat")))
+                .andExpect(jsonPath("$.stageRuns[0].providerAttempts[0].estimatedSpendCny", is(0.8640)))
+                .andExpect(jsonPath("$.stageRuns[0].providerAttempts[0].estimatedSpendUsd").doesNotExist())
+                .andExpect(jsonPath("$.stageRuns[0].providerAttemptsJson", not(containsString("estimatedSpendUsd"))))
                 .andExpect(jsonPath("$.runningExecutions", hasSize(1)))
                 .andExpect(jsonPath("$.runningExecutions[0].containerName", is("rd-bot-repair-test")));
+    }
+
+    @Test
+    void shouldUseBugFixStageOrderAndProgressForBugFixTask() throws Exception {
+        RdBugFixTask task = registry.createTaskManually(
+                "ticket-bug-overview",
+                "注册接口返回 HTML",
+                "修复注册接口",
+                "P1",
+                "prompt"
+        );
+        BugFixStageRecorder recorder = new BugFixStageRecorder(stageRunStore, artifactStore, generator());
+        for (AgentRole role : AgentRole.bugFixOrder()) {
+            AgentStageRun running = recorder.start(task.taskId(), role, role.name() + " input");
+            recorder.succeed(running, role.name() + " result", "", "[]");
+        }
+
+        mockMvc.perform(get("/admin/rd-tasks/{taskId}/execution-overview", task.taskId()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.taskType", is("BUG_FIX")))
+                .andExpect(jsonPath("$.progressCompleted", is(24)))
+                .andExpect(jsonPath("$.progressTotal", is(24)))
+                .andExpect(jsonPath("$.stageRuns", hasSize(4)))
+                .andExpect(jsonPath("$.stageRuns[0].role", is("BUG_EVIDENCE_COLLECTOR")))
+                .andExpect(jsonPath("$.stageRuns[1].role", is("BUG_RAG_RETRIEVER")))
+                .andExpect(jsonPath("$.stageRuns[2].role", is("BUG_ACCEPTANCE_PLANNER")))
+                .andExpect(jsonPath("$.stageRuns[3].role", is("BUG_CODING_AGENT")));
+    }
+
+    @Test
+    void shouldExcludeRequirementRolesFromBugFixOverview() throws Exception {
+        RdBugFixTask task = registry.createTaskManually(
+                "ticket-bug-isolation", "Bug 角色隔离", "修复角色隔离", "P1", "prompt");
+        BugFixStageRecorder recorder = new BugFixStageRecorder(stageRunStore, artifactStore, generator());
+        AgentStageRun bugStage = recorder.start(task.taskId(), AgentRole.BUG_EVIDENCE_COLLECTOR, "evidence");
+        recorder.succeed(bugStage, "collected", "", "[]");
+        stageRunStore.save(AgentStageRun.pending(
+                "stage-requirement-leak",
+                task.taskId(),
+                AgentRole.REQUIREMENT_REVIEWER,
+                1,
+                task.taskId() + ":REQUIREMENT_REVIEWER:1",
+                1_783_000_000_000L
+        ));
+
+        mockMvc.perform(get("/admin/rd-tasks/{taskId}/execution-overview", task.taskId()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.stageRuns", hasSize(1)))
+                .andExpect(jsonPath("$.stageRuns[0].role", is("BUG_EVIDENCE_COLLECTOR")));
     }
 
     @Test

@@ -1,7 +1,9 @@
 package com.wish.rd.engine.admin.rewrite;
 
 import com.wish.rd.rag.rewrite.model.ManagedQueryTermMapping;
+import com.wish.rd.rag.rewrite.model.QueryRewritePreview;
 import com.wish.rd.rag.rewrite.model.QueryTermMappingCommand;
+import com.wish.rd.rag.rewrite.model.QueryTermMappingScope;
 import com.wish.rd.rag.rewrite.QueryTermMappingRegistry;
 
 import java.util.List;
@@ -36,6 +38,22 @@ public final class QueryTermMappingAdminEngine {
 
     public List<ManagedQueryTermMapping> list() {
         return registry.list();
+    }
+
+    public List<ManagedQueryTermMapping> list(
+            String projectId,
+            QueryTermMappingScope scope,
+            Boolean enabled,
+            String keyword
+    ) {
+        return registry.list(projectId, scope, enabled, keyword);
+    }
+
+    public QueryRewritePreview preview(String projectId, String text) {
+        if (text == null || text.isBlank()) {
+            throw new IllegalArgumentException("text must not be blank");
+        }
+        return registry.preview(projectId, text);
     }
 
     public void delete(String id) {

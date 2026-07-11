@@ -8,9 +8,16 @@ import com.wish.rd.engine.bugfix.acceptance.AcceptancePlanGeneratorPort;
 import com.wish.rd.engine.bugfix.acceptance.model.AcceptancePlanStatus;
 import com.wish.rd.engine.bugfix.acceptance.model.AcceptancePlanValidationResult;
 import com.wish.rd.engine.bugfix.acceptance.AcceptancePlanValidator;
+import com.wish.rd.engine.bugfix.observability.BugFixStageRecorder;
+import com.wish.rd.engine.agent.model.AgentRole;
+import com.wish.rd.engine.agent.model.AgentStageRun;
+import com.wish.rd.engine.agent.AgentWorkflowAlertSinkPort;
+import com.wish.rd.engine.agent.model.AgentWorkflowAlert;
+import com.wish.rd.engine.agent.model.AgentWorkflowAlertType;
 import com.wish.rd.engine.rag.model.BugFixMessage;
 import com.wish.rd.engine.rag.ChatQueueLimiter;
 import com.wish.rd.engine.rag.RagBugFixEngine;
+import com.wish.rd.rag.project.RdProjectService;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
 import com.wish.rd.rag.runtime.model.RdBugFixTask;
 import com.wish.rd.rag.runtime.model.RdTaskStatus;
@@ -20,7 +27,10 @@ import org.springframework.stereotype.Service;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Locale;
+import java.util.NoSuchElementException;
+import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import com.wish.rd.engine.bugfix.model.BugFixExecutionRequest;
@@ -43,6 +53,9 @@ public class RdBotFixEngine {
     private final BugFixExecutor bugFixExecutor;
     private final AcceptancePlanGeneratorPort acceptancePlanGenerator;
     private final AcceptancePlanValidator acceptancePlanValidator;
+    private final BugFixStageRecorder stageRecorder;
+    private final AgentWorkflowAlertSinkPort alertSink;
+    private final Function<String, List<String>> projectKnowledgeBaseResolver;
 
     @Autowired
     public RdBotFixEngine(
@@ -51,7 +64,10 @@ public class RdBotFixEngine {
             RagStreamTaskRegistry taskRegistry,
             BugFixPromptBuilder promptBuilder,
             ObjectProvider<BugFixExecutor> bugFixExecutorProvider,
-            ObjectProvider<AcceptancePlanGeneratorPort> acceptancePlanGeneratorProvider
+            ObjectProvider<AcceptancePlanGeneratorPort> acceptancePlanGeneratorProvider,
+            ObjectProvider<BugFixStageRecorder> stageRecorderProvider,
+            ObjectProvider<AgentWorkflowAlertSinkPort> alertSinkProvider,
+            ObjectProvider<RdProjectService> projectServiceProvider
     ) {
         this(
                 chatQueueLimiterProvider.getIfAvailable(ChatQueueLimiter::passThrough),
@@ -59,7 +75,10 @@ public class RdBotFixEngine {
                 taskRegistry,
                 promptBuilder,
                 bugFixExecutorProvider.getIfAvailable(BugFixExecutor::mock),
-                acceptancePlanGeneratorProvider.getIfAvailable(AcceptancePlanGeneratorPort::disabled)
+                acceptancePlanGeneratorProvider.getIfAvailable(AcceptancePlanGeneratorPort::disabled),
+                stageRecorderProvider.getIfAvailable(BugFixStageRecorder::inMemory),
+                alertSinkProvider.getIfAvailable(AgentWorkflowAlertSinkPort::noop),
+                projectId -> resolveProjectKnowledgeBaseIds(projectServiceProvider.getIfAvailable(), projectId)
         );
     }
 
@@ -76,7 +95,10 @@ public class RdBotFixEngine {
                 taskRegistry,
                 promptBuilder,
                 bugFixExecutor,
-                AcceptancePlanGeneratorPort.disabled()
+                AcceptancePlanGeneratorPort.disabled(),
+                BugFixStageRecorder.inMemory(),
+                AgentWorkflowAlertSinkPort.noop(),
+                projectId -> List.of()
         );
     }
 
@@ -88,6 +110,68 @@ public class RdBotFixEngine {
             BugFixExecutor bugFixExecutor,
             AcceptancePlanGeneratorPort acceptancePlanGenerator
     ) {
+        this(
+                chatQueueLimiter,
+                ragBugFixEngine,
+                taskRegistry,
+                promptBuilder,
+                bugFixExecutor,
+                acceptancePlanGenerator,
+                BugFixStageRecorder.inMemory(),
+                AgentWorkflowAlertSinkPort.noop(),
+                projectId -> List.of()
+        );
+    }
+
+    public RdBotFixEngine(
+            ChatQueueLimiter chatQueueLimiter,
+            RagBugFixEngine ragBugFixEngine,
+            RagStreamTaskRegistry taskRegistry,
+            BugFixPromptBuilder promptBuilder,
+            BugFixExecutor bugFixExecutor,
+            AcceptancePlanGeneratorPort acceptancePlanGenerator,
+            BugFixStageRecorder stageRecorder
+    ) {
+        this(
+                chatQueueLimiter, ragBugFixEngine, taskRegistry, promptBuilder, bugFixExecutor,
+                acceptancePlanGenerator, stageRecorder, AgentWorkflowAlertSinkPort.noop(), projectId -> List.of()
+        );
+    }
+
+    public RdBotFixEngine(
+            ChatQueueLimiter chatQueueLimiter,
+            RagBugFixEngine ragBugFixEngine,
+            RagStreamTaskRegistry taskRegistry,
+            BugFixPromptBuilder promptBuilder,
+            BugFixExecutor bugFixExecutor,
+            AcceptancePlanGeneratorPort acceptancePlanGenerator,
+            BugFixStageRecorder stageRecorder,
+            AgentWorkflowAlertSinkPort alertSink
+    ) {
+        this(
+                chatQueueLimiter,
+                ragBugFixEngine,
+                taskRegistry,
+                promptBuilder,
+                bugFixExecutor,
+                acceptancePlanGenerator,
+                stageRecorder,
+                alertSink,
+                projectId -> List.of()
+        );
+    }
+
+    private RdBotFixEngine(
+            ChatQueueLimiter chatQueueLimiter,
+            RagBugFixEngine ragBugFixEngine,
+            RagStreamTaskRegistry taskRegistry,
+            BugFixPromptBuilder promptBuilder,
+            BugFixExecutor bugFixExecutor,
+            AcceptancePlanGeneratorPort acceptancePlanGenerator,
+            BugFixStageRecorder stageRecorder,
+            AgentWorkflowAlertSinkPort alertSink,
+            Function<String, List<String>> projectKnowledgeBaseResolver
+    ) {
         this.chatQueueLimiter = chatQueueLimiter == null ? ChatQueueLimiter.passThrough() : chatQueueLimiter;
         this.ragBugFixEngine = ragBugFixEngine;
         this.taskRegistry = taskRegistry == null ? RagStreamTaskRegistry.inMemory() : taskRegistry;
@@ -97,6 +181,9 @@ public class RdBotFixEngine {
                 ? AcceptancePlanGeneratorPort.disabled()
                 : acceptancePlanGenerator;
         this.acceptancePlanValidator = AcceptancePlanValidator.defaultValidator();
+        this.stageRecorder = stageRecorder == null ? BugFixStageRecorder.inMemory() : stageRecorder;
+        this.alertSink = alertSink == null ? AgentWorkflowAlertSinkPort.noop() : alertSink;
+        this.projectKnowledgeBaseResolver = projectKnowledgeBaseResolver == null ? projectId -> List.of() : projectKnowledgeBaseResolver;
     }
 
     /**
@@ -159,30 +246,83 @@ public class RdBotFixEngine {
     }
 
     private RdBotFixResult runAfterAcquire(String taskId, RdBotFixCommand command) {
-        taskRegistry.markSearching(taskId, "RAG 检索中");
-        BugFixMessage ragMessage = ragBugFixEngine.findBugFixMessgaesForAgent(
-                command.ticket(),
-                command.logs(),
-                command.deepThinking(),
-                taskId
+        AgentStageRun evidenceStage = stageRecorder.start(
+                taskId,
+                AgentRole.BUG_EVIDENCE_COLLECTOR,
+                evidenceInput(command)
         );
-        AcceptancePlan acceptancePlan = generateAcceptancePlan(taskId, ragMessage);
+        stageRecorder.succeed(evidenceStage, "ticket and runtime evidence collected", "", "[]");
+
+        taskRegistry.markSearching(taskId, "RAG 检索中");
+        AgentStageRun ragStage = stageRecorder.start(taskId, AgentRole.BUG_RAG_RETRIEVER, evidenceInput(command));
+        BugFixMessage ragMessage;
+        try {
+            ragMessage = ragBugFixEngine.findBugFixMessgaesForAgent(
+                    command.ticket(),
+                    command.logs(),
+                    command.deepThinking(),
+                    taskId,
+                    projectKnowledgeBaseIds(taskId)
+            );
+            stageRecorder.succeed(ragStage, ragMessage.answer(), "", "[]");
+        } catch (RuntimeException exception) {
+            stageRecorder.failRetryable(ragStage, "RAG_RETRIEVAL_FAILED", exception.getMessage());
+            taskRegistry.markFailedRetryable(taskId, exception.getMessage());
+            publishTaskAlert(taskId, ragStage.stageRunId(), AgentWorkflowAlertType.TASK_FAILED,
+                    exception.getMessage(), "检查 RAG 与知识库状态");
+            throw exception;
+        }
+
+        AgentStageRun acceptanceStage = stageRecorder.start(
+                taskId,
+                AgentRole.BUG_ACCEPTANCE_PLANNER,
+                ragMessage.answer()
+        );
+        AcceptancePlan acceptancePlan;
+        try {
+            acceptancePlan = generateAcceptancePlan(taskId, ragMessage);
+            stageRecorder.succeed(
+                    acceptanceStage,
+                    acceptancePlan.toJson(),
+                    acceptancePlan.source(),
+                    "[]"
+            );
+        } catch (RuntimeException exception) {
+            stageRecorder.failRetryable(acceptanceStage, "ACCEPTANCE_PLAN_FAILED", exception.getMessage());
+            taskRegistry.markFailedRetryable(taskId, exception.getMessage());
+            publishTaskAlert(taskId, acceptanceStage.stageRunId(), AgentWorkflowAlertType.TASK_FAILED,
+                    exception.getMessage(), "检查验收计划生成结果");
+            throw exception;
+        }
         String prompt = promptBuilder.build(ragMessage, acceptancePlan);
         taskRegistry.markExecuting(taskId, prompt);
-        BugFixExecutionResult executionResult = bugFixExecutor.execute(new BugFixExecutionRequest(
-                taskId,
-                prompt,
-                ragMessage,
-                acceptancePlan
-        ));
+        AgentStageRun codingStage = stageRecorder.start(taskId, AgentRole.BUG_CODING_AGENT, prompt);
+        BugFixExecutionResult executionResult;
+        try {
+            executionResult = bugFixExecutor.execute(new BugFixExecutionRequest(
+                    taskId,
+                    prompt,
+                    ragMessage,
+                    acceptancePlan
+            ));
+        } catch (RuntimeException exception) {
+            stageRecorder.failRetryable(codingStage, "BUG_EXECUTOR_EXCEPTION", exception.getMessage());
+            taskRegistry.markFailedRetryable(taskId, exception.getMessage());
+            publishTaskAlert(taskId, codingStage.stageRunId(), AgentWorkflowAlertType.TASK_FAILED,
+                    exception.getMessage(), "检查执行容器与 provider 日志");
+            throw exception;
+        }
         executionResult = normalizeExecutionResult(taskId, executionResult);
         ExecutionOutcome outcome = classifyExecutionResult(executionResult);
         if (!outcome.success()) {
+            stageRecorder.failNeedsHuman(codingStage, "BUG_EXECUTION_REJECTED", outcome.failureReason());
             RdBugFixTask rejected = taskRegistry.markRejected(
                     taskId,
                     outcome.failureReason(),
                     executionResult.resultJson()
             );
+            publishTaskAlert(taskId, codingStage.stageRunId(), AgentWorkflowAlertType.TASK_FAILED,
+                    outcome.failureReason(), "人工复核执行结果");
             return new RdBotFixResult(
                     taskId,
                     rejected.status(),
@@ -193,12 +333,71 @@ public class RdBotFixEngine {
                     true
             );
         }
+        stageRecorder.succeed(
+                codingStage,
+                executionResult.resultJson(),
+                jsonTextField(executionResult.resultJson(), "providerName"),
+                jsonArrayField(executionResult.resultJson(), "providerAttempts")
+        );
         RdBugFixTask committed = taskRegistry.markCommitted(
                 taskId,
                 executionResult.pullRequestUrl(),
                 executionResult.resultJson()
         );
+        publishTaskAlert(taskId, codingStage.stageRunId(), AgentWorkflowAlertType.TASK_COMPLETED,
+                "Bug 修复已提交", "打开任务详情并检查 PR");
         return new RdBotFixResult(taskId, committed.status(), ragMessage, prompt, executionResult, acceptancePlan, false);
+    }
+
+    private void publishTaskAlert(
+            String taskId,
+            String stageRunId,
+            AgentWorkflowAlertType type,
+            String message,
+            String nextAction
+    ) {
+        alertSink.publish(new AgentWorkflowAlert(
+                taskId, stageRunId, type, message,
+                Map.of("nextAction", nextAction, "status", type.name()),
+                System.currentTimeMillis()
+        ));
+    }
+
+    private List<String> projectKnowledgeBaseIds(String taskId) {
+        return projectKnowledgeBaseResolver.apply(taskRegistry.get(taskId).projectId());
+    }
+
+    private static List<String> resolveProjectKnowledgeBaseIds(RdProjectService projectService, String projectId) {
+        if (projectService == null || projectId == null || projectId.isBlank()) {
+            return List.of();
+        }
+        try {
+            String knowledgeBaseId = projectService.get(projectId).knowledgeBaseId();
+            return knowledgeBaseId == null || knowledgeBaseId.isBlank() ? List.of() : List.of(knowledgeBaseId);
+        } catch (NoSuchElementException ignored) {
+            return List.of();
+        }
+    }
+
+    private String evidenceInput(RdBotFixCommand command) {
+        return "ticketId=" + command.ticket().ticketId()
+                + "\ntitle=" + command.ticket().title()
+                + "\ndescription=" + command.ticket().description()
+                + "\nlogs=" + String.join("\n", command.logs());
+    }
+
+    private String jsonArrayField(String json, String fieldName) {
+        if (!hasText(json) || !hasText(fieldName)) {
+            return "[]";
+        }
+        try {
+            com.fasterxml.jackson.databind.JsonNode value = new com.fasterxml.jackson.databind.ObjectMapper()
+                    .readTree(json)
+                    .path(fieldName);
+            return value.isArray() ? value.toString() : "[]";
+        } catch (Exception exception) {
+            return "[]";
+        }
     }
 
     private BugFixExecutionResult normalizeExecutionResult(String taskId, BugFixExecutionResult executionResult) {

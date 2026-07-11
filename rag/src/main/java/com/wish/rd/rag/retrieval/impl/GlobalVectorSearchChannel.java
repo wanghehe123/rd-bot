@@ -27,10 +27,10 @@ public final class GlobalVectorSearchChannel implements SearchChannel {
         return "GlobalVectorSearch";
     }
 
-    /** 启用条件：未命中任何意图（兜底场景）。 */
+    /** 启用条件：未命中意图且项目未绑定知识库时，才允许全库兜底。 */
     @Override
     public boolean isEnabled(RetrievalRequest request) {
-        return request.primaryIntent().isEmpty();
+        return request.primaryIntent().isEmpty() && request.targetKnowledgeBaseIds().isEmpty();
     }
 
     @Override

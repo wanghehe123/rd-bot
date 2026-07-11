@@ -74,7 +74,7 @@ class RuntimeComponentRegistrationPolicyTest {
                 Map.entry("rag/src/main/java/com/wish/rd/rag/memory/impl/ConversationRegistry.java", "@Component"),
                 Map.entry("rag/src/main/java/com/wish/rd/rag/memory/impl/DefaultConversationMemoryService.java", "@Service"),
                 Map.entry("rag/src/main/java/com/wish/rd/rag/feedback/MessageFeedbackRegistry.java", "@Component"),
-                Map.entry("rag/src/main/java/com/wish/rd/rag/rewrite/QueryTermMappingRegistry.java", "@Component"),
+                Map.entry("bootstrap/src/main/java/com/wish/rd/bootstrap/persistence/QueryTermMappingConfiguration.java", "@Configuration"),
                 Map.entry("rag/src/main/java/com/wish/rd/rag/intent/IntentTreeRegistry.java", "@Component"),
                 Map.entry("rag/src/main/java/com/wish/rd/rag/sample/SampleQuestionRegistry.java", "@Component"),
                 Map.entry("rag/src/main/java/com/wish/rd/rag/runtime/RagStreamTaskRegistry.java", "@Component"),

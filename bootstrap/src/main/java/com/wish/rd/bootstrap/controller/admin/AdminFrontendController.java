@@ -14,7 +14,7 @@ import java.nio.charset.StandardCharsets;
  *
  * <p>将 /admin、/admin/dashboard、/admin/knowledge、/admin/intent-tree、
  * /admin/intent-list、/admin/rd-tasks、/admin/projects、/admin/users、/admin/ingestion、/admin/mappings、
- * /admin/traces、/admin/sample-questions、/admin/settings 等前端路由统一回退到类路径下的静态
+ * /admin/traces、/admin/settings 等前端路由统一回退到类路径下的静态
  * index.html，以支持单页应用（SPA）的前端直连刷新。
  */
 @Controller
@@ -36,7 +36,6 @@ public final class AdminFrontendController {
             "/admin/mappings",
             "/admin/traces",
             "/admin/traces/{traceId}",
-            "/admin/sample-questions",
             "/admin/settings"
     }, produces = MediaType.TEXT_HTML_VALUE)
     @ResponseBody

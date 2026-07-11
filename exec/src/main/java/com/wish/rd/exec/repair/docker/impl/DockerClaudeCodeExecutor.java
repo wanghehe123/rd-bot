@@ -8,6 +8,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wish.rd.exec.repair.alert.RepairExecutionWatchdog;
+import com.wish.rd.exec.repair.alert.BudgetCurrencyConverter;
 import com.wish.rd.exec.repair.execution.model.RepairArtifact;
 import com.wish.rd.exec.repair.execution.model.RepairArtifactType;
 import com.wish.rd.exec.repair.execution.model.RepairExecutionResult;
@@ -68,6 +69,7 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
     private final DockerExecutionRegistry executionRegistry;
     private final ExecutionAllowlistPolicy executionAllowlistPolicy;
     private final AuthEnvironmentResolver authEnvironmentResolver;
+    private final BudgetCurrencyConverter budgetCurrencyConverter;
 
     /**
      * 创建 Docker Claude Code 执行器。
@@ -242,7 +244,35 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
                 modelHealthStore,
                 executionRegistry,
                 executionAllowlistPolicy,
-                AuthEnvironmentResolver.system()
+                AuthEnvironmentResolver.system(),
+                new BudgetCurrencyConverter(BudgetCurrencyConverter.DEFAULT_CNY_PER_USD)
+        );
+    }
+
+    public DockerClaudeCodeExecutor(
+            RepairWorkspaceFactory workspaceFactory,
+            ContainerRunnerPort containerRunner,
+            StructuredResultValidator resultValidator,
+            Configuration configuration,
+            RepairWorkspaceRepositoryPort workspaceRepository,
+            RepairExecutionWatchdog watchdog,
+            ModelHealthStore modelHealthStore,
+            DockerExecutionRegistry executionRegistry,
+            ExecutionAllowlistPolicy executionAllowlistPolicy,
+            BudgetCurrencyConverter budgetCurrencyConverter
+    ) {
+        this(
+                workspaceFactory,
+                containerRunner,
+                resultValidator,
+                configuration,
+                workspaceRepository,
+                watchdog,
+                modelHealthStore,
+                executionRegistry,
+                executionAllowlistPolicy,
+                AuthEnvironmentResolver.system(),
+                budgetCurrencyConverter
         );
     }
 
@@ -272,6 +302,34 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
             ExecutionAllowlistPolicy executionAllowlistPolicy,
             AuthEnvironmentResolver authEnvironmentResolver
     ) {
+        this(
+                workspaceFactory,
+                containerRunner,
+                resultValidator,
+                configuration,
+                workspaceRepository,
+                watchdog,
+                modelHealthStore,
+                executionRegistry,
+                executionAllowlistPolicy,
+                authEnvironmentResolver,
+                new BudgetCurrencyConverter(BudgetCurrencyConverter.DEFAULT_CNY_PER_USD)
+        );
+    }
+
+    public DockerClaudeCodeExecutor(
+            RepairWorkspaceFactory workspaceFactory,
+            ContainerRunnerPort containerRunner,
+            StructuredResultValidator resultValidator,
+            Configuration configuration,
+            RepairWorkspaceRepositoryPort workspaceRepository,
+            RepairExecutionWatchdog watchdog,
+            ModelHealthStore modelHealthStore,
+            DockerExecutionRegistry executionRegistry,
+            ExecutionAllowlistPolicy executionAllowlistPolicy,
+            AuthEnvironmentResolver authEnvironmentResolver,
+            BudgetCurrencyConverter budgetCurrencyConverter
+    ) {
         if (workspaceFactory == null) {
             throw new IllegalArgumentException("workspaceFactory must not be null");
         }
@@ -297,6 +355,9 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
         this.authEnvironmentResolver = authEnvironmentResolver == null
                 ? AuthEnvironmentResolver.system()
                 : authEnvironmentResolver;
+        this.budgetCurrencyConverter = budgetCurrencyConverter == null
+                ? new BudgetCurrencyConverter(BudgetCurrencyConverter.DEFAULT_CNY_PER_USD)
+                : budgetCurrencyConverter;
     }
 
     /**
@@ -543,7 +604,7 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
                 command.repairRecordId(),
                 command.taskId(),
                 runResult.durationMillis(),
-                estimatedSpend(runResult.metadata()),
+                budgetCurrencyConverter.usdToCny(estimatedSpend(runResult.metadata())),
                 System.currentTimeMillis()
         );
     }

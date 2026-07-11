@@ -25,10 +25,10 @@ public final class IntentDirectedVectorSearchChannel implements SearchChannel {
         return "IntentDirectedVectorSearch";
     }
 
-    /** 启用条件：命中主意图且意图绑定了至少一个知识库。 */
+    /** 启用条件：意图或项目绑定了至少一个知识库。 */
     @Override
     public boolean isEnabled(RetrievalRequest request) {
-        return request.primaryIntent().isPresent() && !request.targetKnowledgeBaseIds().isEmpty();
+        return !request.targetKnowledgeBaseIds().isEmpty();
     }
 
     @Override

@@ -47,6 +47,10 @@ public final class EngineAgentWorkflowAlertSink implements AgentWorkflowAlertSin
 
     private RepairAlertType toRepairAlertType(AgentWorkflowAlertType type) {
         return switch (type == null ? AgentWorkflowAlertType.STAGE_FAILED_NEEDS_HUMAN : type) {
+            case TASK_COMPLETED -> RepairAlertType.TASK_COMPLETED;
+            case TASK_BLOCKED -> RepairAlertType.TASK_BLOCKED;
+            case TASK_FAILED -> RepairAlertType.TASK_FAILED;
+            case RETRY_EXHAUSTED -> RepairAlertType.RETRY_EXHAUSTED;
             case STAGE_FAILED_RETRYABLE -> RepairAlertType.STAGE_FAILED_RETRYABLE;
             case STAGE_FAILED_NEEDS_HUMAN -> RepairAlertType.STAGE_FAILED_NEEDS_HUMAN;
             case PROVIDER_FALLBACK -> RepairAlertType.PROVIDER_FALLBACK;

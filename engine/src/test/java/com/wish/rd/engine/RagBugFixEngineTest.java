@@ -8,7 +8,10 @@ import com.wish.rd.engine.rag.model.RagRetrievalLogEvent;
 import com.wish.rd.engine.rag.RagRetrievalLogSink;
 import com.wish.rd.rag.intent.IntentTreeRegistry;
 import com.wish.rd.rag.rewrite.QueryTermMappingRegistry;
+import com.wish.rd.rag.rewrite.model.QueryTermMappingCommand;
+import com.wish.rd.rag.rewrite.model.QueryTermMappingScope;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
+import com.wish.rd.rag.runtime.model.RdBugFixTask;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -142,6 +145,38 @@ class RagBugFixEngineTest {
     }
 
     @Test
+    void usesProjectKnowledgeBaseForScopedRetrieval() {
+        RagBugFixEngine engine = new RagBugFixEngine(
+                QueryTermMappingRegistry.withDefaults(),
+                IntentTreeRegistry.withDefaults(),
+                null,
+                RagStreamTaskRegistry.inMemory(),
+                ChatQueueLimiter.passThrough()
+        );
+        TicketSnapshot ticket = new TicketSnapshot(
+                "ticket-project-scope-1",
+                "移动端页面白屏",
+                "进入商家中心后页面无法渲染，需要排查项目代码。",
+                List.of("mobile", "frontend"),
+                Instant.parse("2026-07-10T00:00:00Z")
+        );
+
+        BugFixMessage message = engine.findBugFixMessgaesForAgent(
+                ticket,
+                List.of("TypeError: Cannot read properties of undefined"),
+                false,
+                "task-project-scope-1",
+                List.of("waimai")
+        );
+
+        assertTrue(message.searchChannels().contains("IntentDirectedVectorSearch"));
+        assertFalse(message.searchChannels().contains("GlobalVectorSearch"));
+        assertFalse(message.retrievedChunks().isEmpty());
+        assertTrue(message.retrievedChunks().stream()
+                .allMatch(chunk -> "waimai".equals(chunk.knowledgeBaseId())));
+    }
+
+    @Test
     void publishesRetrievedChunksForEvaluationLogging() {
         RecordingRagRetrievalLogSink logSink = new RecordingRagRetrievalLogSink();
         RagBugFixEngine engine = new RagBugFixEngine(
@@ -178,6 +213,52 @@ class RagBugFixEngineTest {
         assertTrue(event.logs().contains("ERROR orders.amount is null at OrderService.create"));
         assertTrue(event.retrievedChunks().stream()
                 .anyMatch(chunk -> chunk.content().contains("OrderService.create")));
+    }
+
+    @Test
+    void appliesOnlyTheTaskProjectRulesWhenBuildingBugFixPrompt() {
+        QueryTermMappingRegistry mappings = QueryTermMappingRegistry.inMemory();
+        mappings.create(new QueryTermMappingCommand(
+                "", QueryTermMappingScope.GLOBAL, "金额", "orders.amount", 1, true, "global"
+        ));
+        mappings.create(new QueryTermMappingCommand(
+                "project-1", QueryTermMappingScope.PROJECT, "下单", "POST /p1/orders", 1, true, "project one"
+        ));
+        mappings.create(new QueryTermMappingCommand(
+                "project-2", QueryTermMappingScope.PROJECT, "下单", "POST /p2/orders", 1, true, "project two"
+        ));
+        RagStreamTaskRegistry tasks = RagStreamTaskRegistry.inMemory();
+        RdBugFixTask projectOneTask = tasks.createTaskManually(
+                "ticket-project-1", "project one", "project one", "P2", "",
+                "project-1", "p1", "Project One", "", "", "", "main"
+        );
+        RdBugFixTask projectTwoTask = tasks.createTaskManually(
+                "ticket-project-2", "project two", "project two", "P2", "",
+                "project-2", "p2", "Project Two", "", "", "", "main"
+        );
+        RdBugFixTask globalOnlyTask = tasks.createBugFixTask(new TicketSnapshot(
+                "ticket-global", "global", "", List.of(), Instant.now()), "P2");
+        RagBugFixEngine engine = new RagBugFixEngine(
+                mappings, IntentTreeRegistry.withDefaults(), null, tasks, ChatQueueLimiter.passThrough()
+        );
+        TicketSnapshot ticket = new TicketSnapshot(
+                "ticket-project-rules", "下单金额错误", "下单金额错误", List.of(), Instant.now()
+        );
+
+        BugFixMessage projectOne = engine.findBugFixMessgaesForAgent(
+                ticket, List.of(), false, projectOneTask.taskId());
+        BugFixMessage projectTwo = engine.findBugFixMessgaesForAgent(
+                ticket, List.of(), false, projectTwoTask.taskId());
+        BugFixMessage globalOnly = engine.findBugFixMessgaesForAgent(
+                ticket, List.of(), false, globalOnlyTask.taskId());
+
+        assertTrue(projectOne.agentUserMessage().contains("POST /p1/ordersorders.amount"));
+        assertFalse(projectOne.agentUserMessage().contains("POST /p2/orders"));
+        assertTrue(projectTwo.agentUserMessage().contains("POST /p2/ordersorders.amount"));
+        assertFalse(projectTwo.agentUserMessage().contains("POST /p1/orders"));
+        assertTrue(globalOnly.agentUserMessage().contains("下单orders.amount"));
+        assertFalse(globalOnly.agentUserMessage().contains("POST /p1/orders"));
+        assertFalse(globalOnly.agentUserMessage().contains("POST /p2/orders"));
     }
 
     private static final class RecordingRagRetrievalLogSink implements RagRetrievalLogSink {

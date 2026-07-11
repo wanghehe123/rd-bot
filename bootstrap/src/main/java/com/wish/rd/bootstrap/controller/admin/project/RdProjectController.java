@@ -136,7 +136,8 @@ public class RdProjectController {
                 request.repoOwner(),
                 request.repoName(),
                 request.defaultBranch(),
-                request.enabled()
+                request.enabled(),
+                request.knowledgeBaseId()
         );
     }
 
@@ -152,7 +153,8 @@ public class RdProjectController {
                 project.defaultBranch(),
                 project.enabled(),
                 project.createTimeEpochMillis(),
-                project.updateTimeEpochMillis()
+                project.updateTimeEpochMillis(),
+                project.knowledgeBaseId()
         );
     }
 
@@ -165,7 +167,8 @@ public class RdProjectController {
             String repoOwner,
             String repoName,
             String defaultBranch,
-            boolean enabled
+            boolean enabled,
+            String knowledgeBaseId
     ) {
     }
 
@@ -181,7 +184,8 @@ public class RdProjectController {
             String defaultBranch,
             boolean enabled,
             long createTimeEpochMillis,
-            long updateTimeEpochMillis
+            long updateTimeEpochMillis,
+            String knowledgeBaseId
     ) {
     }
 
