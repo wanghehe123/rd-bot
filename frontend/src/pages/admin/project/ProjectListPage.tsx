@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Bell, Database, FolderOpen, LayoutTemplate, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { Bell, Database, FolderOpen, Gauge, LayoutTemplate, MonitorCheck, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import {
@@ -51,12 +51,17 @@ import {
   deleteProject,
   getProjectsPage,
   getProjectAlertConfig,
+  getProjectTokenBudget,
   getProjectTaskTemplate,
+  getProjectQaProfile,
   updateProjectAlertConfig,
+  updateProjectTokenBudget,
   updateProjectTaskTemplate,
+  updateProjectQaProfile,
   updateProject,
   type RdProject,
   type ProjectAlertEventType,
+  type ProjectQaMode,
   type RdProjectPayload
 } from "@/services/projectService";
 import { getKnowledgeBases, type KnowledgeBase } from "@/services/knowledgeService";
@@ -85,7 +90,9 @@ export function ProjectListPage() {
   const [deleteTarget, setDeleteTarget] = useState<RdProject | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [alertTarget, setAlertTarget] = useState<RdProject | null>(null);
+  const [tokenBudgetTarget, setTokenBudgetTarget] = useState<RdProject | null>(null);
   const [templateTarget, setTemplateTarget] = useState<RdProject | null>(null);
+  const [qaProfileTarget, setQaProfileTarget] = useState<RdProject | null>(null);
   const [knowledgeTarget, setKnowledgeTarget] = useState<RdProject | null>(null);
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const [knowledgeBasesLoading, setKnowledgeBasesLoading] = useState(false);
@@ -292,11 +299,27 @@ export function ProjectListPage() {
                         </Tooltip>
                         <Tooltip>
                           <TooltipTrigger asChild>
+                            <Button size="icon" variant="outline" aria-label="Token 预算" onClick={() => setTokenBudgetTarget(project)}>
+                              <Gauge className="h-4 w-4" />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>Token 预算</TooltipContent>
+                        </Tooltip>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
                             <Button size="icon" variant="outline" aria-label="任务模板" onClick={() => setTemplateTarget(project)}>
                               <LayoutTemplate className="h-4 w-4" />
                             </Button>
                           </TooltipTrigger>
                           <TooltipContent>任务模板</TooltipContent>
+                        </Tooltip>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button size="icon" variant="outline" aria-label="浏览器 QA" onClick={() => setQaProfileTarget(project)}>
+                              <MonitorCheck className="h-4 w-4" />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>浏览器 QA</TooltipContent>
                         </Tooltip>
                         <Tooltip>
                           <TooltipTrigger asChild>
@@ -360,7 +383,9 @@ export function ProjectListPage() {
         onSuccess={() => loadProjects(1, keyword, enabledParam)}
       />
       <ProjectAlertDialog project={alertTarget} onOpenChange={(open) => !open && setAlertTarget(null)} />
+      <ProjectTokenBudgetDialog project={tokenBudgetTarget} onOpenChange={(open) => !open && setTokenBudgetTarget(null)} />
       <ProjectTemplateDialog project={templateTarget} onOpenChange={(open) => !open && setTemplateTarget(null)} />
+      <ProjectQaProfileDialog project={qaProfileTarget} onOpenChange={(open) => !open && setQaProfileTarget(null)} />
       <ProjectKnowledgeBindingDialog
         project={knowledgeTarget}
         knowledgeBases={knowledgeBases}
@@ -607,6 +632,61 @@ function ProjectKnowledgeBindingDialog({
   );
 }
 
+function ProjectTokenBudgetDialog({ project, onOpenChange }: { project: RdProject | null; onOpenChange: (open: boolean) => void }) {
+  const [value, setValue] = useState("0");
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const loadSequence = useRef(0);
+
+  useEffect(() => {
+    const sequence = ++loadSequence.current;
+    if (!project) return () => { loadSequence.current++; };
+    setLoading(true);
+    getProjectTokenBudget(project.projectId).then((budget) => {
+      if (sequence === loadSequence.current) setValue(String(budget.defaultTokenBudget ?? 0));
+    }).catch((error) => {
+      if (sequence === loadSequence.current) toast.error(getErrorMessage(error, "加载 Token 预算失败"));
+    }).finally(() => {
+      if (sequence === loadSequence.current) setLoading(false);
+    });
+    return () => { loadSequence.current++; };
+  }, [project?.projectId]);
+
+  const save = async () => {
+    if (!project) return;
+    const budget = Number(value);
+    if (!Number.isSafeInteger(budget) || budget < 0) {
+      toast.error("请输入非负整数额度");
+      return;
+    }
+    setSaving(true);
+    try {
+      await updateProjectTokenBudget(project.projectId, budget);
+      toast.success("Token 预算已保存");
+      onOpenChange(false);
+    } catch (error) {
+      toast.error(getErrorMessage(error, "保存 Token 预算失败"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Dialog open={!!project} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-[440px]">
+        <DialogHeader><DialogTitle>项目 Token 预算</DialogTitle><DialogDescription>{project?.name}</DialogDescription></DialogHeader>
+        <div>
+          <label className="mb-2 block text-sm font-medium">默认额度</label>
+          <Input type="number" min="0" step="1" inputMode="numeric" value={value} disabled={loading || saving}
+            onChange={(event) => setValue(event.target.value)} />
+          <p className="mt-2 text-xs text-muted-foreground">0 表示不限制；任务创建时可填写覆盖额度。</p>
+        </div>
+        <DialogFooter><Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>取消</Button><Button onClick={() => void save()} disabled={loading || saving}>{saving ? "保存中..." : "保存"}</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 const ALERT_EVENTS: Array<{ value: ProjectAlertEventType; label: string }> = [
   { value: "TASK_COMPLETED", label: "任务完成" },
   { value: "TASK_BLOCKED", label: "任务阻塞" },
@@ -740,6 +820,101 @@ function RecipientListEditor({
         </div>
       ))}
     </section>
+  );
+}
+
+function ProjectQaProfileDialog({ project, onOpenChange }: { project: RdProject | null; onOpenChange: (open: boolean) => void }) {
+  const [mode, setMode] = useState<ProjectQaMode>("AUTO");
+  const [baseUrl, setBaseUrl] = useState("");
+  const [startCommand, setStartCommand] = useState("");
+  const [healthPath, setHealthPath] = useState("/");
+  const [allowedHosts, setAllowedHosts] = useState("");
+  const [regressionCommands, setRegressionCommands] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!project) return;
+    setLoading(true);
+    getProjectQaProfile(project.projectId).then((profile) => {
+      setMode(profile.mode);
+      setBaseUrl(profile.baseUrl || "");
+      setStartCommand(profile.startCommand || "");
+      setHealthPath(profile.healthPath || "/");
+      setAllowedHosts((profile.allowedHosts || []).join("\n"));
+      setRegressionCommands((profile.regressionCommands || []).join("\n"));
+    }).catch(() => {
+      setMode("AUTO");
+      setBaseUrl("");
+      setStartCommand("");
+      setHealthPath("/");
+      setAllowedHosts("");
+      setRegressionCommands("");
+    }).finally(() => setLoading(false));
+  }, [project?.projectId]);
+
+  const lines = (value: string) => value.split("\n").map((item) => item.trim()).filter(Boolean);
+  const save = async () => {
+    if (!project) return;
+    setSaving(true);
+    try {
+      await updateProjectQaProfile(project.projectId, {
+        mode,
+        baseUrl: mode === "REQUIRED" ? baseUrl.trim() : "",
+        startCommand: mode === "REQUIRED" ? startCommand.trim() : "",
+        healthPath: mode === "REQUIRED" ? healthPath.trim() || "/" : "",
+        allowedHosts: mode === "REQUIRED" ? lines(allowedHosts) : [],
+        regressionCommands: mode === "DISABLED" ? [] : lines(regressionCommands)
+      });
+      toast.success("浏览器 QA 配置已保存");
+      onOpenChange(false);
+    } catch (error) {
+      toast.error(getErrorMessage(error, "保存浏览器 QA 配置失败"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Dialog open={!!project} onOpenChange={onOpenChange}>
+      <DialogContent className="flex max-h-[calc(100vh-2rem)] flex-col overflow-hidden sm:max-w-[640px]">
+        <DialogHeader>
+          <DialogTitle>浏览器 QA</DialogTitle>
+          <DialogDescription>{project?.name} 的真实页面验证与回归命令</DialogDescription>
+        </DialogHeader>
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
+          <div>
+            <label className="mb-2 block text-sm font-medium">验证模式</label>
+            <Select value={mode} onValueChange={(value) => setMode(value as ProjectQaMode)} disabled={loading}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="AUTO">自动识别</SelectItem>
+                <SelectItem value="REQUIRED">必须浏览器验证</SelectItem>
+                <SelectItem value="DISABLED">不执行浏览器验证</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          {mode === "REQUIRED" ? (
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="sm:col-span-2"><label className="mb-2 block text-sm font-medium">应用地址</label><Input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="http://127.0.0.1:4173" /></div>
+              <div className="sm:col-span-2"><label className="mb-2 block text-sm font-medium">启动命令</label><Input value={startCommand} onChange={(event) => setStartCommand(event.target.value)} className="font-mono text-xs" placeholder="npm run preview -- --host 0.0.0.0" /></div>
+              <div><label className="mb-2 block text-sm font-medium">健康检查路径</label><Input value={healthPath} onChange={(event) => setHealthPath(event.target.value)} className="font-mono text-xs" placeholder="/health" /></div>
+              <div><label className="mb-2 block text-sm font-medium">允许访问的主机</label><Textarea value={allowedHosts} onChange={(event) => setAllowedHosts(event.target.value)} className="min-h-24 font-mono text-xs" placeholder={"127.0.0.1\nlocalhost"} /></div>
+            </div>
+          ) : null}
+          {mode !== "DISABLED" ? (
+            <div>
+              <label className="mb-2 block text-sm font-medium">回归命令</label>
+              <Textarea value={regressionCommands} onChange={(event) => setRegressionCommands(event.target.value)} className="min-h-28 font-mono text-xs" placeholder={"npm test\nnpm run typecheck"} />
+            </div>
+          ) : null}
+        </div>
+        <DialogFooter className="shrink-0 border-t border-slate-200 pt-4">
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>取消</Button>
+          <Button onClick={() => void save()} disabled={loading || saving}>{saving ? "保存中..." : "保存"}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

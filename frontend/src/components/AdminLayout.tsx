@@ -1,4 +1,4 @@
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 import {
   ChevronDown,
@@ -8,6 +8,7 @@ import {
   Database,
   GitBranch,
   Github,
+  FlaskConical,
   KeyRound,
   Layers,
   LayoutDashboard,
@@ -60,7 +61,8 @@ const menuGroups: Array<{ title: string; items: MenuItem[] }> = [
       { path: "/admin/projects", label: "项目管理", icon: Github },
       { path: "/admin/rd-tasks", label: "任务管理", icon: ListChecks },
       { path: "/admin/mappings", label: "检索规则", icon: KeyRound },
-      { path: "/admin/traces", label: "执行追踪", icon: Workflow }
+      { path: "/admin/traces", label: "执行追踪", icon: Workflow },
+      { path: "/admin/evaluations", label: "评测", icon: FlaskConical }
     ]
   },
   {
@@ -82,6 +84,7 @@ const breadcrumbMap: Record<string, string> = {
   "rd-tasks": "任务管理",
   mappings: "检索规则",
   traces: "执行追踪",
+  evaluations: "评测",
   users: "用户管理",
   settings: "系统设置"
 };
@@ -100,10 +103,19 @@ export function AdminLayout() {
   const navigate = useNavigate();
   const [collapsed, setCollapsed] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [isMobileViewport, setIsMobileViewport] = useState(() => (
+    typeof window !== "undefined" && window.matchMedia("(max-width: 860px)").matches
+  ));
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({ intent: true });
   const [passwordOpen, setPasswordOpen] = useState(false);
   const [passwordForm, setPasswordForm] = useState({ currentPassword: "", newPassword: "", confirmPassword: "" });
+  const sidebarRef = useRef<HTMLElement>(null);
+  const previousMobileSidebarOpenRef = useRef(false);
   const sidebarCompact = collapsed && !mobileSidebarOpen;
+  const mobileSidebarHidden = isMobileViewport && !mobileSidebarOpen;
+  const mobileSidebarInertProps = mobileSidebarHidden
+    ? ({ inert: "" } as Record<string, string>)
+    : {};
 
   const breadcrumbs = useMemo(() => {
     const parts = location.pathname.split("/").filter(Boolean);
@@ -130,6 +142,34 @@ export function AdminLayout() {
   }, [location.pathname]);
 
   useEffect(() => {
+    const mobileViewport = window.matchMedia("(max-width: 860px)");
+    const syncMobileViewport = () => {
+      setIsMobileViewport(mobileViewport.matches);
+      if (!mobileViewport.matches) setMobileSidebarOpen(false);
+    };
+    syncMobileViewport();
+    mobileViewport.addEventListener("change", syncMobileViewport);
+    return () => mobileViewport.removeEventListener("change", syncMobileViewport);
+  }, []);
+
+  useEffect(() => {
+    const wasOpen = previousMobileSidebarOpenRef.current;
+    previousMobileSidebarOpenRef.current = mobileSidebarOpen;
+    if (!isMobileViewport) return;
+
+    const frame = window.requestAnimationFrame(() => {
+      if (mobileSidebarOpen) {
+        sidebarRef.current
+          ?.querySelector<HTMLElement>("a[href], button:not([disabled])")
+          ?.focus();
+      } else if (wasOpen) {
+        document.querySelector<HTMLButtonElement>("[data-admin-mobile-toggle]")?.focus();
+      }
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [isMobileViewport, mobileSidebarOpen]);
+
+  useEffect(() => {
     const handleKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.key === "Escape") {
         setMobileSidebarOpen(false);
@@ -153,7 +193,10 @@ export function AdminLayout() {
         />
       ) : null}
       <aside
+        ref={sidebarRef}
         id="admin-sidebar"
+        aria-hidden={mobileSidebarHidden ? true : undefined}
+        {...mobileSidebarInertProps}
         className={cn(
           "admin-sidebar",
           collapsed && "admin-sidebar--collapsed",
@@ -253,6 +296,7 @@ export function AdminLayout() {
               <Button
                 variant="ghost"
                 className="admin-mobile-toggle"
+                data-admin-mobile-toggle
                 onClick={() => setMobileSidebarOpen((value) => !value)}
                 aria-label="切换侧边栏"
                 aria-controls="admin-sidebar"
@@ -272,11 +316,11 @@ export function AdminLayout() {
                 <Plus size={16} />
                 新建任务
               </Button>
-              <Button variant="ghost" onClick={() => notify("聊天端尚未迁移到当前单服务后台", "info")}>
+              <Button className="admin-topbar-secondary-action" variant="ghost" onClick={() => notify("聊天端尚未迁移到当前单服务后台", "info")}>
                 <MessageSquare size={16} />
                 返回聊天
               </Button>
-              <button type="button" className="admin-star-link" onClick={() => navigate("/admin/projects")}>
+              <button type="button" className="admin-star-link admin-topbar-secondary-action" onClick={() => navigate("/admin/projects")}>
                 <Github size={16} />
                 <span>RD-Bot</span>
                 <Badge>Ops</Badge>

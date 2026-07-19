@@ -631,6 +631,7 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
   const [baseBranch, setBaseBranch] = useState("main");
   const [expectedResult, setExpectedResult] = useState("");
   const [acceptanceCriteriaText, setAcceptanceCriteriaText] = useState("");
+  const [tokenBudgetOverride, setTokenBudgetOverride] = useState("0");
   const [materialSourceType, setMaterialSourceType] = useState<"MANUAL_TEXT" | "FEISHU_DOC" | "LOCAL_UPLOAD">("MANUAL_TEXT");
   const [manualRequirementText, setManualRequirementText] = useState("");
   const [feishuDocumentUrl, setFeishuDocumentUrl] = useState("");
@@ -695,6 +696,7 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
       setBaseBranch("main");
       setExpectedResult("");
       setAcceptanceCriteriaText("");
+      setTokenBudgetOverride("0");
       setMaterialSourceType("MANUAL_TEXT");
       setManualRequirementText("");
       setFeishuDocumentUrl("");
@@ -840,6 +842,11 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
           toast.error("请输入预期结果");
           return;
         }
+        const tokenBudget = Number(tokenBudgetOverride || "0");
+        if (!Number.isSafeInteger(tokenBudget) || tokenBudget < 0) {
+          toast.error("Token 预算覆盖额度必须是非负整数");
+          return;
+        }
         if (materialSourceType === "MANUAL_TEXT" && !materialContent) {
           toast.error("请输入需求正文");
           return;
@@ -894,7 +901,8 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
             .map((line) => line.trim())
             .filter(Boolean),
           materials: [material],
-          autoExecute: autoExecute && attachmentFiles.length === 0
+          autoExecute: autoExecute && attachmentFiles.length === 0,
+          tokenBudgetOverride: tokenBudget
         });
         for (const file of attachmentFiles) {
           await uploadTaskMaterial(created.taskId, file, { materialType: "REFERENCE_IMAGE" });
@@ -1261,6 +1269,17 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
                   onChange={(event) => setAcceptanceCriteriaText(event.target.value)}
                   className="min-h-[90px] resize-y"
                   placeholder="每行一条，例如：前端构建通过"
+                />
+              </div>
+              <div>
+                <label className="mb-2 block text-sm font-medium">Token 预算覆盖额度</label>
+                <Input
+                  type="number"
+                  min="0"
+                  step="1"
+                  inputMode="numeric"
+                  value={tokenBudgetOverride}
+                  onChange={(event) => setTokenBudgetOverride(event.target.value)}
                 />
               </div>
               <label className="flex items-center gap-2 text-sm">

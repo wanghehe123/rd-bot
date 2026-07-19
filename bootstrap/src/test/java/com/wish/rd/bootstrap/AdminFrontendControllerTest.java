@@ -99,4 +99,14 @@ class AdminFrontendControllerTest {
                     .andExpect(content().string(containsString("admin-knowledge.js")));
         }
     }
+
+    @Test
+    void servesEvaluationConsoleForDirectBrowserNavigation() throws Exception {
+        mockMvc.perform(get("/admin/evaluations").accept(MediaType.TEXT_HTML))
+                .andExpect(status().isOk())
+                .andExpect(content().string(containsString(ADMIN_TITLE)))
+                .andExpect(content().string(containsString("id=\"root\"")))
+                .andExpect(content().string(containsString("admin-knowledge.css")))
+                .andExpect(content().string(containsString("admin-knowledge.js")));
+    }
 }

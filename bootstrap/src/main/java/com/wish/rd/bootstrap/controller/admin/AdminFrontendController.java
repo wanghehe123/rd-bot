@@ -36,6 +36,7 @@ public final class AdminFrontendController {
             "/admin/mappings",
             "/admin/traces",
             "/admin/traces/{traceId}",
+            "/admin/evaluations",
             "/admin/settings"
     }, produces = MediaType.TEXT_HTML_VALUE)
     @ResponseBody

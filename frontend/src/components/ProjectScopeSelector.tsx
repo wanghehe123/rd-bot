@@ -48,7 +48,7 @@ export function ProjectScopeSelector({
   return (
     <div className={cn("flex min-w-0 items-center gap-2", className)}>
       <Building2 className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-      <Select value={projectId || undefined} onValueChange={onProjectChange} disabled={disabled}>
+      <Select value={projectId} onValueChange={onProjectChange} disabled={disabled}>
         <SelectTrigger className="w-full min-w-[11rem] sm:w-[15rem]" aria-label="选择项目">
           <SelectValue placeholder={placeholder} />
         </SelectTrigger>

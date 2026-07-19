@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeft,
   ChevronLeft,
@@ -7,10 +7,12 @@ import {
   CircleAlert,
   ClipboardList,
   Filter,
+  FlaskConical,
   RefreshCw,
   Search,
   TimerReset,
 } from "lucide-react";
+import { toast } from "sonner";
 
 import { ProjectScopeSelector } from "@/components/ProjectScopeSelector";
 import { Button } from "@/components/ui/button";
@@ -30,6 +32,7 @@ import {
   type ExecutionTracePageResult,
   type ExecutionTraceRecord
 } from "@/services/executionTraceService";
+import { createTaskRunEvaluation } from "@/services/evaluationService";
 
 import {
   executionTraceQueryForScope,
@@ -157,15 +160,31 @@ function TracePagination({ page, pages, total, onPageChange }: { page: number; p
 
 export function ExecutionTraceDetailPage() {
   const { taskId = "" } = useParams();
+  const navigate = useNavigate();
+  const [evaluating, setEvaluating] = useState(false);
   const detailState = useAsyncData(() => getExecutionTraceDetail(taskId), [taskId], null);
   const detail = detailState.data;
+
+  const evaluateCurrentRun = async () => {
+    if (!taskId || evaluating) return;
+    setEvaluating(true);
+    try {
+      const run = await createTaskRunEvaluation(taskId);
+      toast.success(`执行评测 ${run.runId} 已进入队列`);
+      navigate(`/admin/evaluations?runId=${run.runId}`);
+    } catch (error) {
+      toast.error(getErrorMessage(error, "创建执行评测失败"));
+    } finally {
+      setEvaluating(false);
+    }
+  };
 
   return (
     <div className="admin-page execution-trace-detail-page">
       <PageHeader
         title="执行详情"
         description={detail?.task.title || taskId}
-        action={<div className="trace-detail-actions"><Button asChild variant="outline"><Link to="/admin/traces"><ArrowLeft aria-hidden="true" />返回执行追踪</Link></Button><Button asChild variant="outline"><Link to={`/admin/rd-tasks/${taskId}`}><ClipboardList aria-hidden="true" />任务详情</Link></Button><Button variant="outline" size="icon" onClick={() => void detailState.refresh()} aria-label="刷新执行详情" title="刷新执行详情"><RefreshCw className={detailState.loading ? "spin" : undefined} aria-hidden="true" /></Button></div>}
+        action={<div className="trace-detail-actions"><Button variant="outline" onClick={() => void evaluateCurrentRun()} disabled={!detail || evaluating}><FlaskConical className={evaluating ? "spin" : undefined} aria-hidden="true" />{evaluating ? "创建评测中" : "评测本次执行"}</Button><Button asChild variant="outline"><Link to="/admin/traces"><ArrowLeft aria-hidden="true" />返回执行追踪</Link></Button><Button asChild variant="outline"><Link to={`/admin/rd-tasks/${taskId}`}><ClipboardList aria-hidden="true" />任务详情</Link></Button><Button variant="outline" size="icon" onClick={() => void detailState.refresh()} aria-label="刷新执行详情" title="刷新执行详情"><RefreshCw className={detailState.loading ? "spin" : undefined} aria-hidden="true" /></Button></div>}
       />
       {detailState.error ? <div className="trace-inline-notice" role="status">{detailState.error}</div> : null}
       {!detail ? <Empty>{detailState.loading ? "正在加载任务执行详情..." : "未找到执行详情。"}</Empty> : <TraceDetailContent detail={detail} />}

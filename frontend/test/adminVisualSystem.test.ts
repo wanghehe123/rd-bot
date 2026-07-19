@@ -24,6 +24,25 @@ test("uses an independent accessible mobile navigation drawer", () => {
   assert.match(layout, /admin-sidebar-backdrop/);
   assert.match(layout, /aria-expanded=\{mobileSidebarOpen\}/);
   assert.match(layout, /event\.key === "Escape"/);
+  assert.match(layout, /matchMedia\("\(max-width: 860px\)"\)/);
+  assert.match(layout, /aria-hidden=\{mobileSidebarHidden \? true : undefined\}/);
+  assert.match(layout, /const mobileSidebarInertProps = mobileSidebarHidden/);
+  assert.match(layout, /\{ inert: "" \} as Record<string, string>/);
+  assert.match(layout, /\{\.\.\.mobileSidebarInertProps\}/);
+  assert.match(layout, /previousMobileSidebarOpenRef/);
+  assert.match(layout, /data-admin-mobile-toggle/);
+  assert.match(layout, /querySelector<HTMLElement>\("a\[href\], button:not\(\[disabled\]\)"\)/);
+});
+
+test("removes secondary topbar actions before the tablet layout is squeezed", () => {
+  const layout = read("../src/components/AdminLayout.tsx");
+  const styles = read("../src/styles.css");
+
+  assert.equal((layout.match(/admin-topbar-secondary-action/g) || []).length, 2);
+  assert.match(
+    styles,
+    /@media \(max-width: 1024px\) \{[\s\S]*?\.admin-topbar-secondary-action\s*\{[\s\S]*?display:\s*none;/
+  );
 });
 
 test("replaces the broad knowledge search with a direct task creation action", () => {

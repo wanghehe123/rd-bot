@@ -19,3 +19,8 @@ test("project scope selector keeps its choice accessible and width-bounded", () 
   assert.match(source, /min-w-\[11rem\]/);
   assert.match(source, /sm:w-\[15rem\]/);
 });
+
+test("project scope selector stays controlled while the async project choice loads", () => {
+  assert.match(source, /<Select value=\{projectId\}/);
+  assert.doesNotMatch(source, /projectId \|\| undefined/);
+});

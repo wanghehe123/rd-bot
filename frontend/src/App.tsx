@@ -19,6 +19,7 @@ const IngestionPage = lazy(() => import("./pages/AdminPages").then((module) => (
 const RetrievalRulesPage = lazy(() => import("@/pages/admin/retrieval/RetrievalRulesPage").then((module) => ({ default: module.RetrievalRulesPage })));
 const ExecutionTracePage = lazy(() => import("@/pages/admin/trace/ExecutionTracePage").then((module) => ({ default: module.ExecutionTracePage })));
 const ExecutionTraceDetailPage = lazy(() => import("@/pages/admin/trace/ExecutionTracePage").then((module) => ({ default: module.ExecutionTraceDetailPage })));
+const EvaluationPage = lazy(() => import("@/pages/admin/evaluation/EvaluationPage").then((module) => ({ default: module.EvaluationPage })));
 const SettingsPage = lazy(() => import("./pages/AdminPages").then((module) => ({ default: module.SettingsPage })));
 
 function AdminRouteFallback() {
@@ -52,6 +53,7 @@ export function App() {
             <Route path="mappings" element={<RetrievalRulesPage />} />
             <Route path="traces" element={<ExecutionTracePage />} />
             <Route path="traces/:taskId" element={<ExecutionTraceDetailPage />} />
+            <Route path="evaluations" element={<EvaluationPage />} />
             <Route path="settings" element={<SettingsPage />} />
           </Route>
           <Route path="*" element={<Navigate to="/admin/dashboard" replace />} />

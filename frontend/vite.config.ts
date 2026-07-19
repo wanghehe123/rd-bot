@@ -3,12 +3,18 @@ import react from "@vitejs/plugin-react";
 import type { IncomingMessage } from "node:http";
 import { fileURLToPath, URL } from "node:url";
 
-const backendTarget = "http://127.0.0.1:18080";
+const backendTarget = process.env.RD_BOT_BACKEND_TARGET || "http://127.0.0.1:18080";
 
 export function isHtmlNavigation(request: IncomingMessage): boolean {
   const acceptHeader = request.headers.accept;
   const accept = Array.isArray(acceptHeader) ? acceptHeader.join(",") : acceptHeader || "";
   return request.method === "GET" && accept.includes("text/html");
+}
+
+export function isRdTaskSpaNavigation(request: IncomingMessage): boolean {
+  if (!isHtmlNavigation(request)) return false;
+  const pathname = new URL(request.url || "", "http://localhost").pathname;
+  return /^\/admin\/rd-tasks(?:\/[0-9]+)?\/?$/.test(pathname);
 }
 
 export default defineConfig({
@@ -29,13 +35,20 @@ export default defineConfig({
       "/admin/operations": backendTarget,
       "/admin/rd-tasks": {
         target: backendTarget,
-        bypass: (request) => isHtmlNavigation(request) ? request.url : undefined
+        bypass: (request) => isRdTaskSpaNavigation(request) ? request.url : undefined
       },
       "/admin/projects": {
         target: backendTarget,
         bypass: (request) => isHtmlNavigation(request) ? request.url : undefined
       },
       "/admin/rd-task-drafts": backendTarget,
+      "/admin/rag-retrieval-runs": backendTarget,
+      "/admin/ai-reviews": backendTarget,
+      "/admin/evaluations": {
+        target: backendTarget,
+        bypass: (request) => isHtmlNavigation(request) ? request.url : undefined
+      },
+      "/admin/knowledge-base": backendTarget,
       "/intent-tree": backendTarget,
       "/users": backendTarget,
       "/user": backendTarget,

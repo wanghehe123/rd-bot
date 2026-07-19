@@ -30,6 +30,7 @@ export interface RdTask {
   expectedResult: string;
   acceptanceCriteriaJson: string;
   executionEvidence: RdTaskExecutionEvidence;
+  tokenBudgetOverride: number;
 }
 
 export interface RdTaskExecutionEvidence {
@@ -74,6 +75,7 @@ export interface RdTaskExecutionOverview {
   currentRole: string;
   currentStageStatus: string;
   budget: RdTaskExecutionBudget;
+  tokenBudget: RdTaskTokenBudget;
   stageRuns: RdTaskStageRun[];
   runningExecutions: RdTaskRunningExecution[];
 }
@@ -85,6 +87,22 @@ export interface RdTaskExecutionBudget {
   estimatedSpendCny: number;
   budgetAlertCny: number;
   costAvailable: boolean;
+}
+
+export interface RdTaskTokenBudget {
+  effectiveTokenBudget: number;
+  initialTokens: number;
+  retryReserveTokens: number;
+  estimatedTotalTokens: number;
+  confidence: string;
+  basis: string;
+  historicalSamples: Array<{ scope: string; actualTotalTokens: number; completedAtEpochMillis?: number }>;
+  runningTokens: number;
+  actualAccumulatedTokens: number;
+  finalActualTokens: number;
+  estimateAvailable: boolean;
+  actualAvailable: boolean;
+  overBudget: boolean;
 }
 
 export interface RdTaskStageRun {
@@ -117,6 +135,8 @@ export interface RdTaskStageRun {
 export interface RdTaskRunningExecution {
   repairRecordId: string;
   taskId: string;
+  executionTaskId: string;
+  stageRunId: string;
   ticketId: string;
   provider: string;
   containerName: string;
@@ -124,6 +144,76 @@ export interface RdTaskRunningExecution {
   lastHeartbeatEpochMillis: number;
   elapsedMillis: number;
   outputDirectory: string;
+  tokenUsage: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheCreationInputTokens: number;
+    cacheReadInputTokens: number;
+    totalTokens: number;
+    estimatedSpendCny: number;
+    available: boolean;
+    finalized: boolean;
+  };
+}
+
+/** 已归档的角色实际 Prompt 与其绑定的 RAG 上下文。 */
+export interface RdTaskRolePromptResponse {
+  taskId: string;
+  taskType: string;
+  stagePrompts: RdTaskRolePromptStage[];
+}
+
+export interface RdTaskRolePromptStage {
+  stageRunId: string;
+  taskId: string;
+  role: string;
+  status: string;
+  attemptNo: number;
+  providerName: string;
+  prompt: RdTaskRolePrompt;
+  context: RdTaskRolePromptContext;
+}
+
+export interface RdTaskRolePrompt {
+  available: boolean;
+  unavailableReason: string;
+  artifactId: string;
+  summary: string;
+  contentPreview: string;
+  contentHash: string;
+  contentLength: number;
+  previewLength: number;
+  truncated: boolean;
+  createdAtEpochMillis: number;
+}
+
+export interface RdTaskRolePromptContext {
+  available: boolean;
+  unavailableReason: string;
+  packageId: string;
+  packageVersion: number;
+  retrievalRunId: string;
+  maxChars: number;
+  usedChars: number;
+  acceptanceCriteria: string[];
+  riskHints: string[];
+  evidence: RdTaskRolePromptEvidence[];
+  omittedEvidenceIds: string[];
+  createdAtEpochMillis: number;
+}
+
+export interface RdTaskRolePromptEvidence {
+  evidenceId: string;
+  sourceType: string;
+  sourceUri: string;
+  title: string;
+  contentHash: string;
+  summary: string;
+  collectedAtEpochMillis: number;
+  selectionReason: string;
+  relevanceScore: number;
+  requiredEvidenceType: string;
+  sharedRoot: boolean;
 }
 
 export interface TaskMaterial {
@@ -155,6 +245,20 @@ export interface TaskMaterialPreview {
   contentPreview: string;
 }
 
+export interface RdTaskQaEvidence {
+  artifactId: string;
+  stageRunId: string;
+  type: string;
+  name: string;
+  summary: string;
+  contentType: string;
+  sizeBytes: number;
+  sha256: string;
+  createdAtEpochMillis: number;
+  previewable: boolean;
+  contentUrl: string;
+}
+
 export interface RdTaskListQuery {
   taskType?: string;
   status?: string;
@@ -184,6 +288,7 @@ export interface RequirementMaterialPayload {
   content?: string;
   mimeType?: string;
   revisionId?: string;
+  recoveryStageRunId?: string;
 }
 
 export interface CreateRequirementTaskPayload {
@@ -198,6 +303,7 @@ export interface CreateRequirementTaskPayload {
   acceptanceCriteria?: string[];
   materials: RequirementMaterialPayload[];
   autoExecute?: boolean;
+  tokenBudgetOverride?: number;
 }
 
 export interface UpdateRdTaskPayload {
@@ -269,8 +375,14 @@ export const getRdTaskTimeline = (taskId: string): Promise<RdTaskStatusEvent[]> 
 export const getRdTaskExecutionOverview = (taskId: string): Promise<RdTaskExecutionOverview> =>
   api.get<RdTaskExecutionOverview, RdTaskExecutionOverview>(`/admin/rd-tasks/${taskId}/execution-overview`);
 
+export const getRdTaskRolePrompts = (taskId: string): Promise<RdTaskRolePromptResponse> =>
+  api.get<RdTaskRolePromptResponse, RdTaskRolePromptResponse>(`/admin/rd-tasks/${taskId}/role-prompts`);
+
 export const getRdTaskMaterials = (taskId: string): Promise<TaskMaterial[]> =>
   api.get<TaskMaterial[], TaskMaterial[]>(`/admin/rd-tasks/${taskId}/materials`);
+
+export const getRdTaskQaEvidence = (taskId: string): Promise<RdTaskQaEvidence[]> =>
+  api.get<RdTaskQaEvidence[], RdTaskQaEvidence[]>(`/admin/rd-tasks/${taskId}/qa-evidence`);
 
 export const addTextTaskMaterial = (
   taskId: string,
@@ -287,7 +399,7 @@ export const addFeishuTaskMaterial = (
 export const uploadTaskMaterial = (
   taskId: string,
   file: File,
-  options: { title?: string; materialType?: string } = {}
+  options: { title?: string; materialType?: string; recoveryStageRunId?: string } = {}
 ): Promise<TaskMaterial> => {
   const data = new FormData();
   data.append("file", file);
@@ -296,6 +408,9 @@ export const uploadTaskMaterial = (
   }
   if (options.materialType) {
     data.append("materialType", options.materialType);
+  }
+  if (options.recoveryStageRunId) {
+    data.append("recoveryStageRunId", options.recoveryStageRunId);
   }
   return api.post<TaskMaterial, TaskMaterial>(`/admin/rd-tasks/${taskId}/materials/upload`, data);
 };
