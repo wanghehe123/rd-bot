@@ -33,7 +33,8 @@ def main() -> int:
     run_id = args.run_id or (lib.latest_run_id(root) if args.latest else "")
     if not run_id:
         raise SystemExit("--run-id or --latest is required")
-    records = lib.load_jsonl(lib.run_path(root, run_id))
+    records_path = lib.run_path(root, run_id)
+    records = lib.load_jsonl(records_path)
     if args.dataset:
         dataset_path = lib.resolve_repo_path(args.dataset)
     elif records and records[0].get("dataset_path"):
@@ -54,6 +55,7 @@ def main() -> int:
         judge_provider=provider,
         judge_limit=args.judge_limit if args.judge_limit > 0 else None,
     )
+    score["provenance"] = lib.score_provenance(dataset_path, records_path)
     path = lib.score_path(root, run_id)
     lib.write_score(path, score)
     print(path)

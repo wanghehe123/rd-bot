@@ -1,0 +1,6 @@
+# OpenAI-compatible evaluation Judge runtime configuration.
+# RD_EVAL_JUDGE_API_KEY is read from the process environment, with a macOS
+# launchctl fallback at Python scoring time for directly launched backends.
+
+RD_EVAL_JUDGE_BASE_URL: "https://aihubmix.com/v1"
+RD_EVAL_JUDGE_MODEL: "gpt-5.6-luna"

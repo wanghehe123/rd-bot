@@ -17,6 +17,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Record RD-Bot eval records as JSONL.")
     parser.add_argument("--dataset", required=True, help="Path to RdEvalSample JSONL data.")
     parser.add_argument("--source", choices=["fixture", "rag-http"], default="fixture")
+    parser.add_argument(
+        "--fixture-records",
+        default="",
+        help="Optional JSONL records stored separately from the gold dataset.",
+    )
     parser.add_argument("--run-id", default="", help="Stable run id. Defaults to rd-eval-<timestamp>.")
     parser.add_argument("--environment-id", default="local")
     parser.add_argument("--output-root", default=str(lib.DEFAULT_OUTPUT_ROOT))
@@ -35,7 +40,17 @@ def main() -> int:
     root = lib.output_root(args.output_root)
 
     if args.source == "fixture":
-        records = lib.records_from_fixtures(samples, run_id, args.environment_id, str(dataset_path))
+        fixture_records = (
+            lib.load_jsonl(lib.resolve_repo_path(args.fixture_records))
+            if args.fixture_records else None
+        )
+        records = lib.records_from_fixtures(
+            samples,
+            run_id,
+            args.environment_id,
+            str(dataset_path),
+            fixture_records,
+        )
     else:
         records = lib.records_from_rag_http(
             samples=samples,
