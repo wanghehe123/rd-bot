@@ -30,6 +30,7 @@ Thumbs.db
 *.log
 logs/
 frontend/test-results/
+frontend/.playwright-cli/
 
 # ===== 文档（永不提交）=====
 docs/

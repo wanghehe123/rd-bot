@@ -18,24 +18,24 @@
 项目按"分层"而非"微服务"拆分为五个 Maven 模块，依赖只能单向流动：
 
 ```
-bootstrap（应用入口 + REST 控制器 + 静态前端）
-    ↓ 依赖
-engine（业务编排层：把 RAG/日志/代码/修复流程串成可测的端到端用例）
-    ↓ 依赖
-rag（RAG 能力层：解析/分块/检索/改写/记忆/Prompt/知识/摄取/追踪，是核心领域）
-    ↓ 依赖
-framework（跨层约定：convention DTO、trace 注解）
-    ↓ 依赖
-adapter（外部系统端口：日志中心、代码仓库、工单系统）
+`bootstrap`（应用入口、HTTP、配置、PostgreSQL 与外部 SDK 适配）
+    ├──> `engine`（单任务与多角色业务编排、控制面用例）
+    ├──> `exec`（Docker/模型执行与验证能力抽象）
+    ├──> `skill`（技能注册、策略、安装与执行切片）
+    └──> `rag`（知识、检索、上下文、trace、任务运行时基础域）
 
-exec（修复执行占位）、skill（修复技能占位）：预留模块，当前仅占位类
+`engine` ──> `rag`
+`exec`   ──> `rag`
+`skill`  ──> `rag`
 ```
 
-- **依赖方向【强制】**：`bootstrap → engine → rag → framework/adapter`，严禁反向依赖（如 rag 不得 import bootstrap/engine 的类）。
+- **依赖方向【强制】**：以根 `pom.xml` 与子模块 `pom.xml` 为真值；允许 `bootstrap -> engine/exec/skill/rag` 与 `engine/exec/skill -> rag`，严禁反向依赖。
 - **职责边界【强制】**：
   - `bootstrap` 只做 HTTP 适配（参数校验、响应封装、异常翻译），**不得写业务逻辑**；业务一律下沉到 `engine` 或 `rag`。
-  - `engine` 是编排层，负责把多个 `rag` 能力组合成用例，**不持有领域状态**。
-  - `rag` 是领域层，承载核心能力与内存聚合根（`KnowledgeWorkspace`、各 `*Registry`）。
+  - `engine` 是编排层，负责多角色流水线、执行控制与恢复用例，只通过 Store/Port 读取和推进共享状态。
+  - `exec` 负责执行器、provider、验证和健康治理的领域抽象；外部 SDK 与进程适配仍放在 `bootstrap`。
+  - `skill` 负责技能策略与可复用能力切片，不直接接触外部基础设施 SDK。
+  - `rag` 是基础领域层，承载知识、检索、上下文、trace 与任务运行时端口。
 - **包命名【强制】**：`com.wish.rd.<模块>.<子域>`，子域按业务划分（如 `rag.retrieval`、`rag.ingestion`、`rag.prompt`）。控制器统一收敛到 `bootstrap.controller.*`。
 
 ### 1.2 组件注册与配置【强制】
@@ -151,9 +151,9 @@ public RepairContextPackage prepareContext(RepairRagRequest request) {
 - 摄取管线（`TaskIngestionEngine`）用**节点链 + Context 对象**实现可配置流程，支持任意节点拓扑（含环检测）。
 - 【强制】每个可观测步骤都要标注 `@RagTraceNode`，保证链路可追踪。
 
-### 3.5 注册表模式（Registry）【强制用于"内存领域存储"】
+### 3.5 注册表模式（Registry）【仅用于内存实现】
 
-MVP 阶段无数据库，所有内存仓储统一用 `*Registry` 模式：
+生产共享状态已经以 PostgreSQL Store 为真值；`*Registry` / `InMemory*Store` 只用于单测、显式 memory 配置和本地临时演示：
 
 - 特征：`DistributedLockExecutor` 保护跨实例状态推进、`LinkedHashMap` 保持插入顺序、自增 ID 序列、`inMemory()`/`withDefaults()` 静态工厂、对外返回不可变快照（`List.copyOf`）。
 - 【强制】生产路径的共享可变状态不得依赖 JVM 级 `synchronized`；多实例部署需要通过锁端口接入 Redisson 等分布式锁，读操作返回 `List.copyOf` / `Map.copyOf` 快照，禁止把内部集合引用泄露出去。
@@ -170,6 +170,18 @@ MVP 阶段无数据库，所有内存仓储统一用 `*Registry` 模式：
 - 【强制】知识库、文档、分块、意图树、摄取管道、摄取任务、项目、RD 任务、任务材料、阶段执行记录等管理台数据必须通过端口/Store 读写 PostgreSQL；内存实现只能在显式 `rd.knowledge.store=memory`、单测或本地临时演示中使用。
 - 【强制】新增管理台页面或数据域时，必须同时提供：Store 端口、PostgreSQL 适配器、SQL DDL、以及防退化测试，证明注册表/Engine 不直接持有生产可见 `LinkedHashMap`、`AtomicLong` 等内存真值。
 - 【强制】排查“重启后数据消失/全部不可见”时，先确认后端实际配置与数据库计数：`rd.knowledge.store`、`rd.storage.mode`、PostgreSQL 表记录数、HTTP 查询结果；不得在未验证 PostgreSQL 链路前把问题归因于前端空态。
+
+### 3.5.3 任务状态与持久化派发【强制】
+
+- 【强制】`RdTaskStatus` 虽为共享枚举，合法边必须按 `RdTaskType` 分图校验；需求任务不得走 BugFix 的 `SEARCHING` 捷径。
+- 【强制】任务快照与对应状态事件必须通过同一个事务端口写入；PostgreSQL 实现必须使用 `@Transactional`，禁止先改快照、后补事件。
+- 【强制】任务写锁使用 task ID 粒度；工单幂等创建使用 ticket ID 粒度。禁止用全局注册表锁串行化不同任务。
+- 【强制】需求交付派发先写 `rd_requirement_delivery_jobs`，再提交线程池。Worker 必须通过条件更新获得租约；进程重启后恢复 PENDING、FAILED_RETRYABLE 与租约过期的 RUNNING 作业。
+- 【强制】阶段重试必须创建新的 `attemptNo`；`FAILED_RETRYABLE` 是旧 attempt 的终态，不得把旧记录改写为 `RECOVERING`。
+- 【强制】达到派发重试上限时，作业与主任务都进入 `DEAD_LETTERED` 并保留失败原因。
+- 【强制】既有 `AgentStageRun` 的状态推进和元数据保存都必须使用 `WHERE id = ? AND status = ?` 的数据库 CAS；只有首次插入允许 upsert。影响行数不为 1 必须抛出 stale write，禁止旧快照复活已取消或已失败阶段。
+- 【强制】重试准备或派发失败必须补偿本轮新建 Attempt、retry checkpoint 与主任务状态；主任务不得遗留在 `RECOVERING`。补偿失败不能覆盖原始异常，应作为 suppressed error 保留。
+- 【强制】delivery job 已持久化后即使本地线程池拒绝，也必须保留可恢复的 `PENDING` 真值；不得把“未进入当前 JVM 线程池”等同于“未提交”。
 
 ### 3.6 聚合根（Aggregate Root）【强制用于"强一致实体群"】
 
@@ -267,6 +279,14 @@ MVP 阶段无数据库，所有内存仓储统一用 `*Registry` 模式：
 
 - 200 正常；400 参数错误；404 资源不存在；409 冲突；429 限流；500 服务端异常。对应 `@ExceptionHandler` 统一映射。
 
+### 5.4 管理端契约与开发代理【强制】
+
+- 【强制】公开 DTO 的金额字段必须带币种后缀并与页面单位一致，例如 `estimatedSpendCny`；禁止将内部 USD 字段直接作为人民币展示。
+- 【强制】Vite SPA bypass 只能匹配明确的页面导航路由；`/admin/rd-tasks/{id}/timeline`、`execution-overview`、`content` 等嵌套接口必须代理到后端，不能因 `Accept: text/html` 或同路径前缀返回 `index.html`。
+- 【强制】每次新增或修改 `/admin/*` 前端请求，都必须更新代理契约测试，分别断言页面导航和嵌套 API 的行为。
+- 【强制】异步加载的 Select/Input 必须始终保持 controlled；不能在 `undefined` 与具体值之间切换并把 React warning 留到运行期。
+- 【强制】管理端响应式变更至少验证 390px、900px 与桌面视口：不得出现横向溢出或顶栏交叠；隐藏侧栏必须 `aria-hidden` 且 `inert`，打开后转移焦点，关闭或按 Escape 后归还焦点。
+
 ---
 
 ## 六、测试规范
@@ -282,6 +302,8 @@ MVP 阶段无数据库，所有内存仓储统一用 `*Registry` 模式：
 - 【强制】测试类与被测类同包，命名 `XxxTest`；方法命名用 `should_预期_当条件` 或中文描述。
 - 【强制】测试必须可独立运行，不依赖外部中间件（用 mock 端口 / `inMemory()` 工厂）。
 - 【强制】提交前本地 `./mvnw test` 全绿。
+- 【强制】修改任务状态、事件、阶段 CAS 或持久化派发后，除模块测试外必须运行 `PostgresRdTaskStateAtomicRealSmokeTest`，以真实 PostgreSQL 证明事务与原子状态更新可用。
+- 【强制】前端改动提交前必须运行全部 Node contract test、TypeScript typecheck 和生产 build；涉及布局或路由时再补真实浏览器验证，不能只凭静态代码审查判定通过。
 
 ### 6.3 请求链回归验收【强制】
 
@@ -312,6 +334,7 @@ MVP 阶段无数据库，所有内存仓储统一用 `*Registry` 模式：
 - 【强制】一次提交只做一件事，禁止混合功能与格式化。
 - 【推荐】分支命名：`feat/xxx`、`fix/xxx`、`refactor/xxx`。
 - 【强制】禁止提交本地 IDE 配置、`target/`、临时文件；`.gitignore` 保持更新。
+- 【强制】Playwright CLI session、console log、临时 page snapshot 与本地 QA 输出不得随功能代码提交；需要长期保留的证据必须放入明确的验收报告目录并先完成脱敏。
 
 ---
 
@@ -319,7 +342,7 @@ MVP 阶段无数据库，所有内存仓储统一用 `*Registry` 模式：
 
 | 规范要点 | 项目中的范例 |
 |---------|------------|
-| 分层单向依赖 | `bootstrap → engine → rag`，见 `pom.xml` modules |
+| 分层单向依赖 | `bootstrap -> engine/exec/skill/rag`，`engine/exec/skill -> rag`，见各级 `pom.xml` |
 | 端口适配器 | `LogCenterPort` / `CodeRepositorySearchPort` / `ObjectStorageService` |
 | 策略 + 工厂 | `ChunkingStrategy` + `ChunkingStrategyFactory` |
 | 模板方法/编排 | `RepairRagPipeline.prepareContext`、`TaskIngestionEngine.execute` |
@@ -342,11 +365,13 @@ MVP 阶段无数据库，所有内存仓储统一用 `*Registry` 模式：
 - [ ] 外部入参是否做了 null 归一与校验？
 - [ ] 集合返回值是否永不为 null？内部集合是否未泄露？
 - [ ] 生产共享状态是否通过分布式锁、数据库原子约束或并发原语保护，且未依赖 JVM 级 `synchronized`？
+- [ ] 既有阶段保存与状态推进是否使用期望状态 CAS，重试失败是否完成 Attempt/checkpoint/task 补偿？
 - [ ] 新增算法分支是否走了策略/工厂，而非 `if/else`？
 - [ ] 外部系统是否走端口抽象，未在领域层 `new` SDK？
 - [ ] 异常是否分类清晰、消息可定位、Controller 统一处理？
 - [ ] 关键链路是否标注 `@RagTraceNode`？
 - [ ] 是否补充了对应测试，`./mvnw test` 是否全绿？
+- [ ] 管理端 API 是否通过 Vite 代理契约测试，390px/900px/桌面布局和 console 是否真实验证？
 - [ ] 提交是否符合"一事一提交 + 规范信息"？
 
 ---

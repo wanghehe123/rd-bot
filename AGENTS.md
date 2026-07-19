@@ -184,10 +184,20 @@ RD-Bot 是研发交付编排系统，而非聊天机器人。
     `./mvnw -q -pl exec -Dtest=DockerClaudeCodeExecutorTest test` 和
     `./mvnw -q -pl bootstrap -Dtest=ProcessContainerRunnerTest test`；如从 IDEA 或单模块 Maven 启动仍读到旧行为，先执行
     `./mvnw -q -pl exec install -DskipTests`，避免 stale `exec` jar 误导排查。
-12. PostgreSQL 生产化 store 使用的表由
+12. 需求交付异步派发以 `rd_requirement_delivery_jobs` 为持久化真值：提交前先写 PENDING，Worker 通过租约领取，恢复调度处理 PENDING、FAILED_RETRYABLE 和租约过期的 RUNNING。排查“HTTP 已提交但没有继续执行”时必须同时反查：
+    - `select status,attempt_no,max_attempts,lease_owner,lease_until,error_message from rd_requirement_delivery_jobs where task_id=<taskId>;`
+    - `select role,status,attempt_no,error_category,error_message from rd_agent_stage_runs where task_id=<taskId> order by role,attempt_no;`
+    不得只根据线程池日志判断任务是否丢失；超过最大尝试次数后作业与主任务都必须进入 `DEAD_LETTERED`。
+13. 修改任务状态、事件或需求派发恢复后，除模块测试外至少执行一次真实 PostgreSQL 验证：
+    `./mvnw -q -pl bootstrap -Drd.integration.task-state-atomic.enabled=true -Dtest=PostgresRdTaskStateAtomicRealSmokeTest test`。
+14. PostgreSQL 生产化 store 使用的表由
     `bootstrap/src/main/resources/sql/postgres` 管理，但本地数据库不会因代码启动自动补表。新增或启用持久化 store 后，必须先执行对应 SQL，至少连续执行两次验证幂等，再用 `to_regclass`、记录数和真实 HTTP 请求确认表与数据可用；不能把前端的空列表或 500 误判为业务无数据。
-13. 前端新增或调整 `/admin/*` 请求时，必须同步检查 `frontend/vite.config.ts` 的代理表。缺少代理时 Vite 可能以 `200` 返回 SPA `index.html`，客户端随后因响应形状错误白屏；每条新增代理都要补配置测试，并在改完代理后重启开发服务器再做 HTTP/浏览器验证。
-14. 管理端顶栏的全局搜索若被移除，必须替换为真实可执行的当前工作区动作（例如“新建任务”并支持 `?create=true`），同时保留窄屏访问侧边栏的入口；不能为了视觉简化而牺牲核心导航或把按钮做成无效装饰。
+15. 前端新增或调整 `/admin/*` 请求时，必须同步检查 `frontend/vite.config.ts` 的代理表。SPA bypass 只允许任务列表和数字任务详情等明确导航路由；同前缀的 timeline、execution-overview、content 等嵌套接口必须继续代理到 Spring Boot。每条新增代理都要补配置测试，并在改完代理后重启开发服务器再做 HTTP/浏览器验证。
+16. 管理端顶栏的全局搜索若被移除，必须替换为真实可执行的当前工作区动作（例如“新建任务”并支持 `?create=true`），同时保留窄屏访问侧边栏的入口；不能为了视觉简化而牺牲核心导航或把按钮做成无效装饰。
+17. `rd_agent_stage_runs` 的既有记录无论是状态推进还是元数据保存，都必须带期望状态做数据库 CAS；只有首次创建可以使用 upsert。更新影响行数不是 1 时必须按 stale write 失败，禁止旧的 RUNNING 快照覆盖并发产生的 CANCELLED/失败终态。
+18. 重试准备、checkpoint 保存或持久化派发失败时必须做完整补偿：关闭本轮新建的非终态 Attempt、将 checkpoint 置为 `FAILED_RETRYABLE`、把主任务从 `RECOVERING` 恢复到 `FAILED_RETRYABLE`，并把补偿异常作为 suppressed error 保留。线程池在 job 落库后拒绝本地调度时不得删除 job 或同步回滚提交；保留 `PENDING` 交给恢复 Worker 领取。
+19. 恢复材料、角色 Prompt、QA/RAG 证据和恢复动作必须绑定明确的 `stageRunId`。写入前至少验证该阶段真实存在且属于当前任务；读取和操作时使用界面当前选中的 Attempt，不能隐式回退到同角色第一条历史记录。
+20. 对外管理 API 的金额字段必须使用明确币种后缀并与页面展示一致；当前执行概览公开 `estimatedSpendCny`，不得继续把内部 `estimatedCostUsd` 直接暴露给前端冒充人民币。
 
 ---
 
@@ -221,6 +231,8 @@ RD-Bot 是研发交付编排系统，而非聊天机器人。
 2. 重点链路要有真实 HTTP 请求链回归：至少一条成功链 + 一条状态变更链 + 一条反查链。
 3. `SKIPPED` 不等于通过，生产验收必须记录实际调用证据。
 4. 本地缺外部服务时可跳过真实外部调用，但跳过必须显式写在验收记录里并给出补测命令模板。
+5. 修改管理端布局、路由代理或任务详情工作台后，至少用 390px、900px 和桌面视口做真实浏览器验证，记录横向溢出、顶栏交叠、console error/warning，以及移动侧栏的 `aria-hidden`、`inert`、打开焦点和关闭焦点回收。
+6. 为验收启动的 Spring Boot、Vite 或临时 HTTP server 默认在验证结束后关闭，并用 `lsof -nP -iTCP:<port> -sTCP:LISTEN` 确认无监听；只有用户明确要求保持运行时才可留存。
 
 ---
 
