@@ -84,6 +84,13 @@ public final class S3ObjectStorageService implements ObjectStorageService {
         return stream;
     }
 
+    @Override
+    public boolean delete(String url) {
+        S3Location location = parseS3Url(url);
+        s3Client.deleteObject(builder -> builder.bucket(location.bucket()).key(location.key()));
+        return true;
+    }
+
     private void ensureBucket(String bucketName) {
         try {
             s3Client.headBucket(HeadBucketRequest.builder().bucket(bucketName).build());

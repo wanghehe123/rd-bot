@@ -2,9 +2,13 @@ package com.wish.rd.bootstrap.persistence;
 
 import com.wish.rd.rag.project.alert.RdProjectAlertConfigService;
 import com.wish.rd.rag.project.alert.RdProjectAlertConfigStore;
+import com.wish.rd.rag.project.budget.RdProjectTokenBudgetService;
+import com.wish.rd.rag.project.budget.RdProjectTokenBudgetStore;
 import com.wish.rd.rag.project.template.RdProjectTaskTemplateService;
 import com.wish.rd.rag.project.template.RdProjectTaskTemplateStore;
 import com.wish.rd.rag.project.RdProjectService;
+import com.wish.rd.rag.qa.QaValidationProfileService;
+import com.wish.rd.rag.qa.QaValidationProfileStore;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -22,10 +26,23 @@ public class RdProjectControlPlaneConfiguration {
     }
 
     @Bean
+    RdProjectTokenBudgetService rdProjectTokenBudgetService(
+            RdProjectTokenBudgetStore store,
+            RdProjectService projectService
+    ) {
+        return new RdProjectTokenBudgetService(store, projectService::get);
+    }
+
+    @Bean
     RdProjectTaskTemplateService rdProjectTaskTemplateService(
             RdProjectTaskTemplateStore store,
             RdProjectService projectService
     ) {
         return new RdProjectTaskTemplateService(store, projectService::get);
+    }
+
+    @Bean
+    QaValidationProfileService qaValidationProfileService(QaValidationProfileStore store) {
+        return new QaValidationProfileService(store);
     }
 }

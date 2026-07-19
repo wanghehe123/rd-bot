@@ -51,6 +51,13 @@ public class PostgresAgentStageRunStore implements AgentStageRunStore {
         if (existing != null && !PostgresPersistenceSupport.idString(existing.id).equals(stageRun.stageRunId())) {
             throw new IllegalStateException("duplicate agent stage idempotency key: " + stageRun.idempotencyKey());
         }
+        if (existing != null) {
+            int updated = mapper.updateStageRunWhenStatusMatches(toRow(stageRun), stageRun.status().name());
+            if (updated != 1) {
+                throw new IllegalStateException("stale agent stage save: " + stageRun.stageRunId());
+            }
+            return stageRun;
+        }
         mapper.upsertStageRun(toRow(stageRun));
         return stageRun;
     }
@@ -109,7 +116,10 @@ public class PostgresAgentStageRunStore implements AgentStageRunStore {
                 .orElseThrow(() -> new IllegalArgumentException("agent stage run not found: " + stageRunId));
         AgentStageTransitions.ensureTransition(existing.status(), targetStatus);
         AgentStageRun next = existing.withStatus(targetStatus, errorCategory, errorMessage, updateTimeEpochMillis);
-        mapper.upsertStageRun(toRow(next));
+        int updated = mapper.updateStageRunWhenStatusMatches(toRow(next), existing.status().name());
+        if (updated != 1) {
+            throw new IllegalStateException("stale agent stage transition: " + stageRunId);
+        }
         mapper.insertStageEvent(toEventRow(existing, next));
         return next;
     }

@@ -19,6 +19,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.EnableTransactionManagement;
 
+import java.lang.reflect.Proxy;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -26,7 +27,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -49,6 +53,7 @@ class PostgresAgentStageRunStoreTest {
         when(mapper.selectList(any())).thenReturn(List.of(row(run.stageRunId(), run.taskId(), run.role().name(), run.status().name())));
         when(mapper.selectById(7478000000000000001L))
                 .thenReturn(row(run.stageRunId(), run.taskId(), run.role().name(), run.status().name()));
+        when(mapper.updateStageRunWhenStatusMatches(any(RdAgentStageRunRow.class), anyString())).thenReturn(1);
 
         store.save(run);
         AgentStageRun transitioned = store.transition(
@@ -61,7 +66,8 @@ class PostgresAgentStageRunStoreTest {
 
         assertEquals(List.of(run), store.listByTask(run.taskId()));
         assertEquals(AgentStageStatus.CONTEXT_READY, transitioned.status());
-        verify(mapper, times(2)).upsertStageRun(any(RdAgentStageRunRow.class));
+        verify(mapper).upsertStageRun(any(RdAgentStageRunRow.class));
+        verify(mapper).updateStageRunWhenStatusMatches(any(RdAgentStageRunRow.class), anyString());
     }
 
     @Test
@@ -76,6 +82,7 @@ class PostgresAgentStageRunStoreTest {
         );
         when(mapper.selectById(7478000000000000101L))
                 .thenReturn(row(run.stageRunId(), run.taskId(), run.role().name(), run.status().name()));
+        when(mapper.updateStageRunWhenStatusMatches(any(RdAgentStageRunRow.class), anyString())).thenReturn(1);
 
         store.transition(
                 run.stageRunId(),
@@ -96,6 +103,85 @@ class PostgresAgentStageRunStoreTest {
         assertEquals("SYSTEM", event.trigger);
         assertEquals("{\"sourceStatus\":\"PENDING\",\"targetStatus\":\"CONTEXT_READY\",\"errorCategory\":\"\"}",
                 event.metadataJson);
+    }
+
+    @Test
+    void shouldRejectStaleConcurrentStageTransitionBeforeWritingAnEvent() {
+        AgentStageRun run = AgentStageRun.pending(
+                "7478000000000000151",
+                "7478000000000000000",
+                AgentRole.REQUIREMENT_REVIEWER,
+                1,
+                "7478000000000000000:REQUIREMENT_REVIEWER:1",
+                1_783_000_000_000L
+        );
+        RdAgentStageRunMapper staleMapper = (RdAgentStageRunMapper) Proxy.newProxyInstance(
+                RdAgentStageRunMapper.class.getClassLoader(),
+                new Class<?>[]{RdAgentStageRunMapper.class},
+                (proxy, method, args) -> switch (method.getName()) {
+                    case "selectById" -> row(run.stageRunId(), run.taskId(), run.role().name(), run.status().name());
+                    case "updateStageRunWhenStatusMatches" -> 0;
+                    case "toString" -> "stale-stage-run-mapper";
+                    default -> null;
+                }
+        );
+        PostgresAgentStageRunStore staleStore = new PostgresAgentStageRunStore(staleMapper, generator());
+
+        IllegalStateException exception = assertThrows(IllegalStateException.class, () -> staleStore.transition(
+                run.stageRunId(), AgentStageStatus.CONTEXT_READY, "", "", 1_783_000_000_010L));
+
+        assertEquals("stale agent stage transition: " + run.stageRunId(), exception.getMessage());
+    }
+
+    @Test
+    void shouldUseStatusCasWhenSavingMetadataForAnExistingStage() {
+        AgentStageRun running = AgentStageRun.pending(
+                        "7478000000000000161",
+                        "7478000000000000000",
+                        AgentRole.CODING_AGENT,
+                        1,
+                        "7478000000000000000:CODING_AGENT:1",
+                        1_783_000_000_000L
+                )
+                .withStatus(AgentStageStatus.RUNNING, "", "", 1_783_000_000_010L);
+        AgentStageRun withMetadata = running.withProviderMetadata(
+                "long-cat", "[{\"status\":\"SUCCESS\"}]", 1_783_000_000_020L);
+        when(mapper.selectOne(any(Wrapper.class))).thenReturn(
+                row(running.stageRunId(), running.taskId(), running.role().name(), running.status().name()));
+        when(mapper.updateStageRunWhenStatusMatches(any(RdAgentStageRunRow.class), anyString())).thenReturn(1);
+
+        AgentStageRun saved = store.save(withMetadata);
+
+        assertEquals(withMetadata, saved);
+        verify(mapper).updateStageRunWhenStatusMatches(
+                any(RdAgentStageRunRow.class), eq(AgentStageStatus.RUNNING.name()));
+        verify(mapper, never()).upsertStageRun(any(RdAgentStageRunRow.class));
+    }
+
+    @Test
+    void shouldRejectMetadataSaveWhenAConcurrentTransitionChangedTheStageStatus() {
+        AgentStageRun running = AgentStageRun.pending(
+                        "7478000000000000171",
+                        "7478000000000000000",
+                        AgentRole.QA_AGENT,
+                        1,
+                        "7478000000000000000:QA_AGENT:1",
+                        1_783_000_000_000L
+                )
+                .withStatus(AgentStageStatus.RUNNING, "", "", 1_783_000_000_010L);
+        AgentStageRun staleMetadata = running.withResultArtifactId(
+                "7478000000000000199", 1_783_000_000_020L);
+        when(mapper.selectOne(any(Wrapper.class))).thenReturn(
+                row(running.stageRunId(), running.taskId(), running.role().name(), running.status().name()));
+        when(mapper.updateStageRunWhenStatusMatches(any(RdAgentStageRunRow.class), anyString())).thenReturn(0);
+
+        IllegalStateException exception = assertThrows(
+                IllegalStateException.class,
+                () -> store.save(staleMetadata)
+        );
+
+        assertEquals("stale agent stage save: " + running.stageRunId(), exception.getMessage());
+        verify(mapper, never()).upsertStageRun(any(RdAgentStageRunRow.class));
     }
 
     @Test

@@ -77,7 +77,8 @@ class DockerClaudeCodeExecutorTest {
 
     @Test
     void shouldValidateQaAgentResultWithQaProtocolInsteadOfCodingSchema() {
-        CapturingRunner runner = CapturingRunner.withResult(validQaResultJson("PASSED"));
+        CapturingRunner runner = CapturingRunner.withResult(validQaResultJson("PASSED"))
+                .withQaEvidenceArtifacts();
         DockerClaudeCodeExecutor executor = executor(runner);
 
         RepairExecutionResult result = executor.execute(command(
@@ -89,11 +90,30 @@ class DockerClaudeCodeExecutorTest {
         assertEquals(RepairExecutionStatus.SUCCESS, result.status());
         assertEquals("QA PASSED with real command evidence", result.summary());
         assertEquals(validQaResultJson("PASSED").strip(), result.rawResultJson().get("__agentResultJson").strip());
+        assertEquals("rd-bot/claude-code-qa:test", runner.request().image());
+        assertTrue(runner.request().initEnabled());
+        assertEquals("1g", runner.request().sharedMemorySize());
+        assertEquals(
+                "/home/rdbot/.claude/skills/qa-playwright-cli:ro",
+                runner.request().mounts().get(temporaryDirectory.resolve("qa-skill").toString())
+        );
+        assertEquals("qa-playwright-cli", runner.request().env().get("RD_QA_SKILL_ID"));
+        assertEquals("1.0.1", runner.request().env().get("RD_QA_SKILL_VERSION"));
+        assertEquals("QA_AGENT", runner.request().env().get("RD_AGENT_ROLE"));
+        assertEquals("qa-playwright-cli", result.dockerMetadataJson().get("qaSkillId"));
+        assertEquals("1.0.1", result.dockerMetadataJson().get("qaSkillVersion"));
+        assertEquals("sha256:abc123", result.dockerMetadataJson().get("qaSkillChecksum"));
+        assertEquals("QA_AGENT", result.dockerMetadataJson().get("qaSkillRole"));
+        assertEquals(
+                temporaryDirectory.resolve("qa-skill").toString(),
+                result.dockerMetadataJson().get("qaSkillInstallPath")
+        );
     }
 
     @Test
     void shouldReturnFailedWhenQaAgentReportsFailedAcceptance() {
-        CapturingRunner runner = CapturingRunner.withResult(validQaResultJson("FAILED"));
+        CapturingRunner runner = CapturingRunner.withResult(validQaResultJson("FAILED"))
+                .withQaEvidenceArtifacts();
         DockerClaudeCodeExecutor executor = executor(runner);
 
         RepairExecutionResult result = executor.execute(command(
@@ -105,6 +125,232 @@ class DockerClaudeCodeExecutorTest {
         assertEquals(RepairExecutionStatus.FAILED, result.status());
         assertTrue(result.errorMessage().contains("QA_AGENT failed acceptance"));
         assertEquals(validQaResultJson("FAILED").strip(), result.rawResultJson().get("__agentResultJson").strip());
+    }
+
+    @Test
+    void shouldSurfaceQaContainerStartupFailureBeforeValidatingFallbackResult() {
+        CapturingRunner runner = CapturingRunner.withExitCodeAndResult(
+                        126,
+                        """
+                                {
+                                  "status":"FAILED",
+                                  "summary":"Claude Code did not write result.json.",
+                                  "changedFiles":[],
+                                  "testCommands":[],
+                                  "testStatus":"SKIPPED",
+                                  "riskLevel":"HIGH",
+                                  "prBody":"",
+                                  "needHumanAction":true
+                                }
+                                """
+                )
+                .withExtraArtifact(
+                        "claude-events.jsonl",
+                        "/usr/local/bin/rd-claude-entrypoint: line 65: /usr/local/bin/claude: Argument list too long\n"
+                );
+        DockerClaudeCodeExecutor executor = executor(runner);
+
+        RepairExecutionResult result = executor.execute(command(
+                "task-qa-cli-startup-failed",
+                Map.of("repositoryPublishRequired", "false"),
+                Map.of("agentRole", "QA_AGENT")
+        ));
+
+        assertEquals(RepairExecutionStatus.FAILED, result.status());
+        assertTrue(result.errorMessage().contains("Argument list too long"));
+        assertTrue(result.errorMessage().contains("container exited with code 126"));
+        assertEquals("QA_INFRASTRUCTURE", result.rawResultJson().get("failureCategory"));
+        assertEquals("HUMAN", result.rawResultJson().get("retryRecommendation"));
+    }
+
+    @Test
+    void shouldPreserveQaContainerFailureWhenRepositoryCleanupAlsoFails() {
+        CapturingRunner runner = CapturingRunner.withExitCodeAndResult(124, validQaResultJson("FAILED"))
+                .withDurationMillis(1_200_000L)
+                .withMetadata("timedOut", "true")
+                .without("result.json");
+        DockerClaudeCodeExecutor executor = executor(
+                new RepairWorkspaceFactory(temporaryDirectory, RESULT_SCHEMA_JSON),
+                runner,
+                COMMAND,
+                new MutatingQaRepositoryPort(),
+                null
+        );
+
+        RepairExecutionResult result = executor.execute(command(
+                "task-qa-timeout-dirty-repo",
+                Map.of("repositoryPublishRequired", "false"),
+                Map.of("agentRole", "QA_AGENT")
+        ));
+
+        assertEquals(RepairExecutionStatus.FAILED, result.status());
+        assertTrue(result.errorMessage().contains("container timed out after 1200000 ms"));
+        assertTrue(result.errorMessage().contains("container exited with code 124"));
+        assertTrue(result.errorMessage().contains("QA left repository changes"));
+        assertEquals("QA_INFRASTRUCTURE", result.rawResultJson().get("failureCategory"));
+        assertEquals("false", result.dockerMetadataJson().get("qaRepositoryClean"));
+    }
+
+    @Test
+    void shouldRejectQaResultWhenReferencedEvidenceWasNotCollected() {
+        CapturingRunner runner = CapturingRunner.withResult(validQaResultJson("PASSED"));
+        DockerClaudeCodeExecutor executor = executor(runner);
+
+        RepairExecutionResult result = executor.execute(command(
+                "task-qa-missing-evidence",
+                Map.of("repositoryPublishRequired", "false"),
+                Map.of("agentRole", "QA_AGENT")
+        ));
+
+        assertEquals(RepairExecutionStatus.FAILED_VALIDATION, result.status());
+        assertTrue(result.errorMessage().contains("does not resolve to a collected artifact"));
+    }
+
+    @Test
+    void shouldRejectQaPassThatDoesNotCoverTaskAcceptanceCriteria() {
+        CapturingRunner runner = CapturingRunner.withResult(validQaResultJson("PASSED"))
+                .withQaEvidenceArtifacts();
+        DockerClaudeCodeExecutor executor = executor(runner);
+
+        RepairExecutionResult result = executor.execute(command(
+                "task-qa-unmapped-criterion",
+                Map.of("repositoryPublishRequired", "false"),
+                Map.of(
+                        "agentRole", "QA_AGENT",
+                        "acceptanceCriteriaJson", "[\"unmapped task criterion\"]"
+                )
+        ));
+
+        assertEquals(RepairExecutionStatus.FAILED_VALIDATION, result.status());
+        assertTrue(result.errorMessage().contains(
+                "CURRENT evidence is missing task acceptance criterion: unmapped task criterion"));
+    }
+
+    @Test
+    void shouldNotCollectTransientQaWorkFilesAsDeliveryArtifacts() {
+        CapturingRunner runner = CapturingRunner.withResult(validQaResultJson("PASSED"))
+                .withQaEvidenceArtifacts()
+                .withExtraArtifact("qa-work/current-browser.sh", "temporary browser driver");
+        DockerClaudeCodeExecutor executor = executor(runner);
+
+        RepairExecutionResult result = executor.execute(command(
+                "task-qa-transient-work",
+                Map.of("repositoryPublishRequired", "false"),
+                Map.of("agentRole", "QA_AGENT")
+        ));
+
+        assertEquals(RepairExecutionStatus.SUCCESS, result.status(), result.errorMessage());
+        assertFalse(result.artifacts().stream()
+                .anyMatch(artifact -> artifact.name().startsWith("qa-work/")));
+    }
+
+    @Test
+    void shouldResolveAndInjectAutoDetectedWebQaProfile() throws Exception {
+        CapturingRunner runner = CapturingRunner.withResult(validBrowserQaResultJson())
+                .withBrowserQaEvidenceArtifacts();
+        DockerClaudeCodeExecutor executor = executor(
+                new RepairWorkspaceFactory(temporaryDirectory, RESULT_SCHEMA_JSON),
+                runner,
+                COMMAND,
+                new ViteRepositoryPort(),
+                null
+        );
+
+        RepairExecutionResult result = executor.execute(command(
+                "task-qa-vite",
+                Map.of("repositoryPublishRequired", "false"),
+                Map.of("agentRole", "QA_AGENT")
+        ));
+
+        assertEquals(RepairExecutionStatus.SUCCESS, result.status(), result.errorMessage());
+        assertEquals("http://127.0.0.1:5173", runner.request().env().get("RD_QA_BASE_URL"));
+        assertEquals("/", runner.request().env().get("RD_QA_HEALTH_PATH"));
+        assertEquals("127.0.0.1,localhost", runner.request().env().get("RD_QA_ALLOWED_HOSTS"));
+        assertEquals(
+                "http://127.0.0.1:5173;http://127.0.0.1:*;https://127.0.0.1:*;"
+                        + "http://localhost:*;https://localhost:*",
+                runner.request().env().get("PLAYWRIGHT_MCP_ALLOWED_ORIGINS")
+        );
+        assertEquals("/work/output/qa-work/playwright",
+                runner.request().env().get("PLAYWRIGHT_MCP_OUTPUT_DIR"));
+        assertEquals("120", runner.request().env().get("RD_QA_STARTUP_TIMEOUT_SECONDS"));
+        assertEquals("1200000", runner.request().env().get("RD_QA_COMMAND_TIMEOUT_MILLIS"));
+        assertEquals(1_200_000L, runner.request().executionTimeoutMillis());
+        Path profile = temporaryDirectory.resolve("task-qa-vite/input/qa-profile.json");
+        assertTrue(Files.isRegularFile(profile));
+        assertTrue(Files.readString(profile).contains("\"decisionSource\":\"AUTO_DETECTION\""));
+    }
+
+    @Test
+    void shouldInjectExplicitRegressionCommandsAsStructuredQaEnvironment() {
+        CapturingRunner runner = CapturingRunner.withResult(
+                        validBrowserQaResultJson().replace("AUTO_DETECTION", "TASK_OVERRIDE"))
+                .withBrowserQaEvidenceArtifacts();
+        DockerClaudeCodeExecutor executor = executor(runner);
+
+        RepairExecutionResult result = executor.execute(command(
+                "task-qa-explicit-regression",
+                Map.of("repositoryPublishRequired", "false"),
+                Map.of(
+                        "agentRole", "QA_AGENT",
+                        "qaTaskOverrideJson", """
+                                {"mode":"REQUIRED","baseUrl":"http://127.0.0.1:5173",\
+                                "startCommand":"npm run dev -- --host 0.0.0.0",\
+                                "healthPath":"/","allowedHosts":["127.0.0.1","localhost"],\
+                                "regressionCommands":["npm test","npm run typecheck"]}
+                                """
+                )
+        ));
+
+        assertEquals(RepairExecutionStatus.SUCCESS, result.status(), result.errorMessage());
+        assertEquals("[\"npm test\",\"npm run typecheck\"]",
+                runner.request().env().get("RD_QA_REGRESSION_COMMANDS_JSON"));
+    }
+
+    @Test
+    void shouldRejectQaPassThatSkipsRequiredAutoDetectedBrowserValidation() {
+        CapturingRunner runner = CapturingRunner.withResult(validQaResultJson("PASSED"))
+                .withQaEvidenceArtifacts();
+        DockerClaudeCodeExecutor executor = executor(
+                new RepairWorkspaceFactory(temporaryDirectory, RESULT_SCHEMA_JSON),
+                runner,
+                COMMAND,
+                new ViteRepositoryPort(),
+                null
+        );
+
+        RepairExecutionResult result = executor.execute(command(
+                "task-qa-vite-skipped",
+                Map.of("repositoryPublishRequired", "false"),
+                Map.of("agentRole", "QA_AGENT")
+        ));
+
+        assertEquals(RepairExecutionStatus.FAILED_VALIDATION, result.status());
+        assertTrue(result.errorMessage().contains("resolved QA profile requires browser validation"));
+    }
+
+    @Test
+    void shouldFailQaWhenBrowserAgentChangesTrackedRepositoryFiles() {
+        CapturingRunner runner = CapturingRunner.withResult(validQaResultJson("PASSED"))
+                .withQaEvidenceArtifacts();
+        DockerClaudeCodeExecutor executor = executor(
+                new RepairWorkspaceFactory(temporaryDirectory, RESULT_SCHEMA_JSON),
+                runner,
+                COMMAND,
+                new MutatingQaRepositoryPort(),
+                null
+        );
+
+        RepairExecutionResult result = executor.execute(command(
+                "task-qa-mutated-repo",
+                Map.of("repositoryPublishRequired", "false"),
+                Map.of("agentRole", "QA_AGENT")
+        ));
+
+        assertEquals(RepairExecutionStatus.FAILED, result.status());
+        assertTrue(result.errorMessage().contains("QA left repository changes"));
+        assertEquals("QA_INFRASTRUCTURE", result.rawResultJson().get("failureCategory"));
+        assertEquals("HUMAN", result.rawResultJson().get("retryRecommendation"));
     }
 
     @Test
@@ -204,6 +450,36 @@ class DockerClaudeCodeExecutorTest {
         assertEquals(RepairExecutionStatus.FAILED, result.status());
         assertTrue(result.errorMessage().contains("Claude Code API error 402: Insufficient Balance"));
         assertTrue(result.errorMessage().contains("container exited with code 1"));
+    }
+
+    @Test
+    void shouldPersistFinalClaudeTokenUsageInProviderAttempts() throws Exception {
+        CapturingRunner runner = CapturingRunner.withResult(validResultJson("SUCCESS"))
+                .withExtraArtifact(
+                        "claude-events.jsonl",
+                        """
+                                {"type":"assistant","session_id":"session-1","message":{"id":"message-1","usage":{"input_tokens":11,"output_tokens":12,"cache_creation_input_tokens":13,"cache_read_input_tokens":14}}}
+                                {"type":"result","session_id":"session-1","total_cost":0.25}
+                                """
+                );
+        DockerClaudeCodeExecutor executor = executor(runner);
+
+        RepairExecutionResult result = executor.execute(command());
+        JsonNode attempts = OBJECT_MAPPER.readTree(result.dockerMetadataJson().get("providerAttemptsJson"));
+
+        assertEquals(1, attempts.size());
+        assertEquals(50L, attempts.get(0).path("totalTokens").asLong());
+        assertEquals(11L, attempts.get(0).path("inputTokens").asLong());
+        assertEquals(12L, attempts.get(0).path("outputTokens").asLong());
+        assertEquals("0.25", attempts.get(0).path("estimatedCostUsd").asText());
+        assertTrue(attempts.get(0).path("tokenUsageFinalized").asBoolean());
+        assertEquals(1, attempts.get(0).path("attempt").asInt());
+        assertFalse(attempts.get(0).path("provider").asText().isBlank());
+        assertTrue(attempts.get(0).path("startedAtEpochMillis").asLong() > 0L);
+        assertTrue(
+                attempts.get(0).path("finishedAtEpochMillis").asLong()
+                        >= attempts.get(0).path("startedAtEpochMillis").asLong()
+        );
     }
 
     @Test
@@ -524,6 +800,44 @@ class DockerClaudeCodeExecutorTest {
     }
 
     @Test
+    void shouldCollectNestedQaEvidenceWithHashAndContentType() {
+        DockerClaudeCodeExecutor executor = executor(CapturingRunner.withResult(validResultJson("SUCCESS"))
+                .withExtraArtifact("qa-evidence/screenshots/current.png", "fake-png-bytes")
+                .withExtraArtifact("qa-evidence/browser/tracing-stop.log", "trace stopped"));
+
+        RepairExecutionResult result = executor.execute(command());
+
+        RepairArtifact screenshot = artifact(result, "qa-evidence/screenshots/current.png");
+        assertEquals(RepairArtifactType.QA_SCREENSHOT, screenshot.type());
+        assertEquals("14", screenshot.metadataJson().get("bytes"));
+        assertEquals(64, screenshot.metadataJson().get("sha256").length());
+        assertEquals("image/png", screenshot.metadataJson().get("contentType"));
+        assertEquals(
+                RepairArtifactType.QA_COMMAND_LOG,
+                artifact(result, "qa-evidence/browser/tracing-stop.log").type()
+        );
+    }
+
+    @Test
+    void shouldKeepLargeQaManifestAvailableForHostIntegrityValidation() {
+        CapturingRunner runner = CapturingRunner.withResult(validResultJson("SUCCESS"))
+                .withQaEvidenceArtifacts();
+        for (int index = 0; index < 500; index++) {
+            runner = runner.withExtraArtifact(
+                    "qa-evidence/http/response-%03d.json".formatted(index),
+                    "{\"status\":200}"
+            );
+        }
+        DockerClaudeCodeExecutor executor = executor(runner);
+
+        RepairExecutionResult result = executor.execute(command());
+
+        RepairArtifact manifest = artifact(result, "qa-evidence/manifest.json");
+        assertTrue(Long.parseLong(manifest.metadataJson().get("bytes")) > 64_000L);
+        assertNotNull(manifest.metadataJson().get("contentPreview"));
+    }
+
+    @Test
     void shouldPrepareAndPublishRepositoryAroundSuccessfulExecution() {
         CapturingRunner runner = CapturingRunner.withResult(validResultJson("SUCCESS"));
         RecordingRepositoryPort repositoryPort = new RecordingRepositoryPort();
@@ -698,11 +1012,19 @@ class DockerClaudeCodeExecutorTest {
     ) {
         DockerClaudeCodeExecutor.Configuration configuration = new DockerClaudeCodeExecutor.Configuration(
                 "rd-bot/claude-code:test",
+                "rd-bot/claude-code-qa:test",
                 command,
                 "none",
                 true,
                 false,
-                providers
+                providers,
+                new DockerClaudeCodeExecutor.QaSkillConfiguration(
+                        temporaryDirectory.resolve("qa-skill").toString(),
+                        "qa-playwright-cli",
+                        "1.0.1",
+                        "sha256:abc123",
+                        "{\"allowed\":true}"
+                )
         );
         return new DockerClaudeCodeExecutor(
                 new RepairWorkspaceFactory(temporaryDirectory, RESULT_SCHEMA_JSON),
@@ -756,10 +1078,19 @@ class DockerClaudeCodeExecutorTest {
     ) {
         DockerClaudeCodeExecutor.Configuration configuration = new DockerClaudeCodeExecutor.Configuration(
                 "rd-bot/claude-code:test",
+                "rd-bot/claude-code-qa:test",
                 command,
                 "none",
                 true,
-                false
+                false,
+                List.of(ClaudeCodeModelProvider.defaultAnthropic()),
+                new DockerClaudeCodeExecutor.QaSkillConfiguration(
+                        temporaryDirectory.resolve("qa-skill").toString(),
+                        "qa-playwright-cli",
+                        "1.0.1",
+                        "sha256:abc123",
+                        "{\"allowed\":true}"
+                )
         );
         return new DockerClaudeCodeExecutor(
                 workspaceFactory,
@@ -888,20 +1219,102 @@ class DockerClaudeCodeExecutorTest {
         String summary = "FAILED".equals(status)
                 ? "QA FAILED with real command evidence"
                 : "QA PASSED with real command evidence";
+        String failureCategory = "FAILED".equals(status) ? "PRODUCT_DEFECT" : "NONE";
+        String retryRecommendation = "FAILED".equals(status) ? "CODING_AGENT" : "NONE";
         return """
                 {
                   "status": "%s",
                   "summary": "%s",
+                  "failureCategory": "%s",
+                  "retryRecommendation": "%s",
+                  "browserValidation": {
+                    "required": false,
+                    "performed": false,
+                    "decisionSource": "NOT_APPLICABLE",
+                    "baseUrl": "",
+                    "browser": "chromium",
+                    "viewports": []
+                  },
                   "acceptanceResults": [
                     {
                       "criteria": "文档必须包含 marker",
+                      "scope": "CURRENT",
                       "command": "grep -q marker docs/example.md",
                       "status": "%s",
-                      "logArtifactId": "qa-log-1"
+                      "exitCode": %s,
+                      "durationMillis": 10,
+                      "logArtifactId": "qa-evidence/commands/current.log",
+                      "evidenceArtifactIds": ["qa-evidence/commands/current.log"]
+                    },
+                    {
+                      "criteria": "关键回归测试",
+                      "scope": "REGRESSION",
+                      "command": "./mvnw test",
+                      "status": "PASSED",
+                      "exitCode": 0,
+                      "durationMillis": 20,
+                      "logArtifactId": "qa-evidence/commands/regression.log",
+                      "evidenceArtifactIds": ["qa-evidence/commands/regression.log"]
                     }
-                  ]
+                  ],
+                  "evidenceManifestArtifactId": "qa-evidence/manifest.json"
                 }
-                """.formatted(status, summary, acceptanceStatus);
+                """.formatted(
+                status,
+                summary,
+                failureCategory,
+                retryRecommendation,
+                acceptanceStatus,
+                "FAILED".equals(status) ? 1 : 0
+        );
+    }
+
+    private static String validBrowserQaResultJson() {
+        return """
+                {
+                  "status": "PASSED",
+                  "summary": "browser current and regression checks passed",
+                  "failureCategory": "NONE",
+                  "retryRecommendation": "NONE",
+                  "browserValidation": {
+                    "required": true,
+                    "performed": true,
+                    "decisionSource": "AUTO_DETECTION",
+                    "baseUrl": "http://127.0.0.1:5173",
+                    "browser": "chromium",
+                    "viewports": ["desktop-1440x900", "mobile-390x844"]
+                  },
+                  "acceptanceResults": [
+                    {
+                      "criteria": "current browser flow",
+                      "scope": "CURRENT",
+                      "command": "playwright-cli screenshot",
+                      "status": "PASSED",
+                      "exitCode": 0,
+                      "durationMillis": 10,
+                      "logArtifactId": "qa-evidence/commands/current.log",
+                      "evidenceArtifactIds": [
+                        "qa-evidence/screenshots/current-desktop.png",
+                        "qa-evidence/screenshots/current-mobile.png",
+                        "qa-evidence/traces/current.zip",
+                        "qa-evidence/console/current.log",
+                        "qa-evidence/network/current.log"
+                      ]
+                    },
+                    {
+                      "criteria": "critical regression",
+                      "scope": "REGRESSION",
+                      "command": "npm test",
+                      "status": "PASSED",
+                      "exitCode": 0,
+                      "durationMillis": 20,
+                      "logArtifactId": "qa-evidence/commands/regression.log",
+                      "evidenceArtifactIds": ["qa-evidence/commands/regression.log"]
+                    }
+                  ],
+                  "evidenceManifestArtifactId": "qa-evidence/manifest.json"
+                }
+                """;
     }
 
     private static ClaudeCodeModelProvider provider(String name, Map<String, String> env) {
@@ -987,6 +1400,21 @@ class DockerClaudeCodeExecutorTest {
             return new CapturingRunner(exitCode, resultJson, missingArtifacts, nextExtra, durationMillis, metadata);
         }
 
+        CapturingRunner withQaEvidenceArtifacts() {
+            return withExtraArtifact("qa-evidence/manifest.json", "{}")
+                    .withExtraArtifact("qa-evidence/commands/current.log", "current command output")
+                    .withExtraArtifact("qa-evidence/commands/regression.log", "regression command output");
+        }
+
+        CapturingRunner withBrowserQaEvidenceArtifacts() {
+            return withQaEvidenceArtifacts()
+                    .withExtraArtifact("qa-evidence/screenshots/current-desktop.png", "fake desktop screenshot")
+                    .withExtraArtifact("qa-evidence/screenshots/current-mobile.png", "fake mobile screenshot")
+                    .withExtraArtifact("qa-evidence/traces/current.zip", "fake trace")
+                    .withExtraArtifact("qa-evidence/console/current.log", "no console errors")
+                    .withExtraArtifact("qa-evidence/network/current.log", "GET / 200");
+        }
+
         CapturingRunner withDurationMillis(long nextDurationMillis) {
             return new CapturingRunner(exitCode, resultJson, missingArtifacts, extraArtifacts, nextDurationMillis, metadata);
         }
@@ -1022,7 +1450,12 @@ class DockerClaudeCodeExecutorTest {
             writeIfPresent(eventsPath, "{\"type\":\"done\"}\n", "claude-events.jsonl");
             writeIfPresent(dockerMetaPath, "{\"runner\":\"fake\"}\n", "docker-meta.json");
             for (Map.Entry<String, String> entry : extraArtifacts.entrySet()) {
-                Files.writeString(request.outputDirectory().resolve(entry.getKey()), entry.getValue(), StandardCharsets.UTF_8);
+                Path extraArtifact = request.outputDirectory().resolve(entry.getKey());
+                Files.createDirectories(extraArtifact.getParent());
+                Files.writeString(extraArtifact, entry.getValue(), StandardCharsets.UTF_8);
+            }
+            if (extraArtifacts.containsKey("qa-evidence/manifest.json")) {
+                writeEvidenceManifest(request.outputDirectory());
             }
 
             return new ContainerRunResult(
@@ -1043,6 +1476,35 @@ class DockerClaudeCodeExecutorTest {
             if (!missingArtifacts.contains(artifactName)) {
                 Files.writeString(path, body, StandardCharsets.UTF_8);
             }
+        }
+
+        private static void writeEvidenceManifest(Path outputDirectory) throws IOException {
+            Path evidenceDirectory = outputDirectory.resolve("qa-evidence");
+            Path manifestPath = evidenceDirectory.resolve("manifest.json");
+            List<Map<String, Object>> entries;
+            try (var files = Files.walk(evidenceDirectory)) {
+                entries = files
+                        .filter(Files::isRegularFile)
+                        .filter(path -> !path.equals(manifestPath))
+                        .sorted()
+                        .map(path -> {
+                            try {
+                                byte[] body = Files.readAllBytes(path);
+                                return Map.<String, Object>of(
+                                        "path", outputDirectory.relativize(path).toString().replace('\\', '/'),
+                                        "bytes", body.length,
+                                        "sha256", java.util.HexFormat.of().formatHex(
+                                                java.security.MessageDigest.getInstance("SHA-256").digest(body)
+                                        )
+                                );
+                            } catch (IOException | java.security.NoSuchAlgorithmException exception) {
+                                throw new IllegalStateException(exception);
+                            }
+                        })
+                        .toList();
+            }
+            OBJECT_MAPPER.writerWithDefaultPrettyPrinter()
+                    .writeValue(manifestPath.toFile(), Map.of("version", 1, "artifacts", entries));
         }
     }
 
@@ -1166,6 +1628,40 @@ class DockerClaudeCodeExecutorTest {
 
         private List<RepairWorkspace> published() {
             return List.copyOf(published);
+        }
+    }
+
+    private static final class ViteRepositoryPort implements RepairWorkspaceRepositoryPort {
+
+        @Override
+        public RepositoryOperationResult prepare(RepairJobCommand command, RepairWorkspace workspace) throws IOException {
+            Files.writeString(workspace.repoDirectory().resolve("package.json"), """
+                    {"scripts":{"dev":"vite"},"devDependencies":{"vite":"latest"}}
+                    """, StandardCharsets.UTF_8);
+            return new RepositoryOperationResult(Map.of("prepared", "true"));
+        }
+
+        @Override
+        public RepositoryOperationResult publish(RepairJobCommand command, RepairWorkspace workspace) {
+            return new RepositoryOperationResult(Map.of());
+        }
+    }
+
+    private static final class MutatingQaRepositoryPort implements RepairWorkspaceRepositoryPort {
+
+        @Override
+        public RepositoryOperationResult prepare(RepairJobCommand command, RepairWorkspace workspace) {
+            return new RepositoryOperationResult(Map.of("prepared", "true"));
+        }
+
+        @Override
+        public RepositoryOperationResult publish(RepairJobCommand command, RepairWorkspace workspace) {
+            return new RepositoryOperationResult(Map.of());
+        }
+
+        @Override
+        public RepositoryState repositoryState(RepairJobCommand command, RepairWorkspace workspace) {
+            return new RepositoryState(true, false, " M src/App.tsx");
         }
     }
 }

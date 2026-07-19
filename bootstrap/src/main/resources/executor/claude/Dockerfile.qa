@@ -1,0 +1,27 @@
+ARG CLAUDE_BASE_IMAGE=rd-bot/claude-code:local
+FROM ${CLAUDE_BASE_IMAGE}
+
+USER root
+
+ARG PLAYWRIGHT_CLI_VERSION=0.1.17
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+    PLAYWRIGHT_MCP_CONFIG=/etc/rd-bot/playwright-cli.config.json
+
+RUN npm install -g "@playwright/cli@${PLAYWRIGHT_CLI_VERSION}" \
+    && node /usr/local/lib/node_modules/@playwright/cli/node_modules/playwright/cli.js install --with-deps chromium \
+    && npm cache clean --force \
+    && chown -R rdbot:rdbot /ms-playwright /home/rdbot
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl zip \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /home/rdbot/.claude/skills \
+    && chown -R rdbot:rdbot /home/rdbot/.claude
+
+COPY rd-qa-evidence.mjs /usr/local/bin/rd-qa-evidence.mjs
+COPY playwright-cli.config.json /etc/rd-bot/playwright-cli.config.json
+RUN chmod 0755 /usr/local/bin/rd-qa-evidence.mjs \
+    && chmod 0644 /etc/rd-bot/playwright-cli.config.json
+
+USER rdbot

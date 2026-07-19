@@ -116,6 +116,20 @@ class RagStreamTaskRegistryTest {
     }
 
     @Test
+    void shouldStopBugFixBeforeExecutionWhenRetrievalNeedsMaterial() {
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(), new InMemoryRdTaskStatusEventStore(), generatorWithMovingClock());
+        RdBugFixTask created = registry.createBugFixTask(ticket(), "P1");
+
+        registry.markSearching(created.taskId(), "RAG 检索中");
+        RdBugFixTask waitingForMaterial = registry.markFailedNeedsHuman(
+                created.taskId(), "缺少项目知识库范围或可用日志");
+
+        assertEquals(RdTaskStatus.FAILED_NEEDS_HUMAN, waitingForMaterial.status());
+        assertEquals("缺少项目知识库范围或可用日志", waitingForMaterial.errorMessage());
+    }
+
+    @Test
     void shouldRejectIllegalStateTransition() {
         RagStreamTaskRegistry registry = new RagStreamTaskRegistry(new InMemoryRdTaskStore(), new InMemoryRdTaskStatusEventStore(), generatorWithMovingClock());
         RdBugFixTask created = registry.createBugFixTask(ticket(), "P2");
@@ -125,7 +139,7 @@ class RagStreamTaskRegistryTest {
                 () -> registry.markCommitted(created.taskId(), "https://github.example/rd/pr/102", "{}")
         );
 
-        assertEquals("illegal task status transition: CREATED -> COMMITTED", exception.getMessage());
+        assertEquals("illegal BUG_FIX task status transition: CREATED -> COMMITTED", exception.getMessage());
     }
 
     private TicketSnapshot ticket() {

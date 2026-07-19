@@ -25,5 +25,6 @@ public class RdRoleContextPackageRow {
     public String contextBudgetJson;
     public String omittedEvidenceJson;
     public String contentHash;
+    public Long retrievalRunId;
     public OffsetDateTime createdAt;
 }

@@ -19,6 +19,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -36,6 +37,7 @@ class ProcessContainerRunnerTest {
 
         assertFalse(properties.isEnabled());
         assertEquals("rd-bot/claude-code:local", properties.getImage());
+        assertEquals("rd-bot/claude-code-qa:local", properties.getQaImage());
         assertEquals(Path.of("/tmp/rd-bot/repair-workspaces"), properties.getWorkspaceRoot());
         assertEquals("claude", properties.getCommand());
         assertEquals("--dangerously-skip-permissions", properties.getYoloFlag());
@@ -52,6 +54,7 @@ class ProcessContainerRunnerTest {
         DockerClaudeCodeExecutor.Configuration configuration = properties.toExecutorConfiguration();
 
         assertEquals("rd-bot/claude-code:local", configuration.image());
+        assertEquals("rd-bot/claude-code-qa:local", configuration.qaImage());
         assertEquals(properties.claudeCommand(), configuration.command());
         assertEquals("bridge", configuration.networkMode());
         assertTrue(configuration.removeAfterExit());
@@ -90,6 +93,33 @@ class ProcessContainerRunnerTest {
         assertTrue(argv.contains("ANTHROPIC_API_KEY"));
         assertFalse(argv.toString().contains("sk-test-secret"));
         assertTrue(argv.contains("ANTHROPIC_MODEL=claude-sonnet"));
+    }
+
+    @Test
+    void shouldEnableInitAndSharedMemoryForBrowserQaContainers() {
+        DockerExecutorProperties properties = new DockerExecutorProperties();
+        ProcessContainerRunner runner = runner(properties,
+                (argv, environment) -> new ProcessContainerRunner.CommandResult(0, 1, "", ""));
+        ContainerRunRequest request = new ContainerRunRequest(
+                "repair-task-qa",
+                "rd-bot/claude-code-qa:local",
+                properties.claudeCommand(),
+                Map.of(),
+                Map.of(temporaryDirectory.resolve("workspace").toString(), "/work"),
+                "/work/repo",
+                "bridge",
+                true,
+                false,
+                temporaryDirectory.resolve("output"),
+                true,
+                "1g"
+        );
+
+        List<String> argv = runner.buildCommand(request);
+
+        assertTrue(argv.contains("--init"));
+        assertTrue(argv.contains("--shm-size=1g"));
+        assertTrue(argv.indexOf("--init") < argv.indexOf("rd-bot/claude-code-qa:local"));
     }
 
     @Test
@@ -233,6 +263,43 @@ class ProcessContainerRunnerTest {
         String dockerMetaJson = Files.readString(request.outputDirectory().resolve("docker-meta.json"), StandardCharsets.UTF_8);
         assertFalse(dockerMetaJson.contains(rawToken));
         assertTrue(dockerMetaJson.contains("\"containerName\""));
+    }
+
+    @Test
+    void shouldPassRequestHardTimeoutToDockerProcessLauncher() throws IOException {
+        DockerExecutorProperties properties = new DockerExecutorProperties();
+        AtomicLong capturedTimeout = new AtomicLong(-1L);
+        ProcessContainerRunner runner = new ProcessContainerRunner(
+                properties,
+                (argv, environment, timeoutMillis) -> {
+                    capturedTimeout.set(timeoutMillis);
+                    return new ProcessContainerRunner.CommandResult(0, 1, "", "");
+                }
+        );
+        ContainerRunRequest base = request(
+                properties,
+                Map.of(),
+                Map.of(temporaryDirectory.resolve("workspace").toString(), "/work")
+        );
+        ContainerRunRequest request = new ContainerRunRequest(
+                base.containerName(),
+                base.image(),
+                base.command(),
+                base.env(),
+                base.mounts(),
+                base.workingDirectory(),
+                base.networkMode(),
+                base.removeAfterExit(),
+                base.allowPrivileged(),
+                base.outputDirectory(),
+                true,
+                "1g",
+                1_200_000L
+        );
+
+        runner.run(request);
+
+        assertEquals(1_200_000L, capturedTimeout.get());
     }
 
     @Test

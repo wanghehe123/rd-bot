@@ -1,15 +1,9 @@
-package com.wish.rd.engine.admin.trace;
+package com.wish.rd.engine.admin.trace.model;
 
 /** Filters for task-rooted execution traces. */
 public record ExecutionTraceQuery(
-        String projectId,
-        String taskType,
-        String status,
-        String role,
-        String provider,
-        String keyword,
-        int page,
-        int pageSize
+        String projectId, String taskType, String status, String role, String provider,
+        String keyword, int page, int pageSize
 ) {
     public ExecutionTraceQuery {
         projectId = safe(projectId);

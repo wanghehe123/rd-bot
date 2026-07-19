@@ -2,12 +2,14 @@ package com.wish.rd.bootstrap.executor;
 
 import com.wish.rd.bootstrap.executor.impl.EngineRequirementExecutorAdapter;
 import com.wish.rd.bootstrap.executor.impl.EngineRequirementPullRequestPublisherAdapter;
+import com.wish.rd.bootstrap.executor.impl.ObjectStorageQaEvidencePublisher;
 
 import com.wish.rd.bootstrap.threading.RdBotThreadPoolConfiguration;
 import com.wish.rd.engine.requirement.RequirementExecutorPort;
 import com.wish.rd.engine.requirement.RequirementPullRequestPublisherPort;
 import com.wish.rd.exec.repair.code.CodePlatformPort;
 import com.wish.rd.exec.repair.execution.RepairExecutorPort;
+import com.wish.rd.rag.qa.QaValidationProfileService;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -31,6 +33,10 @@ public class EngineRequirementExecutorConfiguration {
                 codePlatformProvider,
                 new org.springframework.beans.factory.support.StaticListableBeanFactory()
                         .getBeanProvider(com.wish.rd.bootstrap.executor.impl.TaskMaterialAttachmentResolver.class),
+                new org.springframework.beans.factory.support.StaticListableBeanFactory()
+                        .getBeanProvider(QaValidationProfileService.class),
+                new org.springframework.beans.factory.support.StaticListableBeanFactory()
+                        .getBeanProvider(ObjectStorageQaEvidencePublisher.class),
                 executorIoTaskExecutor
         );
     }
@@ -47,6 +53,8 @@ public class EngineRequirementExecutorConfiguration {
             ObjectProvider<RepairExecutorPort> repairExecutorProvider,
             ObjectProvider<CodePlatformPort> codePlatformProvider,
             ObjectProvider<com.wish.rd.bootstrap.executor.impl.TaskMaterialAttachmentResolver> attachmentResolverProvider,
+            ObjectProvider<QaValidationProfileService> qaValidationProfileServiceProvider,
+            ObjectProvider<ObjectStorageQaEvidencePublisher> qaEvidencePublisherProvider,
             @Qualifier(RdBotThreadPoolConfiguration.EXECUTOR_IO_EXECUTOR_BEAN)
             AsyncTaskExecutor executorIoTaskExecutor
     ) {
@@ -57,7 +65,9 @@ public class EngineRequirementExecutorConfiguration {
         return new EngineRequirementExecutorAdapter(
                 repairExecutor,
                 executorIoTaskExecutor,
-                attachmentResolverProvider.getIfAvailable()
+                attachmentResolverProvider.getIfAvailable(),
+                qaValidationProfileServiceProvider.getIfAvailable(),
+                qaEvidencePublisherProvider.getIfAvailable()
         );
     }
 

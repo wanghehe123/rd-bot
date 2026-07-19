@@ -41,6 +41,7 @@ public class RdTaskRow {
     public String workBranch;
     public String expectedResult;
     public String acceptanceCriteriaJson;
+    public Long tokenBudgetOverride;
     public OffsetDateTime createdAt;
     public OffsetDateTime updatedAt;
 }

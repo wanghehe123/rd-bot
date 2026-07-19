@@ -25,6 +25,10 @@ public enum AgentStageStatus {
      * @return 已结束时返回 true
      */
     public boolean isTerminal() {
-        return this == SUCCEEDED || this == FAILED_NEEDS_HUMAN || this == SKIPPED || this == CANCELLED;
+        return this == SUCCEEDED
+                || this == FAILED_RETRYABLE
+                || this == FAILED_NEEDS_HUMAN
+                || this == SKIPPED
+                || this == CANCELLED;
     }
 }

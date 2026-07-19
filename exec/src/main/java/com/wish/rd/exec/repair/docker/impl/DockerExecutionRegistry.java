@@ -11,15 +11,25 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import com.wish.rd.exec.repair.docker.model.ContainerRunRequest;
+import com.wish.rd.exec.repair.docker.usage.ClaudeTokenUsageParser;
+import com.wish.rd.exec.repair.docker.usage.model.ClaudeTokenUsageSnapshot;
 
 /**
  * Docker 执行运行态注册表，记录 taskId 到容器的映射，并提供手动停止入口。
  */
 public class DockerExecutionRegistry implements RepairExecutionControlPort {
 
+    private static final long USAGE_REFRESH_INTERVAL_MILLIS = 1_000L;
     private final Map<String, RunningExecution> runningByTaskId = new ConcurrentHashMap<>();
     private final ContainerControlPort containerControlPort;
+    private final ClaudeTokenUsageParser tokenUsageParser = new ClaudeTokenUsageParser();
+    private ScheduledExecutorService usageRefreshExecutor;
+    private ScheduledFuture<?> usageRefreshTask;
 
     /**
      * 创建 Docker 执行注册表。
@@ -51,16 +61,22 @@ public class DockerExecutionRegistry implements RepairExecutionControlPort {
             return;
         }
         long now = System.currentTimeMillis();
-        runningByTaskId.put(command.taskId(), new RunningExecution(
+        String workflowTaskId = workflowTaskId(command);
+        runningByTaskId.put(workflowTaskId, new RunningExecution(
                 command.repairRecordId(),
+                workflowTaskId,
                 command.taskId(),
+                safe(command.contextJson().get("stageRunId")),
                 command.ticketId(),
                 provider == null ? "" : provider,
                 request.containerName(),
                 now,
                 now,
-                request.outputDirectory()
+                request.outputDirectory(),
+                tokenUsageParser.parse(request.outputDirectory().resolve("claude-events.jsonl")),
+                now
         ));
+        ensureUsageRefresh();
     }
 
     /**
@@ -70,7 +86,10 @@ public class DockerExecutionRegistry implements RepairExecutionControlPort {
      */
     public void unregister(String taskId) {
         if (taskId != null && !taskId.isBlank()) {
-            runningByTaskId.remove(taskId.strip());
+            String normalizedTaskId = taskId.strip();
+            runningByTaskId.remove(normalizedTaskId);
+            runningByTaskId.entrySet().removeIf(entry -> normalizedTaskId.equals(entry.getValue().executionTaskId()));
+            stopUsageRefreshIfIdle();
         }
     }
 
@@ -80,6 +99,7 @@ public class DockerExecutionRegistry implements RepairExecutionControlPort {
      * @return 运行任务快照
      */
     public List<RunningExecution> runningExecutions() {
+        refreshUsageSnapshots();
         return runningByTaskId.values().stream()
                 .sorted(java.util.Comparator.comparing(RunningExecution::startedAtEpochMillis))
                 .toList();
@@ -121,12 +141,83 @@ public class DockerExecutionRegistry implements RepairExecutionControlPort {
     public record RunningExecution(
             String repairRecordId,
             String taskId,
+            String executionTaskId,
+            String stageRunId,
             String ticketId,
             String provider,
             String containerName,
             long startedAtEpochMillis,
             long lastHeartbeatEpochMillis,
-            Path outputDirectory
+            Path outputDirectory,
+            ClaudeTokenUsageSnapshot tokenUsage,
+            long lastUsageRefreshEpochMillis
     ) {
+    }
+
+    private void refreshUsageSnapshots() {
+        long now = System.currentTimeMillis();
+        runningByTaskId.replaceAll((taskId, running) -> {
+            if (now - running.lastUsageRefreshEpochMillis() < USAGE_REFRESH_INTERVAL_MILLIS) {
+                return running;
+            }
+            ClaudeTokenUsageSnapshot tokenUsage = tokenUsageParser.parse(
+                    running.outputDirectory() == null ? null : running.outputDirectory().resolve("claude-events.jsonl")
+            );
+            return new RunningExecution(
+                    running.repairRecordId(),
+                    running.taskId(),
+                    running.executionTaskId(),
+                    running.stageRunId(),
+                    running.ticketId(),
+                    running.provider(),
+                    running.containerName(),
+                    running.startedAtEpochMillis(),
+                    now,
+                    running.outputDirectory(),
+                    tokenUsage,
+                    now
+            );
+        });
+    }
+
+    private synchronized void ensureUsageRefresh() {
+        if (usageRefreshTask != null && !usageRefreshTask.isCancelled()) {
+            return;
+        }
+        usageRefreshExecutor = Executors.newSingleThreadScheduledExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "rd-claude-token-usage-refresh");
+            thread.setDaemon(true);
+            return thread;
+        });
+        usageRefreshTask = usageRefreshExecutor.scheduleWithFixedDelay(
+                this::refreshUsageSnapshots,
+                USAGE_REFRESH_INTERVAL_MILLIS,
+                USAGE_REFRESH_INTERVAL_MILLIS,
+                TimeUnit.MILLISECONDS
+        );
+    }
+
+    private synchronized void stopUsageRefreshIfIdle() {
+        if (!runningByTaskId.isEmpty() || usageRefreshTask == null) {
+            return;
+        }
+        usageRefreshTask.cancel(false);
+        usageRefreshTask = null;
+        if (usageRefreshExecutor != null) {
+            usageRefreshExecutor.shutdown();
+            usageRefreshExecutor = null;
+        }
+    }
+
+    private static String workflowTaskId(RepairJobCommand command) {
+        String taskId = safe(command.contextJson().get("workflowTaskId"));
+        if (taskId.isBlank()) {
+            taskId = safe(command.contextJson().get("taskId"));
+        }
+        return taskId.isBlank() ? command.taskId() : taskId;
+    }
+
+    private static String safe(String value) {
+        return value == null ? "" : value.strip();
     }
 }

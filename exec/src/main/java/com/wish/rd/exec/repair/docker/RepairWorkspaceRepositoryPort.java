@@ -32,6 +32,14 @@ public interface RepairWorkspaceRepositoryPort {
     RepositoryOperationResult publish(RepairJobCommand command, RepairWorkspace workspace) throws IOException;
 
     /**
+     * Inspects whether the prepared worktree remains unchanged after a read-only QA run.
+     * Implementations that cannot inspect repository state return {@link RepositoryState#unsupported()}.
+     */
+    default RepositoryState repositoryState(RepairJobCommand command, RepairWorkspace workspace) throws IOException {
+        return RepositoryState.unsupported();
+    }
+
+    /**
      * 返回不操作代码仓库的默认实现，供非真实执行或测试场景使用。
      *
      * @return no-op 仓库端口
@@ -68,6 +76,22 @@ public interface RepairWorkspaceRepositoryPort {
          */
         public static RepositoryOperationResult empty() {
             return new RepositoryOperationResult(Map.of());
+        }
+    }
+
+    /** Repository cleanliness snapshot used by the QA no-mutation guard. */
+    record RepositoryState(boolean supported, boolean clean, String summary) {
+
+        public RepositoryState {
+            summary = summary == null ? "" : summary.strip();
+        }
+
+        public static RepositoryState unsupported() {
+            return new RepositoryState(false, true, "");
+        }
+
+        public static RepositoryState cleanState() {
+            return new RepositoryState(true, true, "");
         }
     }
 }

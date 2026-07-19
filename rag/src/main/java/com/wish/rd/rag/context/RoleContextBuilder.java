@@ -5,6 +5,7 @@ import com.wish.rd.rag.runtime.model.TaskMaterial;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import com.wish.rd.rag.context.model.RoleContextEvidence;
@@ -37,6 +38,19 @@ public final class RoleContextBuilder {
             int maxChars,
             long createdAtEpochMillis
     ) {
+        return build(packageId, task, materials, role, maxChars, 1, createdAtEpochMillis);
+    }
+
+    /** Builds a role context package with an explicit immutable version. */
+    public RoleContextPackage build(
+            String packageId,
+            RdRequirementTask task,
+            List<TaskMaterial> materials,
+            String role,
+            int maxChars,
+            int packageVersion,
+            long createdAtEpochMillis
+    ) {
         String normalizedRole = normalizeRole(role);
         List<TaskMaterial> safeMaterials = materials == null ? List.of() : materials;
         List<CandidateEvidence> candidates = rankCandidates(normalizedRole, safeMaterials, createdAtEpochMillis);
@@ -58,13 +72,70 @@ public final class RoleContextBuilder {
                 packageId,
                 task == null ? "" : task.taskId(),
                 normalizedRole,
-                1,
+                packageVersion,
                 selected,
                 parseJsonArray(task == null ? "" : task.acceptanceCriteriaJson()),
                 riskHints(normalizedRole),
                 safeMaxChars,
                 usedChars,
                 omitted,
+                createdAtEpochMillis
+        );
+    }
+
+    /**
+     * Builds an immutable context from the evidence explicitly selected by a RetrievalRun.
+     * Unscored historical experience and structurally invalid evidence are omitted rather than
+     * silently promoted into every role context.
+     */
+    public RoleContextPackage buildFromEvidence(
+            String packageId,
+            RdRequirementTask task,
+            List<RoleContextEvidence> selectedEvidence,
+            String role,
+            int maxChars,
+            int packageVersion,
+            String retrievalRunId,
+            long createdAtEpochMillis
+    ) {
+        String normalizedRole = normalizeRole(role);
+        int safeMaxChars = Math.max(0, maxChars);
+        int usedChars = 0;
+        List<RoleContextEvidence> included = new ArrayList<>();
+        List<String> omitted = new ArrayList<>();
+        LinkedHashSet<String> seen = new LinkedHashSet<>();
+        for (RoleContextEvidence evidence : selectedEvidence == null ? List.<RoleContextEvidence>of() : selectedEvidence) {
+            if (evidence == null || evidence.evidenceId().isBlank()) {
+                continue;
+            }
+            boolean invalidReference = evidence.sourceUri().isBlank() || evidence.contentHash().isBlank();
+            boolean zeroScoreExperience = "WORKFLOW_EXPERIENCE".equalsIgnoreCase(evidence.sourceType())
+                    && evidence.relevanceScore() <= 0.0d;
+            String dedupeKey = evidence.contentHash().isBlank() ? evidence.evidenceId() : evidence.contentHash();
+            if (invalidReference || zeroScoreExperience || !seen.add(dedupeKey)) {
+                omitted.add(evidence.evidenceId());
+                continue;
+            }
+            int evidenceChars = evidence.title().length() + evidence.summary().length();
+            if (!included.isEmpty() && safeMaxChars > 0 && usedChars + evidenceChars > safeMaxChars) {
+                omitted.add(evidence.evidenceId());
+                continue;
+            }
+            included.add(evidence);
+            usedChars += evidenceChars;
+        }
+        return new RoleContextPackage(
+                packageId,
+                task == null ? "" : task.taskId(),
+                normalizedRole,
+                packageVersion,
+                included,
+                parseJsonArray(task == null ? "" : task.acceptanceCriteriaJson()),
+                riskHints(normalizedRole),
+                safeMaxChars,
+                usedChars,
+                omitted,
+                retrievalRunId,
                 createdAtEpochMillis
         );
     }

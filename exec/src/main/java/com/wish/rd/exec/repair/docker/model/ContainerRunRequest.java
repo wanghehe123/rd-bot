@@ -18,6 +18,9 @@ import java.util.Map;
  * @param removeAfterExit 退出后是否删除容器
  * @param allowPrivileged 是否允许特权模式
  * @param outputDirectory 标准协议输出目录
+ * @param initEnabled      是否使用 Docker init 处理浏览器子进程
+ * @param sharedMemorySize 容器共享内存大小，例如 {@code 1g}
+ * @param executionTimeoutMillis 容器执行硬超时；{@code 0} 表示不设硬超时
  */
 public record ContainerRunRequest(
         String containerName,
@@ -29,7 +32,10 @@ public record ContainerRunRequest(
         String networkMode,
         boolean removeAfterExit,
         boolean allowPrivileged,
-        Path outputDirectory
+        Path outputDirectory,
+        boolean initEnabled,
+        String sharedMemorySize,
+        long executionTimeoutMillis
 ) {
 
     public ContainerRunRequest {
@@ -40,10 +46,78 @@ public record ContainerRunRequest(
         mounts = normalizeMap(mounts, "mounts", false);
         workingDirectory = normalizeText(workingDirectory);
         networkMode = normalizeText(networkMode);
+        sharedMemorySize = normalizeText(sharedMemorySize);
+        executionTimeoutMillis = Math.max(0L, executionTimeoutMillis);
         if (outputDirectory == null) {
             throw new IllegalArgumentException("outputDirectory must not be null");
         }
         outputDirectory = outputDirectory.toAbsolutePath().normalize();
+    }
+
+    /**
+     * Backward-compatible request constructor for browser workloads without a hard timeout.
+     */
+    public ContainerRunRequest(
+            String containerName,
+            String image,
+            List<String> command,
+            Map<String, String> env,
+            Map<String, String> mounts,
+            String workingDirectory,
+            String networkMode,
+            boolean removeAfterExit,
+            boolean allowPrivileged,
+            Path outputDirectory,
+            boolean initEnabled,
+            String sharedMemorySize
+    ) {
+        this(
+                containerName,
+                image,
+                command,
+                env,
+                mounts,
+                workingDirectory,
+                networkMode,
+                removeAfterExit,
+                allowPrivileged,
+                outputDirectory,
+                initEnabled,
+                sharedMemorySize,
+                0L
+        );
+    }
+
+    /**
+     * Backward-compatible request constructor for non-browser workloads.
+     */
+    public ContainerRunRequest(
+            String containerName,
+            String image,
+            List<String> command,
+            Map<String, String> env,
+            Map<String, String> mounts,
+            String workingDirectory,
+            String networkMode,
+            boolean removeAfterExit,
+            boolean allowPrivileged,
+            Path outputDirectory
+    ) {
+        this(
+                containerName,
+                image,
+                command,
+                env,
+                mounts,
+                workingDirectory,
+                networkMode,
+                removeAfterExit,
+                allowPrivileged,
+                outputDirectory,
+                false,
+                "",
+                0L
+        );
     }
 
     private static String requireText(String value, String fieldName) {

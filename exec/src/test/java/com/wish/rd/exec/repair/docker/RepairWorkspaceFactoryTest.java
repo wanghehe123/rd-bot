@@ -101,8 +101,18 @@ class RepairWorkspaceFactoryTest {
 
         assertEquals("RD-Bot QA Agent Result", schema.path("title").asText());
         assertTrue(schema.path("required").toString().contains("acceptanceResults"));
+        assertTrue(schema.path("required").toString().contains("failureCategory"));
+        assertTrue(schema.path("required").toString().contains("retryRecommendation"));
+        assertTrue(schema.path("required").toString().contains("browserValidation"));
+        assertTrue(schema.path("required").toString().contains("evidenceManifestArtifactId"));
         assertTrue(schema.path("properties").path("acceptanceResults").path("minItems").asInt() >= 1);
         assertEquals("PASSED", schema.path("properties").path("status").path("enum").get(0).asText());
+        JsonNode acceptanceItem = schema.path("properties").path("acceptanceResults").path("items");
+        assertTrue(acceptanceItem.path("required").toString().contains("scope"));
+        assertTrue(acceptanceItem.path("required").toString().contains("exitCode"));
+        assertTrue(acceptanceItem.path("required").toString().contains("durationMillis"));
+        assertTrue(acceptanceItem.path("required").toString().contains("evidenceArtifactIds"));
+        assertEquals("CURRENT", acceptanceItem.path("properties").path("scope").path("enum").get(0).asText());
         assertFalse(schema.path("required").toString().contains("changedFiles"));
     }
 

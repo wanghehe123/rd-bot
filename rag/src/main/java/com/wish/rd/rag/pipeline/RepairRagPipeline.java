@@ -8,7 +8,12 @@ import com.wish.rd.rag.intent.IntentClassifier;
 import com.wish.rd.rag.intent.model.NodeScore;
 import com.wish.rd.rag.retrieval.MultiChannelRetrievalEngine;
 import com.wish.rd.rag.retrieval.model.RetrievalBundle;
+import com.wish.rd.rag.retrieval.model.RetrievalExecutionResult;
 import com.wish.rd.rag.retrieval.model.RetrievalRequest;
+import com.wish.rd.rag.retrieval.observability.RagRetrievalTrace;
+import com.wish.rd.rag.retrieval.run.RetrievalRunLifecycle;
+import com.wish.rd.rag.retrieval.run.model.RetrievalConsumerType;
+import com.wish.rd.rag.retrieval.run.model.RetrievalRun;
 import com.wish.rd.rag.text.TextAnalyzer;
 
 import java.util.List;
@@ -27,8 +32,8 @@ import com.wish.rd.rag.pipeline.model.RepairRagRequest;
  * <ol>
  *   <li>用 {@link TextAnalyzer} 把描述与日志合并成查询文本；</li>
  *   <li>调用 {@link IntentClassifier#rank} 对意图节点评分排序，取首个得分为正者作为主意图；</li>
-     *   <li>调用 {@link IntentGuidanceService#decide} 判断是否需要"歧义引导"——
-     *       当头部意图得分过于接近且项目未绑定知识库时，直接返回提示语而不进入检索；</li>
+ *   <li>调用 {@link IntentGuidanceService#decide} 判断是否需要"歧义引导"——
+ *       当头部意图得分过于接近且项目未绑定知识库时，直接返回提示语而不进入检索；</li>
  *   <li>否则触发 {@link MultiChannelRetrievalEngine} 并行检索并去重排序，打包成上下文；</li>
  *   <li>最后通过 {@link RepairTaskContextPort} 把上下文交给执行层（当前 MVP 为空实现，作为后续交接边界）。</li>
  * </ol>
@@ -39,6 +44,7 @@ public final class RepairRagPipeline {
     private final IntentGuidanceService guidanceService;
     private final MultiChannelRetrievalEngine retrievalEngine;
     private final RepairTaskContextPort taskContextPort;
+    private final RetrievalRunLifecycle retrievalRunLifecycle;
 
     /**
      * @param taskContextPort 上下文回调端口，为空时降级为空实现，避免 NPE。
@@ -49,10 +55,22 @@ public final class RepairRagPipeline {
             MultiChannelRetrievalEngine retrievalEngine,
             RepairTaskContextPort taskContextPort
     ) {
+        this(intentClassifier, guidanceService, retrievalEngine, taskContextPort, null);
+    }
+
+    /** Optional lifecycle records retrieval state without changing existing RAG callers. */
+    public RepairRagPipeline(
+            IntentClassifier intentClassifier,
+            IntentGuidanceService guidanceService,
+            MultiChannelRetrievalEngine retrievalEngine,
+            RepairTaskContextPort taskContextPort,
+            RetrievalRunLifecycle retrievalRunLifecycle
+    ) {
         this.intentClassifier = intentClassifier;
         this.guidanceService = guidanceService;
         this.retrievalEngine = retrievalEngine;
         this.taskContextPort = taskContextPort == null ? context -> { } : taskContextPort;
+        this.retrievalRunLifecycle = retrievalRunLifecycle;
     }
 
     /**
@@ -65,47 +83,193 @@ public final class RepairRagPipeline {
      */
     @RagTraceNode(value = "repair-rag-pipeline", category = "rag")
     public RepairContextPackage prepareContext(RepairRagRequest request) {
-        // 1. 合并描述与日志作为检索/分类的统一查询文本
-        String query = TextAnalyzer.combined(request.description(), request.logs());
-        // 2. 对意图树节点评分并排序
-        List<NodeScore> rankedIntents = intentClassifier.rank(query);
-        // 3. 取首个得分为正的节点作为主意图（可能为空，表示未命中任何意图）
-        Optional<NodeScore> primaryIntent = rankedIntents.stream()
-                .filter(score -> score.score() > 0.0d)
-                .findFirst();
+        String query = TextAnalyzer.combined(
+                request.rewrittenQuery().isBlank() ? request.description() : request.rewrittenQuery(), request.logs());
+        RetrievalRun retrievalRun = startRetrievalRun(request, query);
+        RagRetrievalTrace.started(retrievalRun);
+        boolean finalized = false;
+        try {
+            List<NodeScore> rankedIntents = intentClassifier.rank(query);
+            Optional<NodeScore> primaryIntent = rankedIntents.stream()
+                    .filter(score -> score.score() > 0.0d)
+                    .findFirst();
 
-        // 4. 歧义引导：无项目范围时要求补充信息；项目已绑定知识库时仍在受限范围内检索证据。
-        GuidanceDecision guidanceDecision = guidanceService.decide(rankedIntents);
-        if (guidanceDecision.action() == GuidanceDecision.Action.PROMPT
-                && request.projectKnowledgeBaseIds().isEmpty()) {
-            return new RepairContextPackage(
+            GuidanceDecision guidanceDecision = guidanceService.decide(rankedIntents);
+            String planPreview = "query=" + RagRetrievalTrace.preview(query, 180)
+                    + "; primaryIntent=" + primaryIntent.map(score -> score.node().systemId()).orElse("none")
+                    + "; guidance=" + guidanceDecision.action().name()
+                    + "; knowledgeBaseScope=" + request.projectKnowledgeBaseIds();
+            appendArtifact(retrievalRun, "ROUTE_SCOPE", "rag://retrieval/scope",
+                    "consumer=BUG_FIX; taskId=" + request.effectiveRetrievalTaskId()
+                            + "; knowledgeBaseScope=" + request.projectKnowledgeBaseIds()
+                            + "; scopeSource=PROJECT_BINDING");
+            appendArtifact(retrievalRun, "RETRIEVAL_PLAN", "rag://retrieval/plan", planPreview);
+            RagRetrievalTrace.planned(runId(retrievalRun), planPreview);
+            if (guidanceDecision.action() == GuidanceDecision.Action.PROMPT
+                    && request.projectKnowledgeBaseIds().isEmpty()) {
+                waitForInput(retrievalRun, guidanceDecision.prompt());
+                appendArtifact(retrievalRun, "RETRIEVAL_OUTCOME", "rag://retrieval/outcome",
+                        "outcome=WAITING_INPUT; reason=" + guidanceDecision.prompt());
+                RagRetrievalTrace.outcome(runId(retrievalRun), "WAITING_INPUT", 0, 0, guidanceDecision.prompt());
+                finalized = true;
+                return new RepairContextPackage(
+                        request.ticketId(),
+                        primaryIntent,
+                        guidanceDecision,
+                        List.of(),
+                        List.of(),
+                        guidanceDecision.prompt()
+                );
+            }
+
+            RetrievalExecutionResult execution = retrievalEngine.retrieveDetailed(new RetrievalRequest(
+                    query,
+                    primaryIntent,
+                    request.projectKnowledgeBaseIds(),
+                    8
+            ));
+            RetrievalBundle retrievalBundle = execution.bundle();
+            recordRetrievalExecution(retrievalRun, execution, retrievalBundle);
+            if (!execution.hasSuccessfulChannel()) {
+                failRetryable(retrievalRun, "PROVIDER", "全部检索通道失败");
+                appendArtifact(retrievalRun, "RETRIEVAL_OUTCOME", "rag://retrieval/outcome",
+                        "outcome=FAILED_RETRYABLE; reason=全部检索通道失败");
+                RagRetrievalTrace.outcome(runId(retrievalRun), "FAILED_RETRYABLE", 0, 0, "全部检索通道失败");
+            } else if (retrievalBundle.chunks().isEmpty()) {
+                waitForInput(retrievalRun, "未检索到足够证据，请补充日志、验收条件或项目知识库范围");
+                appendArtifact(retrievalRun, "RETRIEVAL_OUTCOME", "rag://retrieval/outcome",
+                        "outcome=WAITING_INPUT; reason=未检索到足够证据");
+                RagRetrievalTrace.outcome(runId(retrievalRun), "WAITING_INPUT", candidateCount(execution), 0,
+                        "未检索到足够证据，请补充日志、验收条件或项目知识库范围");
+            } else {
+                completeRetrievalRun(retrievalRun, execution, retrievalBundle);
+                boolean degraded = execution.channelOutcomes().values().stream().anyMatch(outcome -> outcome.failed());
+                String outcome = degraded ? "SUCCEEDED_DEGRADED" : "SUCCEEDED";
+                String reason = degraded ? "部分检索通道不可用" : "证据充分";
+                appendArtifact(retrievalRun, "RETRIEVAL_OUTCOME", "rag://retrieval/outcome",
+                        "outcome=" + outcome + "; candidates=" + candidateCount(execution)
+                                + "; selected=" + retrievalBundle.chunks().size() + "; reason=" + reason);
+                RagRetrievalTrace.outcome(runId(retrievalRun), outcome, candidateCount(execution),
+                        retrievalBundle.chunks().size(), reason);
+            }
+            finalized = true;
+            RepairContextPackage contextPackage = new RepairContextPackage(
                     request.ticketId(),
                     primaryIntent,
                     guidanceDecision,
-                    List.of(),
-                    List.of(),
-                    guidanceDecision.prompt()
+                    retrievalBundle.chunks(),
+                    retrievalBundle.searchChannels(),
+                    summarize(primaryIntent, retrievalBundle.chunks())
             );
+            taskContextPort.accept(contextPackage);
+            return contextPackage;
+        } catch (RuntimeException exception) {
+            failRetryable(retrievalRun, exception.getClass().getSimpleName(), exception.getMessage());
+            appendArtifact(retrievalRun, "RETRIEVAL_FAILURE", "rag://retrieval/failure",
+                    "category=" + exception.getClass().getSimpleName() + "; message=" + exception.getMessage());
+            RagRetrievalTrace.failure(runId(retrievalRun), exception.getClass().getSimpleName(), exception.getMessage());
+            finalized = true;
+            throw exception;
+        } finally {
+            if (!finalized) {
+                failRetryable(retrievalRun, "INTERNAL", "retrieval run left without terminal state");
+            }
         }
+    }
 
-        // 5. 触发多通道并行检索（向量/关键词/日志/代码），返回去重排序后的证据块
-        RetrievalBundle retrievalBundle = retrievalEngine.retrieve(new RetrievalRequest(
-                query,
-                primaryIntent,
-                request.projectKnowledgeBaseIds(),
-                8
-        ));
-        // 6. 打包为上下文并回调执行层端口（当前 MVP 为空实现）
-        RepairContextPackage contextPackage = new RepairContextPackage(
-                request.ticketId(),
-                primaryIntent,
-                guidanceDecision,
-                retrievalBundle.chunks(),
-                retrievalBundle.searchChannels(),
-                summarize(primaryIntent, retrievalBundle.chunks())
+    private RetrievalRun startRetrievalRun(RepairRagRequest request, String query) {
+        if (retrievalRunLifecycle == null) {
+            return null;
+        }
+        return retrievalRunLifecycle.start(
+                request.effectiveRetrievalTaskId(), RetrievalConsumerType.BUG_FIX, "", "", query,
+                request.projectKnowledgeBaseIds()
         );
-        taskContextPort.accept(contextPackage);
-        return contextPackage;
+    }
+
+    private void completeRetrievalRun(
+            RetrievalRun run,
+            RetrievalExecutionResult execution,
+            RetrievalBundle bundle
+    ) {
+        if (run == null || retrievalRunLifecycle == null) {
+            return;
+        }
+        boolean degraded = execution.channelOutcomes().values().stream().anyMatch(outcome -> outcome.failed());
+        retrievalRunLifecycle.complete(run.runId(),
+                execution.channelOutcomes().values().stream().mapToInt(outcome -> outcome.chunkCount()).sum(),
+                bundle.chunks().size(), degraded, degraded ? "部分检索通道不可用" : "证据充分");
+    }
+
+    private void waitForInput(RetrievalRun run, String reason) {
+        if (run != null && retrievalRunLifecycle != null) {
+            retrievalRunLifecycle.waitForInput(run.runId(), reason);
+        }
+    }
+
+    private void failRetryable(RetrievalRun run, String errorCategory, String errorMessage) {
+        if (run != null && retrievalRunLifecycle != null) {
+            retrievalRunLifecycle.failRetryable(run.runId(), errorCategory, errorMessage);
+        }
+    }
+
+    private void recordRetrievalExecution(
+            RetrievalRun run,
+            RetrievalExecutionResult execution,
+            RetrievalBundle bundle
+    ) {
+        if (execution == null) {
+            return;
+        }
+        execution.channelOutcomes().values().forEach(outcome -> {
+            String channelName = outcome.channelName().isBlank() ? "unknown" : outcome.channelName();
+            appendArtifact(run, "CHANNEL_RESULT", "rag://retrieval/channel/" + channelName,
+                    RagRetrievalTrace.channelArtifactPreview(outcome));
+            for (int index = 0; index < outcome.result().chunks().size(); index++) {
+                RetrievedChunk candidate = outcome.result().chunks().get(index);
+                appendArtifact(run, "CHANNEL_CANDIDATE",
+                        "rag://retrieval/channel/" + channelName + "/candidate/" + (index + 1),
+                        RagRetrievalTrace.candidateArtifactPreview(channelName, index + 1, candidate));
+            }
+            RagRetrievalTrace.channel(runId(run), outcome);
+        });
+        if (bundle != null && !bundle.chunks().isEmpty()) {
+            appendArtifact(run, "FUSION_RESULT", "rag://retrieval/fusion",
+                    "strategy=RRF; k=60; candidates=" + candidateCount(execution)
+                            + "; selected=" + bundle.chunks().size()
+                            + "; channels=" + bundle.searchChannels());
+            for (int index = 0; index < bundle.chunks().size(); index++) {
+                RetrievedChunk evidence = bundle.chunks().get(index);
+                appendArtifact(run, "SELECTED_EVIDENCE", "rag://retrieval/evidence/" + (index + 1),
+                        RagRetrievalTrace.selectedEvidenceArtifactPreview(index + 1, evidence));
+            }
+            RagRetrievalTrace.selectedEvidence(runId(run), bundle.chunks());
+        }
+    }
+
+    private void appendArtifact(RetrievalRun run, String artifactType, String artifactUri, String preview) {
+        if (run == null || retrievalRunLifecycle == null) {
+            return;
+        }
+        try {
+            retrievalRunLifecycle.appendArtifact(
+                    run.runId(), artifactType, artifactUri,
+                    RagRetrievalTrace.preview(preview, 2_000), RagRetrievalTrace.sha256(preview)
+            );
+            RagRetrievalTrace.artifact(run.runId(), artifactType, artifactUri, preview);
+        } catch (RuntimeException exception) {
+            RagRetrievalTrace.failure(run.runId(), "ARTIFACT", exception.getMessage());
+        }
+    }
+
+    private static int candidateCount(RetrievalExecutionResult execution) {
+        return execution == null ? 0 : execution.channelOutcomes().values().stream()
+                .mapToInt(outcome -> outcome.chunkCount())
+                .sum();
+    }
+
+    private static String runId(RetrievalRun run) {
+        return run == null ? "" : run.runId();
     }
 
     /**

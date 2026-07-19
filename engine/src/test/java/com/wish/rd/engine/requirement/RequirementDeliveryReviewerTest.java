@@ -109,6 +109,28 @@ class RequirementDeliveryReviewerTest {
     }
 
     @Test
+    void shouldRejectLegacyQaPassWithoutCurrentAndRegressionEvidence() {
+        RequirementDeliveryReviewResult result = reviewer.review(
+                "task-1",
+                """
+                        {
+                          "status": "SUCCESS",
+                          "multiAgentStatus": "SUCCESS",
+                          "multiAgentStages": [
+                            {"role":"REQUIREMENT_REVIEWER","success":true},
+                            {"role":"SOLUTION_ARCHITECT","success":true},
+                            {"role":"CODING_AGENT","success":true,"resultJson":{"prBody":"body","changedFiles":"src/App.java","testSummary":"./mvnw test passed"}},
+                            {"role":"QA_AGENT","success":true,"resultJson":{"status":"PASSED","summary":"验收通过","acceptanceResults":[{"criteria":"接口测试通过","command":"./mvnw test","status":"PASSED","logArtifactId":"artifact-1"}]}}
+                          ]
+                        }
+                        """
+        );
+
+        assertFalse(result.approved());
+        assertTrue(result.reason().contains("QA_AGENT"));
+    }
+
+    @Test
     void shouldRejectDeliveryWhenAgentStageContainsPullRequestUrl() {
         RequirementDeliveryReviewResult result = reviewer.review(
                 "task-1",
@@ -150,7 +172,18 @@ class RequirementDeliveryReviewerTest {
                     {"role":"REQUIREMENT_REVIEWER","success":true},
                     {"role":"SOLUTION_ARCHITECT","success":true},
                     {"role":"CODING_AGENT","success":true,"resultJson":{"prBody":"## Summary\\n- implement","changedFiles":"src/App.java","testSummary":"./mvnw test passed"}},
-                    {"role":"QA_AGENT","success":true,"resultJson":{"status":"PASSED","summary":"验收通过","acceptanceResults":[{"criteria":"前端构建通过","command":"./mvnw test","status":"PASSED","logArtifactId":"artifact-qa-log"}]}}
+                    {"role":"QA_AGENT","success":true,"resultJson":{
+                      "status":"PASSED",
+                      "summary":"当前需求和回归验收通过",
+                      "failureCategory":"NONE",
+                      "retryRecommendation":"NONE",
+                      "browserValidation":{"required":false,"performed":false,"decisionSource":"NOT_APPLICABLE","baseUrl":"","browser":"chromium","viewports":[]},
+                      "acceptanceResults":[
+                        {"criteria":"前端构建通过","scope":"CURRENT","command":"./mvnw test","status":"PASSED","exitCode":0,"durationMillis":120,"logArtifactId":"qa-evidence/commands/current.log","evidenceArtifactIds":["qa-evidence/commands/current.log"]},
+                        {"criteria":"既有接口回归","scope":"REGRESSION","command":"./mvnw test","status":"PASSED","exitCode":0,"durationMillis":120,"logArtifactId":"qa-evidence/commands/regression.log","evidenceArtifactIds":["qa-evidence/commands/regression.log"]}
+                      ],
+                      "evidenceManifestArtifactId":"qa-evidence/manifest.json"
+                    }}
                   ]
                 }
                 """;

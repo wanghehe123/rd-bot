@@ -10,6 +10,14 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import com.wish.rd.rag.context.RoleContextPackageStore;
 import com.wish.rd.rag.context.impl.InMemoryRoleContextPackageStore;
+import com.wish.rd.engine.requirement.review.AiReviewRunStore;
+import com.wish.rd.engine.requirement.review.impl.InMemoryAiReviewRunStore;
+import com.wish.rd.engine.retry.TaskRetryCheckpointStore;
+import com.wish.rd.engine.retry.impl.InMemoryTaskRetryCheckpointStore;
+import com.wish.rd.engine.agent.WorkflowExperienceStore;
+import com.wish.rd.rag.qa.QaValidationProfileService;
+import com.wish.rd.rag.qa.QaValidationProfileStore;
+import com.wish.rd.rag.qa.impl.InMemoryQaValidationProfileStore;
 
 /** Shared in-memory stage stores for local mode so execution and overview see the same records. */
 @Configuration(proxyBeanMethods = false)
@@ -31,5 +39,35 @@ public class InMemoryAgentObservabilityConfiguration {
     @ConditionalOnMissingBean(RoleContextPackageStore.class)
     RoleContextPackageStore roleContextPackageStore() {
         return new InMemoryRoleContextPackageStore();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(AiReviewRunStore.class)
+    AiReviewRunStore aiReviewRunStore() {
+        return new InMemoryAiReviewRunStore();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(TaskRetryCheckpointStore.class)
+    TaskRetryCheckpointStore taskRetryCheckpointStore() {
+        return new InMemoryTaskRetryCheckpointStore();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(WorkflowExperienceStore.class)
+    WorkflowExperienceStore workflowExperienceStore() {
+        return WorkflowExperienceStore.noop();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(QaValidationProfileStore.class)
+    QaValidationProfileStore qaValidationProfileStore() {
+        return new InMemoryQaValidationProfileStore();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(QaValidationProfileService.class)
+    QaValidationProfileService qaValidationProfileService(QaValidationProfileStore store) {
+        return new QaValidationProfileService(store);
     }
 }

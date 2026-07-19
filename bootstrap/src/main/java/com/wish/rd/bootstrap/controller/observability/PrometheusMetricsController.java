@@ -101,7 +101,70 @@ public final class PrometheusMetricsController {
                     .append(Math.max(stage.count(), 0))
                     .append('\n');
         }
+        appendRetrievalMetrics(metrics, safe.retrievalMetrics());
+        appendControlPlaneMetrics(metrics, safe.controlPlaneMetrics());
         return metrics.toString();
+    }
+
+    private static void appendRetrievalMetrics(StringBuilder metrics, RetrievalMetrics retrieval) {
+        RetrievalMetrics safe = retrieval == null ? RetrievalMetrics.empty() : retrieval;
+        metrics.append("# HELP rd_bot_rag_run_total Persisted RAG retrieval runs by current status.\n")
+                .append("# TYPE rd_bot_rag_run_total gauge\n");
+        if (safe.runStatuses().isEmpty()) {
+            metrics.append("rd_bot_rag_run_total{status=\"NO_DATA\"} 0\n");
+        } else {
+            safe.runStatuses().forEach((status, count) -> metrics
+                    .append("rd_bot_rag_run_total{status=\"")
+                    .append(label(status))
+                    .append("\"} ")
+                    .append(Math.max(count, 0))
+                    .append('\n'));
+        }
+        metrics.append("# HELP rd_bot_rag_run_duration_seconds Mean persisted RAG retrieval run duration.\n")
+                .append("# TYPE rd_bot_rag_run_duration_seconds gauge\n")
+                .append("rd_bot_rag_run_duration_seconds ").append(format(safe.meanRunDurationSeconds())).append('\n')
+                .append("# HELP rd_bot_rag_step_duration_seconds Mean persisted RAG retrieval step duration.\n")
+                .append("# TYPE rd_bot_rag_step_duration_seconds gauge\n")
+                .append("rd_bot_rag_step_duration_seconds ").append(format(safe.meanStepDurationSeconds())).append('\n')
+                .append("# HELP rd_bot_rag_iteration_total Total completed retrieval iterations.\n")
+                .append("# TYPE rd_bot_rag_iteration_total gauge\n")
+                .append("rd_bot_rag_iteration_total ").append(Math.max(safe.iterationTotal(), 0)).append('\n')
+                .append("# HELP rd_bot_rag_degraded_total Retrieval runs accepted with degraded evidence.\n")
+                .append("# TYPE rd_bot_rag_degraded_total gauge\n")
+                .append("rd_bot_rag_degraded_total ").append(Math.max(safe.degradedTotal(), 0)).append('\n')
+                .append("# HELP rd_bot_rag_scope_violation_total Retrieval scope violations.\n")
+                .append("# TYPE rd_bot_rag_scope_violation_total gauge\n")
+                .append("rd_bot_rag_scope_violation_total ").append(Math.max(safe.scopeViolationTotal(), 0)).append('\n')
+                .append("# HELP rd_bot_rag_context_budget_ratio Query preview use against the configured context budget.\n")
+                .append("# TYPE rd_bot_rag_context_budget_ratio gauge\n")
+                .append("rd_bot_rag_context_budget_ratio ").append(format(safe.contextBudgetRatio())).append('\n');
+    }
+
+    private static void appendControlPlaneMetrics(StringBuilder metrics, ControlPlaneMetrics controlPlane) {
+        ControlPlaneMetrics safe = controlPlane == null ? ControlPlaneMetrics.empty() : controlPlane;
+        metrics.append("# HELP rd_bot_task_retry_checkpoint_total Persisted task retry checkpoints by status.\n")
+                .append("# TYPE rd_bot_task_retry_checkpoint_total gauge\n");
+        appendStatusSeries(metrics, "rd_bot_task_retry_checkpoint_total", safe.retryStatuses());
+        metrics.append("# HELP rd_bot_ai_review_run_total Persisted AI delivery reviews by status.\n")
+                .append("# TYPE rd_bot_ai_review_run_total gauge\n");
+        appendStatusSeries(metrics, "rd_bot_ai_review_run_total", safe.aiReviewStatuses());
+        metrics.append("# HELP rd_bot_ai_review_score Mean score of completed AI delivery reviews.\n")
+                .append("# TYPE rd_bot_ai_review_score gauge\n")
+                .append("rd_bot_ai_review_score ").append(format(safe.meanAiReviewScore())).append('\n')
+                .append("# HELP rd_bot_ai_review_duration_seconds Mean persisted AI delivery review duration.\n")
+                .append("# TYPE rd_bot_ai_review_duration_seconds gauge\n")
+                .append("rd_bot_ai_review_duration_seconds ")
+                .append(format(safe.meanAiReviewDurationSeconds())).append('\n');
+    }
+
+    private static void appendStatusSeries(StringBuilder metrics, String name, Map<String, Long> statuses) {
+        if (statuses == null || statuses.isEmpty()) {
+            metrics.append(name).append("{status=\"NO_DATA\"} 0\n");
+            return;
+        }
+        statuses.forEach((status, count) -> metrics.append(name)
+                .append("{status=\"").append(label(status)).append("\"} ")
+                .append(Math.max(count, 0)).append('\n'));
     }
 
     private MetricsSnapshot snapshot() {
@@ -143,10 +206,28 @@ public final class PrometheusMetricsController {
                     retryCount,
                     meanTimeToRepairSeconds,
                     failureCategories(connection),
-                    stageMetrics(connection)
+                    stageMetrics(connection),
+                    safeRetrievalMetrics(connection),
+                    safeControlPlaneMetrics(connection)
             );
         } catch (Exception ignored) {
             return MetricsSnapshot.empty();
+        }
+    }
+
+    private static RetrievalMetrics safeRetrievalMetrics(Connection connection) {
+        try {
+            return retrievalMetrics(connection);
+        } catch (Exception ignored) {
+            return RetrievalMetrics.empty();
+        }
+    }
+
+    private static ControlPlaneMetrics safeControlPlaneMetrics(Connection connection) {
+        try {
+            return controlPlaneMetrics(connection);
+        } catch (Exception ignored) {
+            return ControlPlaneMetrics.empty();
         }
     }
 
@@ -202,6 +283,62 @@ public final class PrometheusMetricsController {
         return List.copyOf(stages);
     }
 
+    private static RetrievalMetrics retrievalMetrics(Connection connection) throws Exception {
+        Map<String, Long> statuses = new LinkedHashMap<>();
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT status, COUNT(*) AS count
+                FROM rd_rag_retrieval_runs
+                GROUP BY status
+                ORDER BY status ASC
+                """);
+             ResultSet resultSet = statement.executeQuery()) {
+            while (resultSet.next()) {
+                statuses.put(resultSet.getString("status"), resultSet.getLong("count"));
+            }
+        }
+        return new RetrievalMetrics(
+                statuses,
+                decimal(connection, """
+                        SELECT COALESCE(AVG(EXTRACT(EPOCH FROM (updated_at - created_at))), 0)
+                        FROM rd_rag_retrieval_runs
+                        """),
+                decimal(connection, """
+                        SELECT COALESCE(AVG(duration_ms) / 1000.0, 0)
+                        FROM rd_rag_retrieval_steps
+                        """),
+                count(connection, "SELECT COALESCE(SUM(current_iteration), 0) FROM rd_rag_retrieval_runs"),
+                count(connection, "SELECT COUNT(*) FROM rd_rag_retrieval_runs WHERE status = 'SUCCEEDED_DEGRADED'"),
+                count(connection, "SELECT COUNT(*) FROM rd_rag_retrieval_runs WHERE error_category = 'SCOPE_VIOLATION'"),
+                decimal(connection, """
+                        SELECT COALESCE(AVG(LEAST(1.0, length(query_preview)::numeric / NULLIF(context_budget_chars, 0))), 0)
+                        FROM rd_rag_retrieval_runs
+                        """)
+        );
+    }
+
+    private static ControlPlaneMetrics controlPlaneMetrics(Connection connection) throws Exception {
+        return new ControlPlaneMetrics(
+                groupedCounts(connection, "SELECT status, COUNT(*) AS count FROM rd_task_retry_checkpoints GROUP BY status ORDER BY status"),
+                groupedCounts(connection, "SELECT status, COUNT(*) AS count FROM rd_ai_review_runs GROUP BY status ORDER BY status"),
+                decimal(connection, "SELECT COALESCE(AVG(score), 0) FROM rd_ai_review_runs WHERE score > 0"),
+                decimal(connection, """
+                        SELECT COALESCE(AVG(EXTRACT(EPOCH FROM (updated_at - created_at))), 0)
+                        FROM rd_ai_review_runs
+                        """)
+        );
+    }
+
+    private static Map<String, Long> groupedCounts(Connection connection, String sql) throws Exception {
+        Map<String, Long> counts = new LinkedHashMap<>();
+        try (PreparedStatement statement = connection.prepareStatement(sql);
+             ResultSet resultSet = statement.executeQuery()) {
+            while (resultSet.next()) {
+                counts.put(resultSet.getString("status"), resultSet.getLong("count"));
+            }
+        }
+        return Map.copyOf(counts);
+    }
+
     private static List<StageMetric> stageMetricsWithDefaultRoles(List<StageMetric> metrics) {
         List<StageMetric> result = new ArrayList<>(metrics == null ? List.of() : metrics);
         for (String role : DELIVERY_ROLES) {
@@ -243,15 +380,59 @@ public final class PrometheusMetricsController {
             long retryCount,
             double meanTimeToRepairSeconds,
             Map<String, Long> failureCategories,
-            List<StageMetric> stageMetrics
+            List<StageMetric> stageMetrics,
+            RetrievalMetrics retrievalMetrics,
+            ControlPlaneMetrics controlPlaneMetrics
     ) {
+        MetricsSnapshot(
+                long totalTaskCount,
+                long successTaskCount,
+                long validationTotalCount,
+                long validationPassedCount,
+                long humanInterventionTaskCount,
+                long prCreatedTaskCount,
+                long retryCount,
+                double meanTimeToRepairSeconds,
+                Map<String, Long> failureCategories,
+                List<StageMetric> stageMetrics
+        ) {
+            this(
+                    totalTaskCount, successTaskCount, validationTotalCount, validationPassedCount,
+                    humanInterventionTaskCount, prCreatedTaskCount, retryCount, meanTimeToRepairSeconds,
+                    failureCategories, stageMetrics, RetrievalMetrics.empty(), ControlPlaneMetrics.empty()
+            );
+        }
+
+        MetricsSnapshot(
+                long totalTaskCount,
+                long successTaskCount,
+                long validationTotalCount,
+                long validationPassedCount,
+                long humanInterventionTaskCount,
+                long prCreatedTaskCount,
+                long retryCount,
+                double meanTimeToRepairSeconds,
+                Map<String, Long> failureCategories,
+                List<StageMetric> stageMetrics,
+                RetrievalMetrics retrievalMetrics
+        ) {
+            this(
+                    totalTaskCount, successTaskCount, validationTotalCount, validationPassedCount,
+                    humanInterventionTaskCount, prCreatedTaskCount, retryCount, meanTimeToRepairSeconds,
+                    failureCategories, stageMetrics, retrievalMetrics, ControlPlaneMetrics.empty()
+            );
+        }
+
         MetricsSnapshot {
             failureCategories = failureCategories == null ? Map.of() : Map.copyOf(failureCategories);
             stageMetrics = stageMetrics == null ? List.of() : List.copyOf(stageMetrics);
+            retrievalMetrics = retrievalMetrics == null ? RetrievalMetrics.empty() : retrievalMetrics;
+            controlPlaneMetrics = controlPlaneMetrics == null ? ControlPlaneMetrics.empty() : controlPlaneMetrics;
         }
 
         static MetricsSnapshot empty() {
-            return new MetricsSnapshot(0, 0, 0, 0, 0, 0, 0, 0D, Map.of(), List.of());
+            return new MetricsSnapshot(0, 0, 0, 0, 0, 0, 0, 0D, Map.of(), List.of(),
+                    RetrievalMetrics.empty(), ControlPlaneMetrics.empty());
         }
     }
 
@@ -260,6 +441,48 @@ public final class PrometheusMetricsController {
             role = label(role);
             status = label(status);
             count = Math.max(count, 0);
+        }
+    }
+
+    record RetrievalMetrics(
+            Map<String, Long> runStatuses,
+            double meanRunDurationSeconds,
+            double meanStepDurationSeconds,
+            long iterationTotal,
+            long degradedTotal,
+            long scopeViolationTotal,
+            double contextBudgetRatio
+    ) {
+        RetrievalMetrics {
+            runStatuses = runStatuses == null ? Map.of() : Map.copyOf(runStatuses);
+            meanRunDurationSeconds = Math.max(meanRunDurationSeconds, 0D);
+            meanStepDurationSeconds = Math.max(meanStepDurationSeconds, 0D);
+            iterationTotal = Math.max(iterationTotal, 0L);
+            degradedTotal = Math.max(degradedTotal, 0L);
+            scopeViolationTotal = Math.max(scopeViolationTotal, 0L);
+            contextBudgetRatio = Math.max(0D, Math.min(contextBudgetRatio, 1D));
+        }
+
+        static RetrievalMetrics empty() {
+            return new RetrievalMetrics(Map.of(), 0D, 0D, 0L, 0L, 0L, 0D);
+        }
+    }
+
+    record ControlPlaneMetrics(
+            Map<String, Long> retryStatuses,
+            Map<String, Long> aiReviewStatuses,
+            double meanAiReviewScore,
+            double meanAiReviewDurationSeconds
+    ) {
+        ControlPlaneMetrics {
+            retryStatuses = retryStatuses == null ? Map.of() : Map.copyOf(retryStatuses);
+            aiReviewStatuses = aiReviewStatuses == null ? Map.of() : Map.copyOf(aiReviewStatuses);
+            meanAiReviewScore = Math.max(meanAiReviewScore, 0D);
+            meanAiReviewDurationSeconds = Math.max(meanAiReviewDurationSeconds, 0D);
+        }
+
+        static ControlPlaneMetrics empty() {
+            return new ControlPlaneMetrics(Map.of(), Map.of(), 0D, 0D);
         }
     }
 }

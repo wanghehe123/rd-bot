@@ -15,7 +15,9 @@ public record RepairRagRequest(
         String ticketId,
         String description,
         List<String> logs,
-        List<String> projectKnowledgeBaseIds
+        List<String> projectKnowledgeBaseIds,
+        String retrievalTaskId,
+        String rewrittenQuery
 ) {
 
     /** 紧凑构造器：强制 ticketId 非空，并把可空字段归一为安全默认值。 */
@@ -26,12 +28,23 @@ public record RepairRagRequest(
         projectKnowledgeBaseIds = projectKnowledgeBaseIds == null
                 ? List.of()
                 : projectKnowledgeBaseIds.stream().filter(id -> id != null && !id.isBlank()).map(String::strip).distinct().toList();
+        retrievalTaskId = retrievalTaskId == null ? "" : retrievalTaskId.strip();
+        rewrittenQuery = rewrittenQuery == null ? "" : rewrittenQuery.strip();
     }
 
     /**
      * 兼容尚未绑定项目知识库的既有 RAG 调用方。
      */
     public RepairRagRequest(String ticketId, String description, List<String> logs) {
-        this(ticketId, description, logs, List.of());
+        this(ticketId, description, logs, List.of(), "", "");
+    }
+
+    public RepairRagRequest(String ticketId, String description, List<String> logs, List<String> projectKnowledgeBaseIds) {
+        this(ticketId, description, logs, projectKnowledgeBaseIds, "", "");
+    }
+
+    /** Uses ticket ID when legacy callers do not yet pass the owning RD task ID. */
+    public String effectiveRetrievalTaskId() {
+        return retrievalTaskId.isBlank() ? ticketId : retrievalTaskId;
     }
 }

@@ -38,8 +38,35 @@ public record CreateRequirementTaskCommand(
         String expectedResult,
         List<String> acceptanceCriteria,
         List<RequirementMaterialInput> materials,
-        boolean autoExecute
+        boolean autoExecute,
+        long tokenBudgetOverride
 ) {
+
+    /** Backward-compatible constructor for callers without a task token-budget override. */
+    public CreateRequirementTaskCommand(
+            String title,
+            String priority,
+            String sourceType,
+            String sourceId,
+            String sourceUrl,
+            String projectId,
+            String projectKey,
+            String projectName,
+            String repositoryUrl,
+            String repoOwner,
+            String repoName,
+            String baseBranch,
+            String expectedResult,
+            List<String> acceptanceCriteria,
+            List<RequirementMaterialInput> materials,
+            boolean autoExecute
+    ) {
+        this(
+                title, priority, sourceType, sourceId, sourceUrl, projectId, projectKey, projectName,
+                repositoryUrl, repoOwner, repoName, baseBranch, expectedResult, acceptanceCriteria,
+                materials, autoExecute, 0L
+        );
+    }
 
     public CreateRequirementTaskCommand(
             String title,
@@ -68,7 +95,8 @@ public record CreateRequirementTaskCommand(
                 expectedResult,
                 acceptanceCriteria,
                 List.of(),
-                autoExecute
+                autoExecute,
+                0L
         );
     }
 
@@ -100,7 +128,8 @@ public record CreateRequirementTaskCommand(
                 expectedResult,
                 acceptanceCriteria,
                 materials,
-                autoExecute
+                autoExecute,
+                0L
         );
     }
 
@@ -134,7 +163,8 @@ public record CreateRequirementTaskCommand(
                 expectedResult,
                 acceptanceCriteria,
                 List.of(),
-                autoExecute
+                autoExecute,
+                0L
         );
     }
 
@@ -163,6 +193,9 @@ public record CreateRequirementTaskCommand(
                 : materials.stream()
                 .filter(input -> input != null && input.hasUsableInput())
                 .toList();
+        if (tokenBudgetOverride < 0L) {
+            throw new IllegalArgumentException("tokenBudgetOverride must not be negative");
+        }
     }
 
     /**

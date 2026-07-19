@@ -26,6 +26,8 @@ public class DockerExecutorProperties {
 
     /** 默认 Claude Code 镜像名。 */
     public static final String DEFAULT_IMAGE = "rd-bot/claude-code:local";
+    /** 默认包含 Playwright CLI 和 Chromium 的 QA 镜像名。 */
+    public static final String DEFAULT_QA_IMAGE = "rd-bot/claude-code-qa:local";
     /** 默认修复工作区根目录。 */
     public static final Path DEFAULT_WORKSPACE_ROOT = Path.of("/tmp/rd-bot/repair-workspaces");
     /** 默认 Claude Code 命令。 */
@@ -47,6 +49,7 @@ public class DockerExecutorProperties {
 
     private boolean enabled = false;
     private String image = DEFAULT_IMAGE;
+    private String qaImage = DEFAULT_QA_IMAGE;
     private Path workspaceRoot = DEFAULT_WORKSPACE_ROOT;
     private String command = DEFAULT_COMMAND;
     private String yoloFlag = DEFAULT_YOLO_FLAG;
@@ -74,6 +77,14 @@ public class DockerExecutorProperties {
 
     public void setImage(String image) {
         this.image = defaultWhenBlank(image, DEFAULT_IMAGE);
+    }
+
+    public String getQaImage() {
+        return qaImage;
+    }
+
+    public void setQaImage(String qaImage) {
+        this.qaImage = defaultWhenBlank(qaImage, DEFAULT_QA_IMAGE);
     }
 
     public Path getWorkspaceRoot() {
@@ -180,6 +191,7 @@ public class DockerExecutorProperties {
     public DockerClaudeCodeExecutor.Configuration toExecutorConfiguration() {
         return new DockerClaudeCodeExecutor.Configuration(
                 image,
+                qaImage,
                 claudeCommand(),
                 networkMode,
                 removeAfterExit,

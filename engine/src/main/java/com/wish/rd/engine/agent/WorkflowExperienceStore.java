@@ -2,6 +2,7 @@ package com.wish.rd.engine.agent;
 
 import java.util.List;
 import com.wish.rd.engine.agent.model.WorkflowExperienceEntry;
+import com.wish.rd.engine.agent.model.AgentRole;
 
 /**
  * 多 Agent 工作流经验存储端口。
@@ -34,6 +35,22 @@ public interface WorkflowExperienceStore {
      */
     default List<WorkflowExperienceEntry> searchReusable(String query, String excludeTaskId, int limit) {
         return List.of();
+    }
+
+    /**
+     * Searches reusable experience inside an explicit project/repository boundary.
+     * Historical stores may delegate to the legacy query; callers must retain a
+     * second boundary check for rows that predate scoped metadata.
+     */
+    default List<WorkflowExperienceEntry> searchReusableScoped(
+            String query,
+            String excludeTaskId,
+            String projectId,
+            String repositoryFingerprint,
+            AgentRole role,
+            int limit
+    ) {
+        return searchReusable(query, excludeTaskId, limit);
     }
 
     /**

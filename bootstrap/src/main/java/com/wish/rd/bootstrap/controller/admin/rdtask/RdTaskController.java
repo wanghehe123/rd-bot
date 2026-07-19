@@ -5,12 +5,17 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wish.rd.adapter.model.TicketSnapshot;
 import com.wish.rd.bootstrap.threading.BugFixExecutionDispatchService;
 import com.wish.rd.bootstrap.threading.RequirementDeliveryDispatchService;
+import com.wish.rd.bootstrap.executor.impl.QaEvidenceRetentionService;
 import com.wish.rd.engine.audit.impl.NoopRepairAuditSink;
 import com.wish.rd.engine.audit.model.RepairAuditEvent;
 import com.wish.rd.engine.audit.model.RepairAuditEventType;
 import com.wish.rd.engine.audit.RepairAuditSinkPort;
+import com.wish.rd.engine.agent.AgentStageRunStore;
+import com.wish.rd.engine.agent.model.AgentStageRun;
 import com.wish.rd.engine.bugfix.RdBotFixEngine;
 import com.wish.rd.engine.bugfix.model.RdBotFixCommand;
+import com.wish.rd.engine.control.RdTaskExecutionControlEngine;
+import com.wish.rd.engine.control.model.RdTaskExecutionControlResult;
 import com.wish.rd.engine.ticket.RdTaskRestartEngine;
 import com.wish.rd.engine.requirement.RequirementDeliveryEngine;
 import com.wish.rd.exec.repair.execution.RepairExecutionControlPort;
@@ -100,6 +105,9 @@ public class RdTaskController {
     private final RdBotFixEngine bugFixEngine;
     private final BugFixExecutionDispatchService bugFixExecutionDispatchService;
     private final RdProjectService projectService;
+    private RdTaskExecutionControlEngine taskExecutionControlEngine;
+    private QaEvidenceRetentionService qaEvidenceRetentionService;
+    private AgentStageRunStore agentStageRunStore;
     private final Object materialUploadMonitor = new Object();
     private ObjectStorageService objectStorageService = new InMemoryObjectStorageService();
 
@@ -108,6 +116,21 @@ public class RdTaskController {
         if (objectStorageService != null) {
             this.objectStorageService = objectStorageService;
         }
+    }
+
+    @Autowired(required = false)
+    void setTaskExecutionControlEngine(RdTaskExecutionControlEngine taskExecutionControlEngine) {
+        this.taskExecutionControlEngine = taskExecutionControlEngine;
+    }
+
+    @Autowired(required = false)
+    void setQaEvidenceRetentionService(QaEvidenceRetentionService qaEvidenceRetentionService) {
+        this.qaEvidenceRetentionService = qaEvidenceRetentionService;
+    }
+
+    @Autowired(required = false)
+    void setAgentStageRunStore(AgentStageRunStore agentStageRunStore) {
+        this.agentStageRunStore = agentStageRunStore;
     }
 
     public RdTaskController(RagStreamTaskRegistry registry) {
@@ -342,7 +365,8 @@ public class RdTaskController {
                 safeRequest.expectedResult(),
                 safeRequest.acceptanceCriteria(),
                 List.of(),
-                safeRequest.autoExecute()
+                safeRequest.autoExecute(),
+                safeRequest.tokenBudgetOverride()
         ));
         saveRequirementMaterials(task.taskId(), safeRequest.materials());
         if (safeRequest.autoExecute()) {
@@ -405,7 +429,12 @@ public class RdTaskController {
                 return toDetailView(restartEngine.resumeAndRestart(taskId, message));
             }
         }
-        return toDetailView(registry.resumeTask(taskId, message));
+        RdTask resumed = registry.resumeTask(taskId, message);
+        if (resumed instanceof RdRequirementTask && isRecoverableRequirementStatus(resumed.status())) {
+            submitRequirementTask(taskId);
+            return toDetailView(registry.getTask(taskId));
+        }
+        return toDetailView(resumed);
     }
 
     /**
@@ -448,14 +477,36 @@ public class RdTaskController {
                 message,
                 Map.of()
         ));
+        if (taskExecutionControlEngine != null) {
+            RdTaskExecutionControlResult result = taskExecutionControlEngine.stopTask(taskId, message);
+            auditSink.publish(RepairAuditEvent.now(
+                    "",
+                    result.task().taskId(),
+                    result.task() instanceof RdBugFixTask bugFixTask ? bugFixTask.ticketId() : "",
+                    RepairAuditEventType.EXECUTION_STOPPED,
+                    "control-plane",
+                    result.message(),
+                    Map.of(
+                            "stopped", String.valueOf(result.externalStopped()),
+                            "containerName", result.containerName(),
+                            "cancelledStageCount", String.valueOf(result.cancelledStageCount())
+                    )
+            ));
+            return new StopRdTaskResponse(
+                    toDetailView(result.task()),
+                    result.externalStopped(),
+                    result.containerName(),
+                    result.message()
+            );
+        }
         RepairExecutionStopResult stopResult = executionControlPort.stop(
                 new RepairExecutionStopCommand("", taskId, "", message)
         );
-        RdBugFixTask task = stopResult.stopped() ? registry.cancel(taskId) : registry.get(taskId);
+        RdTask task = registry.cancelTask(taskId, message);
         auditSink.publish(RepairAuditEvent.now(
                 "",
                 task.taskId(),
-                task.ticketId(),
+                task instanceof RdBugFixTask bugFixTask ? bugFixTask.ticketId() : "",
                 RepairAuditEventType.EXECUTION_STOPPED,
                 "Docker",
                 stopResult.message(),
@@ -477,6 +528,9 @@ public class RdTaskController {
      */
     @DeleteMapping("/admin/rd-tasks/{taskId}")
     public DeleteResponse delete(@PathVariable("taskId") String taskId) {
+        if (qaEvidenceRetentionService != null) {
+            qaEvidenceRetentionService.deleteForTask(taskId);
+        }
         return new DeleteResponse(registry.deleteTask(taskId));
     }
 
@@ -547,6 +601,7 @@ public class RdTaskController {
         if (request == null || request.content() == null || request.content().isBlank()) {
             throw new IllegalArgumentException("material content must not be blank");
         }
+        String recoveryStageRunId = requireOwnedRecoveryStageRun(taskId, request.recoveryStageRunId());
         TaskMaterial material = saveMaterial(
                 taskId,
                 parseMaterialType(request.materialType()),
@@ -556,7 +611,7 @@ public class RdTaskController {
                 request.content(),
                 request.mimeType(),
                 request.revisionId(),
-                "{}"
+                recoveryMetadataJson(recoveryStageRunId)
         );
         return toMaterialView(material);
     }
@@ -567,6 +622,7 @@ public class RdTaskController {
      * @param taskId       任务 ID
      * @param title        展示标题
      * @param materialType 材料类型
+     * @param recoveryStageRunId 关联的失败阶段运行 ID（可选）
      * @param file         上传文件
      * @return 新材料视图
      */
@@ -579,6 +635,7 @@ public class RdTaskController {
             @PathVariable("taskId") String taskId,
             @RequestParam(value = "title", required = false) String title,
             @RequestParam(value = "materialType", required = false) String materialType,
+            @RequestParam(value = "recoveryStageRunId", required = false) String recoveryStageRunId,
             @RequestPart("file") MultipartFile file
     ) {
         registry.getTask(taskId);
@@ -600,6 +657,7 @@ public class RdTaskController {
             throw new IllegalArgumentException("upload file exceeds 10 MiB limit");
         }
         validateUploadContent(filename, mimeType, bytes);
+        String ownedRecoveryStageRunId = requireOwnedRecoveryStageRun(taskId, recoveryStageRunId);
         synchronized (materialUploadMonitor) {
             // Local memory mode needs an atomic count/save section; PostgreSQL also enforces this with a trigger.
             if (materialStore.listByTask(taskId).size() >= MAX_MATERIALS_PER_TASK) {
@@ -630,7 +688,7 @@ public class RdTaskController {
                     stored.url(),
                     "",
                     "",
-                    "{\"filename\":\"" + jsonEscape(filename) + "\",\"size\":" + bytes.length + "}",
+                    uploadMetadataJson(filename, bytes.length, ownedRecoveryStageRunId),
                     now,
                     now
             ));
@@ -777,6 +835,7 @@ public class RdTaskController {
         String workBranch = "";
         String expectedResult = "";
         String acceptanceCriteriaJson = "[]";
+        long tokenBudgetOverride = 0L;
         if (task instanceof RdBugFixTask bugFixTask) {
             ticketId = bugFixTask.ticketId();
             ticketTitle = bugFixTask.ticketTitle();
@@ -809,6 +868,7 @@ public class RdTaskController {
             workBranch = requirementTask.workBranch();
             expectedResult = requirementTask.expectedResult();
             acceptanceCriteriaJson = requirementTask.acceptanceCriteriaJson();
+            tokenBudgetOverride = requirementTask.tokenBudgetOverride();
         }
         return new RdTaskView(
                 task.taskId(),
@@ -838,7 +898,8 @@ public class RdTaskController {
                 workBranch,
                 expectedResult,
                 acceptanceCriteriaJson,
-                executionEvidence(executionResultJson, pullRequestUrl)
+                executionEvidence(executionResultJson, pullRequestUrl),
+                tokenBudgetOverride
         );
     }
 
@@ -1136,10 +1197,49 @@ public class RdTaskController {
         return false;
     }
 
-    private static String jsonEscape(String value) {
-        return (value == null ? "" : value)
-                .replace("\\", "\\\\")
-                .replace("\"", "\\\"");
+    private String requireOwnedRecoveryStageRun(String taskId, String recoveryStageRunId) {
+        String safeStageRunId = recoveryStageRunId == null ? "" : recoveryStageRunId.strip();
+        if (safeStageRunId.isBlank()) {
+            return "";
+        }
+        if (agentStageRunStore == null) {
+            throw new IllegalArgumentException("recovery stage run cannot be verified: " + safeStageRunId);
+        }
+        AgentStageRun stageRun = agentStageRunStore.findById(safeStageRunId)
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "recovery stage run not found: " + safeStageRunId));
+        if (!stageRun.taskId().equals(taskId)) {
+            throw new IllegalArgumentException(
+                    "recovery stage run does not belong to task " + taskId + ": " + safeStageRunId);
+        }
+        return safeStageRunId;
+    }
+
+    private static String recoveryMetadataJson(String recoveryStageRunId) {
+        String safeStageRunId = recoveryStageRunId == null ? "" : recoveryStageRunId.strip();
+        if (safeStageRunId.isBlank()) {
+            return "{}";
+        }
+        return serializeMetadata(Map.of("recoveryStageRunId", safeStageRunId));
+    }
+
+    private static String uploadMetadataJson(String filename, long sizeBytes, String recoveryStageRunId) {
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("filename", filename);
+        metadata.put("size", sizeBytes);
+        String safeStageRunId = recoveryStageRunId == null ? "" : recoveryStageRunId.strip();
+        if (!safeStageRunId.isBlank()) {
+            metadata.put("recoveryStageRunId", safeStageRunId);
+        }
+        return serializeMetadata(metadata);
+    }
+
+    private static String serializeMetadata(Map<String, ?> metadata) {
+        try {
+            return OBJECT_MAPPER.writeValueAsString(metadata == null ? Map.of() : metadata);
+        } catch (Exception exception) {
+            throw new IllegalStateException("material metadata cannot be serialized", exception);
+        }
     }
 
     private static TaskMaterialPreviewView toMaterialPreviewView(TaskMaterial material) {
@@ -1164,6 +1264,13 @@ public class RdTaskController {
             throw new IllegalStateException("requirement delivery engine unavailable");
         }
         requirementDeliveryEngine.submit(taskId);
+    }
+
+    private boolean isRecoverableRequirementStatus(RdTaskStatus status) {
+        return status == RdTaskStatus.REJECTED
+                || status == RdTaskStatus.FAILED_RETRYABLE
+                || status == RdTaskStatus.FAILED_NEEDS_HUMAN
+                || status == RdTaskStatus.RECOVERING;
     }
 
     private void submitBugFixTask(RdBugFixTask task) {
@@ -1340,11 +1447,15 @@ public class RdTaskController {
             String expectedResult,
             List<String> acceptanceCriteria,
             List<RequirementMaterialInput> materials,
-            boolean autoExecute
+            boolean autoExecute,
+            long tokenBudgetOverride
     ) {
         public CreateRequirementTaskRequest {
             acceptanceCriteria = acceptanceCriteria == null ? List.of() : List.copyOf(acceptanceCriteria);
             materials = materials == null ? List.of() : List.copyOf(materials);
+            if (tokenBudgetOverride < 0L) {
+                throw new IllegalArgumentException("tokenBudgetOverride must not be negative");
+            }
         }
     }
 
@@ -1356,7 +1467,8 @@ public class RdTaskController {
             String sourceUri,
             String content,
             String mimeType,
-            String revisionId
+            String revisionId,
+            String recoveryStageRunId
     ) {
     }
 
@@ -1413,7 +1525,8 @@ public class RdTaskController {
             String workBranch,
             String expectedResult,
             String acceptanceCriteriaJson,
-            ExecutionEvidenceView executionEvidence
+            ExecutionEvidenceView executionEvidence,
+            long tokenBudgetOverride
     ) {
     }
 

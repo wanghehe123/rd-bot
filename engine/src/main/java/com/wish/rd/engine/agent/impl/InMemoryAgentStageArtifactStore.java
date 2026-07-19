@@ -4,6 +4,7 @@ import com.wish.rd.engine.agent.AgentStageArtifactStore;
 
 import java.util.Comparator;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import com.wish.rd.engine.agent.model.AgentStageArtifact;
@@ -30,5 +31,15 @@ public final class InMemoryAgentStageArtifactStore implements AgentStageArtifact
                         .comparing(AgentStageArtifact::createdAtEpochMillis)
                         .thenComparing(AgentStageArtifact::artifactId))
                 .toList();
+    }
+
+    @Override
+    public int deleteByTaskAndTypes(String taskId, Set<String> artifactTypes) {
+        String normalizedTaskId = taskId == null ? "" : taskId.strip();
+        Set<String> types = artifactTypes == null ? Set.of() : Set.copyOf(artifactTypes);
+        int before = artifacts.size();
+        artifacts.entrySet().removeIf(entry -> entry.getValue().taskId().equals(normalizedTaskId)
+                && types.contains(entry.getValue().artifactType()));
+        return before - artifacts.size();
     }
 }

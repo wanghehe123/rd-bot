@@ -114,16 +114,62 @@ public class RequirementDeliveryReviewer {
         if (!"PASSED".equalsIgnoreCase(text(parsed.path("status")))) {
             return false;
         }
+        if (!"NONE".equalsIgnoreCase(text(parsed.path("failureCategory")))
+                || !"NONE".equalsIgnoreCase(text(parsed.path("retryRecommendation")))
+                || text(parsed.path("evidenceManifestArtifactId")).isBlank()
+                || !hasValidBrowserDecision(parsed.path("browserValidation"))) {
+            return false;
+        }
         JsonNode acceptanceResults = parsed.path("acceptanceResults");
         if (!acceptanceResults.isArray() || acceptanceResults.isEmpty()) {
             return false;
         }
+        boolean currentScopePresent = false;
+        boolean regressionScopePresent = false;
         for (JsonNode acceptanceResult : acceptanceResults) {
+            String scope = text(acceptanceResult.path("scope"));
             if (!acceptanceResult.isObject()
                     || text(acceptanceResult.path("criteria")).isBlank()
                     || text(acceptanceResult.path("command")).isBlank()
                     || !"PASSED".equalsIgnoreCase(text(acceptanceResult.path("status")))
-                    || text(acceptanceResult.path("logArtifactId")).isBlank()) {
+                    || !acceptanceResult.path("exitCode").isIntegralNumber()
+                    || acceptanceResult.path("exitCode").longValue() != 0L
+                    || !acceptanceResult.path("durationMillis").canConvertToLong()
+                    || acceptanceResult.path("durationMillis").longValue() < 0L
+                    || text(acceptanceResult.path("logArtifactId")).isBlank()
+                    || !hasNonEmptyStringArray(acceptanceResult.path("evidenceArtifactIds"))
+                    || !("CURRENT".equalsIgnoreCase(scope) || "REGRESSION".equalsIgnoreCase(scope))) {
+                return false;
+            }
+            currentScopePresent |= "CURRENT".equalsIgnoreCase(scope);
+            regressionScopePresent |= "REGRESSION".equalsIgnoreCase(scope);
+        }
+        return currentScopePresent && regressionScopePresent;
+    }
+
+    private boolean hasValidBrowserDecision(JsonNode browserValidation) {
+        if (browserValidation == null || !browserValidation.isObject()
+                || !browserValidation.path("required").isBoolean()
+                || !browserValidation.path("performed").isBoolean()
+                || text(browserValidation.path("decisionSource")).isBlank()
+                || text(browserValidation.path("browser")).isBlank()
+                || !browserValidation.path("viewports").isArray()) {
+            return false;
+        }
+        if (!browserValidation.path("required").asBoolean(false)) {
+            return true;
+        }
+        return browserValidation.path("performed").asBoolean(false)
+                && !text(browserValidation.path("baseUrl")).isBlank()
+                && hasNonEmptyStringArray(browserValidation.path("viewports"));
+    }
+
+    private boolean hasNonEmptyStringArray(JsonNode value) {
+        if (value == null || !value.isArray() || value.isEmpty()) {
+            return false;
+        }
+        for (JsonNode item : value) {
+            if (text(item).isBlank()) {
                 return false;
             }
         }

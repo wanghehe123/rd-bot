@@ -171,6 +171,48 @@ class ProcessGitRepairWorkspaceRepositoryTest {
         assertFalse(remoteTree.contains("client/package-lock.json"));
     }
 
+    @Test
+    void shouldSummarizeTrackedAndGeneratedQaRepositoryChanges() throws Exception {
+        assumeTrue(gitAvailable(), "git CLI is required");
+        Path seedRepository = temporaryDirectory.resolve("seed");
+        Path remoteRepository = temporaryDirectory.resolve("remote.git");
+        createSeedRepository(seedRepository, remoteRepository);
+
+        RepairWorkspaceFactory factory = new RepairWorkspaceFactory(
+                temporaryDirectory.resolve("workspaces"),
+                "{\"type\":\"object\"}"
+        );
+        RepairJobCommand command = command(remoteRepository.toString());
+        RepairWorkspace workspace = factory.create(command);
+        ProcessGitRepairWorkspaceRepository repository =
+                new ProcessGitRepairWorkspaceRepository(new DockerExecutorProperties());
+        repository.prepare(command, workspace);
+
+        Files.writeString(workspace.repoDirectory().resolve("README.md"), "changed\n", StandardCharsets.UTF_8);
+        Files.createDirectories(workspace.repoDirectory().resolve("client/node_modules/a"));
+        Files.writeString(
+                workspace.repoDirectory().resolve("client/node_modules/a/index.js"),
+                "module.exports = true;\n",
+                StandardCharsets.UTF_8
+        );
+        Files.createDirectories(workspace.repoDirectory().resolve("server/data"));
+        Files.writeString(workspace.repoDirectory().resolve("server/data/app.db"), "db", StandardCharsets.UTF_8);
+        Files.writeString(
+                workspace.repoDirectory().resolve("client/package-lock.json"),
+                "{}\n",
+                StandardCharsets.UTF_8
+        );
+
+        RepairWorkspaceRepositoryPort.RepositoryState state = repository.repositoryState(command, workspace);
+
+        assertFalse(state.clean());
+        assertTrue(state.summary().contains("tracked=1, untracked=3"), state.summary());
+        assertTrue(state.summary().contains("client/node_modules (1)"), state.summary());
+        assertTrue(state.summary().contains("server/data (1)"), state.summary());
+        assertTrue(state.summary().contains("client/package-lock.json (1)"), state.summary());
+        assertTrue(state.summary().contains("trackedFiles=README.md"), state.summary());
+    }
+
     private static boolean gitAvailable() {
         try {
             return git(null, "--version").exitCode() == 0;

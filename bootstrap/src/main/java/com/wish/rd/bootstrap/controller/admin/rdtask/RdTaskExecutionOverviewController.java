@@ -1,6 +1,7 @@
 package com.wish.rd.bootstrap.controller.admin.rdtask;
 
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wish.rd.bootstrap.executor.DockerExecutorProperties;
 import com.wish.rd.bootstrap.financial.FinancialProperties;
@@ -17,8 +18,10 @@ import com.wish.rd.exec.repair.alert.BudgetCurrencyConverter;
 import com.wish.rd.rag.context.RoleContextPackageStore;
 import com.wish.rd.rag.context.impl.InMemoryRoleContextPackageStore;
 import com.wish.rd.rag.context.model.RoleContextPackage;
+import com.wish.rd.rag.project.budget.RdProjectTokenBudgetService;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
 import com.wish.rd.rag.runtime.model.RdTask;
+import com.wish.rd.rag.runtime.model.RdRequirementTask;
 import com.wish.rd.rag.runtime.model.RdTaskStatus;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -57,6 +60,12 @@ public class RdTaskExecutionOverviewController {
     private final DockerExecutorProperties dockerExecutorProperties;
     private final BudgetCurrencyConverter budgetCurrencyConverter;
     private final AgentStageProgressCalculator stageProgressCalculator;
+    private RdProjectTokenBudgetService projectTokenBudgetService;
+
+    @Autowired(required = false)
+    void setProjectTokenBudgetService(RdProjectTokenBudgetService projectTokenBudgetService) {
+        this.projectTokenBudgetService = projectTokenBudgetService;
+    }
 
     @Autowired
     public RdTaskExecutionOverviewController(
@@ -157,20 +166,35 @@ public class RdTaskExecutionOverviewController {
         List<StageRunView> stageViews = stageRuns.stream()
                 .map(stageRun -> toStageRunView(stageRun, now, artifactById))
                 .toList();
-        List<RunningExecutionView> runningExecutions = executionRegistry.runningExecutions().stream()
+        List<DockerExecutionRegistry.RunningExecution> runningExecutionSnapshots = executionRegistry.runningExecutions().stream()
                 .filter(execution -> task.taskId().equals(execution.taskId()))
+                .toList();
+        List<RunningExecutionView> runningExecutions = runningExecutionSnapshots.stream()
                 .map(execution -> new RunningExecutionView(
                         execution.repairRecordId(),
                         execution.taskId(),
+                        execution.executionTaskId(),
+                        execution.stageRunId(),
                         execution.ticketId(),
                         execution.provider(),
                         execution.containerName(),
                         execution.startedAtEpochMillis(),
                         execution.lastHeartbeatEpochMillis(),
                         Math.max(0L, now - execution.startedAtEpochMillis()),
-                        execution.outputDirectory() == null ? "" : execution.outputDirectory().toString()
+                        execution.outputDirectory() == null ? "" : execution.outputDirectory().toString(),
+                        new TokenUsageView(
+                                execution.tokenUsage().inputTokens(),
+                                execution.tokenUsage().outputTokens(),
+                                execution.tokenUsage().cacheCreationInputTokens(),
+                                execution.tokenUsage().cacheReadInputTokens(),
+                                execution.tokenUsage().totalTokens(),
+                                budgetCurrencyConverter.usdToCny(execution.tokenUsage().estimatedCostUsd()),
+                                execution.tokenUsage().available(),
+                                execution.tokenUsage().finalized()
+                        )
                 ))
                 .toList();
+        TokenBudgetView tokenBudget = tokenBudget(task, stageRuns, runningExecutionSnapshots);
         long elapsedMillis = Math.max(0L, (isTaskTerminal(task.status()) ? task.updateTimeEpochMillis() : now)
                 - task.createTimeEpochMillis());
 
@@ -185,6 +209,7 @@ public class RdTaskExecutionOverviewController {
                 stageProgress.currentRole(),
                 stageProgress.currentStatus(),
                 budget,
+                tokenBudget,
                 stageViews,
                 runningExecutions
         );
@@ -299,6 +324,137 @@ public class RdTaskExecutionOverviewController {
                 budgetAlertCny,
                 estimatedSpendCny.compareTo(BigDecimal.ZERO) > 0
         );
+    }
+
+    private TokenBudgetView tokenBudget(
+            RdTask task,
+            List<AgentStageRun> stageRuns,
+            List<DockerExecutionRegistry.RunningExecution> runningExecutions
+    ) {
+        JsonNode budget = latestRequirementBudget(stageRuns);
+        long effectiveTokenBudget = budget.has("effectiveTokenBudget")
+                ? nonNegativeLong(budget.path("effectiveTokenBudget"))
+                : configuredEffectiveTokenBudget(task);
+        long initialTokens = nonNegativeLong(budget.path("initialTokens"));
+        long retryReserveTokens = nonNegativeLong(budget.path("retryReserveTokens"));
+        long estimatedTotalTokens = nonNegativeLong(budget.path("estimatedTotalTokens"));
+        String confidence = text(budget.path("confidence"));
+        String basis = text(budget.path("basis"));
+        List<Map<String, Object>> historicalSamples = jsonObjectList(budget.path("historicalSamples"));
+        long finalActualTokens = 0L;
+        for (AgentStageRun stageRun : stageRuns) {
+            for (Map<String, Object> attempt : providerAttempts(stageRun.providerAttemptsJson())) {
+                finalActualTokens = safeAdd(finalActualTokens, nonNegativeLong(attempt.get("totalTokens")));
+            }
+        }
+        long runningTokens = runningExecutions.stream()
+                .map(DockerExecutionRegistry.RunningExecution::tokenUsage)
+                .mapToLong(usage -> usage == null ? 0L : usage.totalTokens())
+                .reduce(0L, RdTaskExecutionOverviewController::safeAdd);
+        long actualAccumulatedTokens = safeAdd(finalActualTokens, runningTokens);
+        boolean estimateAvailable = estimatedTotalTokens > 0L || !confidence.isBlank() || !basis.isBlank();
+        boolean actualAvailable = finalActualTokens > 0L || runningTokens > 0L;
+        return new TokenBudgetView(
+                effectiveTokenBudget,
+                initialTokens,
+                retryReserveTokens,
+                estimatedTotalTokens,
+                confidence,
+                basis,
+                historicalSamples,
+                runningTokens,
+                actualAccumulatedTokens,
+                finalActualTokens,
+                estimateAvailable,
+                actualAvailable,
+                effectiveTokenBudget > 0L && (estimatedTotalTokens > effectiveTokenBudget
+                        || actualAccumulatedTokens > effectiveTokenBudget)
+        );
+    }
+
+    private static JsonNode latestRequirementBudget(List<AgentStageRun> stageRuns) {
+        return stageRuns.stream()
+                .filter(stage -> stage.role() == AgentRole.REQUIREMENT_REVIEWER)
+                .max(Comparator.comparingInt(AgentStageRun::attemptNo)
+                        .thenComparingLong(AgentStageRun::updateTimeEpochMillis))
+                .map(AgentStageRun::reviewResultJson)
+                .map(RdTaskExecutionOverviewController::readJson)
+                .map(root -> root.path("tokenBudget"))
+                .filter(JsonNode::isObject)
+                .orElseGet(() -> OBJECT_MAPPER.createObjectNode());
+    }
+
+    private long configuredEffectiveTokenBudget(RdTask task) {
+        if (!(task instanceof RdRequirementTask requirementTask)) {
+            return 0L;
+        }
+        if (requirementTask.tokenBudgetOverride() > 0L) {
+            return requirementTask.tokenBudgetOverride();
+        }
+        if (projectTokenBudgetService == null || requirementTask.projectId().isBlank()) {
+            return 0L;
+        }
+        try {
+            return projectTokenBudgetService.get(requirementTask.projectId()).defaultTokenBudget();
+        } catch (RuntimeException ignored) {
+            return 0L;
+        }
+    }
+
+    private static JsonNode readJson(String value) {
+        try {
+            JsonNode node = OBJECT_MAPPER.readTree(value == null ? "{}" : value);
+            return node == null || !node.isObject() ? OBJECT_MAPPER.createObjectNode() : node;
+        } catch (Exception ignored) {
+            return OBJECT_MAPPER.createObjectNode();
+        }
+    }
+
+    private static List<Map<String, Object>> jsonObjectList(JsonNode node) {
+        if (node == null || !node.isArray()) {
+            return List.of();
+        }
+        List<Map<String, Object>> values = new java.util.ArrayList<>();
+        for (JsonNode entry : node) {
+            if (entry.isObject()) {
+                try {
+                    values.add(OBJECT_MAPPER.convertValue(entry, new TypeReference<>() { }));
+                } catch (IllegalArgumentException ignored) {
+                    // Historical budget evidence is optional and must never break the overview response.
+                }
+            }
+        }
+        return List.copyOf(values);
+    }
+
+    private static String text(JsonNode node) {
+        return node != null && node.isTextual() ? node.textValue().strip() : "";
+    }
+
+    private static long nonNegativeLong(JsonNode node) {
+        return node != null && node.canConvertToLong() && node.longValue() > 0L ? node.longValue() : 0L;
+    }
+
+    private static long nonNegativeLong(Object value) {
+        if (value instanceof Number number) {
+            return Math.max(0L, number.longValue());
+        }
+        if (value instanceof String text && !text.isBlank()) {
+            try {
+                return Math.max(0L, Long.parseLong(text.strip()));
+            } catch (NumberFormatException ignored) {
+                return 0L;
+            }
+        }
+        return 0L;
+    }
+
+    private static long safeAdd(long left, long right) {
+        try {
+            return Math.addExact(left, right);
+        } catch (ArithmeticException ignored) {
+            return Long.MAX_VALUE;
+        }
     }
 
     private long elapsedMillis(AgentStageRun stageRun, long now) {
@@ -416,6 +572,7 @@ public class RdTaskExecutionOverviewController {
             String currentRole,
             String currentStageStatus,
             ExecutionBudgetView budget,
+            TokenBudgetView tokenBudget,
             List<StageRunView> stageRuns,
             List<RunningExecutionView> runningExecutions
     ) {
@@ -428,6 +585,23 @@ public class RdTaskExecutionOverviewController {
             BigDecimal estimatedSpendCny,
             BigDecimal budgetAlertCny,
             boolean costAvailable
+    ) {
+    }
+
+    public record TokenBudgetView(
+            long effectiveTokenBudget,
+            long initialTokens,
+            long retryReserveTokens,
+            long estimatedTotalTokens,
+            String confidence,
+            String basis,
+            List<Map<String, Object>> historicalSamples,
+            long runningTokens,
+            long actualAccumulatedTokens,
+            long finalActualTokens,
+            boolean estimateAvailable,
+            boolean actualAvailable,
+            boolean overBudget
     ) {
     }
 
@@ -462,13 +636,28 @@ public class RdTaskExecutionOverviewController {
     public record RunningExecutionView(
             String repairRecordId,
             String taskId,
+            String executionTaskId,
+            String stageRunId,
             String ticketId,
             String provider,
             String containerName,
             long startedAtEpochMillis,
             long lastHeartbeatEpochMillis,
             long elapsedMillis,
-            String outputDirectory
+            String outputDirectory,
+            TokenUsageView tokenUsage
+    ) {
+    }
+
+    public record TokenUsageView(
+            long inputTokens,
+            long outputTokens,
+            long cacheCreationInputTokens,
+            long cacheReadInputTokens,
+            long totalTokens,
+            BigDecimal estimatedSpendCny,
+            boolean available,
+            boolean finalized
     ) {
     }
 }

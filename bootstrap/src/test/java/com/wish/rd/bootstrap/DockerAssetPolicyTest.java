@@ -35,9 +35,43 @@ class DockerAssetPolicyTest {
     @Test
     void dockerImageAssetsShouldExist() {
         assertTrue(Files.isRegularFile(asset("Dockerfile")));
+        assertTrue(Files.isRegularFile(asset("Dockerfile.qa")));
+        assertTrue(Files.isRegularFile(asset("rd-qa-evidence.mjs")));
+        assertTrue(Files.isRegularFile(asset("playwright-cli.config.json")));
         assertTrue(Files.isRegularFile(asset("rd-claude-entrypoint.sh")));
         assertTrue(Files.isRegularFile(asset("rd-local-repair-worker.mjs")));
         assertTrue(Files.isRegularFile(asset("result.schema.json")));
+    }
+
+    @Test
+    void qaDockerfileShouldPinPlaywrightCliAndInstallChromium() throws IOException {
+        String dockerfile = readAsset("Dockerfile.qa");
+
+        assertTrue(dockerfile.contains("ARG PLAYWRIGHT_CLI_VERSION=0.1.17"));
+        assertTrue(dockerfile.contains("@playwright/cli@${PLAYWRIGHT_CLI_VERSION}"));
+        assertTrue(dockerfile.contains("PLAYWRIGHT_BROWSERS_PATH=/ms-playwright"));
+        assertTrue(dockerfile.contains("apt-get install -y --no-install-recommends curl zip"));
+        assertTrue(dockerfile.contains("install --with-deps chromium"));
+        assertTrue(dockerfile.contains("COPY rd-qa-evidence.mjs /usr/local/bin/rd-qa-evidence.mjs"));
+        assertTrue(dockerfile.contains("COPY playwright-cli.config.json /etc/rd-bot/playwright-cli.config.json"));
+        assertTrue(dockerfile.contains("PLAYWRIGHT_MCP_CONFIG=/etc/rd-bot/playwright-cli.config.json"));
+        assertTrue(dockerfile.contains("mkdir -p /home/rdbot/.claude/skills"));
+        assertTrue(dockerfile.contains("chown -R rdbot:rdbot /home/rdbot/.claude"));
+        assertTrue(dockerfile.contains("USER rdbot"));
+        assertFalse(containsCredentialCopy(dockerfile));
+    }
+
+    @Test
+    void qaPlaywrightConfigShouldUseBundledHeadlessChromium() throws IOException {
+        JsonNode config = OBJECT_MAPPER.readTree(readAsset("playwright-cli.config.json"));
+
+        assertEquals("chromium", config.path("browser").path("browserName").asText());
+        assertTrue(config.path("browser").path("isolated").asBoolean());
+        assertTrue(config.path("browser").path("launchOptions").path("headless").asBoolean());
+        assertEquals("", config.path("browser").path("launchOptions").path("channel").asText());
+        assertTrue(config.path("browser").path("launchOptions").path("chromiumSandbox").isBoolean());
+        assertFalse(config.path("browser").path("launchOptions").path("chromiumSandbox").asBoolean());
+        assertEquals("stdout", config.path("outputMode").asText());
     }
 
     @Test
@@ -98,6 +132,9 @@ class DockerAssetPolicyTest {
         assertTrue(entrypoint.contains("RD_CLAUDE_LOCAL_FALLBACK_ENABLED"));
         assertTrue(entrypoint.contains("rd-local-repair-worker.mjs"));
         assertTrue(entrypoint.contains("local_fallback_should_run"));
+        assertTrue(entrypoint.contains("prompt_payload_file=\"$(mktemp)\""));
+        assertTrue(entrypoint.contains("\"$@\" < \"$prompt_payload_file\""));
+        assertFalse(entrypoint.contains("\"$@\" \"$prompt\""));
         assertFalse(entrypoint.contains("ANTHROPIC_API_KEY=sk"));
         assertFalse(entrypoint.contains(">/work/input"));
         assertFalse(entrypoint.contains(">/work/repo"));

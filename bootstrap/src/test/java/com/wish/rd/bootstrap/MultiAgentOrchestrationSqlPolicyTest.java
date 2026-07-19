@@ -22,4 +22,17 @@ class MultiAgentOrchestrationSqlPolicyTest {
         assertTrue(content.contains("CREATE TABLE IF NOT EXISTS rd_experience_entries"));
         assertTrue(content.contains("uk_rd_agent_stage_runs_idempotency"));
     }
+
+    @Test
+    void shouldProvideIdempotentScopedExperienceMigration() throws Exception {
+        Path sql = Path.of(System.getProperty("user.dir"))
+                .resolve("src/main/resources/sql/postgres/p6_evaluation_data_quality.sql");
+        String content = Files.readString(sql);
+
+        assertTrue(content.contains("ADD COLUMN IF NOT EXISTS project_id"));
+        assertTrue(content.contains("ADD COLUMN IF NOT EXISTS repository_fingerprint"));
+        assertTrue(content.contains("ADD COLUMN IF NOT EXISTS evidence_quality"));
+        assertTrue(content.contains("ADD COLUMN IF NOT EXISTS applicable_roles_json"));
+        assertTrue(content.contains("CREATE INDEX IF NOT EXISTS idx_rd_experience_entries_scope"));
+    }
 }

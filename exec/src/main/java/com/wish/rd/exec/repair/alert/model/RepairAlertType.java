@@ -93,6 +93,11 @@ public enum RepairAlertType {
     QA_FAILED,
 
     /**
+     * QA product/regression failure started one bounded coding remediation attempt.
+     */
+    QA_REMEDIATION_STARTED,
+
+    /**
      * 交付复核失败。
      */
     DELIVERY_REVIEW_FAILED,

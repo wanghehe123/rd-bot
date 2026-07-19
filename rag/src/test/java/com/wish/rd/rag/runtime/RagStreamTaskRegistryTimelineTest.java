@@ -133,7 +133,7 @@ class RagStreamTaskRegistryTimelineTest {
     }
 
     @Test
-    void shouldLogicallyDeleteTaskAndClearTimeline() {
+    void shouldLogicallyDeleteTaskAndKeepDeletionAuditTimeline() {
         RagStreamTaskRegistry registry = newRegistry();
         RdBugFixTask created = registry.createBugFixTask(ticket(), "P2");
         registry.markSearching(created.taskId(), "");
@@ -144,8 +144,10 @@ class RagStreamTaskRegistryTimelineTest {
         // 列表不再可见（DELETED 被过滤）
         RdTaskPage all = registry.queryBugFixTasks(new RdTaskQuery(null, null, null, null, 1, 10));
         assertEquals(0, all.total());
-        // 时间线被清理
-        assertTrue(registry.timeline(created.taskId()).isEmpty());
+        // 删除事件保留在 append-only 时间线中，便于生产审计。
+        List<RdTaskStatusEvent> timeline = registry.timeline(created.taskId());
+        assertFalse(timeline.isEmpty());
+        assertEquals(RdTaskStatusEvent.ACTION_DELETED, timeline.getLast().status());
     }
 
     @Test

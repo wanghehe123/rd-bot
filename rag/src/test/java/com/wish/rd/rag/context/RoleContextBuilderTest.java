@@ -10,7 +10,9 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import com.wish.rd.rag.context.model.RoleContextEvidence;
 import com.wish.rd.rag.context.model.RoleContextPackage;
 
 class RoleContextBuilderTest {
@@ -84,6 +86,43 @@ class RoleContextBuilderTest {
 
         assertEquals(List.of("mat-2"), context.omittedEvidenceIds());
         assertEquals(1, context.evidence().size());
+    }
+
+    @Test
+    void shouldBuildFromSelectedRetrievalEvidenceAndBindImmutableRun() {
+        RoleContextBuilder builder = new RoleContextBuilder();
+        RdRequirementTask task = RdRequirementTask.created(
+                "task-1003",
+                new CreateRequirementTaskCommand(
+                        "增加订单催单能力", "P1", "https://github.com/example/waimai.git",
+                        "example", "waimai", "main", "订单详情页可以催单",
+                        List.of("接口测试通过"), false),
+                1_783_000_000_000L);
+        List<RoleContextEvidence> selected = List.of(
+                new RoleContextEvidence(
+                        "root", "TASK_INPUT", "rd-task://task-1003", "需求根证据", "sha256:root",
+                        "订单详情页可以催单", 1_783_000_000_000L,
+                        "required root evidence", 1.0d, "REQUIREMENT_ROOT", true),
+                new RoleContextEvidence(
+                        "code", "CODE", "code://OrderService.java#urge", "OrderService.urge", "sha256:code",
+                        "催单服务方法与状态检查", 1_783_000_000_000L,
+                        "matched coding role", 0.92d, "CODE_SYMBOL", false),
+                new RoleContextEvidence(
+                        "history-noise", "WORKFLOW_EXPERIENCE", "rd-experience://other", "优惠券经验",
+                        "sha256:noise", "与催单无关的优惠券经验", 1_783_000_000_000L,
+                        "below relevance threshold", 0.0d, "OPTIONAL_HISTORY", false)
+        );
+
+        RoleContextPackage context = builder.buildFromEvidence(
+                "ctx-1003", task, selected, "CODING_AGENT", 8_000, 1, "run-1003",
+                1_783_000_000_001L);
+
+        assertEquals("run-1003", context.retrievalRunId());
+        assertEquals(List.of("root", "code"), context.evidence().stream()
+                .map(RoleContextEvidence::evidenceId).toList());
+        assertFalse(context.evidence().stream()
+                .anyMatch(evidence -> evidence.evidenceId().equals("history-noise")));
+        assertTrue(context.omittedEvidenceIds().contains("history-noise"));
     }
 
     private TaskMaterial material(String id, String title, String preview) {

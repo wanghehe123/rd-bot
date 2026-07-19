@@ -15,6 +15,8 @@ import com.wish.rd.rag.prompt.RepairPromptService;
 import com.wish.rd.rag.rewrite.QueryTermMappingRegistry;
 import com.wish.rd.rag.runtime.RagRuntimeFactory;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
+import com.wish.rd.rag.retrieval.run.RetrievalRunLifecycle;
+import com.wish.rd.rag.retrieval.run.impl.InMemoryRetrievalRunStore;
 import com.wish.rd.rag.runtime.model.RdBugFixTask;
 import com.wish.rd.rag.runtime.model.RdRequirementTask;
 import com.wish.rd.rag.runtime.model.RdTask;
@@ -53,6 +55,7 @@ public final class RagBugFixEngine {
     private final RagStreamTaskRegistry streamTaskRegistry;
     private final ChatQueueLimiter chatQueueLimiter;
     private final RagRetrievalLogSink retrievalLogSink;
+    private final RetrievalRunLifecycle retrievalRunLifecycle;
 
     @Autowired
     public RagBugFixEngine(
@@ -61,7 +64,8 @@ public final class RagBugFixEngine {
             KnowledgeWorkspace knowledgeWorkspace,
             RagStreamTaskRegistry streamTaskRegistry,
             ObjectProvider<ChatQueueLimiter> chatQueueLimiterProvider,
-            ObjectProvider<RagRetrievalLogSink> retrievalLogSinkProvider
+            ObjectProvider<RagRetrievalLogSink> retrievalLogSinkProvider,
+            ObjectProvider<RetrievalRunLifecycle> retrievalRunLifecycleProvider
     ) {
         this(
                 queryTermMappingRegistry,
@@ -69,7 +73,8 @@ public final class RagBugFixEngine {
                 knowledgeWorkspace,
                 streamTaskRegistry,
                 chatQueueLimiterProvider.getIfAvailable(ChatQueueLimiter::passThrough),
-                retrievalLogSinkProvider.getIfAvailable(RagRetrievalLogSink::noop)
+                retrievalLogSinkProvider.getIfAvailable(RagRetrievalLogSink::noop),
+                retrievalRunLifecycleProvider.getIfAvailable(RagBugFixEngine::localRetrievalRunLifecycle)
         );
     }
 
@@ -86,7 +91,8 @@ public final class RagBugFixEngine {
                 knowledgeWorkspace,
                 streamTaskRegistry,
                 chatQueueLimiter,
-                RagRetrievalLogSink.noop()
+                RagRetrievalLogSink.noop(),
+                localRetrievalRunLifecycle()
         );
     }
 
@@ -98,6 +104,19 @@ public final class RagBugFixEngine {
             ChatQueueLimiter chatQueueLimiter,
             RagRetrievalLogSink retrievalLogSink
     ) {
+        this(queryTermMappingRegistry, intentTreeRegistry, knowledgeWorkspace, streamTaskRegistry, chatQueueLimiter,
+                retrievalLogSink, localRetrievalRunLifecycle());
+    }
+
+    public RagBugFixEngine(
+            QueryTermMappingRegistry queryTermMappingRegistry,
+            IntentTreeRegistry intentTreeRegistry,
+            KnowledgeWorkspace knowledgeWorkspace,
+            RagStreamTaskRegistry streamTaskRegistry,
+            ChatQueueLimiter chatQueueLimiter,
+            RagRetrievalLogSink retrievalLogSink,
+            RetrievalRunLifecycle retrievalRunLifecycle
+    ) {
         this.queryTermMappingRegistry = queryTermMappingRegistry == null
                 ? QueryTermMappingRegistry.withDefaults()
                 : queryTermMappingRegistry;
@@ -106,6 +125,7 @@ public final class RagBugFixEngine {
         this.streamTaskRegistry = streamTaskRegistry == null ? RagStreamTaskRegistry.inMemory() : streamTaskRegistry;
         this.chatQueueLimiter = chatQueueLimiter == null ? ChatQueueLimiter.passThrough() : chatQueueLimiter;
         this.retrievalLogSink = retrievalLogSink == null ? RagRetrievalLogSink.noop() : retrievalLogSink;
+        this.retrievalRunLifecycle = retrievalRunLifecycle == null ? localRetrievalRunLifecycle() : retrievalRunLifecycle;
     }
 
     public BugFixMessage findBugFixMessgaesForAgent(TicketSnapshot ticket, List<String> logs) {
@@ -191,6 +211,10 @@ public final class RagBugFixEngine {
     ) {
         streamTaskRegistry.markSearching(taskId, "RAG 检索中");
         BugFixMessage message = buildBugFixRagMessage(ticket, logs, taskId, deepThinking, List.of());
+        if (message.retrievedChunks().isEmpty()) {
+            streamTaskRegistry.markFailedNeedsHuman(taskId, "RAG 检索证据不足：请补充项目知识库范围、日志或复现条件");
+            return message;
+        }
         streamTaskRegistry.markExecuting(taskId, message.agentUserMessage());
         streamTaskRegistry.complete(taskId, "", titleFrom(userQuestion));
         return message;
@@ -203,11 +227,15 @@ public final class RagBugFixEngine {
             boolean deepThinking,
             List<String> projectKnowledgeBaseIds
     ) {
+        String ticketText = ticketFieldsText(ticket);
+        String rewrittenQuery = queryTermMappingRegistry.rewriteService(projectIdFor(taskId)).rewrite(ticketText);
         RepairRagRequest request = new RepairRagRequest(
                 ticket.ticketId(),
-                ticketFieldsText(ticket),
+                ticketText,
                 logs,
-                projectKnowledgeBaseIds
+                projectKnowledgeBaseIds,
+                taskId,
+                rewrittenQuery
         );
         RepairContextPackage context = repairPipeline().prepareContext(request);
         appendRetrievalLog(ticket, logs, taskId, deepThinking, context);
@@ -342,7 +370,14 @@ public final class RagBugFixEngine {
                             Map.of("repositoryId", query.repositoryId())
                     ));
                 },
-                context -> {}
+                context -> {},
+                retrievalRunLifecycle
+        );
+    }
+
+    private static RetrievalRunLifecycle localRetrievalRunLifecycle() {
+        return new RetrievalRunLifecycle(
+                new InMemoryRetrievalRunStore(), () -> UUID.randomUUID().toString(), System::currentTimeMillis
         );
     }
 

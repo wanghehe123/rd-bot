@@ -100,7 +100,7 @@ class RagBugFixEngineTest {
         assertFalse(message.retrievedChunks().isEmpty());
         assertFalse(message.evidenceChunkIds().isEmpty());
         assertFalse(message.answer().contains("未检索到足够证据"));
-        assertTrue(message.answer().contains("client/src/api.ts"));
+        assertTrue(message.answer().contains("client/src/api.ts"), message.answer());
     }
 
     @Test

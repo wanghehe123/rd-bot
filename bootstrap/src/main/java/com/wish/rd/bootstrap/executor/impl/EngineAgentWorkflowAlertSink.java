@@ -55,6 +55,7 @@ public final class EngineAgentWorkflowAlertSink implements AgentWorkflowAlertSin
             case STAGE_FAILED_NEEDS_HUMAN -> RepairAlertType.STAGE_FAILED_NEEDS_HUMAN;
             case PROVIDER_FALLBACK -> RepairAlertType.PROVIDER_FALLBACK;
             case QA_FAILED -> RepairAlertType.QA_FAILED;
+            case QA_REMEDIATION_STARTED -> RepairAlertType.QA_REMEDIATION_STARTED;
             case DELIVERY_REVIEW_FAILED -> RepairAlertType.DELIVERY_REVIEW_FAILED;
             case PR_PUBLICATION_FAILED -> RepairAlertType.PR_PUBLICATION_FAILED;
             case EXPERIENCE_CAPTURE_FAILED -> RepairAlertType.EXPERIENCE_CAPTURE_FAILED;

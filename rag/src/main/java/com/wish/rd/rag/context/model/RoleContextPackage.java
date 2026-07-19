@@ -18,6 +18,7 @@ import java.util.List;
  * @param maxChars              上下文字符预算
  * @param usedChars             已使用字符数
  * @param omittedEvidenceIds    因预算或角色不匹配省略的证据 ID
+ * @param retrievalRunId        生成本上下文包的不可变 RetrievalRun ID
  * @param createdAtEpochMillis  创建时间
  */
 public record RoleContextPackage(
@@ -31,6 +32,7 @@ public record RoleContextPackage(
         int maxChars,
         int usedChars,
         List<String> omittedEvidenceIds,
+        String retrievalRunId,
         long createdAtEpochMillis
 ) {
 
@@ -51,6 +53,27 @@ public record RoleContextPackage(
         omittedEvidenceIds = omittedEvidenceIds == null
                 ? List.of()
                 : omittedEvidenceIds.stream().map(RoleContextPackage::safe).filter(value -> !value.isBlank()).toList();
+        retrievalRunId = safe(retrievalRunId);
+    }
+
+    /** Backward-compatible constructor for historical rows that predate RetrievalRun binding. */
+    public RoleContextPackage(
+            String packageId,
+            String taskId,
+            String role,
+            int packageVersion,
+            List<RoleContextEvidence> evidence,
+            List<String> acceptanceCriteria,
+            List<String> riskHints,
+            int maxChars,
+            int usedChars,
+            List<String> omittedEvidenceIds,
+            long createdAtEpochMillis
+    ) {
+        this(
+                packageId, taskId, role, packageVersion, evidence, acceptanceCriteria, riskHints,
+                maxChars, usedChars, omittedEvidenceIds, "", createdAtEpochMillis
+        );
     }
 
     private static String safe(String value) {

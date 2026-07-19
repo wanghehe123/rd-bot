@@ -168,7 +168,8 @@ public class RepairWorkspaceFactory {
                 "feasibility",
                 "missingInformation",
                 "risks",
-                "acceptanceCoverage"
+                "acceptanceCoverage",
+                "budgetEstimate"
               ],
               "properties": {
                 "decision": {
@@ -191,6 +192,25 @@ public class RepairWorkspaceFactory {
                   "type": "array",
                   "minItems": 1,
                   "items": {"type": "string", "pattern": "\\\\S"}
+                },
+                "budgetEstimate": {
+                  "type": "object",
+                  "required": [
+                    "initialTokens",
+                    "retryReserveTokens",
+                    "estimatedTotalTokens",
+                    "confidence",
+                    "basis",
+                    "historicalSamples"
+                  ],
+                  "properties": {
+                    "initialTokens": {"type": "integer", "minimum": 0},
+                    "retryReserveTokens": {"type": "integer", "minimum": 0},
+                    "estimatedTotalTokens": {"type": "integer", "minimum": 0},
+                    "confidence": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]},
+                    "basis": {"type": "string", "pattern": "\\\\S"},
+                    "historicalSamples": {"type": "array"}
+                  }
                 }
               }
             }
@@ -242,7 +262,11 @@ public class RepairWorkspaceFactory {
               "required": [
                 "status",
                 "summary",
-                "acceptanceResults"
+                "failureCategory",
+                "retryRecommendation",
+                "browserValidation",
+                "acceptanceResults",
+                "evidenceManifestArtifactId"
               ],
               "properties": {
                 "status": {
@@ -250,6 +274,55 @@ public class RepairWorkspaceFactory {
                   "enum": ["PASSED", "FAILED", "SKIPPED"]
                 },
                 "summary": {"type": "string", "pattern": "\\\\S"},
+                "failureCategory": {
+                  "type": "string",
+                  "enum": [
+                    "NONE",
+                    "PRODUCT_DEFECT",
+                    "REGRESSION",
+                    "ENVIRONMENT",
+                    "AUTHENTICATION",
+                    "QA_INFRASTRUCTURE",
+                    "REQUIREMENT_AMBIGUITY",
+                    "FLAKY"
+                  ]
+                },
+                "retryRecommendation": {
+                  "type": "string",
+                  "enum": ["NONE", "CODING_AGENT", "HUMAN"]
+                },
+                "browserValidation": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "required": [
+                    "required",
+                    "performed",
+                    "decisionSource",
+                    "baseUrl",
+                    "browser",
+                    "viewports"
+                  ],
+                  "properties": {
+                    "required": {"type": "boolean"},
+                    "performed": {"type": "boolean"},
+                    "decisionSource": {
+                      "type": "string",
+                      "enum": [
+                        "TASK_OVERRIDE",
+                        "PROJECT_PROFILE",
+                        "REPOSITORY_CONFIG",
+                        "AUTO_DETECTION",
+                        "NOT_APPLICABLE"
+                      ]
+                    },
+                    "baseUrl": {"type": "string"},
+                    "browser": {"type": "string", "pattern": "\\\\S"},
+                    "viewports": {
+                      "type": "array",
+                      "items": {"type": "string", "pattern": "\\\\S"}
+                    }
+                  }
+                },
                 "acceptanceResults": {
                   "type": "array",
                   "minItems": 1,
@@ -258,21 +331,37 @@ public class RepairWorkspaceFactory {
                     "additionalProperties": true,
                     "required": [
                       "criteria",
+                      "scope",
                       "command",
                       "status",
-                      "logArtifactId"
+                      "exitCode",
+                      "durationMillis",
+                      "logArtifactId",
+                      "evidenceArtifactIds"
                     ],
                     "properties": {
                       "criteria": {"type": "string", "pattern": "\\\\S"},
+                      "scope": {
+                        "type": "string",
+                        "enum": ["CURRENT", "REGRESSION"]
+                      },
                       "command": {"type": "string", "pattern": "\\\\S"},
                       "status": {
                         "type": "string",
                         "enum": ["PASSED", "FAILED", "SKIPPED"]
                       },
-                      "logArtifactId": {"type": "string", "pattern": "\\\\S"}
+                      "exitCode": {"type": "integer"},
+                      "durationMillis": {"type": "integer", "minimum": 0},
+                      "logArtifactId": {"type": "string", "pattern": "\\\\S"},
+                      "evidenceArtifactIds": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {"type": "string", "pattern": "\\\\S"}
+                      }
                     }
                   }
-                }
+                },
+                "evidenceManifestArtifactId": {"type": "string", "pattern": "\\\\S"}
               }
             }
             """;

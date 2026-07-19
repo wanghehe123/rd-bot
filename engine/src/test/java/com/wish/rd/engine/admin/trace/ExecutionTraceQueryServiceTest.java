@@ -1,5 +1,8 @@
 package com.wish.rd.engine.admin.trace;
 
+import com.wish.rd.engine.admin.trace.model.ExecutionTracePage;
+import com.wish.rd.engine.admin.trace.model.ExecutionTraceQuery;
+
 import com.wish.rd.engine.agent.AgentStageRunStore;
 import com.wish.rd.engine.agent.impl.InMemoryAgentStageRunStore;
 import com.wish.rd.engine.agent.model.AgentRole;
@@ -37,6 +40,11 @@ class ExecutionTraceQueryServiceTest {
         RdRequirementTask projectTask = createRequirement("project-1", "交付项目一");
         registry.markRequirementMaterialCollecting(projectTask.taskId(), "收集材料");
         registry.markRequirementMaterialReady(projectTask.taskId(), "材料就绪");
+        registry.markRequirementContextBuilding(projectTask.taskId(), "构建上下文");
+        registry.markRequirementContextReady(projectTask.taskId(), "{}");
+        registry.markRequirementPlanGenerating(projectTask.taskId(), "生成计划");
+        registry.markRequirementPlanGenerated(projectTask.taskId(), "{}");
+        registry.markRequirementWaitingPolicy(projectTask.taskId(), "{}");
         registry.markRequirementExecuting(projectTask.taskId(), "开始执行");
         stageRunStore.save(run(projectTask.taskId(), AgentRole.REQUIREMENT_REVIEWER,
                 AgentStageStatus.FAILED_NEEDS_HUMAN, 1, "long-cat", "模型响应格式异常"));

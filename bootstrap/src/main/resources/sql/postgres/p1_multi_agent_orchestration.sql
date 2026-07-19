@@ -147,8 +147,17 @@ CREATE TABLE IF NOT EXISTS rd_experience_entries (
     reusable               BOOLEAN NOT NULL DEFAULT FALSE,
     failure                BOOLEAN NOT NULL DEFAULT FALSE,
     redacted               BOOLEAN NOT NULL DEFAULT TRUE,
+    project_id             VARCHAR(128) NOT NULL DEFAULT '',
+    repository_fingerprint VARCHAR(512) NOT NULL DEFAULT '',
+    intent_id              VARCHAR(128) NOT NULL DEFAULT '',
+    tags_json              JSONB NOT NULL DEFAULT '[]'::jsonb,
+    source_revision        VARCHAR(256) NOT NULL DEFAULT '',
+    evidence_quality       DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+    applicable_roles_json  JSONB NOT NULL DEFAULT '[]'::jsonb,
     ingestion_task_id      BIGINT REFERENCES ingestion_tasks(id) ON DELETE SET NULL,
-    created_at             TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT ck_rd_experience_entries_evidence_quality
+        CHECK (evidence_quality >= 0.0 AND evidence_quality <= 1.0)
 );
 
 CREATE INDEX IF NOT EXISTS idx_rd_experience_entries_task
@@ -159,3 +168,24 @@ CREATE INDEX IF NOT EXISTS idx_rd_experience_entries_type
 
 CREATE INDEX IF NOT EXISTS idx_rd_experience_entries_role
     ON rd_experience_entries (role, experience_type, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_rd_experience_entries_scope
+    ON rd_experience_entries (project_id, repository_fingerprint, reusable, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS rd_requirement_delivery_jobs (
+    id            BIGINT PRIMARY KEY,
+    task_id       BIGINT NOT NULL UNIQUE REFERENCES rd_tasks(id) ON DELETE CASCADE,
+    status        VARCHAR(64) NOT NULL,
+    attempt_no    INTEGER NOT NULL DEFAULT 0,
+    max_attempts  INTEGER NOT NULL DEFAULT 3,
+    lease_owner   VARCHAR(256) NOT NULL DEFAULT '',
+    lease_until   TIMESTAMPTZ,
+    error_message TEXT NOT NULL DEFAULT '',
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT ck_rd_requirement_delivery_job_attempts
+        CHECK (attempt_no >= 0 AND max_attempts > 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_rd_requirement_delivery_jobs_recovery
+    ON rd_requirement_delivery_jobs (status, lease_until, updated_at);

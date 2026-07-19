@@ -117,6 +117,46 @@ class FeishuImMessageControllerTest {
                 registry,
                 materialStore,
                 request -> {
+                    if (request.role() == AgentRole.REQUIREMENT_REVIEWER) {
+                        return RequirementExecutionResult.success(
+                                request.taskId(),
+                                "需求评审通过",
+                                "",
+                                """
+                                        {
+                                          "decision":"APPROVED",
+                                          "feasibility":"CAN_DO",
+                                          "missingInformation":[],
+                                          "risks":[],
+                                          "acceptanceCoverage":["前端构建通过"],
+                                          "budgetEstimate":{
+                                            "initialTokens":1000,
+                                            "retryReserveTokens":500,
+                                            "estimatedTotalTokens":1500,
+                                            "confidence":"LOW",
+                                            "basis":"controller fixture",
+                                            "historicalSamples":[]
+                                          }
+                                        }
+                                        """
+                        );
+                    }
+                    if (request.role() == AgentRole.SOLUTION_ARCHITECT) {
+                        return RequirementExecutionResult.success(
+                                request.taskId(),
+                                "方案完成",
+                                "",
+                                """
+                                        {
+                                          "summary":"新增订单催单按钮",
+                                          "affectedFiles":["client/src/pages/OrderDetail.tsx"],
+                                          "implementationSteps":["实现按钮"],
+                                          "acceptanceMapping":[{"criteria":"前端构建通过","validation":"npm run build"}],
+                                          "testPlan":[{"criteria":"前端构建通过","command":"npm run build"}]
+                                        }
+                                        """
+                        );
+                    }
                     if (request.role() == AgentRole.QA_AGENT) {
                         return RequirementExecutionResult.success(
                                 request.taskId(),
@@ -126,9 +166,21 @@ class FeishuImMessageControllerTest {
                                         {
                                           "status": "PASSED",
                                           "summary": "QA 验收通过",
+                                          "failureCategory": "NONE",
+                                          "retryRecommendation": "NONE",
+                                          "browserValidation": {
+                                            "required": false,
+                                            "performed": false,
+                                            "decisionSource": "NOT_APPLICABLE",
+                                            "baseUrl": "",
+                                            "browser": "chromium",
+                                            "viewports": []
+                                          },
                                           "acceptanceResults": [
-                                            {"criteria":"前端构建通过","command":"npm run build","status":"PASSED","logArtifactId":"qa-log-1"}
-                                          ]
+                                            {"criteria":"前端构建通过","scope":"CURRENT","command":"npm run build","status":"PASSED","exitCode":0,"durationMillis":100,"logArtifactId":"qa-evidence/commands/current-build.log","evidenceArtifactIds":["qa-evidence/commands/current-build.log"]},
+                                            {"criteria":"既有功能回归","scope":"REGRESSION","command":"npm test","status":"PASSED","exitCode":0,"durationMillis":120,"logArtifactId":"qa-evidence/commands/regression.log","evidenceArtifactIds":["qa-evidence/commands/regression.log"]}
+                                          ],
+                                          "evidenceManifestArtifactId": "qa-evidence/manifest.json"
                                         }
                                         """
                         );

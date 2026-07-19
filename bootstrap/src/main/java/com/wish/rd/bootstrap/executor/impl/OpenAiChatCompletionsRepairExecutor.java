@@ -53,6 +53,12 @@ public final class OpenAiChatCompletionsRepairExecutor implements RepairExecutor
 
     @Override
     public RepairExecutionResult execute(RepairJobCommand command) {
+        long startedAtEpochMillis = System.currentTimeMillis();
+        RepairExecutionResult result = executeOnce(command);
+        return withProviderAttempt(result, startedAtEpochMillis, System.currentTimeMillis());
+    }
+
+    private RepairExecutionResult executeOnce(RepairJobCommand command) {
         String role = command.contextJson().getOrDefault("agentRole", "");
         if ("CODING_AGENT".equals(role)) {
             return failed("openai-chat-completions executor does not support repository coding", Map.of());
@@ -78,6 +84,38 @@ public final class OpenAiChatCompletionsRepairExecutor implements RepairExecutor
             Thread.currentThread().interrupt();
             return failed("openai chat completions request interrupted", Map.of());
         }
+    }
+
+    private RepairExecutionResult withProviderAttempt(
+            RepairExecutionResult result,
+            long startedAtEpochMillis,
+            long finishedAtEpochMillis
+    ) {
+        Map<String, Object> attempt = new LinkedHashMap<>();
+        attempt.put("provider", configuration.providerName());
+        attempt.put("model", configuration.model());
+        attempt.put("protocol", configuration.protocol());
+        attempt.put("attempt", 1);
+        attempt.put("status", result.status() == RepairExecutionStatus.SUCCESS
+                ? "SUCCESS" : result.status().name());
+        attempt.put("startedAtEpochMillis", startedAtEpochMillis);
+        attempt.put("finishedAtEpochMillis", Math.max(startedAtEpochMillis, finishedAtEpochMillis));
+        if (result.status() != RepairExecutionStatus.SUCCESS) {
+            attempt.put("errorCategory", result.status().name());
+            attempt.put("errorMessage", safe(result.errorMessage()));
+        }
+        Map<String, String> metadata = new LinkedHashMap<>(result.dockerMetadataJson());
+        metadata.put("provider", configuration.providerName());
+        try {
+            metadata.put("providerAttemptsJson", OBJECT_MAPPER.writeValueAsString(List.of(attempt)));
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("failed to serialize provider attempt", exception);
+        }
+        return new RepairExecutionResult(
+                result.status(), result.summary(), result.pullRequestUrl(), result.artifacts(),
+                result.rawResultJson(), metadata, result.githubMetadataJson(), result.testMetadataJson(),
+                result.riskMetadataJson(), result.errorMessage()
+        );
     }
 
     private HttpRequest request(RepairJobCommand command, String apiKey) throws JsonProcessingException {

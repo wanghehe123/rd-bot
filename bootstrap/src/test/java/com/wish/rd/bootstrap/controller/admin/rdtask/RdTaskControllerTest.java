@@ -1,7 +1,12 @@
 package com.wish.rd.bootstrap.controller.admin.rdtask;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.wish.rd.engine.agent.impl.InMemoryAgentStageRunStore;
 import com.wish.rd.engine.agent.model.AgentRole;
+import com.wish.rd.engine.agent.impl.InMemoryAgentStageArtifactStore;
+import com.wish.rd.engine.agent.model.AgentStageArtifact;
+import com.wish.rd.engine.agent.model.AgentStageRun;
+import com.wish.rd.bootstrap.executor.impl.QaEvidenceRetentionService;
 import com.wish.rd.engine.bugfix.RdBotFixEngine;
 import com.wish.rd.engine.bugfix.model.RdBotFixCommand;
 import com.wish.rd.engine.bugfix.model.RdBotFixResult;
@@ -66,6 +71,7 @@ class RdTaskControllerTest {
 
     private MockMvc mockMvc;
     private RagStreamTaskRegistry registry;
+    private InMemoryAgentStageRunStore stageRunStore;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @BeforeEach
@@ -74,7 +80,9 @@ class RdTaskControllerTest {
                 new InMemoryRdTaskStore(),
                 new InMemoryRdTaskStatusEventStore(),
                 generator());
+        stageRunStore = new InMemoryAgentStageRunStore();
         RdTaskController controller = new RdTaskController(registry);
+        controller.setAgentStageRunStore(stageRunStore);
         mockMvc = MockMvcBuilders.standaloneSetup(controller).build();
     }
 
@@ -190,6 +198,47 @@ class RdTaskControllerTest {
         mockMvc.perform(get("/admin/rd-tasks"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.total", is(0)));
+    }
+
+    @Test
+    void shouldDeletePrivateQaEvidenceWhenTaskIsDeleted() throws Exception {
+        String taskId = createTask("FS-3005-QA", "带 QA 证据的任务", "P2");
+        InMemoryObjectStorageService objectStorage = new InMemoryObjectStorageService();
+        byte[] content = "screenshot".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        String uri = objectStorage.upload(
+                "rd-qa-evidence",
+                new ByteArrayInputStream(content),
+                content.length,
+                "current.png",
+                "image/png"
+        ).url();
+        InMemoryAgentStageArtifactStore artifactStore = new InMemoryAgentStageArtifactStore();
+        artifactStore.save(new AgentStageArtifact(
+                "artifact-qa-1",
+                "stage-qa-1",
+                taskId,
+                AgentRole.QA_AGENT,
+                "QA_SCREENSHOT",
+                uri,
+                "current screenshot",
+                "",
+                "sha256:test",
+                "{}",
+                1L
+        ));
+        RdTaskController controller = new RdTaskController(registry);
+        controller.setQaEvidenceRetentionService(new QaEvidenceRetentionService(artifactStore, objectStorage));
+        mockMvc = MockMvcBuilders.standaloneSetup(controller).build();
+
+        mockMvc.perform(delete("/admin/rd-tasks/{taskId}", taskId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.deleted", is(true)));
+
+        assertEquals(0, artifactStore.listByTask(taskId).size());
+        org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalArgumentException.class,
+                () -> objectStorage.openStream(uri)
+        );
     }
 
     @Test
@@ -479,11 +528,13 @@ class RdTaskControllerTest {
     @Test
     void shouldAppendTextMaterialAndPreviewIt() throws Exception {
         String taskId = createRequirementTask(false);
+        saveStageRun(taskId, "stage-failed-1");
         String body = objectMapper.writeValueAsString(Map.of(
                 "title", "补充验收细节",
                 "materialType", "ACCEPTANCE_CRITERIA",
                 "content", "催单按钮在已完成订单不可见。",
-                "mimeType", "text/plain"
+                "mimeType", "text/plain",
+                "recoveryStageRunId", "stage-failed-1"
         ));
 
         String response = mockMvc.perform(post("/admin/rd-tasks/{taskId}/materials/text", taskId)
@@ -495,6 +546,7 @@ class RdTaskControllerTest {
                 .andExpect(jsonPath("$.materialType", is("ACCEPTANCE_CRITERIA")))
                 .andExpect(jsonPath("$.contentHash", startsWith("sha256:")))
                 .andExpect(jsonPath("$.contentPreview", is("催单按钮在已完成订单不可见。")))
+                .andExpect(jsonPath("$.metadataJson", org.hamcrest.Matchers.containsString("stage-failed-1")))
                 .andReturn().getResponse().getContentAsString();
         String materialId = com.jayway.jsonpath.JsonPath.read(response, "$.materialId");
 
@@ -507,6 +559,7 @@ class RdTaskControllerTest {
     @Test
     void shouldUploadLocalRequirementMaterial() throws Exception {
         String taskId = createRequirementTask(false);
+        saveStageRun(taskId, "stage-failed-1");
         MockMultipartFile file = new MockMultipartFile(
                 "file",
                 "requirement.md",
@@ -517,14 +570,59 @@ class RdTaskControllerTest {
         mockMvc.perform(multipart("/admin/rd-tasks/{taskId}/materials/upload", taskId)
                         .file(file)
                         .param("title", "本地需求文档")
-                        .param("materialType", "REQUIREMENT_DOC"))
+                        .param("materialType", "REQUIREMENT_DOC")
+                        .param("recoveryStageRunId", "stage-failed-1"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.taskId", is(taskId)))
                 .andExpect(jsonPath("$.sourceType", is("LOCAL_UPLOAD")))
                 .andExpect(jsonPath("$.title", is("本地需求文档")))
                 .andExpect(jsonPath("$.sourceUri", is("local-upload://requirement.md")))
                 .andExpect(jsonPath("$.mimeType", is("text/markdown")))
+                .andExpect(jsonPath("$.metadataJson", org.hamcrest.Matchers.containsString("stage-failed-1")))
                 .andExpect(jsonPath("$.contentPreview").value(org.hamcrest.Matchers.containsString("用户可在待接单时催单")));
+    }
+
+    @Test
+    void shouldRejectTextRecoveryMaterialWhenStageRunDoesNotExist() throws Exception {
+        String taskId = createRequirementTask(false);
+        String body = objectMapper.writeValueAsString(Map.of(
+                "title", "不存在阶段的补充材料",
+                "content", "这条材料不能绑定到不存在的阶段。",
+                "recoveryStageRunId", "stage-missing"
+        ));
+
+        mockMvc.perform(post("/admin/rd-tasks/{taskId}/materials/text", taskId)
+                        .contentType(APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message", org.hamcrest.Matchers.containsString("stage-missing")));
+
+        mockMvc.perform(get("/admin/rd-tasks/{taskId}/materials", taskId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(1)));
+    }
+
+    @Test
+    void shouldRejectUploadedRecoveryMaterialWhenStageBelongsToAnotherTask() throws Exception {
+        String taskId = createRequirementTask(false);
+        String otherTaskId = createRequirementTask(false);
+        saveStageRun(otherTaskId, "stage-other-task");
+        MockMultipartFile file = new MockMultipartFile(
+                "file",
+                "requirement.md",
+                "text/markdown",
+                "# 跨任务材料".getBytes(java.nio.charset.StandardCharsets.UTF_8)
+        );
+
+        mockMvc.perform(multipart("/admin/rd-tasks/{taskId}/materials/upload", taskId)
+                        .file(file)
+                        .param("recoveryStageRunId", "stage-other-task"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message", org.hamcrest.Matchers.containsString("stage-other-task")));
+
+        mockMvc.perform(get("/admin/rd-tasks/{taskId}/materials", taskId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(1)));
     }
 
     @Test
@@ -600,6 +698,9 @@ class RdTaskControllerTest {
                 registry,
                 materialStore,
                 request -> {
+                    if (request.role() == AgentRole.REQUIREMENT_REVIEWER) {
+                        return RequirementExecutionResult.success(request.taskId(), "需求评审通过", "", requirementReviewBudgetJson());
+                    }
                     if (request.role() == AgentRole.QA_AGENT) {
                         return RequirementExecutionResult.success(
                                 request.taskId(),
@@ -609,10 +710,22 @@ class RdTaskControllerTest {
                                         {
                                           "status": "PASSED",
                                           "summary": "QA 验收通过",
+                                          "failureCategory": "NONE",
+                                          "retryRecommendation": "NONE",
+                                          "browserValidation": {
+                                            "required": false,
+                                            "performed": false,
+                                            "decisionSource": "NOT_APPLICABLE",
+                                            "baseUrl": "",
+                                            "browser": "chromium",
+                                            "viewports": []
+                                          },
                                           "acceptanceResults": [
-                                            {"criteria":"前端构建通过","command":"npm run build","status":"PASSED","logArtifactId":"qa-log-1"},
-                                            {"criteria":"新增接口测试通过","command":"npm test","status":"PASSED","logArtifactId":"qa-log-2"}
-                                          ]
+                                            {"criteria":"前端构建通过","scope":"CURRENT","command":"npm run build","status":"PASSED","exitCode":0,"durationMillis":100,"logArtifactId":"qa-evidence/commands/current-build.log","evidenceArtifactIds":["qa-evidence/commands/current-build.log"]},
+                                            {"criteria":"新增接口测试通过","scope":"CURRENT","command":"npm test","status":"PASSED","exitCode":0,"durationMillis":120,"logArtifactId":"qa-evidence/commands/current-api.log","evidenceArtifactIds":["qa-evidence/commands/current-api.log"]},
+                                            {"criteria":"既有功能回归","scope":"REGRESSION","command":"npm test","status":"PASSED","exitCode":0,"durationMillis":140,"logArtifactId":"qa-evidence/commands/regression.log","evidenceArtifactIds":["qa-evidence/commands/regression.log"]}
+                                          ],
+                                          "evidenceManifestArtifactId": "qa-evidence/manifest.json"
                                         }
                                         """
                         );
@@ -697,6 +810,9 @@ class RdTaskControllerTest {
                 registry,
                 materialStore,
                 request -> {
+                    if (request.role() == AgentRole.REQUIREMENT_REVIEWER) {
+                        return RequirementExecutionResult.success(request.taskId(), "需求评审通过", "", requirementReviewBudgetJson());
+                    }
                     if (request.role() == AgentRole.QA_AGENT) {
                         return RequirementExecutionResult.success(
                                 request.taskId(),
@@ -706,9 +822,21 @@ class RdTaskControllerTest {
                                         {
                                           "status": "PASSED",
                                           "summary": "QA 验收通过",
+                                          "failureCategory": "NONE",
+                                          "retryRecommendation": "NONE",
+                                          "browserValidation": {
+                                            "required": false,
+                                            "performed": false,
+                                            "decisionSource": "NOT_APPLICABLE",
+                                            "baseUrl": "",
+                                            "browser": "chromium",
+                                            "viewports": []
+                                          },
                                           "acceptanceResults": [
-                                            {"criteria":"前端构建通过","command":"npm run build","status":"PASSED","logArtifactId":"qa-log-77"}
-                                          ]
+                                            {"criteria":"前端构建通过","scope":"CURRENT","command":"npm run build","status":"PASSED","exitCode":0,"durationMillis":100,"logArtifactId":"qa-evidence/commands/current-build.log","evidenceArtifactIds":["qa-evidence/commands/current-build.log"]},
+                                            {"criteria":"既有功能回归","scope":"REGRESSION","command":"npm test","status":"PASSED","exitCode":0,"durationMillis":120,"logArtifactId":"qa-evidence/commands/regression.log","evidenceArtifactIds":["qa-evidence/commands/regression.log"]}
+                                          ],
+                                          "evidenceManifestArtifactId": "qa-evidence/manifest.json"
                                         }
                                         """
                         );
@@ -850,7 +978,7 @@ class RdTaskControllerTest {
     }
 
     @Test
-    void shouldNotCancelTaskWhenExecutionStopFails() throws Exception {
+    void shouldCancelLogicalTaskEvenWhenExternalStopReportsNoProcess() throws Exception {
         String taskId = createTask("FS-3009", "待停止任务", "P1");
 
         mockMvc.perform(post("/admin/rd-tasks/{taskId}/stop", taskId)
@@ -858,11 +986,11 @@ class RdTaskControllerTest {
                         .content("{\"message\":\"停止\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.stopped", is(false)))
-                .andExpect(jsonPath("$.task.status", is("CREATED")));
+                .andExpect(jsonPath("$.task.status", is("CANCELLED")));
 
         mockMvc.perform(get("/admin/rd-tasks/{taskId}", taskId))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status", is("CREATED")));
+                .andExpect(jsonPath("$.status", is("CANCELLED")));
     }
 
     private String createTask(String ticketId, String title, String priority) throws Exception {
@@ -906,6 +1034,37 @@ class RdTaskControllerTest {
                 .andExpect(jsonPath("$.taskId").exists())
                 .andReturn().getResponse().getContentAsString();
         return com.jayway.jsonpath.JsonPath.read(response, "$.taskId");
+    }
+
+    private void saveStageRun(String taskId, String stageRunId) {
+        stageRunStore.save(AgentStageRun.pending(
+                stageRunId,
+                taskId,
+                AgentRole.REQUIREMENT_REVIEWER,
+                1,
+                taskId + ":REQUIREMENT_REVIEWER:1",
+                100L
+        ));
+    }
+
+    private static String requirementReviewBudgetJson() {
+        return """
+                {
+                  "decision":"APPROVED",
+                  "feasibility":"CAN_DO",
+                  "missingInformation":[],
+                  "risks":[],
+                  "acceptanceCoverage":["前端构建通过"],
+                  "budgetEstimate":{
+                    "initialTokens":80000,
+                    "retryReserveTokens":20000,
+                    "estimatedTotalTokens":100000,
+                    "confidence":"LOW",
+                    "basis":"无历史样本时由模型判断完整四角色交付范围",
+                    "historicalSamples":[]
+                  }
+                }
+                """;
     }
 
     private SnowflakeIdGenerator generator() {

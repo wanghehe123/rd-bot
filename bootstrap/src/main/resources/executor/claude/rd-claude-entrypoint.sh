@@ -53,16 +53,18 @@ if [[ "$#" -eq 0 ]]; then
 fi
 
 started_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-prompt="$(
+prompt_payload_file="$(mktemp)"
+trap 'rm -f "$prompt_payload_file"' EXIT
+{
   cat "$PROMPT_FILE"
   printf '\n\nYou must write the final structured result JSON to %s and it must satisfy %s.\n' "$RESULT_FILE" "$SCHEMA_FILE"
   printf 'Write a unified git diff to %s and a concise test log to %s.\n' "$PATCH_FILE" "$TEST_LOG_FILE"
-)"
+} > "$prompt_payload_file"
 
 set +e
 (
   cd /work/repo
-  "$@" "$prompt"
+  "$@" < "$prompt_payload_file"
 ) 2>&1 | tee "$CLAUDE_EVENTS_FILE"
 exit_code="${PIPESTATUS[0]}"
 set -e

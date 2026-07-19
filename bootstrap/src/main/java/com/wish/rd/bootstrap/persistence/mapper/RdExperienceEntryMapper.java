@@ -20,12 +20,16 @@ public interface RdExperienceEntryMapper extends BaseMapper<RdExperienceEntryRow
             INSERT INTO rd_experience_entries (
                 id, task_id, stage_run_id, source_artifact_id, role, experience_type,
                 title, summary, content_json, content_hash, reusable, failure,
-                redacted, ingestion_task_id, created_at
+                redacted, project_id, repository_fingerprint, intent_id, tags_json,
+                source_revision, evidence_quality, applicable_roles_json,
+                ingestion_task_id, created_at
             )
             VALUES (
                 #{id}, #{taskId}, #{stageRunId}, #{sourceArtifactId}, #{role}, #{experienceType},
                 #{title}, #{summary}, #{contentJson}::jsonb, #{contentHash}, #{reusable}, #{failure},
-                #{redacted}, #{ingestionTaskId}, #{createdAt}
+                #{redacted}, #{projectId}, #{repositoryFingerprint}, #{intentId}, #{tagsJson}::jsonb,
+                #{sourceRevision}, #{evidenceQuality}, #{applicableRolesJson}::jsonb,
+                #{ingestionTaskId}, #{createdAt}
             )
             ON CONFLICT (id) DO UPDATE SET
                 task_id = EXCLUDED.task_id,
@@ -40,6 +44,13 @@ public interface RdExperienceEntryMapper extends BaseMapper<RdExperienceEntryRow
                 reusable = EXCLUDED.reusable,
                 failure = EXCLUDED.failure,
                 redacted = EXCLUDED.redacted,
+                project_id = EXCLUDED.project_id,
+                repository_fingerprint = EXCLUDED.repository_fingerprint,
+                intent_id = EXCLUDED.intent_id,
+                tags_json = EXCLUDED.tags_json,
+                source_revision = EXCLUDED.source_revision,
+                evidence_quality = EXCLUDED.evidence_quality,
+                applicable_roles_json = EXCLUDED.applicable_roles_json,
                 ingestion_task_id = EXCLUDED.ingestion_task_id
             """)
     void upsertExperienceEntry(RdExperienceEntryRow row);

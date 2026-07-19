@@ -275,6 +275,10 @@ ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS base_branch VARCHAR(256) NOT NULL 
 ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS work_branch VARCHAR(256) NOT NULL DEFAULT '';
 ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS expected_result TEXT NOT NULL DEFAULT '';
 ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS acceptance_criteria_json JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS token_budget_override BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE rd_tasks DROP CONSTRAINT IF EXISTS ck_rd_tasks_token_budget_override_non_negative;
+ALTER TABLE rd_tasks ADD CONSTRAINT ck_rd_tasks_token_budget_override_non_negative
+    CHECK (token_budget_override >= 0);
 CREATE INDEX IF NOT EXISTS idx_rd_tasks_project ON rd_tasks (project_id, task_type, updated_at);
 
 -- 任务管理：状态事件 append-only 表，承载全链路时间线（含耗时与触发来源）。
@@ -441,6 +445,14 @@ CREATE TABLE IF NOT EXISTS rd_project_alert_configs (
     event_types_json      JSONB NOT NULL DEFAULT '[]'::jsonb,
     budget_threshold_usd  NUMERIC(12, 4) NOT NULL DEFAULT 0,
     failure_threshold     INTEGER NOT NULL DEFAULT 1 CHECK (failure_threshold > 0),
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Token quota is independent from CNY alert thresholds. Zero means no hard budget.
+CREATE TABLE IF NOT EXISTS rd_project_token_budgets (
+    project_id            BIGINT PRIMARY KEY REFERENCES rd_projects(id) ON DELETE CASCADE,
+    default_token_budget  BIGINT NOT NULL DEFAULT 0 CHECK (default_token_budget >= 0),
     created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at            TIMESTAMPTZ NOT NULL DEFAULT now()
 );

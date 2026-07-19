@@ -92,9 +92,10 @@ public final class PostgresRoleContextPackageStore implements RoleContextPackage
                 {"maxChars":%d,"usedChars":%d}
                 """.formatted(contextPackage.maxChars(), contextPackage.usedChars()).strip();
         row.omittedEvidenceJson = writeJson(contextPackage.omittedEvidenceIds());
+        row.retrievalRunId = nullableId(contextPackage.retrievalRunId());
         row.contentHash = PostgresPersistenceSupport.checksum(
                 row.evidenceJson + row.acceptanceJson + row.riskHintsJson + row.contextBudgetJson
-                        + row.omittedEvidenceJson
+                        + row.omittedEvidenceJson + contextPackage.retrievalRunId()
         );
         row.createdAt = PostgresPersistenceSupport.toDateTime(contextPackage.createdAtEpochMillis());
         return row;
@@ -113,8 +114,14 @@ public final class PostgresRoleContextPackageStore implements RoleContextPackage
                 budget.path("maxChars").asInt(0),
                 budget.path("usedChars").asInt(0),
                 readJson(row.omittedEvidenceJson, STRING_LIST),
+                PostgresPersistenceSupport.idString(row.retrievalRunId),
                 PostgresPersistenceSupport.toEpochMillis(row.createdAt)
         );
+    }
+
+    private Long nullableId(String value) {
+        String safeValue = value == null ? "" : value.strip();
+        return safeValue.isBlank() ? null : PostgresPersistenceSupport.parseId(safeValue);
     }
 
     private String writeJson(Object value) {

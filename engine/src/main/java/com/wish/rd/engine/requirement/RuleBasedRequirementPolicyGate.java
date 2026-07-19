@@ -39,10 +39,11 @@ public final class RuleBasedRequirementPolicyGate {
             return new RequirementPolicyDecision("NEED_INFO", "MEDIUM", "需求任务缺少代码仓库");
         }
         String corpus = corpus(task, materials);
-        if (containsAny(corpus, "生产数据", "线上数据库", "导出密钥", "secret", "token")) {
+        if (containsAny(corpus, "生产数据", "线上数据库", "导出密钥", "secret")) {
             return new RequirementPolicyDecision("UNSAFE", "HIGH", "需求包含生产数据或密钥相关高危操作");
         }
-        if (containsAny(corpus, "auth", "security", "payment", "支付", "权限", "登录", "配置")) {
+        // 单独出现 token 无法证明密钥泄露，保留在审批分支避免自动放行。
+        if (containsAny(corpus, "auth", "security", "payment", "支付", "权限", "登录", "配置", "token")) {
             return new RequirementPolicyDecision("WAITING_APPROVAL", "HIGH", "需求涉及高风险模块，等待人工审批");
         }
         return new RequirementPolicyDecision("ALLOWED", "LOW", "低风险需求，允许进入沙箱执行");

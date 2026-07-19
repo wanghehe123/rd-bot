@@ -226,6 +226,33 @@ public record AgentStageRun(
         );
     }
 
+    /** Returns this stage with an auditable reviewer decision snapshot. */
+    public AgentStageRun withReviewResultJson(String newReviewResultJson, long updateTimeEpochMillis) {
+        String safeReviewResultJson = newReviewResultJson == null || newReviewResultJson.isBlank()
+                ? reviewResultJson
+                : newReviewResultJson.strip();
+        return new AgentStageRun(
+                stageRunId,
+                taskId,
+                role,
+                status,
+                attemptNo,
+                idempotencyKey,
+                contextPackageId,
+                promptArtifactId,
+                resultArtifactId,
+                providerName,
+                providerAttemptsJson,
+                safeReviewResultJson,
+                errorCategory,
+                errorMessage,
+                createTimeEpochMillis,
+                updateTimeEpochMillis,
+                startedAtEpochMillis,
+                finishedAtEpochMillis
+        );
+    }
+
     /**
      * 返回绑定 prompt 产物后的新快照。
      *

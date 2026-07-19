@@ -2,6 +2,7 @@ package com.wish.rd.rag.runtime;
 
 import com.wish.rd.rag.runtime.impl.InMemoryRdTaskStatusEventStore;
 import com.wish.rd.rag.runtime.impl.InMemoryRdTaskStore;
+import com.wish.rd.rag.runtime.impl.CoordinatedRdTaskStatePersistence;
 
 import com.wish.rd.adapter.model.TicketSnapshot;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
@@ -39,19 +40,22 @@ import com.wish.rd.rag.runtime.model.RdTaskType;
 @Component
 public final class RagStreamTaskRegistry {
 
-    private static final String LOCK_NAME = "rd-bot:lock:rag-stream-task-registry";
+    private static final String TASK_LOCK_PREFIX = "rd-bot:lock:rd-task:";
+    private static final String TICKET_LOCK_PREFIX = "rd-bot:lock:rd-ticket:";
 
     private final RdTaskStore taskStore;
     private final RdTaskStatusEventStore eventStore;
     private final SnowflakeIdGenerator idGenerator;
     private final DistributedLockExecutor lockExecutor;
+    private final RdTaskStatePersistence statePersistence;
 
     @Autowired
     public RagStreamTaskRegistry(
             RdTaskStore taskStore,
             RdTaskStatusEventStore eventStore,
             SnowflakeIdGenerator idGenerator,
-            ObjectProvider<DistributedLockExecutor> lockExecutorProvider
+            ObjectProvider<DistributedLockExecutor> lockExecutorProvider,
+            ObjectProvider<RdTaskStatePersistence> statePersistenceProvider
     ) {
         this(
                 taskStore,
@@ -59,7 +63,8 @@ public final class RagStreamTaskRegistry {
                 idGenerator,
                 lockExecutorProvider == null
                         ? DistributedLockExecutor.local()
-                        : lockExecutorProvider.getIfAvailable(DistributedLockExecutor::local)
+                        : lockExecutorProvider.getIfAvailable(DistributedLockExecutor::local),
+                statePersistenceProvider == null ? null : statePersistenceProvider.getIfAvailable()
         );
     }
 
@@ -77,10 +82,23 @@ public final class RagStreamTaskRegistry {
             SnowflakeIdGenerator idGenerator,
             DistributedLockExecutor lockExecutor
     ) {
+        this(taskStore, eventStore, idGenerator, lockExecutor, null);
+    }
+
+    public RagStreamTaskRegistry(
+            RdTaskStore taskStore,
+            RdTaskStatusEventStore eventStore,
+            SnowflakeIdGenerator idGenerator,
+            DistributedLockExecutor lockExecutor,
+            RdTaskStatePersistence statePersistence
+    ) {
         this.taskStore = taskStore == null ? new InMemoryRdTaskStore() : taskStore;
         this.eventStore = eventStore;
         this.idGenerator = idGenerator == null ? SnowflakeIdGenerator.defaultGenerator() : idGenerator;
         this.lockExecutor = lockExecutor == null ? DistributedLockExecutor.local() : lockExecutor;
+        this.statePersistence = statePersistence == null
+                ? new CoordinatedRdTaskStatePersistence(this.taskStore, this.eventStore)
+                : statePersistence;
     }
 
     /**
@@ -102,8 +120,16 @@ public final class RagStreamTaskRegistry {
         return new RagStreamTaskRegistry(new InMemoryRdTaskStore(), new InMemoryRdTaskStatusEventStore(), SnowflakeIdGenerator.defaultGenerator());
     }
 
-    private <T> T withLock(Supplier<T> action) {
-        return lockExecutor.execute(LOCK_NAME, action);
+    private <T> T withTaskLock(String taskId, Supplier<T> action) {
+        return lockExecutor.execute(TASK_LOCK_PREFIX + requireTaskId(taskId), action);
+    }
+
+    private <T> T withTicketLock(String ticketId, Supplier<T> action) {
+        String safeTicketId = ticketId == null ? "" : ticketId.strip();
+        if (safeTicketId.isBlank()) {
+            return action.get();
+        }
+        return lockExecutor.execute(TICKET_LOCK_PREFIX + safeTicketId, action);
     }
 
     /**
@@ -114,18 +140,17 @@ public final class RagStreamTaskRegistry {
      * @return 新任务快照
      */
     public RdBugFixTask createBugFixTask(TicketSnapshot ticket, String priority) {
-        return withLock(() -> {
-            TicketSnapshot safeTicket = normalizeTicket(ticket);
-            RdBugFixTask task = RdBugFixTask.created(
-                    idGenerator.nextIdString(),
-                    safeTicket.ticketId(),
-                    safeTicket.title(),
-                    priority,
-                    System.currentTimeMillis()
-            );
-            RdBugFixTask saved = taskStore.saveBugFixTask(task);
-            recordEvent(saved, RdTaskStatus.CREATED.name(), saved.title(), "任务创建", RdTaskEventTrigger.SYSTEM);
-            return saved;
+        TicketSnapshot safeTicket = normalizeTicket(ticket);
+        RdBugFixTask task = RdBugFixTask.created(
+                idGenerator.nextIdString(),
+                safeTicket.ticketId(),
+                safeTicket.title(),
+                priority,
+                System.currentTimeMillis()
+        );
+        return withTaskLock(task.taskId(), () -> {
+            return (RdBugFixTask) saveTaskWithEvent(
+                    task, RdTaskStatus.CREATED.name(), task.title(), "任务创建", RdTaskEventTrigger.SYSTEM);
         });
     }
 
@@ -137,8 +162,8 @@ public final class RagStreamTaskRegistry {
      * @return 已存在任务或新任务快照
      */
     public RdBugFixTask createOrReuseBugFixTask(TicketSnapshot ticket, String priority) {
-        return withLock(() -> {
-            TicketSnapshot safeTicket = normalizeTicket(ticket);
+        TicketSnapshot safeTicket = normalizeTicket(ticket);
+        return withTicketLock(safeTicket.ticketId(), () -> {
             if (!safeTicket.ticketId().isBlank()) {
                 Optional<RdBugFixTask> existing = taskStore.findLatestBugFixTaskByTicketId(safeTicket.ticketId());
                 if (existing.isPresent()) {
@@ -200,10 +225,9 @@ public final class RagStreamTaskRegistry {
             String repoName,
             String baseBranch
     ) {
-        return withLock(() -> {
-            long now = System.currentTimeMillis();
-            RdBugFixTask task = new RdBugFixTask(
-                    idGenerator.nextIdString(),
+        long now = System.currentTimeMillis();
+        RdBugFixTask task = new RdBugFixTask(
+                idGenerator.nextIdString(),
                     RdBugFixTask.TASK_TYPE,
                     ticketId,
                     ticketTitle,
@@ -224,11 +248,11 @@ public final class RagStreamTaskRegistry {
                     baseBranch,
                     now,
                     now,
-                    false
-            );
-            RdBugFixTask saved = taskStore.saveBugFixTask(task);
-            recordEvent(saved, RdTaskStatus.CREATED.name(), saved.title(), "管理台创建任务", RdTaskEventTrigger.API);
-            return saved;
+                false
+        );
+        return withTaskLock(task.taskId(), () -> {
+            return (RdBugFixTask) saveTaskWithEvent(
+                    task, RdTaskStatus.CREATED.name(), task.title(), "管理台创建任务", RdTaskEventTrigger.API);
         });
     }
 
@@ -239,28 +263,27 @@ public final class RagStreamTaskRegistry {
      * @return 新需求任务快照
      */
     public RdRequirementTask createRequirementTask(CreateRequirementTaskCommand command) {
-        return withLock(() -> {
-            CreateRequirementTaskCommand safeCommand = command == null
-                    ? new CreateRequirementTaskCommand("", "P2", "", "", "", "", "", List.of(), false)
-                    : command;
-            if (safeCommand.title().isBlank()) {
-                throw new IllegalArgumentException("title must not be blank");
-            }
-            if (safeCommand.baseBranch().isBlank()) {
-                throw new IllegalArgumentException("baseBranch must not be blank");
-            }
-            if (safeCommand.repositoryUrl().isBlank()
-                    && (safeCommand.repoOwner().isBlank() || safeCommand.repoName().isBlank())) {
-                throw new IllegalArgumentException("repositoryUrl or repoOwner/repoName must not be blank");
-            }
-            if (safeCommand.expectedResult().isBlank()) {
-                throw new IllegalArgumentException("expectedResult must not be blank");
-            }
-            long now = System.currentTimeMillis();
-            RdRequirementTask task = RdRequirementTask.created(idGenerator.nextIdString(), safeCommand, now);
-            RdRequirementTask saved = taskStore.saveRequirementTask(task);
-            recordEvent(saved, RdTaskStatus.CREATED.name(), saved.title(), "管理台创建需求任务", RdTaskEventTrigger.API);
-            return saved;
+        CreateRequirementTaskCommand safeCommand = command == null
+                ? new CreateRequirementTaskCommand("", "P2", "", "", "", "", "", List.of(), false)
+                : command;
+        if (safeCommand.title().isBlank()) {
+            throw new IllegalArgumentException("title must not be blank");
+        }
+        if (safeCommand.baseBranch().isBlank()) {
+            throw new IllegalArgumentException("baseBranch must not be blank");
+        }
+        if (safeCommand.repositoryUrl().isBlank()
+                && (safeCommand.repoOwner().isBlank() || safeCommand.repoName().isBlank())) {
+            throw new IllegalArgumentException("repositoryUrl or repoOwner/repoName must not be blank");
+        }
+        if (safeCommand.expectedResult().isBlank()) {
+            throw new IllegalArgumentException("expectedResult must not be blank");
+        }
+        long now = System.currentTimeMillis();
+        RdRequirementTask task = RdRequirementTask.created(idGenerator.nextIdString(), safeCommand, now);
+        return withTaskLock(task.taskId(), () -> {
+            return (RdRequirementTask) saveTaskWithEvent(
+                    task, RdTaskStatus.CREATED.name(), task.title(), "管理台创建需求任务", RdTaskEventTrigger.API);
         });
     }
 
@@ -272,7 +295,7 @@ public final class RagStreamTaskRegistry {
      * @return 新任务快照
      */
     public RdBugFixTask markSearching(String taskId, String summary) {
-        return withLock(() -> {
+        return withTaskLock(taskId, () -> {
             RdBugFixTask existing = get(taskId);
             return transitionAndSave(existing, RdTaskStatus.SEARCHING, "", summary, "", "", "", "");
         });
@@ -286,7 +309,7 @@ public final class RagStreamTaskRegistry {
      * @return 新任务快照
      */
     public RdBugFixTask markExecuting(String taskId, String promptSnapshot) {
-        return withLock(() -> {
+        return withTaskLock(taskId, () -> {
             RdBugFixTask existing = get(taskId);
             return transitionAndSave(existing, RdTaskStatus.EXECUTING, "", "", promptSnapshot, "", "", "");
         });
@@ -305,7 +328,7 @@ public final class RagStreamTaskRegistry {
             String pullRequestUrl,
             String executionResultJson
     ) {
-        return withLock(() -> {
+        return withTaskLock(taskId, () -> {
             RdBugFixTask existing = get(taskId);
             return transitionAndSave(
                     existing,
@@ -327,7 +350,7 @@ public final class RagStreamTaskRegistry {
      * @return 新任务快照
      */
     public RdBugFixTask markMerged(String taskId) {
-        return withLock(() -> {
+        return withTaskLock(taskId, () -> {
             RdBugFixTask existing = get(taskId);
             return transitionAndSave(existing, RdTaskStatus.MERGED, "", "", "", "", "", "");
         });
@@ -341,7 +364,7 @@ public final class RagStreamTaskRegistry {
      * @return 新任务快照
      */
     public RdBugFixTask markRejected(String taskId, String errorMessage) {
-        return withLock(() -> markRejected(taskId, errorMessage, ""));
+        return markRejected(taskId, errorMessage, "");
     }
 
     /**
@@ -357,7 +380,7 @@ public final class RagStreamTaskRegistry {
             String errorMessage,
             String executionResultJson
     ) {
-        return withLock(() -> {
+        return withTaskLock(taskId, () -> {
             RdBugFixTask existing = get(taskId);
             return transitionAndSave(existing, RdTaskStatus.REJECTED, "", "", "", executionResultJson, "", errorMessage);
         });
@@ -365,11 +388,31 @@ public final class RagStreamTaskRegistry {
 
     /** Marks a Bug task retryable so a later submit creates fresh stage attempts. */
     public RdBugFixTask markFailedRetryable(String taskId, String errorMessage) {
-        return withLock(() -> {
+        return withTaskLock(taskId, () -> {
             RdBugFixTask existing = get(taskId);
             return transitionAndSave(
                     existing,
                     RdTaskStatus.FAILED_RETRYABLE,
+                    "",
+                    "",
+                    "",
+                    existing.executionResultJson(),
+                    existing.pullRequestUrl(),
+                    errorMessage
+            );
+        });
+    }
+
+    /**
+     * Stops a Bug task before execution when its retrieval run identifies a concrete material gap.
+     * The retrieval lifecycle stays separately auditable; this only projects its outcome to the task.
+     */
+    public RdBugFixTask markFailedNeedsHuman(String taskId, String errorMessage) {
+        return withTaskLock(taskId, () -> {
+            RdBugFixTask existing = get(taskId);
+            return transitionAndSave(
+                    existing,
+                    RdTaskStatus.FAILED_NEEDS_HUMAN,
                     "",
                     "",
                     "",
@@ -388,7 +431,7 @@ public final class RagStreamTaskRegistry {
      * @return 新任务快照
      */
     public RdBugFixTask registerRunning(String taskId, String conversationId) {
-        return withLock(() -> {
+        return withTaskLock(taskId, () -> {
             RdBugFixTask existing = taskStore.findBugFixTask(requireTaskId(taskId))
                     .orElseGet(() -> save(newTaskWithId(taskId)));
             if (existing.status() == RdTaskStatus.REJECTED || existing.status() == RdTaskStatus.MERGED) {
@@ -407,7 +450,7 @@ public final class RagStreamTaskRegistry {
      * @return 新任务快照
      */
     public RdBugFixTask complete(String taskId, String messageId, String title) {
-        return withLock(() -> {
+        return withTaskLock(taskId, () -> {
             RdBugFixTask existing = get(taskId);
             if (existing.status() == RdTaskStatus.REJECTED || existing.status() == RdTaskStatus.MERGED) {
                 return existing;
@@ -419,18 +462,46 @@ public final class RagStreamTaskRegistry {
         });
     }
 
-    /**
-     * 兼容 stop 接口：将任务标记为 REJECTED。
-     *
-     * @param taskId 任务 ID
-     * @return 新任务快照
-     */
+    /** 兼容旧 Bug 修复 stop 调用方。 */
     public RdBugFixTask cancel(String taskId) {
-        return withLock(() -> {
+        return withTaskLock(taskId, () -> {
             String safeTaskId = requireTaskId(taskId);
             RdBugFixTask existing = taskStore.findBugFixTask(safeTaskId)
                     .orElseGet(() -> save(newTaskWithId(safeTaskId)));
             return transitionAndSave(existing, RdTaskStatus.REJECTED, "", "", "", "", "", "任务已停止");
+        });
+    }
+
+    /** 将任意可取消任务推进到 CANCELLED；重复取消幂等。 */
+    public RdTask cancelTask(String taskId, String reason) {
+        return withTaskLock(taskId, () -> {
+            RdTask existing = getTask(taskId);
+            if (existing.status() == RdTaskStatus.CANCELLED) {
+                return existing;
+            }
+            return transitionTask(existing, RdTaskStatus.CANCELLED, reason);
+        });
+    }
+
+    /** 将失败任务推进到任务级 RECOVERING；阶段重试仍创建新 attempt。 */
+    public RdTask markRecovering(String taskId, String reason) {
+        return withTaskLock(taskId, () -> {
+            RdTask existing = getTask(taskId);
+            if (existing.status() == RdTaskStatus.RECOVERING) {
+                return existing;
+            }
+            return transitionTask(existing, RdTaskStatus.RECOVERING, reason);
+        });
+    }
+
+    /** 将派发超过重试上限的任务推进到 DEAD_LETTERED；重复调用幂等。 */
+    public RdTask markDeadLettered(String taskId, String reason) {
+        return withTaskLock(taskId, () -> {
+            RdTask existing = getTask(taskId);
+            if (existing.status() == RdTaskStatus.DEAD_LETTERED) {
+                return existing;
+            }
+            return transitionTask(existing, RdTaskStatus.DEAD_LETTERED, reason);
         });
     }
 
@@ -449,7 +520,7 @@ public final class RagStreamTaskRegistry {
             String messageId,
             String errorMessage
     ) {
-        return withLock(() -> {
+        return withTaskLock(taskId, () -> {
             String safeTaskId = requireTaskId(taskId);
             RdBugFixTask existing = taskStore.findBugFixTask(safeTaskId)
                     .orElseGet(() -> save(newTaskWithId(safeTaskId)));
@@ -464,11 +535,9 @@ public final class RagStreamTaskRegistry {
      * @return 任务快照
      */
     public RdBugFixTask get(String taskId) {
-        return withLock(() -> {
-            String safeTaskId = requireTaskId(taskId);
-            return taskStore.findBugFixTask(safeTaskId)
-                    .orElseThrow(() -> new NoSuchElementException("rd task not found: " + safeTaskId));
-        });
+        String safeTaskId = requireTaskId(taskId);
+        return taskStore.findBugFixTask(safeTaskId)
+                .orElseThrow(() -> new NoSuchElementException("rd task not found: " + safeTaskId));
     }
 
     /**
@@ -478,11 +547,9 @@ public final class RagStreamTaskRegistry {
      * @return 任务快照
      */
     public RdTask getTask(String taskId) {
-        return withLock(() -> {
-            String safeTaskId = requireTaskId(taskId);
-            return taskStore.findTask(safeTaskId)
-                    .orElseThrow(() -> new NoSuchElementException("rd task not found: " + safeTaskId));
-        });
+        String safeTaskId = requireTaskId(taskId);
+        return taskStore.findTask(safeTaskId)
+                .orElseThrow(() -> new NoSuchElementException("rd task not found: " + safeTaskId));
     }
 
     /**
@@ -492,11 +559,9 @@ public final class RagStreamTaskRegistry {
      * @return 需求任务快照
      */
     public RdRequirementTask getRequirementTask(String taskId) {
-        return withLock(() -> {
-            String safeTaskId = requireTaskId(taskId);
-            return taskStore.findRequirementTask(safeTaskId)
-                    .orElseThrow(() -> new NoSuchElementException("rd requirement task not found: " + safeTaskId));
-        });
+        String safeTaskId = requireTaskId(taskId);
+        return taskStore.findRequirementTask(safeTaskId)
+                .orElseThrow(() -> new NoSuchElementException("rd requirement task not found: " + safeTaskId));
     }
 
     /**
@@ -505,7 +570,7 @@ public final class RagStreamTaskRegistry {
      * @return 任务快照列表
      */
     public List<RdBugFixTask> listBugFixTasks() {
-        return withLock(taskStore::listBugFixTasks);
+        return taskStore.listBugFixTasks();
     }
 
     /**
@@ -514,7 +579,7 @@ public final class RagStreamTaskRegistry {
      * @return 任务快照列表
      */
     public List<RdTask> listTasks() {
-        return withLock(taskStore::listTasks);
+        return taskStore.listTasks();
     }
 
     /**
@@ -524,20 +589,18 @@ public final class RagStreamTaskRegistry {
      * @return 分页结果
      */
     public RdTaskPage queryBugFixTasks(RdTaskQuery query) {
-        return withLock(() -> {
-            RdTaskQuery oldQuery = query == null ? new RdTaskQuery(null, null, null, null, 1, 20) : query;
-            RdTaskQuery safeQuery = new RdTaskQuery(
-                    RdTaskType.BUG_FIX.name(),
-                    oldQuery.status(),
-                    oldQuery.priority(),
-                    oldQuery.projectId(),
-                    oldQuery.ticketId(),
-                    oldQuery.keyword(),
-                    oldQuery.page(),
-                    oldQuery.pageSize()
-            );
-            return queryTasks(safeQuery);
-        });
+        RdTaskQuery oldQuery = query == null ? new RdTaskQuery(null, null, null, null, 1, 20) : query;
+        RdTaskQuery safeQuery = new RdTaskQuery(
+                RdTaskType.BUG_FIX.name(),
+                oldQuery.status(),
+                oldQuery.priority(),
+                oldQuery.projectId(),
+                oldQuery.ticketId(),
+                oldQuery.keyword(),
+                oldQuery.page(),
+                oldQuery.pageSize()
+        );
+        return queryTasks(safeQuery);
     }
 
     /**
@@ -547,9 +610,8 @@ public final class RagStreamTaskRegistry {
      * @return 分页结果
      */
     public RdTaskPage queryTasks(RdTaskQuery query) {
-        return withLock(() -> {
-            RdTaskQuery safeQuery = query == null ? new RdTaskQuery(null, null, null, null, 1, 20) : query;
-            List<RdTask> filtered = taskStore.listTasks().stream()
+        RdTaskQuery safeQuery = query == null ? new RdTaskQuery(null, null, null, null, 1, 20) : query;
+        List<RdTask> filtered = taskStore.listTasks().stream()
                     .filter(task -> task.status() != RdTaskStatus.DELETED)
                     .filter(task -> safeQuery.matchesTaskType(task.taskType()))
                     .filter(task -> safeQuery.matchesStatus(task.status()))
@@ -564,8 +626,7 @@ public final class RagStreamTaskRegistry {
             int pages = total == 0 ? 0 : (int) Math.ceil((double) total / pageSize);
             int fromIndex = Math.min((safeQuery.page() - 1) * pageSize, total);
             int toIndex = Math.min(fromIndex + pageSize, total);
-            return new RdTaskPage(filtered.subList(fromIndex, toIndex), total, safeQuery.page(), pageSize, pages);
-        });
+        return new RdTaskPage(filtered.subList(fromIndex, toIndex), total, safeQuery.page(), pageSize, pages);
     }
 
     private static String projectId(RdTask task) {
@@ -586,7 +647,7 @@ public final class RagStreamTaskRegistry {
      * @return 新任务快照
      */
     public RdRequirementTask markRequirementMaterialCollecting(String taskId, String summary) {
-        return withLock(() -> {
+        return withTaskLock(taskId, () -> {
             RdRequirementTask existing = getRequirementTask(taskId);
             return transitionAndSave(existing, RdTaskStatus.MATERIAL_COLLECTING, "", "", "", "");
         });
@@ -600,7 +661,7 @@ public final class RagStreamTaskRegistry {
      * @return 新任务快照
      */
     public RdRequirementTask markRequirementMaterialReady(String taskId, String summary) {
-        return withLock(() -> {
+        return withTaskLock(taskId, () -> {
             RdRequirementTask existing = getRequirementTask(taskId);
             return transitionAndSave(existing, RdTaskStatus.MATERIAL_READY, "", "", "", "");
         });
@@ -614,7 +675,7 @@ public final class RagStreamTaskRegistry {
      * @return 新任务快照
      */
     public RdRequirementTask markRequirementContextBuilding(String taskId, String summary) {
-        return withLock(() -> {
+        return withTaskLock(taskId, () -> {
             RdRequirementTask existing = getRequirementTask(taskId);
             return transitionAndSave(existing, RdTaskStatus.CONTEXT_BUILDING, "", "", "", "");
         });
@@ -628,7 +689,7 @@ public final class RagStreamTaskRegistry {
      * @return 新任务快照
      */
     public RdRequirementTask markRequirementContextReady(String taskId, String contextJson) {
-        return withLock(() -> {
+        return withTaskLock(taskId, () -> {
             RdRequirementTask existing = getRequirementTask(taskId);
             return transitionAndSave(existing, RdTaskStatus.CONTEXT_READY, "", contextJson, "", "");
         });
@@ -642,7 +703,7 @@ public final class RagStreamTaskRegistry {
      * @return 新任务快照
      */
     public RdRequirementTask markRequirementPlanGenerating(String taskId, String summary) {
-        return withLock(() -> {
+        return withTaskLock(taskId, () -> {
             RdRequirementTask existing = getRequirementTask(taskId);
             return transitionAndSave(existing, RdTaskStatus.PLAN_GENERATING, "", "", "", "");
         });
@@ -656,7 +717,7 @@ public final class RagStreamTaskRegistry {
      * @return 新任务快照
      */
     public RdRequirementTask markRequirementPlanGenerated(String taskId, String planJson) {
-        return withLock(() -> {
+        return withTaskLock(taskId, () -> {
             RdRequirementTask existing = getRequirementTask(taskId);
             return transitionAndSave(existing, RdTaskStatus.PLAN_GENERATED, "", planJson, "", "");
         });
@@ -670,7 +731,7 @@ public final class RagStreamTaskRegistry {
      * @return 新任务快照
      */
     public RdRequirementTask markRequirementWaitingPolicy(String taskId, String policyJson) {
-        return withLock(() -> {
+        return withTaskLock(taskId, () -> {
             RdRequirementTask existing = getRequirementTask(taskId);
             return transitionAndSave(existing, RdTaskStatus.WAITING_POLICY, "", policyJson, "", "");
         });
@@ -684,7 +745,7 @@ public final class RagStreamTaskRegistry {
      * @return 新任务快照
      */
     public RdRequirementTask markRequirementWaitingApproval(String taskId, String policyJson) {
-        return withLock(() -> {
+        return withTaskLock(taskId, () -> {
             RdRequirementTask existing = getRequirementTask(taskId);
             return transitionAndSave(existing, RdTaskStatus.WAITING_APPROVAL, "", policyJson, "", "");
         });
@@ -698,7 +759,7 @@ public final class RagStreamTaskRegistry {
      * @return 新任务快照
      */
     public RdRequirementTask markRequirementExecuting(String taskId, String promptSnapshot) {
-        return withLock(() -> {
+        return withTaskLock(taskId, () -> {
             RdRequirementTask existing = getRequirementTask(taskId);
             return transitionAndSave(existing, RdTaskStatus.EXECUTING, promptSnapshot, "", "", "");
         });
@@ -712,7 +773,7 @@ public final class RagStreamTaskRegistry {
      * @return 新任务快照
      */
     public RdRequirementTask markRequirementValidating(String taskId, String validationJson) {
-        return withLock(() -> {
+        return withTaskLock(taskId, () -> {
             RdRequirementTask existing = getRequirementTask(taskId);
             return transitionAndSave(existing, RdTaskStatus.VALIDATING, "", validationJson, "", "");
         });
@@ -726,7 +787,7 @@ public final class RagStreamTaskRegistry {
      * @return 新任务快照
      */
     public RdRequirementTask markRequirementPrCreating(String taskId, String reviewedResultJson) {
-        return withLock(() -> {
+        return withTaskLock(taskId, () -> {
             RdRequirementTask existing = getRequirementTask(taskId);
             return transitionAndSave(existing, RdTaskStatus.PR_CREATING, "", reviewedResultJson, "", "");
         });
@@ -745,7 +806,7 @@ public final class RagStreamTaskRegistry {
             String pullRequestUrl,
             String executionResultJson
     ) {
-        return withLock(() -> {
+        return withTaskLock(taskId, () -> {
             RdRequirementTask existing = getRequirementTask(taskId);
             return transitionAndSave(existing, RdTaskStatus.COMMITTED, "", executionResultJson, pullRequestUrl, "");
         });
@@ -759,7 +820,7 @@ public final class RagStreamTaskRegistry {
      * @return 新任务快照
      */
     public RdRequirementTask markRequirementReporting(String taskId, String deliveryReportJson) {
-        return withLock(() -> {
+        return withTaskLock(taskId, () -> {
             RdRequirementTask existing = getRequirementTask(taskId);
             return transitionAndSave(existing, RdTaskStatus.REPORTING, "", deliveryReportJson, "", "");
         });
@@ -778,7 +839,7 @@ public final class RagStreamTaskRegistry {
             String pullRequestUrl,
             String executionResultJson
     ) {
-        return withLock(() -> {
+        return withTaskLock(taskId, () -> {
             RdRequirementTask existing = getRequirementTask(taskId);
             return transitionAndSave(existing, RdTaskStatus.COMPLETED, "", executionResultJson, pullRequestUrl, "");
         });
@@ -791,7 +852,7 @@ public final class RagStreamTaskRegistry {
      * @return 新需求任务快照
      */
     public RdRequirementTask markRequirementMerged(String taskId) {
-        return withLock(() -> {
+        return withTaskLock(taskId, () -> {
             RdRequirementTask existing = getRequirementTask(taskId);
             return transitionAndSave(existing, RdTaskStatus.MERGED, "", "", "", "");
         });
@@ -810,7 +871,7 @@ public final class RagStreamTaskRegistry {
             String errorMessage,
             String executionResultJson
     ) {
-        return withLock(() -> {
+        return withTaskLock(taskId, () -> {
             RdRequirementTask existing = getRequirementTask(taskId);
             return transitionAndSave(existing, RdTaskStatus.REJECTED, "", executionResultJson, "", errorMessage);
         });
@@ -829,9 +890,29 @@ public final class RagStreamTaskRegistry {
             String errorMessage,
             String executionResultJson
     ) {
-        return withLock(() -> {
+        return withTaskLock(taskId, () -> {
             RdRequirementTask existing = getRequirementTask(taskId);
             return transitionAndSave(existing, RdTaskStatus.FAILED_NEEDS_HUMAN, "", executionResultJson, "", errorMessage);
+        });
+    }
+
+    /**
+     * 将需求任务推进到 FAILED_RETRYABLE，并保留结构化失败结果。
+     *
+     * @param taskId              任务 ID
+     * @param errorMessage        可重试失败原因
+     * @param executionResultJson 结构化结果 JSON
+     * @return 新任务快照
+     */
+    public RdRequirementTask markRequirementFailedRetryable(
+            String taskId,
+            String errorMessage,
+            String executionResultJson
+    ) {
+        return withTaskLock(taskId, () -> {
+            RdRequirementTask existing = getRequirementTask(taskId);
+            return transitionAndSave(existing, RdTaskStatus.FAILED_RETRYABLE,
+                    "", executionResultJson, "", errorMessage);
         });
     }
 
@@ -845,7 +926,7 @@ public final class RagStreamTaskRegistry {
      * @return 更新后任务快照
      */
     public RdBugFixTask updateTask(String taskId, String title, String priority, String ticketTitle) {
-        return withLock(() -> {
+        return withTaskLock(taskId, () -> {
             RdBugFixTask existing = get(taskId);
             RdBugFixTask updated = existing.withEditedFields(title, priority, ticketTitle, System.currentTimeMillis());
             return taskStore.saveBugFixTask(updated);
@@ -860,10 +941,7 @@ public final class RagStreamTaskRegistry {
      * @return 更新后任务快照
      */
     public RdBugFixTask pause(String taskId, String message) {
-        return withLock(() -> {
-            RdBugFixTask existing = get(taskId);
-            return (RdBugFixTask) pauseTask(existing.taskId(), message);
-        });
+        return (RdBugFixTask) pauseTask(taskId, message);
     }
 
     /**
@@ -874,12 +952,11 @@ public final class RagStreamTaskRegistry {
      * @return 更新后任务快照
      */
     public RdTask pauseTask(String taskId, String message) {
-        return withLock(() -> {
+        return withTaskLock(taskId, () -> {
             RdTask existing = getTask(taskId);
             RdTask paused = switchPaused(existing, true, System.currentTimeMillis());
-            RdTask saved = saveTask(paused);
-            recordEvent(saved, RdTaskStatusEvent.ACTION_PAUSED, saved.title(), message, RdTaskEventTrigger.API);
-            return saved;
+            return saveTaskWithEvent(
+                    paused, RdTaskStatusEvent.ACTION_PAUSED, paused.title(), message, RdTaskEventTrigger.API);
         });
     }
 
@@ -891,10 +968,7 @@ public final class RagStreamTaskRegistry {
      * @return 更新后任务快照
      */
     public RdBugFixTask resume(String taskId, String message) {
-        return withLock(() -> {
-            RdBugFixTask existing = get(taskId);
-            return (RdBugFixTask) resumeTask(existing.taskId(), message);
-        });
+        return (RdBugFixTask) resumeTask(taskId, message);
     }
 
     /**
@@ -905,12 +979,11 @@ public final class RagStreamTaskRegistry {
      * @return 更新后任务快照
      */
     public RdTask resumeTask(String taskId, String message) {
-        return withLock(() -> {
+        return withTaskLock(taskId, () -> {
             RdTask existing = getTask(taskId);
             RdTask resumed = switchPaused(existing, false, System.currentTimeMillis());
-            RdTask saved = saveTask(resumed);
-            recordEvent(saved, RdTaskStatusEvent.ACTION_RESUMED, saved.title(), message, RdTaskEventTrigger.API);
-            return saved;
+            return saveTaskWithEvent(
+                    resumed, RdTaskStatusEvent.ACTION_RESUMED, resumed.title(), message, RdTaskEventTrigger.API);
         });
     }
 
@@ -925,37 +998,34 @@ public final class RagStreamTaskRegistry {
      * @return 审批后的任务快照
      */
     public RdRequirementTask approveRequirementTask(String taskId, String message) {
-        return withLock(() -> {
+        return withTaskLock(taskId, () -> {
             RdRequirementTask existing = getRequirementTask(taskId);
             if (existing.status() != RdTaskStatus.WAITING_APPROVAL) {
                 throw new IllegalStateException("requirement task is not waiting approval: " + existing.status());
             }
-            RdRequirementTask saved = taskStore.saveRequirementTask(existing);
             String approvalMessage = message == null || message.isBlank() ? "管理台审批通过" : message;
-            recordEvent(saved, RdTaskStatusEvent.ACTION_APPROVED, saved.title(), approvalMessage, RdTaskEventTrigger.API);
-            return saved;
+            recordEvent(existing, RdTaskStatusEvent.ACTION_APPROVED, existing.title(), approvalMessage, RdTaskEventTrigger.API);
+            return existing;
         });
     }
 
     /**
-     * 管理台逻辑删除任务（状态置 DELETED）并清理状态事件。
+     * 管理台逻辑删除任务（状态置 DELETED）并保留删除审计事件。
      *
      * @param taskId 任务 ID
      * @return 是否删除（任务不存在或已删除返回 false）
      */
     public boolean deleteTask(String taskId) {
-        return withLock(() -> {
+        return withTaskLock(taskId, () -> {
             String safeTaskId = requireTaskId(taskId);
             return taskStore.findTask(safeTaskId).map(existing -> {
                 if (existing.status() == RdTaskStatus.DELETED) {
                     return false;
                 }
                 RdTask deleted = deletedTask(existing, System.currentTimeMillis());
+                // Keep the DELETED audit event; do not wipe the entire timeline after recording it.
                 recordEvent(deleted, RdTaskStatusEvent.ACTION_DELETED, deleted.title(), "管理台删除任务", RdTaskEventTrigger.API);
                 saveTask(deleted);
-                if (eventStore != null) {
-                    eventStore.deleteByTask(safeTaskId);
-                }
                 return true;
             }).orElse(false);
         });
@@ -968,82 +1038,11 @@ public final class RagStreamTaskRegistry {
      * @return 状态事件列表（升序）
      */
     public List<RdTaskStatusEvent> timeline(String taskId) {
-        return withLock(() -> {
-            requireTaskId(taskId);
-            if (eventStore == null) {
-                return List.of();
-            }
-            return eventStore.listByTask(taskId);
-        });
-    }
-
-    private void ensureTransition(RdTaskStatus source, RdTaskStatus target) {
-        if (source == target) {
-            return;
+        requireTaskId(taskId);
+        if (eventStore == null) {
+            return List.of();
         }
-        boolean legal = switch (source) {
-            case CREATED -> target == RdTaskStatus.MATERIAL_COLLECTING
-                    || target == RdTaskStatus.SEARCHING
-                    || target == RdTaskStatus.REJECTED;
-            case MATERIAL_COLLECTING -> target == RdTaskStatus.MATERIAL_READY || target == RdTaskStatus.REJECTED;
-            case MATERIAL_READY -> target == RdTaskStatus.CONTEXT_BUILDING
-                    || target == RdTaskStatus.SEARCHING
-                    || target == RdTaskStatus.EXECUTING
-                    || target == RdTaskStatus.REJECTED
-                    || target == RdTaskStatus.FAILED_NEEDS_HUMAN;
-            case CONTEXT_BUILDING -> target == RdTaskStatus.CONTEXT_READY
-                    || target == RdTaskStatus.REJECTED
-                    || target == RdTaskStatus.FAILED_NEEDS_HUMAN;
-            case CONTEXT_READY -> target == RdTaskStatus.PLAN_GENERATING
-                    || target == RdTaskStatus.REJECTED
-                    || target == RdTaskStatus.FAILED_NEEDS_HUMAN;
-            case PLAN_GENERATING -> target == RdTaskStatus.PLAN_GENERATED
-                    || target == RdTaskStatus.REJECTED
-                    || target == RdTaskStatus.FAILED_NEEDS_HUMAN;
-            case PLAN_GENERATED -> target == RdTaskStatus.WAITING_POLICY
-                    || target == RdTaskStatus.REJECTED
-                    || target == RdTaskStatus.FAILED_NEEDS_HUMAN;
-            case WAITING_POLICY -> target == RdTaskStatus.EXECUTING
-                    || target == RdTaskStatus.WAITING_APPROVAL
-                    || target == RdTaskStatus.REJECTED
-                    || target == RdTaskStatus.FAILED_NEEDS_HUMAN;
-            case WAITING_APPROVAL -> target == RdTaskStatus.EXECUTING
-                    || target == RdTaskStatus.REJECTED
-                    || target == RdTaskStatus.FAILED_NEEDS_HUMAN;
-            case SEARCHING -> target == RdTaskStatus.EXECUTING
-                    || target == RdTaskStatus.REJECTED
-                    || target == RdTaskStatus.FAILED_RETRYABLE;
-            case EXECUTING -> target == RdTaskStatus.VALIDATING
-                    || target == RdTaskStatus.COMMITTED
-                    || target == RdTaskStatus.REJECTED
-                    || target == RdTaskStatus.FAILED_RETRYABLE
-                    || target == RdTaskStatus.FAILED_NEEDS_HUMAN;
-            case VALIDATING -> target == RdTaskStatus.PR_CREATING
-                    || target == RdTaskStatus.COMMITTED
-                    || target == RdTaskStatus.REJECTED
-                    || target == RdTaskStatus.FAILED_NEEDS_HUMAN;
-            case PR_CREATING -> target == RdTaskStatus.COMMITTED
-                    || target == RdTaskStatus.REJECTED
-                    || target == RdTaskStatus.FAILED_RETRYABLE;
-            case COMMITTED -> target == RdTaskStatus.MERGED
-                    || target == RdTaskStatus.REPORTING
-                    || target == RdTaskStatus.COMPLETED
-                    || target == RdTaskStatus.REJECTED;
-            case REPORTING -> target == RdTaskStatus.COMPLETED || target == RdTaskStatus.FAILED_RETRYABLE;
-            case REJECTED, FAILED_RETRYABLE, FAILED_NEEDS_HUMAN -> target == RdTaskStatus.SEARCHING
-                    || target == RdTaskStatus.MATERIAL_COLLECTING
-                    || target == RdTaskStatus.CONTEXT_BUILDING
-                    || target == RdTaskStatus.EXECUTING;
-            case COMPLETED -> target == RdTaskStatus.MERGED;
-            case MERGED, CANCELLED, DEAD_LETTERED, DELETED -> false;
-            case RECOVERING -> target == RdTaskStatus.MATERIAL_COLLECTING
-                    || target == RdTaskStatus.SEARCHING
-                    || target == RdTaskStatus.EXECUTING
-                    || target == RdTaskStatus.FAILED_NEEDS_HUMAN;
-        };
-        if (!legal) {
-            throw new IllegalStateException("illegal task status transition: " + source + " -> " + target);
-        }
+        return eventStore.listByTask(taskId);
     }
 
     private RdBugFixTask save(RdBugFixTask task) {
@@ -1058,6 +1057,17 @@ public final class RagStreamTaskRegistry {
             return taskStore.saveRequirementTask(requirementTask);
         }
         throw new IllegalArgumentException("unsupported rd task type: " + task.getClass().getName());
+    }
+
+    private RdTask transitionTask(RdTask existing, RdTaskStatus targetStatus, String reason) {
+        String safeReason = reason == null ? "" : reason.strip();
+        if (existing instanceof RdBugFixTask bugFixTask) {
+            return transitionAndSave(bugFixTask, targetStatus, "", "", "", "", "", safeReason);
+        }
+        if (existing instanceof RdRequirementTask requirementTask) {
+            return transitionAndSave(requirementTask, targetStatus, "", "", "", safeReason);
+        }
+        throw new IllegalArgumentException("unsupported rd task type: " + existing.getClass().getName());
     }
 
     private RdTask switchPaused(RdTask task, boolean paused, long updateTimeEpochMillis) {
@@ -1118,7 +1128,11 @@ public final class RagStreamTaskRegistry {
         if (existing.status() == targetStatus) {
             return existing;
         }
-        ensureTransition(existing.status(), targetStatus);
+        RdTaskTransitionPolicy.ensureTransition(
+                RdTaskType.parse(existing.taskType(), RdTaskType.BUG_FIX),
+                existing.status(),
+                targetStatus
+        );
         RdBugFixTask next = existing.withState(
                 targetStatus,
                 messageId,
@@ -1129,10 +1143,9 @@ public final class RagStreamTaskRegistry {
                 errorMessage,
                 System.currentTimeMillis()
         );
-        RdBugFixTask saved = taskStore.saveBugFixTask(next);
-        String message = saved.errorMessage().isBlank() ? "" : saved.errorMessage();
-        recordEvent(saved, saved.status().name(), saved.title(), message, RdTaskEventTrigger.SYSTEM);
-        return saved;
+        String message = next.errorMessage().isBlank() ? "" : next.errorMessage();
+        return (RdBugFixTask) saveTaskWithEvent(
+                next, next.status().name(), next.title(), message, RdTaskEventTrigger.SYSTEM);
     }
 
     private RdRequirementTask transitionAndSave(
@@ -1146,7 +1159,11 @@ public final class RagStreamTaskRegistry {
         if (existing.status() == targetStatus) {
             return existing;
         }
-        ensureTransition(existing.status(), targetStatus);
+        RdTaskTransitionPolicy.ensureTransition(
+                RdTaskType.parse(existing.taskType(), RdTaskType.REQUIREMENT),
+                existing.status(),
+                targetStatus
+        );
         RdRequirementTask next = existing.withState(
                 targetStatus,
                 promptSnapshot,
@@ -1155,10 +1172,19 @@ public final class RagStreamTaskRegistry {
                 errorMessage,
                 System.currentTimeMillis()
         );
-        RdRequirementTask saved = taskStore.saveRequirementTask(next);
-        String message = saved.errorMessage().isBlank() ? "" : saved.errorMessage();
-        recordEvent(saved, saved.status().name(), saved.title(), message, RdTaskEventTrigger.SYSTEM);
-        return saved;
+        String message = next.errorMessage().isBlank() ? "" : next.errorMessage();
+        return (RdRequirementTask) saveTaskWithEvent(
+                next, next.status().name(), next.title(), message, RdTaskEventTrigger.SYSTEM);
+    }
+
+    private RdTask saveTaskWithEvent(
+            RdTask task,
+            String status,
+            String title,
+            String message,
+            RdTaskEventTrigger trigger
+    ) {
+        return statePersistence.saveWithEvent(task, buildEvent(task, status, title, message, trigger));
     }
 
     /**
@@ -1172,14 +1198,27 @@ public final class RagStreamTaskRegistry {
             String message,
             RdTaskEventTrigger trigger
     ) {
+        RdTaskStatusEvent event = buildEvent(task, status, title, message, trigger);
+        if (event != null) {
+            eventStore.save(event);
+        }
+    }
+
+    private RdTaskStatusEvent buildEvent(
+            RdTask task,
+            String status,
+            String title,
+            String message,
+            RdTaskEventTrigger trigger
+    ) {
         if (eventStore == null) {
-            return;
+            return null;
         }
         long now = System.currentTimeMillis();
         List<RdTaskStatusEvent> existing = eventStore.listByTask(task.taskId());
         long previousEnteredAt = existing.isEmpty() ? now : existing.get(existing.size() - 1).enteredAtEpochMillis();
         long duration = Math.max(0L, now - previousEnteredAt);
-        RdTaskStatusEvent event = new RdTaskStatusEvent(
+        return new RdTaskStatusEvent(
                 idGenerator.nextIdString(),
                 task.taskId(),
                 status,
@@ -1189,7 +1228,6 @@ public final class RagStreamTaskRegistry {
                 duration,
                 trigger.name()
         );
-        eventStore.save(event);
     }
 
     private RdBugFixTask newTaskWithId(String taskId) {

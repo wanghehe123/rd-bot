@@ -26,6 +26,13 @@ public class RdExperienceEntryRow {
     public Boolean reusable;
     public Boolean failure;
     public Boolean redacted;
+    public String projectId;
+    public String repositoryFingerprint;
+    public String intentId;
+    public String tagsJson;
+    public String sourceRevision;
+    public Double evidenceQuality;
+    public String applicableRolesJson;
     public Long ingestionTaskId;
     public OffsetDateTime createdAt;
 }

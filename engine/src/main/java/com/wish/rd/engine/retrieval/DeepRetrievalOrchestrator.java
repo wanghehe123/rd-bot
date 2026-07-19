@@ -1,0 +1,476 @@
+package com.wish.rd.engine.retrieval;
+
+import com.wish.rd.engine.agent.model.AgentRole;
+import com.wish.rd.engine.retrieval.model.ChannelAudit;
+import com.wish.rd.engine.retrieval.model.RetrievalOutcome;
+import com.wish.rd.engine.retrieval.model.RetrievalScope;
+import com.wish.rd.engine.retrieval.model.SearchResult;
+import com.wish.rd.rag.context.model.RoleContextEvidence;
+import com.wish.rd.rag.retrieval.observability.RagRetrievalTrace;
+import com.wish.rd.rag.retrieval.run.RetrievalRunLifecycle;
+import com.wish.rd.rag.retrieval.run.model.EvidenceQualityDecision;
+import com.wish.rd.rag.retrieval.run.model.RetrievalConsumerType;
+import com.wish.rd.rag.retrieval.run.model.RetrievalRun;
+import com.wish.rd.rag.retrieval.run.model.RetrievalRunArtifact;
+import com.wish.rd.rag.runtime.model.RdRequirementTask;
+import com.wish.rd.rag.runtime.model.TaskMaterial;
+
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+
+/**
+ * Runs one project-scoped requirement retrieval attempt and applies deterministic role evidence gates.
+ * Upstream role output is used only to refine the query; it is never promoted to evidence by itself.
+ */
+public final class DeepRetrievalOrchestrator {
+
+    private static final Set<String> ARCHITECT_TYPES = Set.of(
+            "ARCHITECTURE", "INTERFACE", "API_CONTRACT", "DATABASE_SCHEMA"
+    );
+    private static final Set<String> CODING_TYPES = Set.of(
+            "CODE_SYMBOL", "SOURCE_CODE", "API_CONTRACT", "DATABASE_SCHEMA"
+    );
+    private static final Set<String> QA_TYPES = Set.of(
+            "TEST_ENTRY", "TEST_CASE", "ACCEPTANCE_TARGET", "API_CONTRACT", "PAGE_BEHAVIOR"
+    );
+
+    private final RetrievalRunLifecycle lifecycle;
+    private final RequirementKnowledgeSearchPort searchPort;
+
+    public DeepRetrievalOrchestrator(
+            RetrievalRunLifecycle lifecycle,
+            RequirementKnowledgeSearchPort searchPort
+    ) {
+        this.lifecycle = Objects.requireNonNull(lifecycle, "lifecycle must not be null");
+        this.searchPort = searchPort == null ? RequirementKnowledgeSearchPort.noop() : searchPort;
+    }
+
+    public RetrievalOutcome retrieve(
+            RdRequirementTask task,
+            List<TaskMaterial> materials,
+            RetrievalConsumerType consumerType,
+            AgentRole role,
+            String stageRunId,
+            String upstreamClues,
+            int topK
+    ) {
+        Objects.requireNonNull(task, "task must not be null");
+        RetrievalConsumerType consumer = consumerType == null
+                ? RetrievalConsumerType.REQUIREMENT_BASE : consumerType;
+        if (consumer == RetrievalConsumerType.AGENT_ROLE && role == null) {
+            throw new IllegalArgumentException("role is required for AGENT_ROLE retrieval");
+        }
+        List<TaskMaterial> safeMaterials = materials == null ? List.of() : List.copyOf(materials);
+        RetrievalScope scope = safeScope(task);
+        String query = query(task, role, upstreamClues);
+        RetrievalRun run = lifecycle.start(
+                task.taskId(), consumer, role == null ? "" : role.name(), safe(stageRunId), query,
+                scope.knowledgeBaseIds()
+        );
+        RagRetrievalTrace.started(run);
+
+        append(run.runId(), "QUERY", "rag://retrieval/query", query, sha256(query));
+        String plan = plan(consumer, role, scope, topK);
+        append(run.runId(), "RETRIEVAL_PLAN", "rag://retrieval/plan", plan, sha256(plan));
+        RagRetrievalTrace.planned(run.runId(), plan);
+
+        SearchResult searchResult;
+        try {
+            searchResult = searchPort.search(task, role, query, scope, Math.max(1, topK));
+            if (searchResult == null) {
+                searchResult = SearchResult.empty();
+            }
+        } catch (RuntimeException exception) {
+            String error = bounded(exception.getMessage(), 600);
+            append(run.runId(), "QUALITY_REPORT", "rag://retrieval/quality",
+                    "decision=FAILED_RETRYABLE; reason=knowledge search failed; error=" + error,
+                    sha256(error));
+            RetrievalRun failed = lifecycle.failRetryable(
+                    run.runId(), exception.getClass().getSimpleName(), error
+            );
+            RagRetrievalTrace.outcome(run.runId(), failed.status().name(), 0, 0, error);
+            return new RetrievalOutcome(
+                    run.runId(), failed.status(), consumer, role, safe(stageRunId), List.of(),
+                    failed.qualityDecision(), "", List.of("SEARCH_CHANNEL"), List.of(), failed.stopReason()
+            );
+        }
+
+        appendChannelAudits(run.runId(), searchResult.channels());
+        appendMaterialEvidence(run.runId(), safeMaterials);
+        List<RoleContextEvidence> roots = rootEvidence(task, safeMaterials, scope);
+        List<RoleContextEvidence> candidates = mergeCandidates(roots, searchResult.candidates());
+        Selection selection = select(role, consumer, roots, searchResult.candidates(), Math.max(1, topK));
+        List<String> missing = missingEvidence(task, consumer, role, scope, selection.selected());
+
+        for (RoleContextEvidence evidence : selection.selected()) {
+            append(run.runId(), "SELECTED_EVIDENCE", evidence.sourceUri(), evidencePreview(evidence),
+                    evidence.contentHash().isBlank() ? sha256(evidence.summary()) : evidence.contentHash());
+        }
+
+        EvidenceQualityDecision decision = missing.isEmpty()
+                ? EvidenceQualityDecision.SUFFICIENT : EvidenceQualityDecision.NEED_INPUT;
+        String reason = missing.isEmpty()
+                ? "角色关键证据门禁通过"
+                : "缺少角色关键证据: " + String.join(",", missing);
+        String quality = qualityReport(decision, scope, candidates.size(), selection, missing, reason);
+        RetrievalRunArtifact qualityArtifact = append(
+                run.runId(), "QUALITY_REPORT", "rag://retrieval/quality", quality, sha256(quality)
+        );
+
+        RetrievalRun terminal = missing.isEmpty()
+                ? lifecycle.complete(run.runId(), candidates.size(), selection.selected().size(), false, reason)
+                : lifecycle.waitForInput(run.runId(), candidates.size(), selection.selected().size(), reason);
+        append(run.runId(), "RETRIEVAL_OUTCOME", "rag://retrieval/outcome",
+                "outcome=" + terminal.status().name()
+                        + "; candidates=" + candidates.size()
+                        + "; selected=" + selection.selected().size()
+                        + "; reason=" + reason,
+                sha256(terminal.status().name() + reason));
+        RagRetrievalTrace.outcome(
+                run.runId(), terminal.status().name(), candidates.size(), selection.selected().size(), reason
+        );
+        return new RetrievalOutcome(
+                run.runId(), terminal.status(), consumer, role, safe(stageRunId), selection.selected(),
+                decision, qualityArtifact.artifactId(), missing, selection.omittedIds(), reason
+        );
+    }
+
+    private RetrievalScope safeScope(RdRequirementTask task) {
+        RetrievalScope resolved = searchPort.resolveScope(task);
+        return resolved == null
+                ? new RetrievalScope(List.of(), repositoryFingerprint(task), !task.projectId().isBlank(),
+                "scope resolver returned no project boundary")
+                : resolved;
+    }
+
+    private List<RoleContextEvidence> rootEvidence(
+            RdRequirementTask task,
+            List<TaskMaterial> materials,
+            RetrievalScope scope
+    ) {
+        List<RoleContextEvidence> roots = new ArrayList<>();
+        long collectedAt = Math.max(task.createTimeEpochMillis(), task.updateTimeEpochMillis());
+        addRoot(roots, "task-" + task.taskId(), "TASK_INPUT", "rd-task://" + task.taskId(),
+                task.title(), task.title() + "\n" + task.expectedResult(), collectedAt, "REQUIREMENT_ROOT");
+        if (!scope.repositoryFingerprint().isBlank()) {
+            String repository = scope.repositoryFingerprint()
+                    + (task.baseBranch().isBlank() ? "" : "@" + task.baseBranch());
+            addRoot(roots, "repository-" + task.taskId(), "REPOSITORY", "repo://" + repository,
+                    "Repository scope", repository, collectedAt, "REPOSITORY_SCOPE");
+        }
+        if (!task.acceptanceCriteriaJson().equals("[]")) {
+            addRoot(roots, "acceptance-" + task.taskId(), "ACCEPTANCE_CRITERIA",
+                    "rd-task://" + task.taskId() + "/acceptance", "Acceptance criteria",
+                    task.acceptanceCriteriaJson(), collectedAt, "ACCEPTANCE_CRITERIA");
+        }
+        for (TaskMaterial material : materials) {
+            if (material == null || material.sourceUri().startsWith("rd-experience://")) {
+                continue;
+            }
+            String summary = bounded(material.contentPreview(), 2_000);
+            if (summary.isBlank()) {
+                continue;
+            }
+            String uri = firstNonBlank(material.sourceUri(), material.artifactUri(),
+                    "rd-task://" + task.taskId() + "/material/" + material.materialId());
+            roots.add(new RoleContextEvidence(
+                    firstNonBlank(material.materialId(), sha256(uri)), material.materialType().name(), uri,
+                    firstNonBlank(material.title(), material.materialType().name()),
+                    firstNonBlank(material.contentHash(), sha256(summary)), summary,
+                    Math.max(material.createTimeEpochMillis(), material.updateTimeEpochMillis()),
+                    "task material root evidence", 1.0d, "REQUIREMENT_MATERIAL", true
+            ));
+        }
+        return deduplicate(roots);
+    }
+
+    private void addRoot(
+            List<RoleContextEvidence> roots,
+            String id,
+            String sourceType,
+            String uri,
+            String title,
+            String summary,
+            long collectedAt,
+            String requiredType
+    ) {
+        if (safe(summary).isBlank()) {
+            return;
+        }
+        roots.add(new RoleContextEvidence(
+                id, sourceType, uri, title, sha256(summary), bounded(summary, 2_000), collectedAt,
+                "immutable task root evidence", 1.0d, requiredType, true
+        ));
+    }
+
+    private Selection select(
+            AgentRole role,
+            RetrievalConsumerType consumer,
+            List<RoleContextEvidence> roots,
+            List<RoleContextEvidence> searchCandidates,
+            int topK
+    ) {
+        List<RoleContextEvidence> selected = new ArrayList<>(roots);
+        List<String> omitted = new ArrayList<>();
+        for (RoleContextEvidence candidate : deduplicate(searchCandidates)) {
+            if (!valid(candidate) || !roleRelevant(role, consumer, candidate)) {
+                omitted.add(candidate == null ? "" : candidate.evidenceId());
+                continue;
+            }
+            if (selected.size() >= topK) {
+                omitted.add(candidate.evidenceId());
+                continue;
+            }
+            selected.add(candidate);
+        }
+        return new Selection(deduplicate(selected), omitted.stream().filter(value -> !value.isBlank()).toList());
+    }
+
+    private boolean roleRelevant(
+            AgentRole role,
+            RetrievalConsumerType consumer,
+            RoleContextEvidence evidence
+    ) {
+        if (evidence.relevanceScore() <= 0.0d) {
+            return false;
+        }
+        if (consumer == RetrievalConsumerType.REQUIREMENT_BASE || role == AgentRole.REQUIREMENT_REVIEWER) {
+            return true;
+        }
+        String type = evidence.requiredEvidenceType();
+        if (type.equals("EXPERIENCE_HINT")) {
+            return true;
+        }
+        return switch (role) {
+            case SOLUTION_ARCHITECT -> ARCHITECT_TYPES.contains(type);
+            case CODING_AGENT -> CODING_TYPES.contains(type);
+            case QA_AGENT -> QA_TYPES.contains(type);
+            default -> true;
+        };
+    }
+
+    private List<String> missingEvidence(
+            RdRequirementTask task,
+            RetrievalConsumerType consumer,
+            AgentRole role,
+            RetrievalScope scope,
+            List<RoleContextEvidence> selected
+    ) {
+        LinkedHashSet<String> missing = new LinkedHashSet<>();
+        if (scope.projectScopeRequired() && scope.knowledgeBaseIds().isEmpty()) {
+            missing.add("PROJECT_KNOWLEDGE_SCOPE");
+        }
+        if (selected.stream().noneMatch(item -> item.requiredEvidenceType().equals("REQUIREMENT_ROOT"))) {
+            missing.add("REQUIREMENT_ROOT");
+        }
+        if (!task.repositoryUrl().isBlank()
+                && selected.stream().noneMatch(item -> item.requiredEvidenceType().equals("REPOSITORY_SCOPE"))) {
+            missing.add("REPOSITORY_SCOPE");
+        }
+        if (!task.acceptanceCriteriaJson().equals("[]")
+                && selected.stream().noneMatch(item -> item.requiredEvidenceType().equals("ACCEPTANCE_CRITERIA"))) {
+            missing.add("ACCEPTANCE_CRITERIA");
+        }
+        if ((consumer == RetrievalConsumerType.REQUIREMENT_BASE || role == AgentRole.REQUIREMENT_REVIEWER)
+                && selected.stream().noneMatch(item -> item.requiredEvidenceType().equals("REQUIREMENT_MATERIAL"))) {
+            missing.add("REQUIREMENT_MATERIAL");
+        }
+        if (consumer == RetrievalConsumerType.AGENT_ROLE && role != null) {
+            boolean hasRoleEvidence = selected.stream().filter(item -> !item.sharedRoot()).anyMatch(item -> switch (role) {
+                case SOLUTION_ARCHITECT -> ARCHITECT_TYPES.contains(item.requiredEvidenceType());
+                case CODING_AGENT -> CODING_TYPES.contains(item.requiredEvidenceType());
+                case QA_AGENT -> QA_TYPES.contains(item.requiredEvidenceType());
+                case REQUIREMENT_REVIEWER -> true;
+                default -> true;
+            });
+            if (!hasRoleEvidence && role == AgentRole.SOLUTION_ARCHITECT) {
+                missing.add("ARCHITECTURE_OR_INTERFACE");
+            } else if (!hasRoleEvidence && role == AgentRole.CODING_AGENT) {
+                missing.add("CODE_SYMBOL");
+            } else if (!hasRoleEvidence && role == AgentRole.QA_AGENT) {
+                missing.add("TEST_ENTRY");
+            }
+        }
+        return List.copyOf(missing);
+    }
+
+    private void appendChannelAudits(String runId, List<ChannelAudit> channels) {
+        for (ChannelAudit channel : channels == null ? List.<ChannelAudit>of() : channels) {
+            String preview = "channel=" + channel.channel()
+                    + "; failed=" + channel.failed()
+                    + "; candidates=" + channel.candidateCount()
+                    + "; errorCategory=" + channel.errorCategory()
+                    + "; error=" + bounded(channel.errorMessage(), 400);
+            append(runId, "SEARCH_CHANNEL", "rag://retrieval/channel/" + channel.channel(),
+                    preview, sha256(preview));
+        }
+    }
+
+    private void appendMaterialEvidence(String runId, List<TaskMaterial> materials) {
+        for (TaskMaterial material : materials) {
+            if (material == null || material.contentPreview().isBlank()) {
+                continue;
+            }
+            String preview = "materialId=" + material.materialId()
+                    + "; type=" + material.materialType().name()
+                    + "; sourceType=" + material.sourceType().name()
+                    + "; title=" + material.title()
+                    + "; source=" + firstNonBlank(material.sourceUri(), material.artifactUri())
+                    + "; content=" + bounded(material.contentPreview(), 1_500);
+            append(runId, "MATERIAL_EVIDENCE",
+                    "rag://retrieval/material/" + material.materialId(), preview,
+                    firstNonBlank(material.contentHash(), sha256(material.contentPreview())));
+        }
+    }
+
+    private RetrievalRunArtifact append(
+            String runId,
+            String type,
+            String uri,
+            String content,
+            String hash
+    ) {
+        String preview = RagRetrievalTrace.preview(content, 2_000);
+        RetrievalRunArtifact artifact = lifecycle.appendArtifact(
+                runId, type, uri, preview, firstNonBlank(hash, sha256(content))
+        );
+        RagRetrievalTrace.artifact(runId, type, uri, preview);
+        return artifact;
+    }
+
+    private String plan(
+            RetrievalConsumerType consumer,
+            AgentRole role,
+            RetrievalScope scope,
+            int topK
+    ) {
+        return "strategy=PROJECT_SCOPED_DEEP_RETRIEVAL"
+                + "; consumer=" + consumer.name()
+                + "; role=" + (role == null ? "" : role.name())
+                + "; knowledgeBaseIds=" + String.join(",", scope.knowledgeBaseIds())
+                + "; repository=" + scope.repositoryFingerprint()
+                + "; topK=" + Math.max(1, topK)
+                + "; upstreamOutputIsQueryOnly=true";
+    }
+
+    private String qualityReport(
+            EvidenceQualityDecision decision,
+            RetrievalScope scope,
+            int candidateCount,
+            Selection selection,
+            List<String> missing,
+            String reason
+    ) {
+        return "decision=" + decision.name()
+                + "; projectScopeRequired=" + scope.projectScopeRequired()
+                + "; knowledgeBaseIds=" + String.join(",", scope.knowledgeBaseIds())
+                + "; candidateCount=" + candidateCount
+                + "; selectedCount=" + selection.selected().size()
+                + "; missingEvidence=" + String.join(",", missing)
+                + "; omittedCount=" + selection.omittedIds().size()
+                + "; reason=" + reason;
+    }
+
+    private String evidencePreview(RoleContextEvidence evidence) {
+        return "evidenceId=" + evidence.evidenceId()
+                + "; sourceType=" + evidence.sourceType()
+                + "; requiredEvidenceType=" + evidence.requiredEvidenceType()
+                + "; sharedRoot=" + evidence.sharedRoot()
+                + "; relevanceScore=" + String.format(Locale.ROOT, "%.4f", evidence.relevanceScore())
+                + "; selectionReason=" + evidence.selectionReason()
+                + "; title=" + evidence.title()
+                + "; summary=" + bounded(evidence.summary(), 1_400);
+    }
+
+    private String query(RdRequirementTask task, AgentRole role, String upstreamClues) {
+        return ((role == null ? "REQUIREMENT_BASE" : role.name())
+                + "\n任务: " + task.title()
+                + "\n预期结果: " + task.expectedResult()
+                + "\n验收标准: " + task.acceptanceCriteriaJson()
+                + "\n仓库: " + repositoryFingerprint(task)
+                + (safe(upstreamClues).isBlank() ? "" : "\n上游线索(仅用于检索): " + bounded(upstreamClues, 2_000)))
+                .strip();
+    }
+
+    private String repositoryFingerprint(RdRequirementTask task) {
+        if (!task.repoOwner().isBlank() && !task.repoName().isBlank()) {
+            return (task.repoOwner() + "/" + task.repoName()).toLowerCase(Locale.ROOT);
+        }
+        return safe(task.repositoryUrl()).toLowerCase(Locale.ROOT);
+    }
+
+    private List<RoleContextEvidence> mergeCandidates(
+            List<RoleContextEvidence> roots,
+            List<RoleContextEvidence> searched
+    ) {
+        List<RoleContextEvidence> merged = new ArrayList<>(roots);
+        if (searched != null) {
+            merged.addAll(searched);
+        }
+        return deduplicate(merged);
+    }
+
+    private List<RoleContextEvidence> deduplicate(List<RoleContextEvidence> evidence) {
+        Map<String, RoleContextEvidence> unique = new LinkedHashMap<>();
+        for (RoleContextEvidence item : evidence == null ? List.<RoleContextEvidence>of() : evidence) {
+            if (!valid(item)) {
+                continue;
+            }
+            String key = firstNonBlank(item.contentHash(), item.sourceUri(), item.evidenceId());
+            unique.putIfAbsent(key, item);
+        }
+        return List.copyOf(unique.values());
+    }
+
+    private boolean valid(RoleContextEvidence evidence) {
+        return evidence != null
+                && !evidence.evidenceId().isBlank()
+                && !evidence.sourceUri().isBlank()
+                && !evidence.contentHash().isBlank()
+                && !evidence.summary().isBlank();
+    }
+
+    private String sha256(String value) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(safe(value).getBytes(StandardCharsets.UTF_8));
+            StringBuilder result = new StringBuilder("sha256:");
+            for (byte item : digest) {
+                result.append(String.format(Locale.ROOT, "%02x", item));
+            }
+            return result.toString();
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 unavailable", exception);
+        }
+    }
+
+    private String bounded(String value, int maxChars) {
+        String safeValue = safe(value);
+        return safeValue.length() <= maxChars ? safeValue : safeValue.substring(0, maxChars);
+    }
+
+    private String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value.strip();
+            }
+        }
+        return "";
+    }
+
+    private String safe(String value) {
+        return value == null ? "" : value.strip();
+    }
+
+    private record Selection(List<RoleContextEvidence> selected, List<String> omittedIds) {
+    }
+}

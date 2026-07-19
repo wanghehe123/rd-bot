@@ -19,12 +19,13 @@ public interface RdRoleContextPackageMapper extends BaseMapper<RdRoleContextPack
     @Insert("""
             INSERT INTO rd_role_context_packages (
                 id, task_id, role, package_version, evidence_json, acceptance_json,
-                risk_hints_json, context_budget_json, omitted_evidence_json, content_hash, created_at
+                risk_hints_json, context_budget_json, omitted_evidence_json, content_hash,
+                retrieval_run_id, created_at
             )
             VALUES (
                 #{id}, #{taskId}, #{role}, #{packageVersion}, #{evidenceJson}::jsonb,
                 #{acceptanceJson}::jsonb, #{riskHintsJson}::jsonb, #{contextBudgetJson}::jsonb,
-                #{omittedEvidenceJson}::jsonb, #{contentHash}, #{createdAt}
+                #{omittedEvidenceJson}::jsonb, #{contentHash}, #{retrievalRunId}, #{createdAt}
             )
             ON CONFLICT (id) DO UPDATE SET
                 task_id = EXCLUDED.task_id,
@@ -35,7 +36,8 @@ public interface RdRoleContextPackageMapper extends BaseMapper<RdRoleContextPack
                 risk_hints_json = EXCLUDED.risk_hints_json,
                 context_budget_json = EXCLUDED.context_budget_json,
                 omitted_evidence_json = EXCLUDED.omitted_evidence_json,
-                content_hash = EXCLUDED.content_hash
+                content_hash = EXCLUDED.content_hash,
+                retrieval_run_id = EXCLUDED.retrieval_run_id
             """)
     void upsertContextPackage(RdRoleContextPackageRow row);
 }

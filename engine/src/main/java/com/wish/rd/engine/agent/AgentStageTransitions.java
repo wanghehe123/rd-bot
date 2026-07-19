@@ -26,10 +26,14 @@ public final class AgentStageTransitions {
         if (source == null || target == null) {
             throw new IllegalStateException("agent stage status must not be null");
         }
+        if (!source.isTerminal() && target == AgentStageStatus.CANCELLED) {
+            return;
+        }
         boolean legal = switch (source) {
             case PENDING -> target == AgentStageStatus.CONTEXT_READY
                     || target == AgentStageStatus.SKIPPED
-                    || target == AgentStageStatus.CANCELLED;
+                    || target == AgentStageStatus.FAILED_RETRYABLE
+                    || target == AgentStageStatus.FAILED_NEEDS_HUMAN;
             case CONTEXT_READY -> target == AgentStageStatus.DISPATCHING
                     || target == AgentStageStatus.FAILED_RETRYABLE
                     || target == AgentStageStatus.FAILED_NEEDS_HUMAN;
@@ -38,15 +42,14 @@ public final class AgentStageTransitions {
                     || target == AgentStageStatus.FAILED_NEEDS_HUMAN;
             case RUNNING -> target == AgentStageStatus.RESULT_COLLECTING
                     || target == AgentStageStatus.FAILED_RETRYABLE
-                    || target == AgentStageStatus.FAILED_NEEDS_HUMAN
-                    || target == AgentStageStatus.CANCELLED;
+                    || target == AgentStageStatus.FAILED_NEEDS_HUMAN;
             case RESULT_COLLECTING -> target == AgentStageStatus.VERIFYING
                     || target == AgentStageStatus.FAILED_RETRYABLE
                     || target == AgentStageStatus.FAILED_NEEDS_HUMAN;
             case VERIFYING -> target == AgentStageStatus.SUCCEEDED
                     || target == AgentStageStatus.FAILED_RETRYABLE
                     || target == AgentStageStatus.FAILED_NEEDS_HUMAN;
-            case FAILED_RETRYABLE -> target == AgentStageStatus.RECOVERING;
+            case FAILED_RETRYABLE -> false;
             case RECOVERING -> target == AgentStageStatus.CONTEXT_READY
                     || target == AgentStageStatus.DISPATCHING
                     || target == AgentStageStatus.FAILED_NEEDS_HUMAN;

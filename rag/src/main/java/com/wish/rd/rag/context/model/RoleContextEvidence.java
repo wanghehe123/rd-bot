@@ -13,6 +13,10 @@ package com.wish.rd.rag.context.model;
  * @param contentHash           内容 hash
  * @param summary               证据摘要
  * @param collectedAtEpochMillis 采集时间
+ * @param selectionReason       进入当前角色上下文的确定性原因
+ * @param relevanceScore        当前角色相关性分数，范围 0..1
+ * @param requiredEvidenceType  该证据满足的关键证据类型
+ * @param sharedRoot            是否为所有角色可共享的任务根证据
  */
 public record RoleContextEvidence(
         String evidenceId,
@@ -21,7 +25,11 @@ public record RoleContextEvidence(
         String title,
         String contentHash,
         String summary,
-        long collectedAtEpochMillis
+        long collectedAtEpochMillis,
+        String selectionReason,
+        double relevanceScore,
+        String requiredEvidenceType,
+        boolean sharedRoot
 ) {
 
     public RoleContextEvidence {
@@ -31,6 +39,28 @@ public record RoleContextEvidence(
         title = safe(title);
         contentHash = safe(contentHash);
         summary = safe(summary);
+        selectionReason = safe(selectionReason);
+        if (selectionReason.isBlank()) {
+            selectionReason = "legacy context evidence";
+        }
+        relevanceScore = Math.max(0.0d, Math.min(1.0d, relevanceScore));
+        requiredEvidenceType = safe(requiredEvidenceType).toUpperCase();
+    }
+
+    /** Backward-compatible constructor for historical context evidence rows. */
+    public RoleContextEvidence(
+            String evidenceId,
+            String sourceType,
+            String sourceUri,
+            String title,
+            String contentHash,
+            String summary,
+            long collectedAtEpochMillis
+    ) {
+        this(
+                evidenceId, sourceType, sourceUri, title, contentHash, summary, collectedAtEpochMillis,
+                "legacy context evidence", 0.0d, "", false
+        );
     }
 
     private static String safe(String value) {

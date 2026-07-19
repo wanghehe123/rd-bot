@@ -52,7 +52,7 @@ class OpenAiChatCompletionsRepairExecutorTest {
                       "choices": [
                         {
                           "message": {
-                            "content": "{\\"decision\\":\\"APPROVED\\",\\"feasibility\\":\\"CAN_DO\\",\\"missingInformation\\":[],\\"risks\\":[\\"low\\"],\\"acceptanceCoverage\\":[\\"测试通过\\"]}"
+                            "content": "{\\"decision\\":\\"APPROVED\\",\\"feasibility\\":\\"CAN_DO\\",\\"missingInformation\\":[],\\"risks\\":[\\"low\\"],\\"acceptanceCoverage\\":[\\"测试通过\\"],\\"budgetEstimate\\":{\\"initialTokens\\":1000,\\"retryReserveTokens\\":200,\\"estimatedTotalTokens\\":1200,\\"confidence\\":\\"HIGH\\",\\"basis\\":\\"test fixture\\",\\"historicalSamples\\":[]}}"
                           }
                         }
                       ],
@@ -72,6 +72,14 @@ class OpenAiChatCompletionsRepairExecutorTest {
         assertEquals("openai-chat-completions", result.dockerMetadataJson().get("protocol"));
         assertEquals("minimax", result.dockerMetadataJson().get("provider"));
         assertEquals("32", result.dockerMetadataJson().get("totalTokens"));
+        JsonNode attempts = OBJECT_MAPPER.readTree(result.dockerMetadataJson().get("providerAttemptsJson"));
+        assertEquals(1, attempts.size());
+        assertEquals("minimax", attempts.get(0).path("provider").asText());
+        assertEquals("SUCCESS", attempts.get(0).path("status").asText());
+        assertEquals(1, attempts.get(0).path("attempt").asInt());
+        assertTrue(attempts.get(0).path("startedAtEpochMillis").asLong() > 0);
+        assertTrue(attempts.get(0).path("finishedAtEpochMillis").asLong()
+                >= attempts.get(0).path("startedAtEpochMillis").asLong());
 
         JsonNode agentResult = OBJECT_MAPPER.readTree(result.rawResultJson().get("__agentResultJson"));
         assertEquals("APPROVED", agentResult.path("decision").asText());

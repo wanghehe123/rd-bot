@@ -2,6 +2,7 @@ package com.wish.rd.bootstrap.executor;
 
 import com.wish.rd.bootstrap.executor.impl.InMemoryRepairAlertSink;
 import com.wish.rd.bootstrap.financial.FinancialProperties;
+import com.wish.rd.bootstrap.skill.impl.QaPlaywrightSkillProvisioner;
 
 import com.wish.rd.exec.repair.alert.RepairAlertSinkPort;
 import com.wish.rd.exec.repair.alert.RepairExecutionWatchdog;
@@ -122,6 +123,24 @@ public class DockerExecutorConfiguration {
     }
 
     /**
+     * Provisions the governed QA skill snapshot that is mounted read-only into QA containers.
+     */
+    @Bean
+    @ConditionalOnBean(ContainerRunnerPort.class)
+    @ConditionalOnMissingBean
+    public QaPlaywrightSkillProvisioner.Provision qaPlaywrightSkillProvision(
+            DockerExecutorProperties properties
+    ) {
+        QaPlaywrightSkillProvisioner.Provision provision = new QaPlaywrightSkillProvisioner(
+                properties.getWorkspaceRoot().resolve("_qa-skills")
+        ).provision();
+        if (!provision.installed()) {
+            throw new IllegalStateException("failed to provision QA Playwright skill: " + provision.message());
+        }
+        return provision;
+    }
+
+    /**
      * Exposes Docker Claude Code execution as the exec repair executor port.
      *
      * @param workspaceFactory workspace factory
@@ -146,14 +165,24 @@ public class DockerExecutorConfiguration {
             ModelHealthStore modelHealthStore,
             DockerExecutionRegistry executionRegistry,
             ExecutionAllowlistPolicy executionAllowlistPolicy,
+            QaPlaywrightSkillProvisioner.Provision qaSkillProvision,
             ObjectProvider<RepairWorkspaceRepositoryPort> repositoryPortProvider,
             ObjectProvider<FinancialProperties> financialPropertiesProvider
     ) {
+        DockerClaudeCodeExecutor.Configuration configuration = properties.toExecutorConfiguration().withQaSkill(
+                new DockerClaudeCodeExecutor.QaSkillConfiguration(
+                        qaSkillProvision.installPath(),
+                        qaSkillProvision.skillId(),
+                        qaSkillProvision.version(),
+                        qaSkillProvision.checksum(),
+                        qaSkillProvision.policyJson()
+                )
+        );
         return new DockerClaudeCodeExecutor(
                 workspaceFactory,
                 containerRunner,
                 resultValidator,
-                properties.toExecutorConfiguration(),
+                configuration,
                 repositoryPortProvider.getIfAvailable(RepairWorkspaceRepositoryPort::noop),
                 watchdog,
                 modelHealthStore,

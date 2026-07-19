@@ -29,6 +29,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 基于 {@link ProcessBuilder} 的 Docker CLI 容器执行适配器。
@@ -41,10 +42,11 @@ import java.util.concurrent.CompletionException;
 public class ProcessContainerRunner implements ContainerRunnerPort, ContainerControlPort {
 
     private static final String DOCKER_BINARY = "docker";
+    private static final long CONTROL_COMMAND_TIMEOUT_MILLIS = 30_000L;
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     private final DockerExecutorProperties properties;
-    private final CommandLauncher commandLauncher;
+    private final TimedCommandLauncher commandLauncher;
 
     /**
      * 创建生产 Docker CLI runner。
@@ -53,7 +55,7 @@ public class ProcessContainerRunner implements ContainerRunnerPort, ContainerCon
      */
     @Autowired
     public ProcessContainerRunner(DockerExecutorProperties properties) {
-        this(properties, ProcessContainerRunner::launchProcess);
+        this(properties, (TimedCommandLauncher) ProcessContainerRunner::launchProcess);
     }
 
     /**
@@ -63,6 +65,19 @@ public class ProcessContainerRunner implements ContainerRunnerPort, ContainerCon
      * @param commandLauncher  命令启动器
      */
     public ProcessContainerRunner(DockerExecutorProperties properties, CommandLauncher commandLauncher) {
+        this(
+                properties,
+                (argv, environment, timeoutMillis) -> commandLauncher.launch(argv, environment)
+        );
+    }
+
+    /**
+     * 创建可观察硬超时的 runner，供容器执行超时测试与专用适配器使用。
+     *
+     * @param properties       Docker 执行配置
+     * @param commandLauncher  支持硬超时的命令启动器
+     */
+    public ProcessContainerRunner(DockerExecutorProperties properties, TimedCommandLauncher commandLauncher) {
         this.properties = Objects.requireNonNull(properties, "properties must not be null");
         this.commandLauncher = Objects.requireNonNull(commandLauncher, "commandLauncher must not be null");
     }
@@ -74,7 +89,10 @@ public class ProcessContainerRunner implements ContainerRunnerPort, ContainerCon
         }
         Files.createDirectories(request.outputDirectory());
         List<String> argv = buildCommand(request);
-        CommandResult commandResult = launch(argv, request.env());
+        CommandResult commandResult = launch(argv, request.env(), request.executionTimeoutMillis());
+        if (commandResult.timedOut()) {
+            cleanupTimedOutContainer(request.containerName());
+        }
         writeDockerMetadata(request, argv, commandResult);
         return new ContainerRunResult(
                 commandResult.exitCode(),
@@ -96,7 +114,11 @@ public class ProcessContainerRunner implements ContainerRunnerPort, ContainerCon
             return new RepairExecutionStopResult("", "", false, "containerName must not be blank");
         }
         try {
-            CommandResult result = launch(List.of(DOCKER_BINARY, "stop", command.containerName()), Map.of());
+            CommandResult result = launch(
+                    List.of(DOCKER_BINARY, "stop", command.containerName()),
+                    Map.of(),
+                    CONTROL_COMMAND_TIMEOUT_MILLIS
+            );
             boolean stopped = result.exitCode() == 0;
             String message = stopped ? "container stopped" : result.stderr();
             return new RepairExecutionStopResult(command.taskId(), command.containerName(), stopped, message);
@@ -126,6 +148,12 @@ public class ProcessContainerRunner implements ContainerRunnerPort, ContainerCon
         if (request.removeAfterExit()) {
             argv.add("--rm");
         }
+        if (request.initEnabled()) {
+            argv.add("--init");
+        }
+        if (!request.sharedMemorySize().isBlank()) {
+            argv.add("--shm-size=" + request.sharedMemorySize());
+        }
         argv.add("--name");
         argv.add(request.containerName());
         if (!request.networkMode().isBlank()) {
@@ -151,9 +179,17 @@ public class ProcessContainerRunner implements ContainerRunnerPort, ContainerCon
         return List.copyOf(argv);
     }
 
-    private CommandResult launch(List<String> argv, Map<String, String> environment) throws IOException {
+    private CommandResult launch(
+            List<String> argv,
+            Map<String, String> environment,
+            long timeoutMillis
+    ) throws IOException {
         try {
-            CommandResult result = commandLauncher.launch(argv, processEnvironment(environment));
+            CommandResult result = commandLauncher.launch(
+                    argv,
+                    processEnvironment(environment),
+                    Math.max(0L, timeoutMillis)
+            );
             if (result == null) {
                 throw new IOException("docker command launcher returned null result");
             }
@@ -161,6 +197,18 @@ public class ProcessContainerRunner implements ContainerRunnerPort, ContainerCon
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             throw new IOException("docker command interrupted", exception);
+        }
+    }
+
+    private void cleanupTimedOutContainer(String containerName) {
+        try {
+            launch(
+                    List.of(DOCKER_BINARY, "rm", "-f", containerName),
+                    Map.of(),
+                    CONTROL_COMMAND_TIMEOUT_MILLIS
+            );
+        } catch (IOException ignored) {
+            // The original timeout remains the authoritative result; cleanup is best effort.
         }
     }
 
@@ -213,7 +261,8 @@ public class ProcessContainerRunner implements ContainerRunnerPort, ContainerCon
 
     private static CommandResult launchProcess(
             List<String> argv,
-            Map<String, String> environment
+            Map<String, String> environment,
+            long timeoutMillis
     ) throws IOException, InterruptedException {
         Instant startedAt = Instant.now();
         ProcessBuilder processBuilder = new ProcessBuilder(argv);
@@ -221,9 +270,24 @@ public class ProcessContainerRunner implements ContainerRunnerPort, ContainerCon
         Process process = processBuilder.start();
         CompletableFuture<String> stdout = readAsync(process.getInputStream());
         CompletableFuture<String> stderr = readAsync(process.getErrorStream());
-        int exitCode = process.waitFor();
+        boolean timedOut = timeoutMillis > 0L && !process.waitFor(timeoutMillis, TimeUnit.MILLISECONDS);
+        int exitCode;
+        if (timedOut) {
+            process.destroy();
+            if (!process.waitFor(2, TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+                process.waitFor(2, TimeUnit.SECONDS);
+            }
+            exitCode = 124;
+        } else {
+            exitCode = timeoutMillis > 0L ? process.exitValue() : process.waitFor();
+        }
         long durationMillis = Duration.between(startedAt, Instant.now()).toMillis();
-        return new CommandResult(exitCode, durationMillis, await(stdout), await(stderr));
+        String stderrValue = await(stderr);
+        if (timedOut) {
+            stderrValue = (stderrValue + "\ndocker command timed out after " + timeoutMillis + "ms").strip();
+        }
+        return new CommandResult(exitCode, durationMillis, await(stdout), stderrValue, timedOut);
     }
 
     private static CompletableFuture<String> readAsync(InputStream inputStream) {
@@ -262,6 +326,7 @@ public class ProcessContainerRunner implements ContainerRunnerPort, ContainerCon
         metadata.put("removeAfterExit", request.removeAfterExit());
         metadata.put("exitCode", commandResult.exitCode());
         metadata.put("durationMillis", commandResult.durationMillis());
+        metadata.put("timedOut", commandResult.timedOut());
         OBJECT_MAPPER.writeValue(dockerMetaJson.toFile(), metadata);
     }
 
@@ -278,6 +343,7 @@ public class ProcessContainerRunner implements ContainerRunnerPort, ContainerCon
         metadata.put("argv", String.join(" ", sanitizedArgv(argv)));
         metadata.put("exitCode", String.valueOf(commandResult.exitCode()));
         metadata.put("durationMillis", String.valueOf(commandResult.durationMillis()));
+        metadata.put("timedOut", String.valueOf(commandResult.timedOut()));
         metadata.put("workspaceRoot", properties.getWorkspaceRoot().toString());
         return Map.copyOf(metadata);
     }
@@ -324,6 +390,19 @@ public class ProcessContainerRunner implements ContainerRunnerPort, ContainerCon
     }
 
     /**
+     * 带单次硬超时的命令启动器。
+     */
+    @FunctionalInterface
+    public interface TimedCommandLauncher {
+
+        CommandResult launch(
+                List<String> argv,
+                Map<String, String> environment,
+                long timeoutMillis
+        ) throws IOException, InterruptedException;
+    }
+
+    /**
      * 进程启动结果。
      *
      * @param exitCode       退出码
@@ -331,7 +410,17 @@ public class ProcessContainerRunner implements ContainerRunnerPort, ContainerCon
      * @param stdout         标准输出
      * @param stderr         标准错误
      */
-    public record CommandResult(int exitCode, long durationMillis, String stdout, String stderr) {
+    public record CommandResult(
+            int exitCode,
+            long durationMillis,
+            String stdout,
+            String stderr,
+            boolean timedOut
+    ) {
+
+        public CommandResult(int exitCode, long durationMillis, String stdout, String stderr) {
+            this(exitCode, durationMillis, stdout, stderr, false);
+        }
 
         public CommandResult {
             durationMillis = Math.max(0L, durationMillis);

@@ -5,6 +5,7 @@ import com.wish.rd.bootstrap.executor.DockerExecutorProperties;
 import com.wish.rd.bootstrap.executor.impl.InMemoryRepairAlertSink;
 import com.wish.rd.bootstrap.executor.impl.ProcessGitRepairWorkspaceRepository;
 import com.wish.rd.bootstrap.executor.impl.ProcessContainerRunner;
+import com.wish.rd.bootstrap.skill.impl.QaPlaywrightSkillProvisioner;
 import com.wish.rd.exec.repair.alert.model.RepairAlert;
 import com.wish.rd.exec.repair.alert.RepairAlertSinkPort;
 import com.wish.rd.exec.repair.alert.model.RepairAlertType;
@@ -258,6 +259,11 @@ class DockerExecutorConfigurationTest {
                     assertEquals(1, context.getBeanNamesForType(RepairExecutorPort.class).length);
                     assertTrue(context.getBean(RepairExecutorPort.class) instanceof DockerClaudeCodeExecutor);
                     assertTrue(context.getBean(ModelHealthStore.class).policy().enabled());
+                    QaPlaywrightSkillProvisioner.Provision provision = context.getBean(
+                            QaPlaywrightSkillProvisioner.Provision.class
+                    );
+                    assertTrue(provision.installed());
+                    assertEquals("qa-playwright-cli", provision.skillId());
                 });
     }
 

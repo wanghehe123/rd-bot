@@ -12,5 +12,13 @@ public enum RepairArtifactType {
     CLAUDE_EVENTS,
     STDOUT_LOG,
     STDERR_LOG,
+    QA_COMMAND_LOG,
+    QA_SCREENSHOT,
+    QA_TRACE,
+    QA_CONSOLE_LOG,
+    QA_NETWORK_LOG,
+    QA_HTTP_TRANSCRIPT,
+    QA_VIDEO,
+    QA_EVIDENCE_MANIFEST,
     OTHER
 }

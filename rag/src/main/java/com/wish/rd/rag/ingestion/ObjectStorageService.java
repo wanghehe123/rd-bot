@@ -14,4 +14,13 @@ public interface ObjectStorageService {
     );
 
     InputStream openStream(String url);
+
+    /**
+     * Delete an object by its private storage URL.
+     *
+     * @return {@code true} when the object was deleted or the backend accepted the deletion
+     */
+    default boolean delete(String url) {
+        throw new UnsupportedOperationException("object deletion is not supported");
+    }
 }

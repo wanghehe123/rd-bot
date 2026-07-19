@@ -17,6 +17,7 @@ import java.util.List;
  * @param roleContextJson     当前角色上下文包 JSON
  * @param pullRequestRequired 是否请求阶段执行器创建 PR；需求交付链路必须为 false
  * @param upstreamResultJson  上游角色阶段结果 JSON
+ * @param stageRunId          当前角色阶段运行 ID
  */
 public record RequirementExecutionRequest(
         String taskId,
@@ -26,8 +27,22 @@ public record RequirementExecutionRequest(
         AgentRole role,
         String roleContextJson,
         boolean pullRequestRequired,
-        String upstreamResultJson
+        String upstreamResultJson,
+        String stageRunId
 ) {
+
+    public RequirementExecutionRequest(
+            String taskId,
+            RdRequirementTask task,
+            List<TaskMaterial> materials,
+            String prompt,
+            AgentRole role,
+            String roleContextJson,
+            boolean pullRequestRequired,
+            String upstreamResultJson
+    ) {
+        this(taskId, task, materials, prompt, role, roleContextJson, pullRequestRequired, upstreamResultJson, "");
+    }
 
     public RequirementExecutionRequest(
             String taskId,
@@ -35,7 +50,7 @@ public record RequirementExecutionRequest(
             List<TaskMaterial> materials,
             String prompt
     ) {
-        this(taskId, task, materials, prompt, AgentRole.CODING_AGENT, "{}", false, "[]");
+        this(taskId, task, materials, prompt, AgentRole.CODING_AGENT, "{}", false, "[]", "");
     }
 
     public RequirementExecutionRequest {
@@ -47,5 +62,6 @@ public record RequirementExecutionRequest(
         upstreamResultJson = upstreamResultJson == null || upstreamResultJson.isBlank()
                 ? "[]"
                 : upstreamResultJson.strip();
+        stageRunId = stageRunId == null ? "" : stageRunId.strip();
     }
 }

@@ -1,14 +1,10 @@
-package com.wish.rd.engine.admin.trace;
+package com.wish.rd.engine.admin.trace.model;
 
 import java.util.List;
 
 /** Paginated execution-trace result. */
 public record ExecutionTracePage(
-        List<ExecutionTraceRecord> records,
-        long total,
-        int page,
-        int pageSize,
-        int pages
+        List<ExecutionTraceRecord> records, long total, int page, int pageSize, int pages
 ) {
     public ExecutionTracePage {
         records = records == null ? List.of() : List.copyOf(records);

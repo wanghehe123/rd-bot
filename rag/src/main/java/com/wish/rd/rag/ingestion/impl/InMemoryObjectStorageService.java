@@ -51,6 +51,11 @@ public final class InMemoryObjectStorageService implements ObjectStorageService 
         return new ByteArrayInputStream(bytes);
     }
 
+    @Override
+    public synchronized boolean delete(String url) {
+        return files.remove(url) != null;
+    }
+
     private String randomKey(String originalFilename) {
         String suffix = suffix(originalFilename);
         String key = UUID.randomUUID().toString().replace("-", "");

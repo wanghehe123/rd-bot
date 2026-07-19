@@ -1,6 +1,7 @@
 package com.wish.rd.engine.agent;
 
 import java.util.List;
+import java.util.Set;
 import com.wish.rd.engine.agent.model.AgentStageArtifact;
 
 /**
@@ -23,6 +24,13 @@ public interface AgentStageArtifactStore {
      * @return 阶段产物列表
      */
     List<AgentStageArtifact> listByTask(String taskId);
+
+    /**
+     * Delete selected artifact types for one task. Storage adapters may override this for retention cleanup.
+     */
+    default int deleteByTaskAndTypes(String taskId, Set<String> artifactTypes) {
+        return 0;
+    }
 
     /**
      * 返回默认空存储。

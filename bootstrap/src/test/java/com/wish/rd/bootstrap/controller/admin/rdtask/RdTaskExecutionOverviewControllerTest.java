@@ -25,9 +25,11 @@ import com.wish.rd.rag.runtime.model.RdRequirementTask;
 import com.wish.rd.rag.runtime.model.RdBugFixTask;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
@@ -50,6 +52,9 @@ class RdTaskExecutionOverviewControllerTest {
     private AgentStageArtifactStore artifactStore;
     private RoleContextPackageStore contextPackageStore;
     private DockerExecutionRegistry executionRegistry;
+
+    @TempDir
+    Path temporaryDirectory;
 
     @BeforeEach
     void setUp() {
@@ -142,6 +147,11 @@ class RdTaskExecutionOverviewControllerTest {
         ));
         registry.markRequirementMaterialCollecting(task.taskId(), "collecting");
         registry.markRequirementMaterialReady(task.taskId(), "ready");
+        registry.markRequirementContextBuilding(task.taskId(), "context");
+        registry.markRequirementContextReady(task.taskId(), "{}");
+        registry.markRequirementPlanGenerating(task.taskId(), "plan");
+        registry.markRequirementPlanGenerated(task.taskId(), "{}");
+        registry.markRequirementWaitingPolicy(task.taskId(), "{}");
         registry.markRequirementExecuting(task.taskId(), "prompt");
         stageRunStore.save(new AgentStageRun(
                 "stage-1001",
@@ -176,6 +186,12 @@ class RdTaskExecutionOverviewControllerTest {
                 List.of("material-omitted"),
                 1_783_000_000_000L
         ));
+        Path outputDirectory = temporaryDirectory.resolve("overview-output");
+        Files.createDirectories(outputDirectory);
+        Files.writeString(outputDirectory.resolve("claude-events.jsonl"), """
+                {"type":"assistant","message":{"id":"message-1","usage":{"input_tokens":7,"output_tokens":8}}}
+                {"type":"result","total_cost":0.42}
+                """);
         executionRegistry.register(
                 new RepairJobCommand(
                         "repair-1001",
@@ -202,7 +218,7 @@ class RdTaskExecutionOverviewControllerTest {
                         "bridge",
                         true,
                         false,
-                        Path.of("/tmp/rd-bot/overview")
+                        outputDirectory
                 )
         );
 
@@ -227,7 +243,38 @@ class RdTaskExecutionOverviewControllerTest {
                 .andExpect(jsonPath("$.stageRuns[0].providerAttempts[0].estimatedSpendUsd").doesNotExist())
                 .andExpect(jsonPath("$.stageRuns[0].providerAttemptsJson", not(containsString("estimatedSpendUsd"))))
                 .andExpect(jsonPath("$.runningExecutions", hasSize(1)))
-                .andExpect(jsonPath("$.runningExecutions[0].containerName", is("rd-bot-repair-test")));
+                .andExpect(jsonPath("$.runningExecutions[0].containerName", is("rd-bot-repair-test")))
+                .andExpect(jsonPath("$.runningExecutions[0].tokenUsage.estimatedSpendCny", is(3.0240)))
+                .andExpect(jsonPath("$.runningExecutions[0].tokenUsage.estimatedCostUsd").doesNotExist());
+    }
+
+    @Test
+    void shouldExposeTokenBudgetEstimateAndFinalActualUsage() throws Exception {
+        RdRequirementTask task = registry.createRequirementTask(new CreateRequirementTaskCommand(
+                "Token 预算测试", "P1", "https://github.com/example/repo.git", "example", "repo", "main",
+                "展示 token 预算", List.of("API 返回预算"), false
+        ));
+        stageRunStore.save(new AgentStageRun(
+                "stage-review-budget", task.taskId(), AgentRole.REQUIREMENT_REVIEWER, AgentStageStatus.SUCCEEDED, 1,
+                task.taskId() + ":REQUIREMENT_REVIEWER:1", "", "", "", "long-cat", "[]", """
+                {"tokenBudget":{"effectiveTokenBudget":1000,"initialTokens":700,"retryReserveTokens":200,
+                "estimatedTotalTokens":900,"confidence":"MEDIUM","basis":"模型参考脱敏历史样本",
+                "overBudget":false,"excessTokens":0,"historicalSamples":[{"scope":"SAME_PROJECT","actualTotalTokens":850}]}}
+                """, "", "", 1L, 2L, 1L, 2L
+        ));
+        stageRunStore.save(new AgentStageRun(
+                "stage-coding-budget", task.taskId(), AgentRole.CODING_AGENT, AgentStageStatus.SUCCEEDED, 1,
+                task.taskId() + ":CODING_AGENT:1", "", "", "", "long-cat",
+                "[{\"provider\":\"long-cat\",\"status\":\"SUCCESS\",\"totalTokens\":880,\"tokenUsageFinalized\":true}]",
+                "{}", "", "", 1L, 2L, 1L, 2L
+        ));
+
+        mockMvc.perform(get("/admin/rd-tasks/{taskId}/execution-overview", task.taskId()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.tokenBudget.effectiveTokenBudget", is(1000)))
+                .andExpect(jsonPath("$.tokenBudget.estimatedTotalTokens", is(900)))
+                .andExpect(jsonPath("$.tokenBudget.finalActualTokens", is(880)))
+                .andExpect(jsonPath("$.tokenBudget.historicalSamples[0].scope", is("SAME_PROJECT")));
     }
 
     @Test

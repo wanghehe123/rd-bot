@@ -24,14 +24,14 @@ public interface RdTaskMapper extends BaseMapper<RdTaskRow> {
                 message_id, title, prompt_snapshot, execution_result_json,
                 pull_request_url, error_message, paused, source_type, source_id, source_url,
                 project_id, project_key, project_name, repository_url, repo_owner, repo_name, base_branch, work_branch,
-                expected_result, acceptance_criteria_json, created_at, updated_at
+                expected_result, acceptance_criteria_json, token_budget_override, created_at, updated_at
             )
             VALUES (
                 #{id}, #{taskType}, #{ticketId}, #{ticketTitle}, #{priority}, #{status},
                 #{messageId}, #{title}, #{promptSnapshot}, #{executionResultJson}::jsonb,
                 #{pullRequestUrl}, #{errorMessage}, COALESCE(#{paused}, FALSE), #{sourceType}, #{sourceId}, #{sourceUrl},
                 #{projectId}, #{projectKey}, #{projectName}, #{repositoryUrl}, #{repoOwner}, #{repoName}, #{baseBranch}, #{workBranch},
-                #{expectedResult}, #{acceptanceCriteriaJson}::jsonb, #{createdAt}, #{updatedAt}
+                #{expectedResult}, #{acceptanceCriteriaJson}::jsonb, COALESCE(#{tokenBudgetOverride}, 0), #{createdAt}, #{updatedAt}
             )
             ON CONFLICT (id) DO UPDATE SET
                 task_type = EXCLUDED.task_type,
@@ -59,6 +59,7 @@ public interface RdTaskMapper extends BaseMapper<RdTaskRow> {
                 work_branch = EXCLUDED.work_branch,
                 expected_result = EXCLUDED.expected_result,
                 acceptance_criteria_json = EXCLUDED.acceptance_criteria_json,
+                token_budget_override = EXCLUDED.token_budget_override,
                 updated_at = EXCLUDED.updated_at
             """)
     void upsertTask(RdTaskRow row);

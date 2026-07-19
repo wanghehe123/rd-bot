@@ -1,7 +1,7 @@
 package com.wish.rd.bootstrap.controller.admin.trace;
 
-import com.wish.rd.engine.admin.trace.ExecutionTracePage;
-import com.wish.rd.engine.admin.trace.ExecutionTraceQuery;
+import com.wish.rd.engine.admin.trace.model.ExecutionTracePage;
+import com.wish.rd.engine.admin.trace.model.ExecutionTraceQuery;
 import com.wish.rd.engine.admin.trace.ExecutionTraceQueryService;
 import com.wish.rd.engine.agent.AgentStageRunStore;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;

@@ -33,6 +33,7 @@ import java.util.List;
  * @param createTimeEpochMillis 创建时间
  * @param updateTimeEpochMillis 更新时间
  * @param paused                是否暂停
+ * @param tokenBudgetOverride   任务 token 预算覆盖额度，0 表示使用项目默认或不限制
  */
 public record RdRequirementTask(
         String taskId,
@@ -59,7 +60,8 @@ public record RdRequirementTask(
         String errorMessage,
         long createTimeEpochMillis,
         long updateTimeEpochMillis,
-        boolean paused
+        boolean paused,
+        long tokenBudgetOverride
 ) implements RdTask {
 
     public static final String TASK_TYPE = "REQUIREMENT";
@@ -91,6 +93,45 @@ public record RdRequirementTask(
                 : executionResultJson.strip();
         pullRequestUrl = safe(pullRequestUrl);
         errorMessage = safe(errorMessage);
+        if (tokenBudgetOverride < 0L) {
+            throw new IllegalArgumentException("tokenBudgetOverride must not be negative");
+        }
+    }
+
+    /** Backward-compatible constructor for persisted task snapshots without a token override. */
+    public RdRequirementTask(
+            String taskId,
+            String taskType,
+            String sourceType,
+            String sourceId,
+            String sourceUrl,
+            String priority,
+            RdTaskStatus status,
+            String title,
+            String projectId,
+            String projectKey,
+            String projectName,
+            String repositoryUrl,
+            String repoOwner,
+            String repoName,
+            String baseBranch,
+            String workBranch,
+            String expectedResult,
+            String acceptanceCriteriaJson,
+            String promptSnapshot,
+            String executionResultJson,
+            String pullRequestUrl,
+            String errorMessage,
+            long createTimeEpochMillis,
+            long updateTimeEpochMillis,
+            boolean paused
+    ) {
+        this(
+                taskId, taskType, sourceType, sourceId, sourceUrl, priority, status, title,
+                projectId, projectKey, projectName, repositoryUrl, repoOwner, repoName, baseBranch, workBranch,
+                expectedResult, acceptanceCriteriaJson, promptSnapshot, executionResultJson, pullRequestUrl,
+                errorMessage, createTimeEpochMillis, updateTimeEpochMillis, paused, 0L
+        );
     }
 
     public RdRequirementTask(
@@ -142,7 +183,8 @@ public record RdRequirementTask(
                 errorMessage,
                 createTimeEpochMillis,
                 updateTimeEpochMillis,
-                paused
+                paused,
+                0L
         );
     }
 
@@ -187,7 +229,8 @@ public record RdRequirementTask(
                 "",
                 createTimeEpochMillis,
                 createTimeEpochMillis,
-                false
+                false,
+                safeCommand.tokenBudgetOverride()
         );
     }
 
@@ -224,7 +267,8 @@ public record RdRequirementTask(
                 errorMessage,
                 createTimeEpochMillis,
                 updateTimeEpochMillis,
-                newPaused
+                newPaused,
+                tokenBudgetOverride
         );
     }
 
@@ -272,7 +316,8 @@ public record RdRequirementTask(
                 safe(newErrorMessage),
                 createTimeEpochMillis,
                 updateTimeEpochMillis,
-                paused
+                paused,
+                tokenBudgetOverride
         );
     }
 
@@ -308,7 +353,8 @@ public record RdRequirementTask(
                 errorMessage,
                 createTimeEpochMillis,
                 updateTimeEpochMillis,
-                paused
+                paused,
+                tokenBudgetOverride
         );
     }
 

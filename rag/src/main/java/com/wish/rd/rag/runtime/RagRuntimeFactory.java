@@ -16,6 +16,7 @@ import com.wish.rd.rag.retrieval.impl.KeywordBM25SearchChannel;
 import com.wish.rd.rag.retrieval.impl.LogCenterSearchChannel;
 import com.wish.rd.rag.retrieval.MultiChannelRetrievalEngine;
 import com.wish.rd.rag.retrieval.SearchChannel;
+import com.wish.rd.rag.retrieval.run.RetrievalRunLifecycle;
 import com.wish.rd.rag.vector.VectorStore;
 
 import java.util.List;
@@ -56,6 +57,15 @@ public final class RagRuntimeFactory {
             IntentTree intentTree,
             RepairTaskContextPort taskContextPort
     ) {
+        return repairRagPipeline(vectorStore, intentTree, taskContextPort, null);
+    }
+
+    public static RepairRagPipeline repairRagPipeline(
+            VectorStore vectorStore,
+            IntentTree intentTree,
+            RepairTaskContextPort taskContextPort,
+            RetrievalRunLifecycle retrievalRunLifecycle
+    ) {
         List<SearchChannel> channels = List.of(
                 new IntentDirectedVectorSearchChannel(vectorStore),
                 new GlobalVectorSearchChannel(vectorStore),
@@ -65,7 +75,8 @@ public final class RagRuntimeFactory {
                 new IntentClassifier(intentTree),
                 new IntentGuidanceService(),
                 new MultiChannelRetrievalEngine(channels),
-                taskContextPort
+                taskContextPort,
+                retrievalRunLifecycle
         );
     }
 
@@ -88,6 +99,17 @@ public final class RagRuntimeFactory {
             CodeRepositorySearchPort codeRepositorySearchPort,
             RepairTaskContextPort taskContextPort
     ) {
+        return repairRagPipeline(vectorStore, intentTree, logCenterPort, codeRepositorySearchPort, taskContextPort, null);
+    }
+
+    public static RepairRagPipeline repairRagPipeline(
+            VectorStore vectorStore,
+            IntentTree intentTree,
+            LogCenterPort logCenterPort,
+            CodeRepositorySearchPort codeRepositorySearchPort,
+            RepairTaskContextPort taskContextPort,
+            RetrievalRunLifecycle retrievalRunLifecycle
+    ) {
         List<SearchChannel> channels = List.of(
                 new IntentDirectedVectorSearchChannel(vectorStore),
                 new GlobalVectorSearchChannel(vectorStore),
@@ -99,7 +121,8 @@ public final class RagRuntimeFactory {
                 new IntentClassifier(intentTree),
                 new IntentGuidanceService(),
                 new MultiChannelRetrievalEngine(channels),
-                taskContextPort
+                taskContextPort,
+                retrievalRunLifecycle
         );
     }
 }

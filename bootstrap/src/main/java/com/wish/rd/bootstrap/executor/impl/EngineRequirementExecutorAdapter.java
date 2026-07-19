@@ -13,8 +13,13 @@ import com.wish.rd.exec.repair.execution.model.RepairExecutionResult;
 import com.wish.rd.exec.repair.execution.model.RepairExecutionStatus;
 import com.wish.rd.exec.repair.execution.RepairExecutorPort;
 import com.wish.rd.exec.repair.execution.model.RepairJobCommand;
+import com.wish.rd.exec.repair.result.AgentRoleResultValidator;
+import com.wish.rd.exec.repair.result.QaEvidenceBundleValidator;
+import com.wish.rd.exec.repair.result.model.AgentRoleResultValidation;
 import com.wish.rd.rag.runtime.model.RdRequirementTask;
 import com.wish.rd.rag.runtime.model.TaskMaterial;
+import com.wish.rd.rag.qa.QaValidationProfileService;
+import com.wish.rd.rag.qa.model.QaValidationProfile;
 import org.springframework.core.task.AsyncTaskExecutor;
 import org.springframework.core.task.TaskRejectedException;
 
@@ -37,20 +42,24 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     private static final Pattern SSH_GIT_PATTERN = Pattern.compile("[:/]([^/:]+)/([^/]+?)(?:\\.git)?$");
     static final String AGENT_RESULT_JSON_FIELD = "__agentResultJson";
+    private static final AgentRoleResultValidator AGENT_ROLE_RESULT_VALIDATOR = new AgentRoleResultValidator();
+    private static final QaEvidenceBundleValidator QA_EVIDENCE_BUNDLE_VALIDATOR = new QaEvidenceBundleValidator();
 
     private final RepairExecutorPort repairExecutor;
     private final AsyncTaskExecutor executorIoTaskExecutor;
     private final TaskMaterialAttachmentResolver attachmentResolver;
+    private final QaValidationProfileService qaValidationProfileService;
+    private final ObjectStorageQaEvidencePublisher qaEvidencePublisher;
 
     public EngineRequirementExecutorAdapter(RepairExecutorPort repairExecutor) {
-        this(repairExecutor, null, null);
+        this(repairExecutor, null, null, null, null);
     }
 
     public EngineRequirementExecutorAdapter(
             RepairExecutorPort repairExecutor,
             AsyncTaskExecutor executorIoTaskExecutor
     ) {
-        this(repairExecutor, executorIoTaskExecutor, null);
+        this(repairExecutor, executorIoTaskExecutor, null, null, null);
     }
 
     public EngineRequirementExecutorAdapter(
@@ -58,9 +67,30 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
             AsyncTaskExecutor executorIoTaskExecutor,
             TaskMaterialAttachmentResolver attachmentResolver
     ) {
+        this(repairExecutor, executorIoTaskExecutor, attachmentResolver, null, null);
+    }
+
+    public EngineRequirementExecutorAdapter(
+            RepairExecutorPort repairExecutor,
+            AsyncTaskExecutor executorIoTaskExecutor,
+            TaskMaterialAttachmentResolver attachmentResolver,
+            QaValidationProfileService qaValidationProfileService
+    ) {
+        this(repairExecutor, executorIoTaskExecutor, attachmentResolver, qaValidationProfileService, null);
+    }
+
+    public EngineRequirementExecutorAdapter(
+            RepairExecutorPort repairExecutor,
+            AsyncTaskExecutor executorIoTaskExecutor,
+            TaskMaterialAttachmentResolver attachmentResolver,
+            QaValidationProfileService qaValidationProfileService,
+            ObjectStorageQaEvidencePublisher qaEvidencePublisher
+    ) {
         this.repairExecutor = Objects.requireNonNull(repairExecutor, "repairExecutor must not be null");
         this.executorIoTaskExecutor = executorIoTaskExecutor;
         this.attachmentResolver = attachmentResolver;
+        this.qaValidationProfileService = qaValidationProfileService;
+        this.qaEvidencePublisher = qaEvidencePublisher;
     }
 
     public EngineRequirementExecutorAdapter(
@@ -82,6 +112,25 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
                     request.taskId(),
                     "repair executor returned null",
                     "{\"status\":\"FAILED\",\"errorMessage\":\"repair executor returned null\"}"
+            );
+        }
+        if (request.role() == AgentRole.QA_AGENT && qaEvidencePublisher != null) {
+            try {
+                repairResult = qaEvidencePublisher.publish(repairResult);
+            } catch (RuntimeException exception) {
+                return RequirementExecutionResult.failure(
+                        request.taskId(),
+                        "QA evidence persistence failed: " + safeMessage(exception),
+                        qaEvidencePersistenceFailureJson(repairResult, exception)
+                );
+            }
+        }
+        String invalidQaProtocolReason = invalidQaProtocolReason(request, repairResult);
+        if (!invalidQaProtocolReason.isBlank()) {
+            return RequirementExecutionResult.failure(
+                    request.taskId(),
+                    invalidQaProtocolReason,
+                    toResultJson(request, repairResult)
             );
         }
         if (qaReportBlocksDelivery(request, repairResult)) {
@@ -164,6 +213,8 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
     private Map<String, String> contextJson(RequirementExecutionRequest request) {
         Map<String, String> context = new LinkedHashMap<>();
         RdRequirementTask task = request.task();
+        context.put("workflowTaskId", request.taskId());
+        context.put("stageRunId", request.stageRunId());
         context.put("taskId", task.taskId());
         context.put("taskType", task.taskType());
         context.put("agentRole", request.role().name());
@@ -174,7 +225,44 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
         context.put("roleContextJson", request.roleContextJson());
         context.put("upstreamResultJson", request.upstreamResultJson());
         context.put("materials", materialSummary(request.materials()));
+        appendQaProfileContext(context, request, task);
         return Map.copyOf(context);
+    }
+
+    private void appendQaProfileContext(
+            Map<String, String> context,
+            RequirementExecutionRequest request,
+            RdRequirementTask task
+    ) {
+        if (request.role() != AgentRole.QA_AGENT || qaValidationProfileService == null) {
+            return;
+        }
+        QaValidationProfileService.Resolution resolution = qaValidationProfileService.resolve(
+                request.taskId(),
+                task == null ? "" : task.projectId()
+        );
+        if (resolution.profile().isEmpty()) {
+            return;
+        }
+        String key = "TASK_OVERRIDE".equals(resolution.source())
+                ? "qaTaskOverrideJson"
+                : "qaProjectProfileJson";
+        context.put(key, qaProfileJson(resolution.profile().orElseThrow()));
+    }
+
+    private String qaProfileJson(QaValidationProfile profile) {
+        Map<String, Object> value = new LinkedHashMap<>();
+        value.put("mode", profile.mode());
+        value.put("baseUrl", profile.baseUrl());
+        value.put("startCommand", profile.startCommand());
+        value.put("healthPath", profile.healthPath());
+        value.put("allowedHosts", profile.allowedHosts());
+        value.put("regressionCommands", profile.regressionCommands());
+        try {
+            return OBJECT_MAPPER.writeValueAsString(value);
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("failed to serialize QA validation profile", exception);
+        }
     }
 
     private String materialSummary(List<TaskMaterial> materials) {
@@ -218,7 +306,9 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
             value.put("uri", artifact.uri());
             value.put("summary", artifact.summary());
             value.put("contentPreview", artifact.metadataJson().getOrDefault("contentPreview", ""));
-            value.put("metadataJson", artifact.metadataJson());
+            Map<String, String> metadata = new LinkedHashMap<>(artifact.metadataJson());
+            metadata.put("artifactName", artifact.name());
+            value.put("metadataJson", Map.copyOf(metadata));
             artifacts.add(Map.copyOf(value));
         }
         if (!repairResult.dockerMetadataJson().isEmpty()) {
@@ -244,28 +334,6 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
         }
         if (request.role() == AgentRole.SOLUTION_ARCHITECT) {
             normalizeSolutionArchitectResult(request, repairResult, value);
-            return;
-        }
-        if (request.role() != AgentRole.QA_AGENT) {
-            return;
-        }
-        String currentStatus = text(value.get("status"));
-        boolean hasQaProtocol = ("PASSED".equalsIgnoreCase(currentStatus)
-                || "FAILED".equalsIgnoreCase(currentStatus)
-                || "SKIPPED".equalsIgnoreCase(currentStatus))
-                && hasNonEmptyArray(value.get("acceptanceResults"));
-        if (hasQaProtocol) {
-            return;
-        }
-        if (!currentStatus.isBlank() && !"PASSED".equalsIgnoreCase(currentStatus)) {
-            value.putIfAbsent("legacyStatus", currentStatus);
-        }
-        value.put("status", "PASSED");
-        value.putIfAbsent("summary", repairResult.summary().isBlank()
-                ? "QA passed with normalized delivery evidence"
-                : repairResult.summary());
-        if (!hasNonEmptyArray(value.get("acceptanceResults"))) {
-            value.put("acceptanceResults", qaAcceptanceResults(request, repairResult, value));
         }
     }
 
@@ -355,35 +423,6 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
         return "Verify the criterion during coding and QA review";
     }
 
-    private List<Map<String, String>> qaAcceptanceResults(
-            RequirementExecutionRequest request,
-            RepairExecutionResult repairResult,
-            Map<String, Object> value
-    ) {
-        List<String> criteria = acceptanceCriteria(request.task());
-        if (criteria.isEmpty()) {
-            criteria = List.of("QA delivery evidence is present");
-        }
-        List<String> commandCandidates = commandCandidates(repairResult, value);
-        List<Map<String, String>> results = new ArrayList<>();
-        for (int index = 0; index < criteria.size(); index++) {
-            String criterion = criteria.get(index);
-            String command = commandFromCriterion(criterion);
-            if (command.isBlank()) {
-                command = commandCandidates.isEmpty()
-                        ? "see normalized QA summary evidence"
-                        : commandCandidates.get(Math.min(index, commandCandidates.size() - 1));
-            }
-            results.add(Map.of(
-                    "criteria", criterion,
-                    "command", command,
-                    "status", "PASSED",
-                    "logArtifactId", "qa-inline-log-" + (index + 1)
-            ));
-        }
-        return List.copyOf(results);
-    }
-
     private List<String> acceptanceCriteria(RdRequirementTask task) {
         try {
             JsonNode root = OBJECT_MAPPER.readTree(task == null ? "[]" : task.acceptanceCriteriaJson());
@@ -400,34 +439,6 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
             return List.copyOf(values);
         } catch (JsonProcessingException exception) {
             return List.of();
-        }
-    }
-
-    private List<String> commandCandidates(RepairExecutionResult repairResult, Map<String, Object> value) {
-        List<String> candidates = new ArrayList<>();
-        addCommandCandidates(candidates, repairResult.testMetadataJson().getOrDefault("testCommands", ""));
-        addCommandCandidates(candidates, text(value.get("testSummary")));
-        addCommandCandidates(candidates, text(value.get("prBody")));
-        return candidates.stream().distinct().toList();
-    }
-
-    private void addCommandCandidates(List<String> candidates, String text) {
-        if (text == null || text.isBlank()) {
-            return;
-        }
-        Matcher matcher = Pattern.compile("`([^`]*(?:test|grep)[^`]*)`").matcher(text);
-        while (matcher.find()) {
-            String command = matcher.group(1).strip();
-            if (!command.isBlank()) {
-                candidates.add(command);
-            }
-        }
-        for (String line : text.split("\\R")) {
-            String normalized = line.strip();
-            if ((normalized.startsWith("test ") || normalized.startsWith("grep "))
-                    && !normalized.isBlank()) {
-                candidates.add(normalized);
-            }
         }
     }
 
@@ -471,6 +482,35 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
         return "FAILED".equalsIgnoreCase(status) || "SKIPPED".equalsIgnoreCase(status);
     }
 
+    private String invalidQaProtocolReason(
+            RequirementExecutionRequest request,
+            RepairExecutionResult repairResult
+    ) {
+        if (request == null
+                || request.role() != AgentRole.QA_AGENT
+                || repairResult == null
+                || repairResult.status() != RepairExecutionStatus.SUCCESS) {
+            return "";
+        }
+        try {
+            String json = OBJECT_MAPPER.writeValueAsString(expandedAgentResult(repairResult.rawResultJson()));
+            AgentRoleResultValidation validation = AGENT_ROLE_RESULT_VALIDATOR.validate("QA_AGENT", json);
+            if (!validation.valid()) {
+                return "QA evidence protocol invalid: " + String.join("; ", validation.errors());
+            }
+            AgentRoleResultValidation evidenceValidation = QA_EVIDENCE_BUNDLE_VALIDATOR.validate(
+                    json,
+                    repairResult.artifacts(),
+                    acceptanceCriteria(request.task())
+            );
+            return evidenceValidation.valid()
+                    ? ""
+                    : "QA evidence bundle invalid: " + String.join("; ", evidenceValidation.errors());
+        } catch (JsonProcessingException exception) {
+            return "QA evidence protocol invalid: result cannot be serialized";
+        }
+    }
+
     private String qaFailureReason(RepairExecutionResult repairResult) {
         Map<String, Object> value = expandedAgentResult(repairResult.rawResultJson());
         String summary = text(value.get("summary"));
@@ -478,6 +518,33 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
             return "QA_AGENT failed acceptance";
         }
         return "QA_AGENT failed: " + summary;
+    }
+
+    private String qaEvidencePersistenceFailureJson(
+            RepairExecutionResult repairResult,
+            RuntimeException exception
+    ) {
+        Map<String, Object> value = expandedAgentResult(repairResult.rawResultJson());
+        value.put("status", "FAILED");
+        value.put("summary", "QA evidence could not be persisted");
+        value.put("failureCategory", "QA_INFRASTRUCTURE");
+        value.put("retryRecommendation", "HUMAN");
+        value.put("evidencePersistenceError", safeMessage(exception));
+        value.put("stageArtifacts", List.of());
+        try {
+            return OBJECT_MAPPER.writeValueAsString(value);
+        } catch (JsonProcessingException ignored) {
+            return "{\"status\":\"FAILED\",\"failureCategory\":\"QA_INFRASTRUCTURE\","
+                    + "\"retryRecommendation\":\"HUMAN\"}";
+        }
+    }
+
+    private static String safeMessage(RuntimeException exception) {
+        if (exception == null || exception.getMessage() == null || exception.getMessage().isBlank()) {
+            return "unknown persistence error";
+        }
+        String message = exception.getMessage().strip();
+        return message.length() <= 500 ? message : message.substring(0, 500);
     }
 
     private String text(Object value) {

@@ -11,10 +11,13 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import org.mockito.ArgumentCaptor;
 
 class PostgresRoleContextPackageStoreTest {
 
@@ -35,7 +38,10 @@ class PostgresRoleContextPackageStoreTest {
         assertEquals(context, store.findById(context.packageId()).orElseThrow());
         assertEquals(List.of(context), store.listByTask(context.taskId()));
         assertEquals(List.of(context), store.listByTaskAndRole(context.taskId(), "qa_agent"));
-        verify(mapper).upsertContextPackage(any(RdRoleContextPackageRow.class));
+        ArgumentCaptor<RdRoleContextPackageRow> rowCaptor = ArgumentCaptor.forClass(RdRoleContextPackageRow.class);
+        verify(mapper, atLeastOnce()).upsertContextPackage(rowCaptor.capture());
+        assertNotNull(rowCaptor.getValue().retrievalRunId);
+        assertEquals(7478000000000002001L, rowCaptor.getValue().retrievalRunId);
     }
 
     private RoleContextPackage context(String packageId, String taskId, String role) {
@@ -58,6 +64,7 @@ class PostgresRoleContextPackageStoreTest {
                 8_000,
                 64,
                 List.of("mat-2"),
+                "7478000000000002001",
                 1_783_000_000_000L
         );
     }
@@ -76,6 +83,7 @@ class PostgresRoleContextPackageStoreTest {
         row.contextBudgetJson = "{\"maxChars\":8000,\"usedChars\":64}";
         row.omittedEvidenceJson = "[\"mat-2\"]";
         row.contentHash = "sha256:ctx";
+        row.retrievalRunId = Long.parseLong(context.retrievalRunId());
         row.createdAt = PostgresPersistenceSupport.toDateTime(context.createdAtEpochMillis());
         return row;
     }

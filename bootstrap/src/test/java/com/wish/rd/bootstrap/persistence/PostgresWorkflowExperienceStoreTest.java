@@ -19,6 +19,7 @@ import static org.mockito.ArgumentCaptor.forClass;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 class PostgresWorkflowExperienceStoreTest {
 
@@ -102,6 +103,53 @@ class PostgresWorkflowExperienceStoreTest {
         assertTrue(sqlSegment.contains("task_id <>"));
     }
 
+    @Test
+    void shouldDropZeroScoreExperienceInsteadOfReturningNewestNoise() {
+        WorkflowExperienceEntry unrelated = new WorkflowExperienceEntry(
+                "7478000000000003010", "7478000000000000010", "7478000000000002010",
+                "7478000000000001010", AgentRole.QA_AGENT, WorkflowExperienceType.QA_REPORT,
+                "优惠券活动", "满减优惠券验收通过", "{\"summary\":\"营销活动\"}",
+                true, false, true, 1_783_000_001_000L);
+        when(mapper.selectList(any())).thenReturn(List.of(row(unrelated)));
+
+        List<WorkflowExperienceEntry> results = store.searchReusable(
+                "商品库存批量调整", "7478000000000000999", 5);
+
+        assertTrue(results.isEmpty());
+    }
+
+    @Test
+    void shouldPersistAndHardFilterScopedExperienceMetadata() {
+        WorkflowExperienceEntry scoped = new WorkflowExperienceEntry(
+                "7478000000000003020", "7478000000000000020", "7478000000000002020",
+                "7478000000000001020", AgentRole.QA_AGENT, WorkflowExperienceType.QA_REPORT,
+                "商品验收", "商品保存接口验收通过", "{\"status\":\"PASSED\"}",
+                true, false, true, 1_783_000_002_000L,
+                "waimai-project", "example/waimai", "product-admin",
+                List.of("商品", "QA_AGENT"), "0123456789abcdef", 0.95d,
+                List.of(AgentRole.QA_AGENT));
+        when(mapper.selectList(any())).thenReturn(List.of(row(scoped)));
+
+        store.save(scoped);
+        List<WorkflowExperienceEntry> results = store.searchReusableScoped(
+                "商品验收", "7478000000000000999", "waimai-project", "example/waimai",
+                AgentRole.QA_AGENT, 5);
+
+        assertEquals(List.of(scoped), results);
+        org.mockito.ArgumentCaptor<RdExperienceEntryRow> rowCaptor = forClass(RdExperienceEntryRow.class);
+        verify(mapper).upsertExperienceEntry(rowCaptor.capture());
+        assertEquals("waimai-project", rowCaptor.getValue().projectId);
+        assertEquals("example/waimai", rowCaptor.getValue().repositoryFingerprint);
+        assertEquals("[\"商品\",\"QA_AGENT\"]", rowCaptor.getValue().tagsJson);
+        assertNotNull(rowCaptor.getValue().applicableRolesJson);
+
+        @SuppressWarnings("unchecked")
+        org.mockito.ArgumentCaptor<QueryWrapper<RdExperienceEntryRow>> queryCaptor =
+                forClass((Class<QueryWrapper<RdExperienceEntryRow>>) (Class<?>) QueryWrapper.class);
+        verify(mapper).selectList(queryCaptor.capture());
+        assertTrue(queryCaptor.getValue().getSqlSegment().contains("project_id"));
+    }
+
     private RdExperienceEntryRow row(WorkflowExperienceEntry entry) {
         RdExperienceEntryRow row = new RdExperienceEntryRow();
         row.id = Long.parseLong(entry.experienceId());
@@ -117,6 +165,18 @@ class PostgresWorkflowExperienceStoreTest {
         row.reusable = entry.reusable();
         row.failure = entry.failure();
         row.redacted = entry.redacted();
+        row.projectId = entry.projectId();
+        row.repositoryFingerprint = entry.repositoryFingerprint();
+        row.intentId = entry.intentId();
+        try {
+            row.tagsJson = new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(entry.tags());
+            row.applicableRolesJson = new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(
+                    entry.applicableRoles().stream().map(Enum::name).toList());
+        } catch (com.fasterxml.jackson.core.JsonProcessingException exception) {
+            throw new AssertionError(exception);
+        }
+        row.sourceRevision = entry.sourceRevision();
+        row.evidenceQuality = entry.evidenceQuality();
         row.ingestionTaskId = null;
         row.createdAt = PostgresPersistenceSupport.toDateTime(entry.createdAtEpochMillis());
         return row;

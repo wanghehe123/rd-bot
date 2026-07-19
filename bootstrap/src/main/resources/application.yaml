@@ -21,6 +21,10 @@ spring:
       port: ${REDIS_PORT:6379}
       password: ${REDIS_PASSWORD:}
 
+logging:
+  level:
+    com.wish.rd.rag.retrieval: ${RD_RAG_RETRIEVAL_LOG_LEVEL:INFO}
+
 rag:
   default:
     collection-name: rd_bot_collection
@@ -50,6 +54,31 @@ rustfs:
   secret-access-key: ${RUSTFS_SECRET_ACCESS_KEY:rustfsadmin}
 
 rd:
+  evaluation:
+    enabled: ${RD_EVAL_ENABLED:true}
+    repository-root: ${RD_EVAL_REPOSITORY_ROOT:${user.dir}}
+    output-root: ${RD_EVAL_OUTPUT_ROOT:qa-runs/evaluation}
+    dataset-root: ${RD_EVAL_DATASET_ROOT:scripts/evaluation/datasets}
+    rag-log-root: ${RD_EVAL_RAG_LOG_ROOT:logs}
+    python-executable: ${RD_EVAL_PYTHON_EXECUTABLE:python3}
+    ragas-python-executable: ${RD_EVAL_RAGAS_PYTHON_EXECUTABLE:}
+    default-base-url: ${RD_EVAL_DEFAULT_BASE_URL:http://127.0.0.1:18080}
+    parallelism: ${RD_EVAL_PARALLELISM:2}
+    max-log-chars: ${RD_EVAL_MAX_LOG_CHARS:200000}
+  ai-review:
+    enabled: ${RD_AI_REVIEW_ENABLED:false}
+    base-url: ${RD_AI_REVIEW_BASE_URL:https://api.longcat.chat/anthropic}
+    model: ${RD_AI_REVIEW_MODEL:}
+    auth-token-env: ${RD_AI_REVIEW_AUTH_TOKEN_ENV:LONGCAT_API_KEY}
+    auth-mode: ${RD_AI_REVIEW_AUTH_MODE:authorization-bearer}
+    disable-thinking: ${RD_AI_REVIEW_DISABLE_THINKING:true}
+    max-tokens: ${RD_AI_REVIEW_MAX_TOKENS:4096}
+    max-input-chars: ${RD_AI_REVIEW_MAX_INPUT_CHARS:80000}
+    timeout: ${RD_AI_REVIEW_TIMEOUT:90s}
+  requirement-delivery:
+    max-attempts: ${RD_REQUIREMENT_DELIVERY_MAX_ATTEMPTS:3}
+    lease-millis: ${RD_REQUIREMENT_DELIVERY_LEASE_MILLIS:600000}
+    recovery-interval-millis: ${RD_REQUIREMENT_DELIVERY_RECOVERY_INTERVAL_MILLIS:30000}
   financial:
     cny-per-usd: ${RD_FINANCIAL_CNY_PER_USD:7.20}
   task-draft:
@@ -144,6 +173,7 @@ rd:
     docker:
       enabled: ${RD_EXECUTOR_DOCKER_ENABLED:true}
       image: ${RD_EXECUTOR_DOCKER_IMAGE:rd-bot/claude-code:local}
+      qa-image: ${RD_EXECUTOR_DOCKER_QA_IMAGE:rd-bot/claude-code-qa:local}
       workspace-root: ${RD_EXECUTOR_DOCKER_WORKSPACE_ROOT:/tmp/rd-bot/repair-workspaces}
       command: claude
       yolo-flag: --dangerously-skip-permissions

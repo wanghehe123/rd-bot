@@ -124,6 +124,7 @@ public final class PostgresRdTaskStore implements RdTaskStore {
         row.workBranch = "";
         row.expectedResult = "";
         row.acceptanceCriteriaJson = "[]";
+        row.tokenBudgetOverride = 0L;
         row.createdAt = PostgresPersistenceSupport.toDateTime(task.createTimeEpochMillis());
         row.updatedAt = PostgresPersistenceSupport.toDateTime(task.updateTimeEpochMillis());
         row.paused = task.paused();
@@ -157,6 +158,7 @@ public final class PostgresRdTaskStore implements RdTaskStore {
         row.workBranch = task.workBranch();
         row.expectedResult = task.expectedResult();
         row.acceptanceCriteriaJson = task.acceptanceCriteriaJson().isBlank() ? "[]" : task.acceptanceCriteriaJson();
+        row.tokenBudgetOverride = task.tokenBudgetOverride();
         row.createdAt = PostgresPersistenceSupport.toDateTime(task.createTimeEpochMillis());
         row.updatedAt = PostgresPersistenceSupport.toDateTime(task.updateTimeEpochMillis());
         row.paused = task.paused();
@@ -216,7 +218,8 @@ public final class PostgresRdTaskStore implements RdTaskStore {
                 row.errorMessage,
                 PostgresPersistenceSupport.toEpochMillis(row.createdAt),
                 PostgresPersistenceSupport.toEpochMillis(row.updatedAt),
-                row.paused != null && row.paused
+                row.paused != null && row.paused,
+                row.tokenBudgetOverride == null ? 0L : row.tokenBudgetOverride
         );
     }
 }

@@ -3,6 +3,7 @@ package com.wish.rd.engine.requirement;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.wish.rd.engine.agent.model.AgentStageArtifact;
 import com.wish.rd.engine.agent.AgentStageArtifactStore;
 import com.wish.rd.engine.agent.model.AgentRole;
@@ -23,7 +24,11 @@ import com.wish.rd.rag.context.impl.InMemoryRoleContextPackageStore;
 import com.wish.rd.rag.context.RoleContextBuilder;
 import com.wish.rd.rag.context.model.RoleContextEvidence;
 import com.wish.rd.rag.context.model.RoleContextPackage;
+import com.wish.rd.rag.retrieval.run.model.RetrievalConsumerType;
+import com.wish.rd.engine.retrieval.DeepRetrievalOrchestrator;
+import com.wish.rd.engine.retrieval.model.RetrievalOutcome;
 import com.wish.rd.rag.context.RoleContextPackageStore;
+import com.wish.rd.rag.project.budget.RdProjectTokenBudgetService;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
 import com.wish.rd.rag.runtime.model.RdRequirementTask;
 import com.wish.rd.rag.runtime.model.RdTask;
@@ -43,10 +48,11 @@ import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Set;
 import java.util.stream.Collectors;
 import com.wish.rd.engine.requirement.model.RequirementContextPackage;
 import com.wish.rd.engine.requirement.model.RequirementDeliveryResult;
@@ -57,6 +63,13 @@ import com.wish.rd.engine.requirement.model.RequirementPlan;
 import com.wish.rd.engine.requirement.model.RequirementPolicyDecision;
 import com.wish.rd.engine.requirement.model.RequirementPullRequestPublication;
 import com.wish.rd.engine.requirement.model.RequirementPullRequestPublishCommand;
+import com.wish.rd.engine.requirement.review.AiDeliveryReviewEngine;
+import com.wish.rd.engine.requirement.review.model.AiReviewRun;
+import com.wish.rd.engine.requirement.review.model.AiReviewRunStatus;
+import com.wish.rd.engine.retry.TaskRetryCheckpointStore;
+import com.wish.rd.engine.retry.model.TaskFailurePhase;
+import com.wish.rd.engine.retry.model.TaskRetryCheckpoint;
+import com.wish.rd.engine.retry.model.TaskRetryCheckpointStatus;
 
 /**
  * 需求交付编排引擎。
@@ -83,11 +96,38 @@ public class RequirementDeliveryEngine {
     private final AgentStageArtifactStore artifactStore;
     private final RoleContextBuilder roleContextBuilder;
     private final RoleContextPackageStore roleContextPackageStore;
+    private final RoleContextVersionManager roleContextVersionManager;
     private final AgentWorkflowAlertSinkPort alertSink;
     private final WorkflowExperienceStore experienceStore;
     private final RequirementDeliveryReviewer deliveryReviewer;
     private final RequirementPullRequestPublisherPort pullRequestPublisher;
     private final SnowflakeIdGenerator idGenerator;
+    private RequirementContextRetrievalRecorder retrievalRecorder;
+    private AiDeliveryReviewEngine aiDeliveryReviewEngine;
+    private TaskRetryCheckpointStore taskRetryCheckpointStore;
+    private RdProjectTokenBudgetService projectTokenBudgetService;
+
+    @Autowired(required = false)
+    void setDeepRetrievalOrchestrator(DeepRetrievalOrchestrator orchestrator) {
+        this.retrievalRecorder = orchestrator == null
+                ? null
+                : new RequirementContextRetrievalRecorder(orchestrator);
+    }
+
+    @Autowired(required = false)
+    void setAiDeliveryReviewEngine(AiDeliveryReviewEngine aiDeliveryReviewEngine) {
+        this.aiDeliveryReviewEngine = aiDeliveryReviewEngine;
+    }
+
+    @Autowired(required = false)
+    void setTaskRetryCheckpointStore(TaskRetryCheckpointStore taskRetryCheckpointStore) {
+        this.taskRetryCheckpointStore = taskRetryCheckpointStore;
+    }
+
+    @Autowired(required = false)
+    void setProjectTokenBudgetService(RdProjectTokenBudgetService projectTokenBudgetService) {
+        this.projectTokenBudgetService = projectTokenBudgetService;
+    }
 
     public RequirementDeliveryEngine(
             RagStreamTaskRegistry taskRegistry,
@@ -514,13 +554,15 @@ public class RequirementDeliveryEngine {
         this.roleContextPackageStore = roleContextPackageStore == null
                 ? new InMemoryRoleContextPackageStore()
                 : roleContextPackageStore;
+        this.idGenerator = safeIdGenerator(idGenerator);
+        this.roleContextVersionManager = new RoleContextVersionManager(
+                this.roleContextBuilder, this.roleContextPackageStore, this.idGenerator::nextIdString, 18_000);
         this.alertSink = alertSink == null ? AgentWorkflowAlertSinkPort.noop() : alertSink;
         this.experienceStore = experienceStore == null ? WorkflowExperienceStore.noop() : experienceStore;
         this.deliveryReviewer = deliveryReviewer == null ? new RequirementDeliveryReviewer() : deliveryReviewer;
         this.pullRequestPublisher = pullRequestPublisher == null
                 ? RequirementPullRequestPublisherPort.unavailable()
                 : pullRequestPublisher;
-        this.idGenerator = safeIdGenerator(idGenerator);
     }
 
     /**
@@ -543,9 +585,26 @@ public class RequirementDeliveryEngine {
         if (materials.isEmpty()) {
             throw new IllegalStateException("requirement materials must not be empty: " + taskId);
         }
+        if (isRetryableRequirementStatus(requirementTask.status())) {
+            if (requirementTask.status() != RdTaskStatus.RECOVERING) {
+                requirementTask = (RdRequirementTask) taskRegistry.markRecovering(
+                        requirementTask.taskId(), "创建新的角色阶段尝试");
+            }
+        }
+        TaskRetryCheckpoint activeRetry = activeDispatchedRetry(requirementTask.taskId());
+        if (activeRetry != null && activeRetry.failurePhase() == TaskFailurePhase.PR_PUBLICATION) {
+            return resumePullRequestPublication(requirementTask);
+        }
+        if (activeRetry != null && activeRetry.failurePhase() == TaskFailurePhase.DETERMINISTIC_REVIEW) {
+            return validateAndPublish(requirementTask, recoverExecutionResult(requirementTask), false);
+        }
+        if (activeRetry != null && activeRetry.failurePhase() == TaskFailurePhase.AI_REVIEW
+                && activeRetry.retryFromRole() == null) {
+            return validateAndPublish(requirementTask, recoverExecutionResult(requirementTask), true);
+        }
         // 先补齐阶段运行记录和角色上下文（幂等创建），确保每次提交都能有完整审计闭环。
         ensureRequirementStages(requirementTask);
-        ensureRoleContexts(requirementTask, materials);
+        ensureRoleContexts(requirementTask, materials, activeRetry);
 
         // 状态机推进（可重入）主链路：
         // 主状态链：
@@ -554,6 +613,7 @@ public class RequirementDeliveryEngine {
         // -> PR_CREATING -> COMMITTED -> REPORTING -> COMPLETED
         // 失败分支：
         // WAITING_POLICY -> WAITING_APPROVAL、WAITING_POLICY -> FAILED_NEEDS_HUMAN
+        // RECOVERING -> WAITING_APPROVAL（恢复后再入审批，依赖状态机边，禁止裸抛）
         // EXECUTING -> FAILED_NEEDS_HUMAN、EXECUTING -> REJECTED
         // VALIDATING -> REJECTED
         // PR_CREATING -> REJECTED
@@ -600,7 +660,7 @@ public class RequirementDeliveryEngine {
         }
         if (!policyDecision.allowed()) {
             if (policyDecision.waitingApproval()) {
-                // WAITING_POLICY -> WAITING_APPROVAL：策略要求外部审批，任务在此暂停。
+                // WAITING_POLICY / RECOVERING -> WAITING_APPROVAL：策略要求外部审批，任务在此暂停。
                 RdRequirementTask waitingApproval = taskRegistry.markRequirementWaitingApproval(
                         requirementTask.taskId(),
                         policyDecision.toJson()
@@ -640,8 +700,13 @@ public class RequirementDeliveryEngine {
                 materials,
                 context,
                 plan,
-                policyDecision
+                policyDecision,
+                activeRetry
         );
+        RdTask afterStages = taskRegistry.getTask(requirementTask.taskId());
+        if (afterStages.status() == RdTaskStatus.WAITING_APPROVAL) {
+            return currentResult((RdRequirementTask) afterStages);
+        }
         if (!executionResult.success()) {
             String reason = executionResult.errorMessage().isBlank()
                     ? "需求执行失败"
@@ -679,8 +744,19 @@ public class RequirementDeliveryEngine {
                     rejected.errorMessage()
             );
         }
-        // EXECUTING -> VALIDATING：执行完成后进入结果复核阶段，开始复核前把执行产物写入验证态。
-        requirementTask = taskRegistry.markRequirementValidating(requirementTask.taskId(), executionResult.resultJson());
+        return validateAndPublish(requirementTask, executionResult, false);
+    }
+
+    private RequirementDeliveryResult validateAndPublish(
+            RdRequirementTask task,
+            RequirementExecutionResult executionResult,
+            boolean skipDeterministicReview
+    ) {
+        RdRequirementTask requirementTask = taskRegistry.markRequirementValidating(
+                task.taskId(), executionResult.resultJson());
+        String deterministicReviewJson = existingDeliveryReviewJson(executionResult.resultJson());
+        String reviewedResultJson = executionResult.resultJson();
+        if (!skipDeterministicReview) {
         RequirementDeliveryReviewResult reviewResult = deliveryReviewer.review(
                 requirementTask.taskId(),
                 executionResult.resultJson()
@@ -692,7 +768,7 @@ public class RequirementDeliveryEngine {
             RdRequirementTask rejected = taskRegistry.markRequirementRejected(
                     requirementTask.taskId(),
                     "delivery review failed: " + reviewResult.reason(),
-                    reviewResult.toJson()
+                    withDeliveryReviewJson(executionResult.resultJson(), reviewResult)
             );
             return new RequirementDeliveryResult(
                     rejected.taskId(),
@@ -702,7 +778,45 @@ public class RequirementDeliveryEngine {
                     rejected.errorMessage()
             );
         }
-        String reviewedResultJson = withDeliveryReviewJson(executionResult.resultJson(), reviewResult);
+            deterministicReviewJson = reviewResult.toJson();
+            reviewedResultJson = withDeliveryReviewJson(executionResult.resultJson(), reviewResult);
+        }
+        if (aiDeliveryReviewEngine != null && aiDeliveryReviewEngine.isEnabled()) {
+            AiReviewRun aiReviewRun = aiDeliveryReviewEngine.review(
+                    requirementTask, deterministicReviewJson, skipDeterministicReview ? "RETRY" : "AUTO");
+            reviewedResultJson = withAiReviewJson(reviewedResultJson, aiReviewRun);
+            if (aiReviewRun.status() == AiReviewRunStatus.FAILED_RETRYABLE) {
+                String reason = aiReviewRun.errorMessage().isBlank()
+                        ? "AI delivery review failed and can be retried"
+                        : aiReviewRun.errorMessage();
+                RdRequirementTask failed = taskRegistry.markRequirementFailedRetryable(
+                        requirementTask.taskId(), reason, reviewedResultJson);
+                return new RequirementDeliveryResult(
+                        failed.taskId(), failed.status(), "", failed.executionResultJson(), failed.errorMessage());
+            }
+            if (aiReviewRun.status() == AiReviewRunStatus.SUCCEEDED_NOT_OK
+                    || aiReviewRun.status() == AiReviewRunStatus.SUCCEEDED_NEEDS_HUMAN) {
+                String reason = aiReviewRun.summary().isBlank()
+                        ? "AI delivery review requires human intervention"
+                        : aiReviewRun.summary();
+                RdRequirementTask failed = taskRegistry.markRequirementFailedNeedsHuman(
+                        requirementTask.taskId(), reason, reviewedResultJson);
+                return new RequirementDeliveryResult(
+                        failed.taskId(), failed.status(), "", failed.executionResultJson(), failed.errorMessage());
+            }
+            if (aiReviewRun.status() != AiReviewRunStatus.SUCCEEDED_OK) {
+                throw new IllegalStateException("AI delivery review did not reach a terminal decision: "
+                        + aiReviewRun.status());
+            }
+        }
+        return publishValidatedResult(requirementTask, executionResult, reviewedResultJson);
+    }
+
+    private RequirementDeliveryResult publishValidatedResult(
+            RdRequirementTask requirementTask,
+            RequirementExecutionResult executionResult,
+            String reviewedResultJson
+    ) {
         // VALIDATING -> PR_CREATING：复核通过后，将复核结果与执行产物合并，提交 PR 生成阶段。
         requirementTask = taskRegistry.markRequirementPrCreating(requirementTask.taskId(), reviewedResultJson);
         RequirementPullRequestPublication publication = publishPullRequest(requirementTask, reviewedResultJson);
@@ -773,6 +887,79 @@ public class RequirementDeliveryEngine {
         ));
     }
 
+    private TaskRetryCheckpoint activeDispatchedRetry(String taskId) {
+        if (taskRetryCheckpointStore == null) {
+            return null;
+        }
+        return taskRetryCheckpointStore.findActiveByTask(taskId)
+                .filter(checkpoint -> checkpoint.status() == TaskRetryCheckpointStatus.DISPATCHED)
+                .orElse(null);
+    }
+
+    private RequirementExecutionResult recoverExecutionResult(RdRequirementTask task) {
+        String persisted = task.executionResultJson();
+        try {
+            JsonNode root = OBJECT_MAPPER.readTree(persisted);
+            if (root != null && root.isObject()
+                    && "SUCCESS".equals(root.path("multiAgentStatus").asText())) {
+                return RequirementExecutionResult.success(task.taskId(), "reused persisted delivery result", "", persisted);
+            }
+        } catch (JsonProcessingException ignored) {
+            // Fall through to the immutable stage artifacts below.
+        }
+        List<String> stageResults = new ArrayList<>();
+        List<AgentStageRun> stages = stageRunStore.listByTask(task.taskId());
+        for (AgentRole role : AgentRole.requirementDeliveryOrder()) {
+            AgentStageRun latest = latestStageOrNull(stages, role);
+            if (latest == null || latest.status() != AgentStageStatus.SUCCEEDED) {
+                throw new IllegalStateException("cannot recover delivery result, successful stage missing: " + role);
+            }
+            stageResults.add(reusedStageResultJson(latest));
+        }
+        return RequirementExecutionResult.success(
+                task.taskId(), "recovered from immutable role artifacts", "",
+                mergeDeliveryResultJson("{}", "", stageResults));
+    }
+
+    private String existingDeliveryReviewJson(String resultJson) {
+        try {
+            JsonNode root = OBJECT_MAPPER.readTree(resultJson == null ? "{}" : resultJson);
+            JsonNode review = root == null ? null : root.path("deliveryReview");
+            return review == null || review.isMissingNode() || review.isNull() ? "{}" : review.toString();
+        } catch (JsonProcessingException exception) {
+            return "{}";
+        }
+    }
+
+    private RequirementDeliveryResult resumePullRequestPublication(RdRequirementTask task) {
+        String reviewedResultJson = task.executionResultJson();
+        RdRequirementTask publishing = taskRegistry.markRequirementPrCreating(task.taskId(), reviewedResultJson);
+        RequirementPullRequestPublication publication = publishPullRequest(publishing, reviewedResultJson);
+        if (!publication.success() || publication.pullRequestUrl().isBlank()) {
+            String reason = publication.errorMessage().isBlank()
+                    ? "pull request publication failed"
+                    : publication.errorMessage();
+            publishPullRequestPublicationAlert(task.taskId(), reason);
+            RdRequirementTask rejected = taskRegistry.markRequirementRejected(
+                    task.taskId(), "pull request publication failed: " + reason,
+                    withPullRequestPublicationJson(reviewedResultJson, publication));
+            return currentResult(rejected);
+        }
+        RequirementExecutionResult published = RequirementExecutionResult.success(
+                task.taskId(), "PR publication retry succeeded", publication.pullRequestUrl(),
+                withPullRequestPublicationJson(reviewedResultJson, publication));
+        RdRequirementTask committed = taskRegistry.markRequirementCommitted(
+                task.taskId(), published.pullRequestUrl(), published.resultJson());
+        RdRequirementTask reporting = taskRegistry.markRequirementReporting(
+                committed.taskId(), published.resultJson());
+        captureDeliveryExperience(reporting.taskId(), published);
+        RdRequirementTask completed = taskRegistry.markRequirementCompleted(
+                reporting.taskId(), published.pullRequestUrl(), published.resultJson());
+        publishTaskLifecycleAlert(completed.taskId(), AgentWorkflowAlertType.TASK_COMPLETED,
+                "需求交付已完成", "打开任务详情并检查 PR 与交付报告");
+        return currentResult(completed);
+    }
+
     private RequirementDeliveryResult currentResult(RdRequirementTask task) {
         return new RequirementDeliveryResult(
                 task.taskId(),
@@ -818,12 +1005,14 @@ public class RequirementDeliveryEngine {
     private boolean isRetryableRequirementStatus(RdTaskStatus status) {
         return status == RdTaskStatus.REJECTED
                 || status == RdTaskStatus.FAILED_RETRYABLE
-                || status == RdTaskStatus.FAILED_NEEDS_HUMAN;
+                || status == RdTaskStatus.FAILED_NEEDS_HUMAN
+                || status == RdTaskStatus.RECOVERING;
     }
 
     private boolean isRetryableStageFailure(AgentStageRun stage) {
+        // CANCELLED / SKIPPED 是人工终止语义，禁止当作可重试失败自动开新 attempt（CP-16）。
         return stage.status() == AgentStageStatus.FAILED_RETRYABLE
-                || (stage.status().isTerminal() && stage.status() != AgentStageStatus.SUCCEEDED);
+                || stage.status() == AgentStageStatus.FAILED_NEEDS_HUMAN;
     }
 
     private AgentStageRun pendingStage(String taskId, AgentRole role, int attemptNo, long createTimeEpochMillis) {
@@ -841,6 +1030,18 @@ public class RequirementDeliveryEngine {
         return taskId + ":" + role.name() + ":" + attemptNo;
     }
 
+    private List<AgentStageRun> createQaRemediationAttempts(String taskId) {
+        List<AgentStageRun> existing = stageRunStore.listByTask(taskId);
+        long now = System.currentTimeMillis();
+        List<AgentStageRun> created = new ArrayList<>(2);
+        for (AgentRole role : List.of(AgentRole.CODING_AGENT, AgentRole.QA_AGENT)) {
+            AgentStageRun latest = latestStageOrNull(existing, role);
+            int attemptNo = latest == null ? 1 : latest.attemptNo() + 1;
+            created.add(stageRunStore.save(pendingStage(taskId, role, attemptNo, now)));
+        }
+        return List.copyOf(created);
+    }
+
     private AgentStageRun latestStageOrNull(List<AgentStageRun> stages, AgentRole role) {
         return stages.stream()
                 .filter(stage -> stage.role() == role)
@@ -848,23 +1049,23 @@ public class RequirementDeliveryEngine {
                 .orElse(null);
     }
 
-    private void ensureRoleContexts(RdRequirementTask task, List<TaskMaterial> materials) {
-        Set<String> existingRoles = roleContextPackageStore.listByTask(task.taskId()).stream()
-                .map(contextPackage -> contextPackage.role())
-                .collect(Collectors.toSet());
+    private void ensureRoleContexts(
+            RdRequirementTask task,
+            List<TaskMaterial> materials,
+            TaskRetryCheckpoint activeRetry
+    ) {
         long now = System.currentTimeMillis();
         List<TaskMaterial> contextMaterials = materialsWithReusableExperience(task, materials, now);
-        AgentRole.requirementDeliveryOrder().stream()
-                .filter(role -> !existingRoles.contains(role.name()))
-                .map(role -> roleContextBuilder.build(
-                        idGenerator.nextIdString(),
-                        task,
-                        contextMaterials,
-                        role.name(),
-                        18_000,
-                        now
-                ))
-                .forEach(roleContextPackageStore::save);
+        if (retrievalRecorder != null) {
+            // Base context is observable up front; role contexts are retrieved and bound immediately
+            // before their exact AgentStageRun is dispatched.
+            retrievalRecorder.recordOnly(
+                    task, contextMaterials, RetrievalConsumerType.REQUIREMENT_BASE, null, "", ""
+            );
+            return;
+        }
+        // Compatibility path for unit tests and installations without the Deep RAG control plane.
+        roleContextVersionManager.ensureLatestContexts(task, contextMaterials, now);
     }
 
     private List<TaskMaterial> materialsWithReusableExperience(
@@ -874,10 +1075,51 @@ public class RequirementDeliveryEngine {
     ) {
         List<TaskMaterial> contextMaterials = new ArrayList<>(materials == null ? List.of() : materials);
         String query = experienceSearchQuery(task);
-        experienceStore.searchReusable(query, task == null ? "" : task.taskId(), 5).stream()
+        experienceStore.searchReusable(query, task == null ? "" : task.taskId(), 100).stream()
+                .filter(experience -> sameProjectExperience(task, experience))
+                .filter(experience -> hasExperienceOverlap(query, experience))
+                .limit(5)
                 .map(experience -> experienceMaterial(task, experience, collectedAtEpochMillis))
                 .forEach(contextMaterials::add);
         return List.copyOf(contextMaterials);
+    }
+
+    private boolean sameProjectExperience(RdRequirementTask task, WorkflowExperienceEntry experience) {
+        if (task == null || experience == null || experience.taskId().isBlank()) {
+            return false;
+        }
+        try {
+            RdTask source = taskRegistry.getTask(experience.taskId());
+            if (!(source instanceof RdRequirementTask sourceTask)) {
+                return false;
+            }
+            if (!task.projectId().isBlank() || !sourceTask.projectId().isBlank()) {
+                return !task.projectId().isBlank() && task.projectId().equals(sourceTask.projectId());
+            }
+            String currentRepo = (task.repoOwner() + "/" + task.repoName()).toLowerCase(Locale.ROOT);
+            String sourceRepo = (sourceTask.repoOwner() + "/" + sourceTask.repoName()).toLowerCase(Locale.ROOT);
+            return !currentRepo.equals("/") && currentRepo.equals(sourceRepo);
+        } catch (RuntimeException ignored) {
+            return false;
+        }
+    }
+
+    private boolean hasExperienceOverlap(String query, WorkflowExperienceEntry experience) {
+        String corpus = (experience.title() + " " + experience.summary() + " " + experience.contentJson())
+                .toLowerCase(Locale.ROOT);
+        String normalizedQuery = safe(query).toLowerCase(Locale.ROOT);
+        for (String token : normalizedQuery.split("[^\\p{L}\\p{N}]+")) {
+            if (token.length() >= 2 && corpus.contains(token)) {
+                return true;
+            }
+        }
+        String cjk = normalizedQuery.replaceAll("[^\\p{IsHan}]", "");
+        for (int index = 0; index + 2 <= cjk.length(); index++) {
+            if (corpus.contains(cjk.substring(index, index + 2))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private String experienceSearchQuery(RdRequirementTask task) {
@@ -927,7 +1169,21 @@ public class RequirementDeliveryEngine {
             List<TaskMaterial> materials,
             RequirementContextPackage context,
             RequirementPlan plan,
-            RequirementPolicyDecision policyDecision
+            RequirementPolicyDecision policyDecision,
+            TaskRetryCheckpoint activeRetry
+    ) {
+        return executeAgentStages(task, materials, context, plan, policyDecision, activeRetry, "", 0);
+    }
+
+    private RequirementExecutionResult executeAgentStages(
+            RdRequirementTask task,
+            List<TaskMaterial> materials,
+            RequirementContextPackage context,
+            RequirementPlan plan,
+            RequirementPolicyDecision policyDecision,
+            TaskRetryCheckpoint activeRetry,
+            String qaRemediationResultJson,
+            int qaRemediationCount
     ) {
         // 多角色执行链路（单任务内按固定顺序）：REQ_REVIEWER -> SOLUTION_ARCHITECT -> CODING_AGENT -> QA_AGENT。
         // 阶段状态流转（可重入）：PENDING -> CONTEXT_READY -> DISPATCHING -> RUNNING -> RESULT_COLLECTING
@@ -941,12 +1197,13 @@ public class RequirementDeliveryEngine {
         String pullRequestUrl = "";
         String summary = "";
         String deliveryResultJson = "{}";
+        List<TaskMaterial> recoveryEvidenceMaterials = recoveryEvidenceMaterials(activeRetry, task.taskId(), materials);
         // 可优化为责任链模式
         for (AgentRole role : AgentRole.requirementDeliveryOrder()) {
             AgentStageRun stage = stageRun(task.taskId(), role);
             // 已成功阶段：直接复用历史产物，不再触发重跑，保持幂等与可恢复性。
             if (stage.status() == AgentStageStatus.SUCCEEDED) {
-                stageResults.add(reusedStageResultJson(role));
+                stageResults.add(reusedStageResultJson(stage));
                 continue;
             }
             // 阶段已进入终态但不成功时，当前提交链路直接失败（避免在异常阶段上继续向后推进）。
@@ -957,13 +1214,47 @@ public class RequirementDeliveryEngine {
                         aggregateAgentResultsJson("FAILED", pullRequestUrl, stageResults)
                 );
             }
-            RoleContextPackage roleContext = latestRoleContext(task.taskId(), role);
+            String upstreamResultJson = stageResultsJson(stageResults);
+            if (role == AgentRole.CODING_AGENT && !qaRemediationResultJson.isBlank()) {
+                upstreamResultJson = qaRemediationUpstreamJson(upstreamResultJson, qaRemediationResultJson);
+            }
+            RoleContextPackage roleContext;
+            if (retrievalRecorder == null) {
+                roleContext = latestRoleContext(task.taskId(), role);
+            } else {
+                List<TaskMaterial> retrievalMaterials = materialsWithReusableExperience(
+                        task, materials, System.currentTimeMillis()
+                );
+                RetrievalOutcome retrieval = retrievalRecorder.recordOnly(
+                        task, retrievalMaterials, RetrievalConsumerType.AGENT_ROLE, role,
+                        stage.stageRunId(), upstreamResultJson
+                );
+                if (!retrieval.succeeded()) {
+                    String reason = firstNonBlank(
+                            retrieval.stopReason(), "RAG retrieval did not satisfy " + role + " evidence gate"
+                    );
+                    AgentStageRun failedStage = stageRunStore.transition(
+                            stage.stageRunId(), AgentStageStatus.FAILED_NEEDS_HUMAN,
+                            "RAG_EVIDENCE_INSUFFICIENT", reason, System.currentTimeMillis()
+                    );
+                    publishStageAlert(
+                            failedStage, AgentWorkflowAlertType.STAGE_FAILED_NEEDS_HUMAN,
+                            reason
+                    );
+                    return RequirementExecutionResult.failure(
+                            task.taskId(), reason,
+                            aggregateAgentResultsJson("NEEDS_HUMAN", pullRequestUrl, stageResults)
+                    );
+                }
+                roleContext = roleContextVersionManager.ensureLatestContext(
+                        task, role, retrieval, System.currentTimeMillis()
+                );
+            }
             stage = bindRoleContext(stage, roleContext);
             // PENDING -> CONTEXT_READY：将该角色的上下文包绑定为本阶段执行上下文快照。
             stage = transitionStage(stage, AgentStageStatus.CONTEXT_READY, "", "");
             // CONTEXT_READY -> DISPATCHING：准备调度并构造角色提示词。
             stage = transitionStage(stage, AgentStageStatus.DISPATCHING, "", "");
-            String upstreamResultJson = stageResultsJson(stageResults);
             String rolePrompt = buildAgentPrompt(
                     role,
                     task,
@@ -972,7 +1263,8 @@ public class RequirementDeliveryEngine {
                     plan,
                     policyDecision,
                     roleContext,
-                    upstreamResultJson
+                    upstreamResultJson,
+                    recoveryPromptSection(activeRetry, role, recoveryEvidenceMaterials)
             );
             // DISPATCHING -> RUNNING：记录 prompt 快照后进入正式执行。
             stage = capturePromptArtifact(stage, rolePrompt);
@@ -989,7 +1281,8 @@ public class RequirementDeliveryEngine {
                                 role,
                                 roleContextJson(roleContext),
                                 false,
-                                upstreamResultJson
+                                upstreamResultJson,
+                                stage.stageRunId()
                         ))
                 );
             } catch (RuntimeException exception) {
@@ -1058,11 +1351,28 @@ public class RequirementDeliveryEngine {
                         reason
                 );
                 stageResults.add(stageResultJson(role, roleResult));
-                String aggregateStatus = role == AgentRole.QA_AGENT ? "NEEDS_HUMAN" : "FAILED";
+                if (role == AgentRole.QA_AGENT
+                        && qaRemediationCount < 1
+                        && isCodingRemediationRequested(roleResult.resultJson())) {
+                    List<AgentStageRun> remediationStages = createQaRemediationAttempts(task.taskId());
+                    publishQaRemediationStarted(failedStage, remediationStages, roleResult.resultJson());
+                    return executeAgentStages(
+                            task,
+                            materials,
+                            context,
+                            plan,
+                            policyDecision,
+                            activeRetry,
+                            roleResult.resultJson(),
+                            qaRemediationCount + 1
+                    );
+                }
+                // 任意角色 FAILED_NEEDS_HUMAN 都必须聚合为 NEEDS_HUMAN，
+                // 否则上层会把任务误标成 REJECTED（CP-06）。
                 return RequirementExecutionResult.failure(
                         task.taskId(),
                         role + " failed: " + reason,
-                        aggregateAgentResultsJson(aggregateStatus, pullRequestUrl, stageResults)
+                        aggregateAgentResultsJson("NEEDS_HUMAN", pullRequestUrl, stageResults)
                 );
             }
             if (role == AgentRole.REQUIREMENT_REVIEWER) {
@@ -1086,6 +1396,55 @@ public class RequirementDeliveryEngine {
                             task.taskId(),
                             reviewGateDecision.reason(),
                             aggregateAgentResultsJson("NEEDS_HUMAN", pullRequestUrl, stageResults)
+                    );
+                }
+                List<BudgetHistorySample> historicalSamples = historicalBudgetSamples(task);
+                TokenBudgetEstimate budgetEstimate = tokenBudgetEstimate(roleResult.resultJson(), historicalSamples.isEmpty());
+                if (!budgetEstimate.valid()) {
+                    String reason = "invalid requirement review budget estimate: " + budgetEstimate.reason();
+                    AgentStageRun failedStage = stageRunStore.transition(
+                            stage.stageRunId(),
+                            AgentStageStatus.FAILED_NEEDS_HUMAN,
+                            "REQUIREMENT_REVIEW_BUDGET_INVALID",
+                            reason,
+                            System.currentTimeMillis()
+                    );
+                    publishStageAlert(failedStage, AgentWorkflowAlertType.STAGE_FAILED_NEEDS_HUMAN, reason);
+                    stageResults.add(stageResultJson(role, roleResult));
+                    return RequirementExecutionResult.failure(
+                            task.taskId(),
+                            reason,
+                            aggregateAgentResultsJson("NEEDS_HUMAN", pullRequestUrl, stageResults)
+                    );
+                }
+                long effectiveTokenBudget = effectiveTokenBudget(task);
+                String budgetSnapshotJson = budgetSnapshotJson(
+                        roleResult.resultJson(),
+                        budgetEstimate,
+                        effectiveTokenBudget,
+                        historicalSamples
+                );
+                stage = stageRunStore.save(stage.withReviewResultJson(budgetSnapshotJson, System.currentTimeMillis()));
+                if (effectiveTokenBudget > 0L && budgetEstimate.estimatedTotalTokens() > effectiveTokenBudget) {
+                    stage = transitionStage(stage, AgentStageStatus.VERIFYING, "", "");
+                    stage = transitionStage(stage, AgentStageStatus.SUCCEEDED, "", "");
+                    stageResults.add(stageResultJson(role, roleResult));
+                    captureExperience(stage, roleResult, experienceType(role));
+                    RdRequirementTask waitingApproval = taskRegistry.markRequirementWaitingApproval(
+                            task.taskId(),
+                            budgetSnapshotJson
+                    );
+                    publishTaskLifecycleAlert(
+                            waitingApproval.taskId(),
+                            AgentWorkflowAlertType.TASK_BLOCKED,
+                            "预估 token 用量超过有效额度，等待人工预算审批",
+                            "确认预估、额度与超出量后提交审批说明"
+                    );
+                    return RequirementExecutionResult.success(
+                            task.taskId(),
+                            "token budget approval required",
+                            "",
+                            budgetSnapshotJson
                     );
                 }
             }
@@ -1112,8 +1471,193 @@ public class RequirementDeliveryEngine {
         return finalResult;
     }
 
+    private long effectiveTokenBudget(RdRequirementTask task) {
+        if (task == null) {
+            return 0L;
+        }
+        if (task.tokenBudgetOverride() > 0L) {
+            return task.tokenBudgetOverride();
+        }
+        if (projectTokenBudgetService == null || task.projectId().isBlank()) {
+            return 0L;
+        }
+        try {
+            return projectTokenBudgetService.get(task.projectId()).defaultTokenBudget();
+        } catch (RuntimeException ignored) {
+            // Existing migrated tasks can outlive a deleted project. They remain unlimited rather than failing review.
+            return 0L;
+        }
+    }
+
+    private List<BudgetHistorySample> historicalBudgetSamples(RdRequirementTask task) {
+        if (task == null) {
+            return List.of();
+        }
+        Map<String, RdRequirementTask> completedTasks = new LinkedHashMap<>();
+        taskRegistry.listTasks().stream()
+                .filter(RdRequirementTask.class::isInstance)
+                .map(RdRequirementTask.class::cast)
+                .filter(candidate -> candidate.status() == RdTaskStatus.COMPLETED)
+                .filter(candidate -> !candidate.taskId().equals(task.taskId()))
+                .sorted(Comparator.comparingLong(RdRequirementTask::updateTimeEpochMillis).reversed())
+                .forEach(candidate -> completedTasks.putIfAbsent(candidate.taskId(), candidate));
+        if (completedTasks.isEmpty()) {
+            return List.of();
+        }
+        LinkedHashSet<String> orderedTaskIds = new LinkedHashSet<>();
+        experienceStore.searchReusable(experienceSearchQuery(task), task.taskId(), 20).stream()
+                .map(WorkflowExperienceEntry::taskId)
+                .filter(completedTasks::containsKey)
+                .forEach(orderedTaskIds::add);
+        orderedTaskIds.addAll(completedTasks.keySet());
+
+        List<BudgetHistorySample> sameProject = new ArrayList<>();
+        List<BudgetHistorySample> crossProject = new ArrayList<>();
+        for (String candidateTaskId : orderedTaskIds) {
+            RdRequirementTask candidate = completedTasks.get(candidateTaskId);
+            long actualTokens = actualTokenUsage(candidate.taskId());
+            if (candidate == null || actualTokens <= 0L) {
+                continue;
+            }
+            BudgetHistorySample sample = new BudgetHistorySample(
+                    sameProject(task, candidate) ? "SAME_PROJECT" : "CROSS_PROJECT_REDACTED",
+                    actualTokens,
+                    candidate.updateTimeEpochMillis()
+            );
+            (sameProject(task, candidate) ? sameProject : crossProject).add(sample);
+        }
+        List<BudgetHistorySample> result = new ArrayList<>(5);
+        sameProject.stream().limit(5).forEach(result::add);
+        if (result.size() < 5) {
+            crossProject.stream().limit(5 - result.size()).forEach(result::add);
+        }
+        return List.copyOf(result);
+    }
+
+    private static boolean sameProject(RdRequirementTask left, RdRequirementTask right) {
+        return left != null && right != null && !left.projectId().isBlank()
+                && left.projectId().equals(right.projectId());
+    }
+
+    private long actualTokenUsage(String taskId) {
+        long total = 0L;
+        for (AgentStageRun stageRun : stageRunStore.listByTask(taskId)) {
+            try {
+                JsonNode attempts = OBJECT_MAPPER.readTree(stageRun.providerAttemptsJson());
+                if (attempts == null || !attempts.isArray()) {
+                    continue;
+                }
+                for (JsonNode attempt : attempts) {
+                    JsonNode tokens = attempt.get("totalTokens");
+                    if (tokens != null && tokens.canConvertToLong() && tokens.longValue() > 0L) {
+                        total = safeAdd(total, tokens.longValue());
+                    }
+                }
+            } catch (JsonProcessingException ignored) {
+                // Historical data is optional evidence; malformed old metadata is ignored.
+            }
+        }
+        return total;
+    }
+
+    private TokenBudgetEstimate tokenBudgetEstimate(String reviewResultJson, boolean noHistoricalSamples) {
+        try {
+            JsonNode root = OBJECT_MAPPER.readTree(reviewResultJson == null ? "{}" : reviewResultJson);
+            JsonNode budget = root == null ? null : root.path("budgetEstimate");
+            if (budget == null || !budget.isObject()) {
+                return TokenBudgetEstimate.invalid("budgetEstimate must be an object");
+            }
+            long initialTokens = requiredNonNegativeLong(budget, "initialTokens");
+            long retryReserveTokens = requiredNonNegativeLong(budget, "retryReserveTokens");
+            long estimatedTotalTokens = requiredNonNegativeLong(budget, "estimatedTotalTokens");
+            String confidence = normalizedCode(budget.path("confidence"));
+            String basis = text(budget.path("basis"));
+            if (!("LOW".equals(confidence) || "MEDIUM".equals(confidence) || "HIGH".equals(confidence))) {
+                return TokenBudgetEstimate.invalid("budgetEstimate.confidence must be LOW, MEDIUM or HIGH");
+            }
+            if (basis.isBlank()) {
+                return TokenBudgetEstimate.invalid("budgetEstimate.basis must not be blank");
+            }
+            if (!budget.path("historicalSamples").isArray()) {
+                return TokenBudgetEstimate.invalid("budgetEstimate.historicalSamples must be an array");
+            }
+            if (estimatedTotalTokens < safeAdd(initialTokens, retryReserveTokens)) {
+                return TokenBudgetEstimate.invalid(
+                        "budgetEstimate.estimatedTotalTokens must cover initialTokens and retryReserveTokens"
+                );
+            }
+            if (noHistoricalSamples && !"LOW".equals(confidence)) {
+                return TokenBudgetEstimate.invalid("budgetEstimate.confidence must be LOW without historical samples");
+            }
+            return new TokenBudgetEstimate(
+                    initialTokens,
+                    retryReserveTokens,
+                    estimatedTotalTokens,
+                    confidence,
+                    basis,
+                    true,
+                    ""
+            );
+        } catch (JsonProcessingException | IllegalArgumentException exception) {
+            return TokenBudgetEstimate.invalid(firstNonBlank(exception.getMessage(), "invalid budgetEstimate"));
+        }
+    }
+
+    private static long requiredNonNegativeLong(JsonNode node, String fieldName) {
+        JsonNode value = node.get(fieldName);
+        if (value == null || !value.canConvertToLong() || value.longValue() < 0L) {
+            throw new IllegalArgumentException("budgetEstimate." + fieldName + " must be a non-negative integer");
+        }
+        return value.longValue();
+    }
+
+    private String budgetSnapshotJson(
+            String reviewResultJson,
+            TokenBudgetEstimate estimate,
+            long effectiveTokenBudget,
+            List<BudgetHistorySample> historicalSamples
+    ) {
+        try {
+            ObjectNode snapshot = OBJECT_MAPPER.createObjectNode();
+            JsonNode review = OBJECT_MAPPER.readTree(reviewResultJson == null ? "{}" : reviewResultJson);
+            snapshot.set("requirementReview", review == null ? OBJECT_MAPPER.createObjectNode() : review);
+            ObjectNode budget = snapshot.putObject("tokenBudget");
+            budget.put("effectiveTokenBudget", effectiveTokenBudget);
+            budget.put("initialTokens", estimate.initialTokens());
+            budget.put("retryReserveTokens", estimate.retryReserveTokens());
+            budget.put("estimatedTotalTokens", estimate.estimatedTotalTokens());
+            budget.put("confidence", estimate.confidence());
+            budget.put("basis", estimate.basis());
+            budget.put("overBudget", effectiveTokenBudget > 0L && estimate.estimatedTotalTokens() > effectiveTokenBudget);
+            budget.put("excessTokens", effectiveTokenBudget > 0L
+                    ? Math.max(0L, estimate.estimatedTotalTokens() - effectiveTokenBudget)
+                    : 0L);
+            budget.set("historicalSamples", OBJECT_MAPPER.valueToTree(historicalSamples));
+            return OBJECT_MAPPER.writeValueAsString(snapshot);
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("failed to serialize token budget snapshot", exception);
+        }
+    }
+
+    private String budgetHistoryJson(List<BudgetHistorySample> samples) {
+        try {
+            return OBJECT_MAPPER.writeValueAsString(samples == null ? List.of() : samples);
+        } catch (JsonProcessingException exception) {
+            return "[]";
+        }
+    }
+
+    private static long safeAdd(long left, long right) {
+        try {
+            return Math.addExact(left, right);
+        } catch (ArithmeticException exception) {
+            return Long.MAX_VALUE;
+        }
+    }
+
     private boolean needsHumanInterventionResult(RequirementExecutionResult result) {
-        return "NEEDS_HUMAN".equals(aggregateStatus(result == null ? "" : result.resultJson()));
+        String status = aggregateStatus(result == null ? "" : result.resultJson());
+        return "NEEDS_HUMAN".equals(status) || "FAILED_NEEDS_HUMAN".equals(status);
     }
 
     private RequirementPullRequestPublication publishPullRequest(RdRequirementTask task, String reviewedResultJson) {
@@ -1147,6 +1691,36 @@ public class RequirementDeliveryEngine {
                         "status", stage.status().name(),
                         "attemptNo", Integer.toString(stage.attemptNo()),
                         "errorCategory", stage.errorCategory()
+                ),
+                System.currentTimeMillis()
+        ));
+    }
+
+    private void publishQaRemediationStarted(
+            AgentStageRun failedQaStage,
+            List<AgentStageRun> remediationStages,
+            String qaResultJson
+    ) {
+        AgentStageRun codingStage = remediationStages.stream()
+                .filter(stage -> stage.role() == AgentRole.CODING_AGENT)
+                .findFirst()
+                .orElseThrow();
+        AgentStageRun qaStage = remediationStages.stream()
+                .filter(stage -> stage.role() == AgentRole.QA_AGENT)
+                .findFirst()
+                .orElseThrow();
+        alertSink.publish(new AgentWorkflowAlert(
+                failedQaStage.taskId(),
+                failedQaStage.stageRunId(),
+                AgentWorkflowAlertType.QA_REMEDIATION_STARTED,
+                "QA product failure returned to coding for one bounded remediation attempt",
+                Map.of(
+                        "role", failedQaStage.role().name(),
+                        "failedQaAttemptNo", Integer.toString(failedQaStage.attemptNo()),
+                        "codingAttemptNo", Integer.toString(codingStage.attemptNo()),
+                        "qaAttemptNo", Integer.toString(qaStage.attemptNo()),
+                        "failureCategory", qaFailureCategory(qaResultJson),
+                        "nextAction", AgentRole.CODING_AGENT.name()
                 ),
                 System.currentTimeMillis()
         ));
@@ -1259,7 +1833,7 @@ public class RequirementDeliveryEngine {
                         uri.isBlank() ? artifactUri(stage, artifactType.toLowerCase(Locale.ROOT)) : uri,
                         firstNonBlank(text(item.path("summary")), artifactType + " artifact"),
                         content,
-                        sha256(content.isBlank() ? uri : content),
+                        stageArtifactContentHash(item, content, uri),
                         stageArtifactMetadata(stage, artifactType, item),
                         now + (++index)
                 ));
@@ -1287,6 +1861,18 @@ public class RequirementDeliveryEngine {
             return OBJECT_MAPPER.writeValueAsString(metadata);
         }
         return artifactMetadata(stage, artifactType, stageArtifactContentPreview(item));
+    }
+
+    private String stageArtifactContentHash(JsonNode item, String content, String uri) {
+        String executorSha256 = text(item.path("metadataJson").path("sha256"));
+        String normalized = executorSha256.toLowerCase(Locale.ROOT);
+        if (normalized.startsWith("sha256:")) {
+            normalized = normalized.substring("sha256:".length());
+        }
+        if (normalized.matches("[0-9a-f]{64}")) {
+            return "sha256:" + normalized;
+        }
+        return sha256(content.isBlank() ? uri : content);
     }
 
     private String artifactUri(AgentStageRun stage, String name) {
@@ -1330,7 +1916,7 @@ public class RequirementDeliveryEngine {
             WorkflowExperienceType experienceType
     ) {
         try {
-            experienceStore.save(new WorkflowExperienceEntry(
+            experienceStore.save(scopeExperience(new WorkflowExperienceEntry(
                     idGenerator.nextIdString(),
                     stage.taskId(),
                     stage.stageRunId(),
@@ -1344,7 +1930,7 @@ public class RequirementDeliveryEngine {
                     false,
                     true,
                     System.currentTimeMillis()
-            ));
+            )));
         } catch (RuntimeException exception) {
             publishStageAlert(
                     stage,
@@ -1352,6 +1938,58 @@ public class RequirementDeliveryEngine {
                     "experience capture failed: " + safe(exception.getMessage())
             );
         }
+    }
+
+    private WorkflowExperienceEntry scopeExperience(WorkflowExperienceEntry entry) {
+        try {
+            RdRequirementTask task = taskRegistry.getRequirementTask(entry.taskId());
+            String repositoryFingerprint = !task.repoOwner().isBlank() && !task.repoName().isBlank()
+                    ? (task.repoOwner() + "/" + task.repoName()).toLowerCase(Locale.ROOT)
+                    : safe(task.repositoryUrl()).toLowerCase(Locale.ROOT);
+            LinkedHashSet<String> tags = new LinkedHashSet<>();
+            tags.add(task.projectKey());
+            tags.add(entry.role().name());
+            tags.add(entry.experienceType().name());
+            return new WorkflowExperienceEntry(
+                    entry.experienceId(), entry.taskId(), entry.stageRunId(), entry.sourceArtifactId(),
+                    entry.role(), entry.experienceType(), entry.title(), entry.summary(), entry.contentJson(),
+                    entry.reusable(), entry.failure(), entry.redacted(), entry.createdAtEpochMillis(),
+                    task.projectId(), repositoryFingerprint, task.projectKey(),
+                    tags.stream().filter(value -> !safe(value).isBlank()).toList(),
+                    experienceSourceRevision(task, entry.contentJson()), entry.evidenceQuality(),
+                    applicableExperienceRoles(entry.experienceType())
+            );
+        } catch (RuntimeException exception) {
+            // Historical/in-memory tests may not have a persisted requirement task.
+            // Preserve the entry rather than manufacturing a false project scope.
+            return entry;
+        }
+    }
+
+    private String experienceSourceRevision(RdRequirementTask task, String contentJson) {
+        try {
+            JsonNode root = OBJECT_MAPPER.readTree(contentJson == null ? "{}" : contentJson);
+            String commit = firstNonBlank(
+                    text(root.path("commitSha")),
+                    text(root.path("commit")),
+                    text(root.path("executionResult").path("commitSha"))
+            );
+            if (!commit.isBlank()) {
+                return commit;
+            }
+        } catch (JsonProcessingException ignored) {
+            // Fall through to the persisted branch revision.
+        }
+        return firstNonBlank(task.workBranch(), task.baseBranch());
+    }
+
+    private List<AgentRole> applicableExperienceRoles(WorkflowExperienceType type) {
+        return switch (type) {
+            case REQUIREMENT_REVIEW -> List.of(AgentRole.REQUIREMENT_REVIEWER, AgentRole.SOLUTION_ARCHITECT);
+            case TECHNICAL_DESIGN -> List.of(AgentRole.SOLUTION_ARCHITECT, AgentRole.CODING_AGENT);
+            case CODE_CHANGE -> List.of(AgentRole.CODING_AGENT, AgentRole.QA_AGENT);
+            case QA_REPORT, DELIVERY_REPORT -> List.of(AgentRole.QA_AGENT, AgentRole.REQUIREMENT_REVIEWER);
+        };
     }
 
     private AgentStageRun recordProviderMetadata(AgentStageRun stage, RequirementExecutionResult result) {
@@ -1522,7 +2160,7 @@ public class RequirementDeliveryEngine {
 
     private void captureDeliveryExperience(String taskId, RequirementExecutionResult result) {
         try {
-            experienceStore.save(new WorkflowExperienceEntry(
+            experienceStore.save(scopeExperience(new WorkflowExperienceEntry(
                     idGenerator.nextIdString(),
                     taskId,
                     "",
@@ -1536,7 +2174,7 @@ public class RequirementDeliveryEngine {
                     false,
                     true,
                     System.currentTimeMillis()
-            ));
+            )));
         } catch (RuntimeException exception) {
             alertSink.publish(new AgentWorkflowAlert(
                     taskId,
@@ -1555,7 +2193,7 @@ public class RequirementDeliveryEngine {
             RequirementExecutionResult result
     ) {
         try {
-            experienceStore.save(new WorkflowExperienceEntry(
+            experienceStore.save(scopeExperience(new WorkflowExperienceEntry(
                     idGenerator.nextIdString(),
                     taskId,
                     "",
@@ -1571,7 +2209,7 @@ public class RequirementDeliveryEngine {
                     true,
                     true,
                     System.currentTimeMillis()
-            ));
+            )));
         } catch (RuntimeException exception) {
             alertSink.publish(new AgentWorkflowAlert(
                     taskId,
@@ -1597,9 +2235,9 @@ public class RequirementDeliveryEngine {
     private String latestStageResultArtifactId(String taskId, AgentRole role) {
         return stageRunStore.listByTask(taskId).stream()
                 .filter(stage -> stage.role() == role)
+                .filter(stage -> !stage.resultArtifactId().isBlank())
+                .max(STAGE_RUN_RECENCY)
                 .map(AgentStageRun::resultArtifactId)
-                .filter(value -> !value.isBlank())
-                .findFirst()
                 .orElse("");
     }
 
@@ -1650,7 +2288,11 @@ public class RequirementDeliveryEngine {
         if (packages.isEmpty()) {
             throw new IllegalStateException("role context package missing: " + taskId + " " + role);
         }
-        return packages.get(packages.size() - 1);
+        return packages.stream()
+                .max(Comparator.comparingInt(RoleContextPackage::packageVersion)
+                        .thenComparingLong(RoleContextPackage::createdAtEpochMillis)
+                        .thenComparing(RoleContextPackage::packageId))
+                .orElseThrow();
     }
 
     private static SnowflakeIdGenerator safeIdGenerator(SnowflakeIdGenerator idGenerator) {
@@ -1780,7 +2422,8 @@ public class RequirementDeliveryEngine {
             RequirementPlan plan,
             RequirementPolicyDecision policyDecision,
             RoleContextPackage roleContext,
-            String upstreamResultJson
+            String upstreamResultJson,
+            String recoveryPromptSection
     ) {
         return """
                 你是 RD-Bot 多 Agent 需求交付链路中的 %s。
@@ -1794,6 +2437,11 @@ public class RequirementDeliveryEngine {
                 # 上游阶段结果
                 %s
 
+                # Token 预算估算证据
+                %s
+
+                %s
+
                 %s
 
                 # 当前角色输出 JSON 协议
@@ -1803,8 +2451,135 @@ public class RequirementDeliveryEngine {
                 roleInstruction(role),
                 roleContextJson(roleContext),
                 upstreamResultJson,
+                budgetEstimatePromptSection(role, task),
+                recoveryPromptSection,
                 buildPrompt(task, materials, context, plan, policyDecision),
                 roleOutputContract(role)
+        ).strip();
+    }
+
+    /**
+     * Resolves the immutable evidence selected for the active recovery checkpoint before any role is dispatched.
+     *
+     * <p>Retry creation validates these IDs as well. The execution-time validation protects against a material
+     * being removed or a stale checkpoint being replayed between checkpoint creation and dispatch.
+     *
+     * @param checkpoint active recovery checkpoint, if any
+     * @param taskId current task ID
+     * @param taskMaterials material snapshot loaded for this execution
+     * @return selected recovery evidence in the operator-selected order
+     */
+    private List<TaskMaterial> recoveryEvidenceMaterials(
+            TaskRetryCheckpoint checkpoint,
+            String taskId,
+            List<TaskMaterial> taskMaterials
+    ) {
+        if (checkpoint == null || checkpoint.evidenceMaterialIds().isEmpty()) {
+            return List.of();
+        }
+        if (!checkpoint.taskId().equals(taskId)) {
+            throw new IllegalStateException("recovery checkpoint does not belong to task: " + taskId);
+        }
+        Map<String, TaskMaterial> materialsById = (taskMaterials == null ? List.<TaskMaterial>of() : taskMaterials)
+                .stream()
+                .filter(material -> taskId.equals(material.taskId()))
+                .collect(Collectors.toMap(
+                        TaskMaterial::materialId,
+                        material -> material,
+                        (left, ignored) -> left,
+                        LinkedHashMap::new
+                ));
+        LinkedHashSet<String> selectedIds = new LinkedHashSet<>();
+        List<TaskMaterial> selectedMaterials = new ArrayList<>();
+        for (String materialId : checkpoint.evidenceMaterialIds()) {
+            if (!selectedIds.add(materialId)) {
+                throw new IllegalStateException("recovery checkpoint contains duplicate evidence material: " + materialId);
+            }
+            TaskMaterial material = materialsById.get(materialId);
+            if (material == null) {
+                throw new IllegalStateException("recovery evidence material is unavailable for task: " + materialId);
+            }
+            selectedMaterials.add(material);
+        }
+        return List.copyOf(selectedMaterials);
+    }
+
+    /**
+     * Builds the explicit recovery section injected into the newly-created failed stage and all downstream roles.
+     *
+     * @param checkpoint active recovery checkpoint, if any
+     * @param role role about to be dispatched
+     * @param recoveryMaterials selected evidence resolved from the task snapshot
+     * @return prompt section or an empty string when the role precedes the recovery point
+     */
+    private String recoveryPromptSection(
+            TaskRetryCheckpoint checkpoint,
+            AgentRole role,
+            List<TaskMaterial> recoveryMaterials
+    ) {
+        if (!isRecoveryRoleOrDownstream(checkpoint, role)) {
+            return "";
+        }
+        String operatorNote = checkpoint.operatorNote();
+        if (operatorNote.isBlank() && recoveryMaterials.isEmpty()) {
+            return "";
+        }
+        String noteSection = operatorNote.isBlank()
+                ? ""
+                : """
+                        ## 操作员补充说明
+                        %s
+                        """.formatted(operatorNote).strip();
+        String evidenceSection = recoveryMaterials.isEmpty()
+                ? ""
+                : """
+                        ## 本次选定证据
+                        %s
+                        """.formatted(materialPrompt(recoveryMaterials)).strip();
+        return """
+                # 本次失败恢复补充
+                - 失败阶段运行 ID: %s
+                - 从角色继续: %s
+
+                %s
+
+                %s
+                """.formatted(
+                checkpoint.failedStageRunId(),
+                checkpoint.retryFromRole().name(),
+                noteSection,
+                evidenceSection
+        ).strip();
+    }
+
+    private boolean isRecoveryRoleOrDownstream(TaskRetryCheckpoint checkpoint, AgentRole role) {
+        if (checkpoint == null || checkpoint.failurePhase() != TaskFailurePhase.AGENT_ROLE
+                || checkpoint.retryFromRole() == null || role == null) {
+            return false;
+        }
+        List<AgentRole> deliveryOrder = AgentRole.requirementDeliveryOrder();
+        int retryIndex = deliveryOrder.indexOf(checkpoint.retryFromRole());
+        int roleIndex = deliveryOrder.indexOf(role);
+        return retryIndex >= 0 && roleIndex >= retryIndex;
+    }
+
+    private String budgetEstimatePromptSection(AgentRole role, RdRequirementTask task) {
+        if (role != AgentRole.REQUIREMENT_REVIEWER) {
+            return "本角色不输出预算估算。";
+        }
+        List<BudgetHistorySample> samples = historicalBudgetSamples(task);
+        String confidenceRequirement = samples.isEmpty()
+                ? "没有可用历史样本时，仍须由模型给出估算，confidence 必须为 LOW。"
+                : "优先参考以下脱敏实际 token 样本，并由模型判断 confidence。";
+        return """
+                你必须估算完整四角色首轮交付和一次重试预留的 token 总量；不得使用确定性公式替代判断。
+                当前有效 token 额度：%d（0 表示不限制）。
+                %s
+                历史实际样本（仅聚合和脱敏字段）：%s
+                """.formatted(
+                effectiveTokenBudget(task),
+                confidenceRequirement,
+                budgetHistoryJson(samples)
         ).strip();
     }
 
@@ -1827,10 +2602,12 @@ public class RequirementDeliveryEngine {
                     """.strip();
             case QA_AGENT -> """
                     - 基于代码交付候选包、验收标准和真实命令执行 QA 复核。
-                    - 不创建新 PR；任一验收标准没有真实证据时必须失败。
-                    - 必须真实执行命令并把每条命令结果写入 acceptanceResults。
-                    - 全部通过时 status=PASSED；任一命令失败时 status=FAILED；无法真实执行时 status=SKIPPED。
-                    - acceptanceResults 每项必须包含 criteria、command、status、logArtifactId。
+                    - 先读取 /work/input/qa-profile.json，并遵循已安装的 qa-playwright-cli Skill；Web 项目且配置要求时必须执行真实 Chromium 浏览器验证。
+                    - 不创建新 PR，也不得修改 /work/repo 中的跟踪文件；临时脚本只能写入 /work/output/qa-work。
+                    - 当前需求验收（CURRENT）和受影响的既有关键路径回归（REGRESSION）都必须真实执行；任一必需检查缺少证据或被跳过都阻断交付。
+                    - 必须记录每条命令的退出码、耗时和日志；浏览器验证必须补充截图、trace、console 和 network 证据。
+                    - PRODUCT_DEFECT 或 REGRESSION 失败必须建议退回 CODING_AGENT；环境、鉴权、QA 基础设施、需求歧义或 flaky 问题建议 HUMAN。
+                    - 最后生成完整性 manifest，再把严格协议写入 /work/output/result.json。
                     """.strip();
             default -> throw new IllegalArgumentException("unsupported requirement role: " + role);
         };
@@ -1845,7 +2622,15 @@ public class RequirementDeliveryEngine {
                       "feasibility": "CAN_DO|NEED_INFO|UNSAFE",
                       "missingInformation": [],
                       "risks": [],
-                      "acceptanceCoverage": ["每条验收标准的覆盖判断"]
+                      "acceptanceCoverage": ["每条验收标准的覆盖判断"],
+                      "budgetEstimate": {
+                        "initialTokens": 0,
+                        "retryReserveTokens": 0,
+                        "estimatedTotalTokens": 0,
+                        "confidence": "LOW|MEDIUM|HIGH",
+                        "basis": "基于四角色首轮、一次重试预留和给定历史实际 token 样本的模型判断",
+                        "historicalSamples": []
+                      }
                     }
                     """.strip();
             case SOLUTION_ARCHITECT -> """
@@ -1875,15 +2660,30 @@ public class RequirementDeliveryEngine {
                     只输出一个 JSON 对象，不要 markdown：
                     {
                       "status": "PASSED|FAILED|SKIPPED",
-                      "summary": "QA 真实命令验收摘要",
+                      "summary": "QA 当前需求与回归验证摘要",
+                      "failureCategory": "NONE|PRODUCT_DEFECT|REGRESSION|ENVIRONMENT|AUTHENTICATION|QA_INFRASTRUCTURE|REQUIREMENT_AMBIGUITY|FLAKY",
+                      "retryRecommendation": "NONE|CODING_AGENT|HUMAN",
+                      "browserValidation": {
+                        "required": true,
+                        "performed": true,
+                        "decisionSource": "TASK_OVERRIDE|PROJECT_PROFILE|REPOSITORY_CONFIG|AUTO_DETECTION|NOT_APPLICABLE",
+                        "baseUrl": "真实浏览器验证 URL；不适用时为空字符串",
+                        "browser": "chromium",
+                        "viewports": ["desktop-1440x900", "mobile-390x844"]
+                      },
                       "acceptanceResults": [
                         {
                           "criteria": "对应验收标准",
+                          "scope": "CURRENT|REGRESSION",
                           "command": "真实执行命令",
                           "status": "PASSED|FAILED|SKIPPED",
-                          "logArtifactId": "命令日志产物 ID"
+                          "exitCode": 0,
+                          "durationMillis": 0,
+                          "logArtifactId": "qa-evidence/ 下的命令日志相对路径",
+                          "evidenceArtifactIds": ["qa-evidence/ 下的真实证据相对路径"]
                         }
-                      ]
+                      ],
+                      "evidenceManifestArtifactId": "qa-evidence/manifest.json"
                     }
                     """.strip();
             default -> throw new IllegalArgumentException("unsupported requirement role: " + role);
@@ -1925,10 +2725,57 @@ public class RequirementDeliveryEngine {
         return stageResults.stream().collect(Collectors.joining(",", "[", "]"));
     }
 
-    private String reusedStageResultJson(AgentRole role) {
+    private String qaRemediationUpstreamJson(String stageResultsJson, String qaResultJson) {
         return """
-                {"role":%s,"success":true,"reused":true,"status":%s}
-                """.formatted(json(role.name()), json("SUCCEEDED")).strip();
+                {"stages":%s,"qaRemediation":{"reason":"QA_CURRENT_OR_REGRESSION_FAILED","failedQaResult":%s}}
+                """.formatted(
+                stageResultsJson == null || stageResultsJson.isBlank() ? "[]" : stageResultsJson,
+                json(qaResultJson)
+        ).strip();
+    }
+
+    private boolean isCodingRemediationRequested(String qaResultJson) {
+        try {
+            JsonNode root = OBJECT_MAPPER.readTree(safe(qaResultJson));
+            if (root == null || !root.isObject()) {
+                return false;
+            }
+            String status = root.path("status").asText("").strip().toUpperCase(Locale.ROOT);
+            String category = root.path("failureCategory").asText("").strip().toUpperCase(Locale.ROOT);
+            String recommendation = root.path("retryRecommendation").asText("").strip().toUpperCase(Locale.ROOT);
+            return "FAILED".equals(status)
+                    && ("PRODUCT_DEFECT".equals(category) || "REGRESSION".equals(category))
+                    && AgentRole.CODING_AGENT.name().equals(recommendation);
+        } catch (JsonProcessingException exception) {
+            return false;
+        }
+    }
+
+    private String qaFailureCategory(String qaResultJson) {
+        try {
+            JsonNode root = OBJECT_MAPPER.readTree(safe(qaResultJson));
+            return root == null ? "" : root.path("failureCategory").asText("").strip();
+        } catch (JsonProcessingException exception) {
+            return "";
+        }
+    }
+
+    private String reusedStageResultJson(AgentStageRun stage) {
+        AgentStageArtifact resultArtifact = artifactStore.listByTask(stage.taskId()).stream()
+                .filter(artifact -> artifact.stageRunId().equals(stage.stageRunId()))
+                .filter(artifact -> artifact.artifactId().equals(stage.resultArtifactId())
+                        || "RESULT_JSON".equals(artifact.artifactType()))
+                .max(Comparator.comparingLong(AgentStageArtifact::createdAtEpochMillis))
+                .orElse(null);
+        return """
+                {"role":%s,"success":true,"reused":true,"status":%s,"sourceStageRunId":%s,"sourceArtifactId":%s,"resultJson":%s}
+                """.formatted(
+                json(stage.role().name()),
+                json("SUCCEEDED"),
+                json(stage.stageRunId()),
+                json(resultArtifact == null ? stage.resultArtifactId() : resultArtifact.artifactId()),
+                json(resultArtifact == null ? "" : resultArtifact.contentPreview())
+        ).strip();
     }
 
     private String stageResultJson(AgentRole role, RequirementExecutionResult result) {
@@ -1989,26 +2836,49 @@ public class RequirementDeliveryEngine {
         return "{\"status\":\"SUCCESS\",\"deliveryResult\":" + json(normalized) + "," + appended + "}";
     }
 
+    private String withAiReviewJson(String resultJson, AiReviewRun aiReviewRun) {
+        try {
+            JsonNode parsed = OBJECT_MAPPER.readTree(resultJson == null ? "{}" : resultJson);
+            com.fasterxml.jackson.databind.node.ObjectNode root = parsed != null && parsed.isObject()
+                    ? (com.fasterxml.jackson.databind.node.ObjectNode) parsed
+                    : OBJECT_MAPPER.createObjectNode();
+            com.fasterxml.jackson.databind.node.ObjectNode review = root.putObject("aiDeliveryReview");
+            review.put("runId", aiReviewRun.runId());
+            review.put("attemptNo", aiReviewRun.attemptNo());
+            review.put("status", aiReviewRun.status().name());
+            review.put("decision", aiReviewRun.decision() == null ? "" : aiReviewRun.decision().name());
+            review.put("score", aiReviewRun.score());
+            review.put("retryFromRole", aiReviewRun.retryFromRole());
+            review.put("summary", aiReviewRun.summary());
+            review.put("packageHash", aiReviewRun.packageHash());
+            review.put("errorCategory", aiReviewRun.errorCategory());
+            review.put("errorMessage", aiReviewRun.errorMessage());
+            return OBJECT_MAPPER.writeValueAsString(root);
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("cannot attach AI delivery review result", exception);
+        }
+    }
+
     private String withPullRequestPublicationJson(
             String resultJson,
             RequirementPullRequestPublication publication
     ) {
-        String publicationJson = publicationJson(publication);
         String normalized = resultJson == null ? "" : resultJson.strip();
-        String appended = """
-                "pullRequestUrl":%s,"pullRequestPublication":%s
-                """.formatted(
-                json(publication == null ? "" : publication.pullRequestUrl()),
-                publicationJson
-        ).strip();
-        if (normalized.startsWith("{") && normalized.endsWith("}")) {
-            String body = normalized.substring(1, normalized.length() - 1).strip();
-            if (body.isBlank()) {
-                return "{" + appended + "}";
+        ObjectNode root = OBJECT_MAPPER.createObjectNode();
+        try {
+            JsonNode parsed = OBJECT_MAPPER.readTree(normalized);
+            if (parsed != null && parsed.isObject()) {
+                root = ((ObjectNode) parsed).deepCopy();
+            } else if (!normalized.isBlank()) {
+                root.put("status", "SUCCESS");
+                root.put("deliveryResult", normalized);
             }
-            return "{" + body + "," + appended + "}";
+            root.put("pullRequestUrl", publication == null ? "" : publication.pullRequestUrl());
+            root.set("pullRequestPublication", OBJECT_MAPPER.readTree(publicationJson(publication)));
+            return OBJECT_MAPPER.writeValueAsString(root);
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("cannot attach pull request publication result", exception);
         }
-        return "{\"status\":\"SUCCESS\",\"deliveryResult\":" + json(normalized) + "," + appended + "}";
     }
 
     private String publicationJson(RequirementPullRequestPublication publication) {
@@ -2093,6 +2963,38 @@ public class RequirementDeliveryEngine {
 
         private static RequirementReviewGateDecision proceed() {
             return new RequirementReviewGateDecision(false, "");
+        }
+    }
+
+    private record TokenBudgetEstimate(
+            long initialTokens,
+            long retryReserveTokens,
+            long estimatedTotalTokens,
+            String confidence,
+            String basis,
+            boolean valid,
+            String reason
+    ) {
+        private TokenBudgetEstimate {
+            confidence = safe(confidence).toUpperCase(Locale.ROOT);
+            basis = safe(basis);
+            reason = safe(reason);
+        }
+
+        private static TokenBudgetEstimate invalid(String reason) {
+            return new TokenBudgetEstimate(0L, 0L, 0L, "", "", false, reason);
+        }
+    }
+
+    private record BudgetHistorySample(
+            String scope,
+            long actualTotalTokens,
+            long completedAtEpochMillis
+    ) {
+        private BudgetHistorySample {
+            scope = safe(scope);
+            actualTotalTokens = Math.max(0L, actualTotalTokens);
+            completedAtEpochMillis = Math.max(0L, completedAtEpochMillis);
         }
     }
 

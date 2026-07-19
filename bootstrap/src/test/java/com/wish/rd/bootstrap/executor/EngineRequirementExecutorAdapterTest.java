@@ -1,6 +1,7 @@
 package com.wish.rd.bootstrap.executor;
 
 import com.wish.rd.bootstrap.executor.impl.EngineRequirementExecutorAdapter;
+import com.wish.rd.bootstrap.executor.impl.ObjectStorageQaEvidencePublisher;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -18,11 +19,24 @@ import com.wish.rd.exec.repair.execution.RepairExecutorPort;
 import com.wish.rd.exec.repair.execution.model.RepairJobCommand;
 import com.wish.rd.rag.runtime.model.CreateRequirementTaskCommand;
 import com.wish.rd.rag.runtime.model.RdRequirementTask;
+import com.wish.rd.rag.qa.QaValidationProfileService;
+import com.wish.rd.rag.qa.QaValidationProfileStore;
+import com.wish.rd.rag.qa.model.QaValidationProfile;
+import com.wish.rd.rag.qa.model.QaValidationProfileCommand;
+import com.wish.rd.rag.ingestion.impl.InMemoryObjectStorageService;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 import java.util.List;
+import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -32,6 +46,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class EngineRequirementExecutorAdapterTest {
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+
+    @TempDir
+    Path tempDirectory;
 
     @Test
     void shouldPreserveRequirementExecutionEvidenceWithoutCreatingPullRequest() throws IOException {
@@ -209,7 +226,7 @@ class EngineRequirementExecutorAdapterTest {
     }
 
     @Test
-    void shouldNormalizeLegacySuccessfulQaResultToQaReportProtocol() throws IOException {
+    void shouldRejectLegacySuccessfulQaResultInsteadOfFabricatingEvidence() throws IOException {
         RepairExecutorPort repairExecutor = ignored -> new RepairExecutionResult(
                 RepairExecutionStatus.SUCCESS,
                 "QA verified with real shell commands",
@@ -241,39 +258,100 @@ class EngineRequirementExecutorAdapterTest {
         ));
 
         JsonNode resultJson = OBJECT_MAPPER.readTree(result.resultJson());
-        assertTrue(result.success());
-        assertEquals("PASSED", resultJson.path("status").asText());
-        assertTrue(resultJson.path("acceptanceResults").isArray());
-        assertEquals(1, resultJson.path("acceptanceResults").size());
-        JsonNode acceptanceResult = resultJson.path("acceptanceResults").get(0);
-        assertEquals("测试通过", acceptanceResult.path("criteria").asText());
-        assertEquals("PASSED", acceptanceResult.path("status").asText());
-        assertTrue(acceptanceResult.path("command").asText().contains("test -s"));
-        assertTrue(acceptanceResult.path("logArtifactId").asText().startsWith("qa-inline-log-"));
-        assertEquals("SUCCESS", resultJson.path("legacyStatus").asText());
+        assertFalse(result.success());
+        assertTrue(result.errorMessage().contains("QA evidence protocol invalid"));
+        assertEquals("SUCCESS", resultJson.path("status").asText());
+        assertFalse(resultJson.has("acceptanceResults"));
+        assertFalse(result.resultJson().contains("qa-inline-log-"));
+    }
+
+    @Test
+    void shouldRejectStrictQaResultWhenEvidenceReferencesAreNotCollected() {
+        RepairExecutorPort repairExecutor = ignored -> new RepairExecutionResult(
+                RepairExecutionStatus.SUCCESS,
+                "QA protocol claims evidence that does not exist",
+                "",
+                List.of(),
+                Map.of("__agentResultJson", strictQaResultJson()),
+                Map.of("provider", "long-cat"),
+                Map.of(),
+                Map.of(),
+                Map.of(),
+                ""
+        );
+
+        RequirementExecutionResult result = new EngineRequirementExecutorAdapter(repairExecutor).execute(
+                qaRequest()
+        );
+
+        assertFalse(result.success());
+        assertTrue(result.errorMessage().contains("QA evidence bundle invalid"));
+        assertTrue(result.errorMessage().contains("does not resolve to a collected artifact"));
+    }
+
+    @Test
+    void shouldAcceptStrictQaResultWhenEveryEvidenceReferenceIsCollected() {
+        List<RepairArtifact> artifacts = qaArtifacts();
+        RepairExecutorPort repairExecutor = ignored -> new RepairExecutionResult(
+                RepairExecutionStatus.SUCCESS,
+                "QA current and regression checks passed",
+                "",
+                artifacts,
+                Map.of("__agentResultJson", strictQaResultJson()),
+                Map.of("provider", "long-cat"),
+                Map.of(),
+                Map.of(),
+                Map.of(),
+                ""
+        );
+
+        RequirementExecutionResult result = new EngineRequirementExecutorAdapter(repairExecutor).execute(
+                qaRequest()
+        );
+
+        assertTrue(result.success(), result::errorMessage);
+    }
+
+    @Test
+    void shouldPublishQaEvidenceBeforeReturningStageArtifacts() throws Exception {
+        List<RepairArtifact> artifacts = localQaArtifacts();
+        RepairExecutorPort repairExecutor = ignored -> new RepairExecutionResult(
+                RepairExecutionStatus.SUCCESS,
+                "QA current and regression checks passed",
+                "",
+                artifacts,
+                Map.of("__agentResultJson", strictQaResultJson()),
+                Map.of("provider", "long-cat"),
+                Map.of(),
+                Map.of(),
+                Map.of(),
+                ""
+        );
+        EngineRequirementExecutorAdapter adapter = new EngineRequirementExecutorAdapter(
+                repairExecutor,
+                null,
+                null,
+                null,
+                new ObjectStorageQaEvidencePublisher(new InMemoryObjectStorageService())
+        );
+
+        RequirementExecutionResult result = adapter.execute(qaRequest());
+
+        assertTrue(result.success(), result::errorMessage);
+        JsonNode stageArtifacts = OBJECT_MAPPER.readTree(result.resultJson()).path("stageArtifacts");
+        assertTrue(stageArtifacts.get(0).path("uri").asText().startsWith("s3://rd-qa-evidence/"));
+        assertEquals("qa-evidence/manifest.json",
+                stageArtifacts.get(0).path("metadataJson").path("artifactName").asText());
     }
 
     @Test
     void shouldTreatQaFailedReportAsRequirementFailure() throws IOException {
-        String agentResultJson = """
-                {
-                  "status": "FAILED",
-                  "summary": "Marker text was not found by real grep command",
-                  "acceptanceResults": [
-                    {
-                      "criteria": "文档必须包含 marker",
-                      "command": "grep -q marker docs/example.md",
-                      "status": "FAILED",
-                      "logArtifactId": "qa-log-1"
-                    }
-                  ]
-                }
-                """;
+        String agentResultJson = strictFailedQaResultJson();
         RepairExecutorPort repairExecutor = ignored -> new RepairExecutionResult(
                 RepairExecutionStatus.SUCCESS,
                 "Marker text was not found by real grep command",
                 "",
-                List.of(),
+                qaArtifacts(),
                 Map.of("__agentResultJson", agentResultJson),
                 Map.of("provider", "long-cat"),
                 Map.of(),
@@ -390,8 +468,228 @@ class EngineRequirementExecutorAdapterTest {
         assertEquals("task-1001", repairExecutor.commands().get(2).contextJson().get("taskId"));
     }
 
+    @Test
+    void shouldInjectPersistedTaskQaOverrideIntoDockerContext() {
+        RecordingRepairExecutor repairExecutor = new RecordingRepairExecutor();
+        QaValidationProfileService profileService = new QaValidationProfileService(new InMemoryQaProfileStore());
+        profileService.updateTask("task-1001", new QaValidationProfileCommand(
+                "REQUIRED",
+                "http://127.0.0.1:4173",
+                "npm run preview -- --host 0.0.0.0",
+                "/health",
+                List.of("127.0.0.1", "localhost"),
+                List.of("npm test")
+        ));
+        EngineRequirementExecutorAdapter adapter = new EngineRequirementExecutorAdapter(
+                repairExecutor,
+                null,
+                null,
+                profileService
+        );
+
+        adapter.execute(qaRequest());
+
+        String profileJson = repairExecutor.commands().getFirst().contextJson().get("qaTaskOverrideJson");
+        assertTrue(profileJson.contains("\"mode\":\"REQUIRED\""));
+        assertTrue(profileJson.contains("\"baseUrl\":\"http://127.0.0.1:4173\""));
+        assertTrue(profileJson.contains("\"regressionCommands\":[\"npm test\"]"));
+    }
+
     private RequirementExecutionRequest request() {
         return new RequirementExecutionRequest("task-1001", task(), List.of(), "implement");
+    }
+
+    private RequirementExecutionRequest qaRequest() {
+        return new RequirementExecutionRequest(
+                "task-1001",
+                task(),
+                List.of(),
+                "qa",
+                AgentRole.QA_AGENT,
+                "{}",
+                false,
+                "[]"
+        );
+    }
+
+    private static List<RepairArtifact> qaArtifacts() {
+        RepairArtifact current = qaArtifact(
+                RepairArtifactType.QA_COMMAND_LOG,
+                "qa-evidence/commands/current.log",
+                "current"
+        );
+        RepairArtifact regression = qaArtifact(
+                RepairArtifactType.QA_COMMAND_LOG,
+                "qa-evidence/commands/regression.log",
+                "regression"
+        );
+        RepairArtifact manifest = qaArtifact(
+                RepairArtifactType.QA_EVIDENCE_MANIFEST,
+                "qa-evidence/manifest.json",
+                manifestJson(List.of(current, regression))
+        );
+        return List.of(manifest, current, regression);
+    }
+
+    private static RepairArtifact qaArtifact(RepairArtifactType type, String name, String body) {
+        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+        return new RepairArtifact(
+                type,
+                name,
+                "file:///tmp/" + name,
+                "QA evidence",
+                Map.of(
+                        "bytes", String.valueOf(bytes.length),
+                        "sha256", sha256(bytes),
+                        "contentType", "text/plain",
+                        "contentPreview", body
+                )
+        );
+    }
+
+    private List<RepairArtifact> localQaArtifacts() throws Exception {
+        RepairArtifact current = localQaArtifact(
+                RepairArtifactType.QA_COMMAND_LOG,
+                "qa-evidence/commands/current.log",
+                "current"
+        );
+        RepairArtifact regression = localQaArtifact(
+                RepairArtifactType.QA_COMMAND_LOG,
+                "qa-evidence/commands/regression.log",
+                "regression"
+        );
+        RepairArtifact manifest = localQaArtifact(
+                RepairArtifactType.QA_EVIDENCE_MANIFEST,
+                "qa-evidence/manifest.json",
+                manifestJson(List.of(current, regression))
+        );
+        return List.of(manifest, current, regression);
+    }
+
+    private RepairArtifact localQaArtifact(RepairArtifactType type, String name, String content) throws Exception {
+        Path path = tempDirectory.resolve(name);
+        Files.createDirectories(path.getParent());
+        Files.writeString(path, content);
+        String sha256 = HexFormat.of().formatHex(
+                MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(path)));
+        return new RepairArtifact(
+                type,
+                name,
+                path.toUri().toString(),
+                "QA evidence",
+                Map.of(
+                        "bytes", Long.toString(Files.size(path)),
+                        "sha256", sha256,
+                        "contentType", "text/plain",
+                        "contentPreview", content
+                )
+        );
+    }
+
+    private static String manifestJson(List<RepairArtifact> artifacts) {
+        String entries = artifacts.stream()
+                .map(artifact -> """
+                        {"path":"%s","bytes":%s,"sha256":"%s"}
+                        """.formatted(
+                                artifact.name(),
+                                artifact.metadataJson().get("bytes"),
+                                artifact.metadataJson().get("sha256")
+                        ).strip())
+                .reduce((left, right) -> left + "," + right)
+                .orElse("");
+        return "{\"version\":1,\"artifacts\":[" + entries + "]}";
+    }
+
+    private static String sha256(byte[] value) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value));
+        } catch (Exception exception) {
+            throw new IllegalStateException(exception);
+        }
+    }
+
+    private static String strictQaResultJson() {
+        return """
+                {
+                  "status": "PASSED",
+                  "summary": "current and regression checks passed",
+                  "failureCategory": "NONE",
+                  "retryRecommendation": "NONE",
+                  "browserValidation": {
+                    "required": false,
+                    "performed": false,
+                    "decisionSource": "NOT_APPLICABLE",
+                    "baseUrl": "",
+                    "browser": "chromium",
+                    "viewports": []
+                  },
+                  "acceptanceResults": [
+                    {
+                      "criteria": "测试通过",
+                      "scope": "CURRENT",
+                      "command": "./mvnw test",
+                      "status": "PASSED",
+                      "exitCode": 0,
+                      "durationMillis": 100,
+                      "logArtifactId": "qa-evidence/commands/current.log",
+                      "evidenceArtifactIds": ["qa-evidence/commands/current.log"]
+                    },
+                    {
+                      "criteria": "critical regression",
+                      "scope": "REGRESSION",
+                      "command": "./mvnw test",
+                      "status": "PASSED",
+                      "exitCode": 0,
+                      "durationMillis": 100,
+                      "logArtifactId": "qa-evidence/commands/regression.log",
+                      "evidenceArtifactIds": ["qa-evidence/commands/regression.log"]
+                    }
+                  ],
+                  "evidenceManifestArtifactId": "qa-evidence/manifest.json"
+                }
+                """;
+    }
+
+    private static String strictFailedQaResultJson() {
+        return """
+                {
+                  "status": "FAILED",
+                  "summary": "Marker text was not found by real grep command",
+                  "failureCategory": "PRODUCT_DEFECT",
+                  "retryRecommendation": "CODING_AGENT",
+                  "browserValidation": {
+                    "required": false,
+                    "performed": false,
+                    "decisionSource": "NOT_APPLICABLE",
+                    "baseUrl": "",
+                    "browser": "chromium",
+                    "viewports": []
+                  },
+                  "acceptanceResults": [
+                    {
+                      "criteria": "测试通过",
+                      "scope": "CURRENT",
+                      "command": "grep -q marker docs/example.md",
+                      "status": "FAILED",
+                      "exitCode": 1,
+                      "durationMillis": 100,
+                      "logArtifactId": "qa-evidence/commands/current.log",
+                      "evidenceArtifactIds": ["qa-evidence/commands/current.log"]
+                    },
+                    {
+                      "criteria": "critical regression",
+                      "scope": "REGRESSION",
+                      "command": "./mvnw test",
+                      "status": "PASSED",
+                      "exitCode": 0,
+                      "durationMillis": 100,
+                      "logArtifactId": "qa-evidence/commands/regression.log",
+                      "evidenceArtifactIds": ["qa-evidence/commands/regression.log"]
+                    }
+                  ],
+                  "evidenceManifestArtifactId": "qa-evidence/manifest.json"
+                }
+                """;
     }
 
     private RdRequirementTask task() {
@@ -451,6 +749,21 @@ class EngineRequirementExecutorAdapterTest {
 
         private List<RepairJobCommand> commands() {
             return List.copyOf(commands);
+        }
+    }
+
+    private static final class InMemoryQaProfileStore implements QaValidationProfileStore {
+        private final Map<String, QaValidationProfile> values = new HashMap<>();
+
+        @Override
+        public QaValidationProfile save(QaValidationProfile profile) {
+            values.put(profile.scopeType() + ":" + profile.scopeId(), profile);
+            return profile;
+        }
+
+        @Override
+        public Optional<QaValidationProfile> find(String scopeType, String scopeId) {
+            return Optional.ofNullable(values.get(scopeType + ":" + scopeId));
         }
     }
 }

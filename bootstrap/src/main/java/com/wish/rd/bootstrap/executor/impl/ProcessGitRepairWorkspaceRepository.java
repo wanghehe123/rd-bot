@@ -135,6 +135,74 @@ public class ProcessGitRepairWorkspaceRepository implements RepairWorkspaceRepos
         return new RepositoryOperationResult(metadata);
     }
 
+    @Override
+    public RepositoryState repositoryState(RepairJobCommand command, RepairWorkspace workspace) throws IOException {
+        Path repoDirectory = requireRepoDirectory(workspace);
+        if (!Files.isDirectory(repoDirectory.resolve(".git"))) {
+            return RepositoryState.unsupported();
+        }
+        CommandResult status = runGit(List.of(
+                GIT_BINARY,
+                "-C",
+                repoDirectory.toString(),
+                "status",
+                "--porcelain=v1",
+                "--untracked-files=all"
+        ));
+        String summary = repositoryStateSummary(status.stdout());
+        return status.stdout().isBlank()
+                ? RepositoryState.cleanState()
+                : new RepositoryState(true, false, summary);
+    }
+
+    private static String repositoryStateSummary(String porcelain) {
+        int tracked = 0;
+        int untracked = 0;
+        Map<String, Integer> untrackedPaths = new LinkedHashMap<>();
+        List<String> trackedFiles = new ArrayList<>();
+        for (String line : (porcelain == null ? "" : porcelain).lines().toList()) {
+            if (line.length() < 4) {
+                continue;
+            }
+            String status = line.substring(0, 2);
+            String path = line.substring(3).strip();
+            if ("??".equals(status)) {
+                untracked++;
+                untrackedPaths.merge(repositoryPathBucket(path), 1, Integer::sum);
+            } else {
+                tracked++;
+                if (trackedFiles.size() < 5) {
+                    trackedFiles.add(path);
+                }
+            }
+        }
+        StringBuilder summary = new StringBuilder("tracked=")
+                .append(tracked)
+                .append(", untracked=")
+                .append(untracked);
+        if (!untrackedPaths.isEmpty()) {
+            summary.append("; untrackedPaths=");
+            summary.append(untrackedPaths.entrySet().stream()
+                    .limit(8)
+                    .map(entry -> entry.getKey() + " (" + entry.getValue() + ")")
+                    .reduce((left, right) -> left + ", " + right)
+                    .orElse(""));
+        }
+        if (!trackedFiles.isEmpty()) {
+            summary.append("; trackedFiles=").append(String.join(", ", trackedFiles));
+        }
+        return summary.toString();
+    }
+
+    private static String repositoryPathBucket(String rawPath) {
+        String path = rawPath == null ? "" : rawPath.strip();
+        if (path.length() >= 2 && path.startsWith("\"") && path.endsWith("\"")) {
+            path = path.substring(1, path.length() - 1);
+        }
+        String[] segments = path.split("/");
+        return segments.length >= 2 ? segments[0] + "/" + segments[1] : path;
+    }
+
     private CommandResult runGit(List<String> argv) throws IOException {
         CommandResult result = executeGit(argv);
         if (result.exitCode() != 0) {
