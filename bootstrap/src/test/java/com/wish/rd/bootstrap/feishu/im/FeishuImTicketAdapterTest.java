@@ -79,7 +79,7 @@ class FeishuImTicketAdapterTest {
         FeishuImTicketStore store = seedStore();
         FeishuImProperties properties = properties(true);
         properties.getLocalListener().setWriteBackViaCli(true);
-        properties.getLocalListener().setProfile("cli_aab17cbab0f85cce");
+        properties.getLocalListener().setProfile("cli_test_app_id");
         FeishuImTicketAdapter adapter = new FeishuImTicketAdapter(
                 store,
                 new FeishuImClient(properties, new ObjectMapper(), new StubTransport()),
@@ -93,7 +93,7 @@ class FeishuImTicketAdapterTest {
 
         assertEquals("lark-cli", argv.get(0));
         assertEquals("--profile", argv.get(1));
-        assertEquals("cli_aab17cbab0f85cce", argv.get(2));
+        assertEquals("cli_test_app_id", argv.get(2));
         assertEquals("im", argv.get(3));
         assertTrue(argv.contains("+messages-send"));
         assertTrue(argv.contains("--chat-id"));

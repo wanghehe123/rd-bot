@@ -10,7 +10,7 @@ fi
 : "${RD_BOT_BASE_URL:=http://127.0.0.1:18080}"
 : "${WAIMAI_KB_NAME:=waimai}"
 : "${WAIMAI_PROJECT_KEY:=codex-waimai-20260705-1613}"
-: "${WAIMAI_REPOSITORY_URL:=https://github.com/wanghehe123/rd-bot-waimai-acceptance-20260624-141045.git}"
+: "${WAIMAI_REPOSITORY_URL:=https://github.com/example-owner/example-repo.git}"
 : "${WAIMAI_REPOSITORY_REF:=main}"
 : "${WAIMAI_MIN_DOCUMENT_COUNT:=30}"
 
@@ -120,7 +120,7 @@ def source_payload(source_dir, revision, knowledge_type, relative_path):
     content = "\n".join([
         "# Waimai Repository Source",
         "",
-        "- Repository: wanghehe123/rd-bot-waimai-acceptance-20260624-141045",
+        "- Repository: example-owner/example-repo",
         f"- Revision: {revision}",
         f"- Path: {relative_path}",
         "",

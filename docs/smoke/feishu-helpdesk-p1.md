@@ -13,7 +13,7 @@ P1 的真实外部依赖（飞书 Helpdesk、RocketMQ、PostgreSQL）冒烟测�
 
 飞书机器人凭据（由用户提供）：
 
-- App ID：`cli_a9458f91d17b5cd6`
+- App ID：`$FEISHU_APP_ID`（通过环境变量注入）
 - App Secret：通过环境变量 `FEISHU_APP_SECRET` 注入，不要写入仓库。
 - Helpdesk ID / Helpdesk Token：由飞书服务台后台获取。官方入口是 [服务台管理后台](https://feishu.cn/helpdesk/admin) 的 **设置中心 > API 凭证**；重置 token 会生成新 token，旧 token 自动失效。
 

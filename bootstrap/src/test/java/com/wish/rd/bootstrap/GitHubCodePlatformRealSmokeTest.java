@@ -33,7 +33,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *   -Drd.github.smoke.rd-bot-version=<rd-bot-version> \
  *   -Drd.github.smoke.environment-id=<production-environment-id> \
  *   -Drd.github.smoke.executed-by=<operator> \
- *   -Drd.github.smoke.repo-owner=wanghehe123 \
+ *   -Drd.github.smoke.repo-owner=example-owner \
  *   -Drd.github.smoke.repo-name=rd-bot-pr-smoke-20260623 \
  *   -Drd.github.smoke.base-branch=main \
  *   -Drd.github.smoke.work-branch=repair/smoke-20260623 \

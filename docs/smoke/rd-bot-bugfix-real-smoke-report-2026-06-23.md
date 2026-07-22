@@ -175,8 +175,8 @@ BUILD SUCCESS
 
 测试仓库：
 
-- Repository：`wanghehe123/rd-bot-pr-smoke-20260623133619`
-- URL：`https://github.com/wanghehe123/rd-bot-pr-smoke-20260623133619`
+- Repository：`example-owner/rd-bot-pr-smoke-20260623133619`
+- URL：`https://github.com/example-owner/rd-bot-pr-smoke-20260623133619`
 - Visibility：private
 - Base branch：`main`
 - Work branch：`repair/smoke-20260623133619`
@@ -191,7 +191,7 @@ GITHUB_PAT="$(gh auth token)" ./mvnw -pl bootstrap -am \
   -Dtest=GitHubCodePlatformRealSmokeTest \
   -Dsurefire.failIfNoSpecifiedTests=false \
   -Drd.integration.github.enabled=true \
-  -Drd.github.smoke.repo-owner=wanghehe123 \
+  -Drd.github.smoke.repo-owner=example-owner \
   -Drd.github.smoke.repo-name=rd-bot-pr-smoke-20260623133619 \
   -Drd.github.smoke.base-branch=main \
   -Drd.github.smoke.work-branch=repair/smoke-20260623133619 \
@@ -203,7 +203,7 @@ GITHUB_PAT="$(gh auth token)" ./mvnw -pl bootstrap -am \
 关键输出：
 
 ```text
-[smoke] github pullRequestUrl=https://github.com/wanghehe123/rd-bot-pr-smoke-20260623133619/pull/1 number=1 repository=wanghehe123/rd-bot-pr-smoke-20260623133619 head=repair/smoke-20260623133619 base=main
+[smoke] github pullRequestUrl=https://github.com/example-owner/rd-bot-pr-smoke-20260623133619/pull/1 number=1 repository=example-owner/rd-bot-pr-smoke-20260623133619 head=repair/smoke-20260623133619 base=main
 Tests run: 1, Failures: 0, Errors: 0, Skipped: 0
 ```
 
@@ -214,10 +214,10 @@ Tests run: 1, Failures: 0, Errors: 0, Skipped: 0
   "baseRefName": "main",
   "headRefName": "repair/smoke-20260623133619",
   "number": 1,
-  "owner": "wanghehe123",
+  "owner": "example-owner",
   "state": "OPEN",
   "title": "RD-Bot real PR smoke",
-  "url": "https://github.com/wanghehe123/rd-bot-pr-smoke-20260623133619/pull/1"
+  "url": "https://github.com/example-owner/rd-bot-pr-smoke-20260623133619/pull/1"
 }
 ```
 
@@ -297,7 +297,7 @@ POST /open-apis/helpdesk/v1/start_service
 不要把 secret 写入仓库。建议本地启动或测试时通过环境变量注入：
 
 ```bash
-export FEISHU_APP_ID="cli_a9458f91d17b5cd6"
+export FEISHU_APP_ID="<你的飞书应用 App ID>"
 export FEISHU_APP_SECRET="<不要写入仓库>"
 export FEISHU_HELPDESK_ID="<服务台 ID>"
 export FEISHU_HELPDESK_TOKEN="<服务台 token>"
@@ -385,7 +385,7 @@ POST https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal
 
 - App 凭据有效，能获取 `tenant_access_token`。
 - Helpdesk ID/token 已参与请求，但当前应用尚未开通 `helpdesk:all:readonly`，所以自定义字段和工单列表被飞书拒绝。
-- 飞书错误给出的开通入口是应用 `cli_a9458f91d17b5cd6` 的权限管理页，搜索并开通 `helpdesk:all:readonly`。
+- 飞书错误给出的开通入口是应用（`$FEISHU_APP_ID`）的权限管理页，搜索并开通 `helpdesk:all:readonly`。
 - 若要让机器人创建真实服务台工单，还需要开通 `helpdesk:helpdesk:access`。
 - 权限变更后需要重新发布应用，并由租户管理员安装或升级应用权限。
 

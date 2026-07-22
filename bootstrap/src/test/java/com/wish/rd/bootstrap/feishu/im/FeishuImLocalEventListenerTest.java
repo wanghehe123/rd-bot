@@ -144,7 +144,7 @@ class FeishuImLocalEventListenerTest {
     void shouldUseConfiguredLarkCliProfileWhenConsumingEvents() {
         ObjectMapper objectMapper = new ObjectMapper();
         FeishuImProperties properties = new FeishuImProperties();
-        properties.getLocalListener().setProfile("cli_aab17cbab0f85cce");
+        properties.getLocalListener().setProfile("cli_test_app_id");
         FeishuImMessageController controller = new FeishuImMessageController(
                 objectMapper,
                 properties,
@@ -161,7 +161,7 @@ class FeishuImLocalEventListenerTest {
         assertEquals(List.of(
                 "lark-cli",
                 "--profile",
-                "cli_aab17cbab0f85cce",
+                "cli_test_app_id",
                 "event",
                 "consume",
                 "im.message.receive_v1",

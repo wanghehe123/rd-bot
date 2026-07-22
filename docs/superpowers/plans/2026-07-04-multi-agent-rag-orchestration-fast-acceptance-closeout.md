@@ -22,7 +22,7 @@
 | PostgreSQL | `spring.datasource.*` | 默认 `jdbc:postgresql://127.0.0.1:5432/ragent`，用户名 `postgres` |
 | Redis | `spring.data.redis.*` | 默认 `127.0.0.1:6379` |
 | RustFS/S3 | `rustfs.*` | 默认 `http://localhost:9000`，bucket `biz` |
-| 目标仓库 | `rd.executor.repository.*` | `wanghehe123/rd-bot-waimai-acceptance-20260624-141045`，base `main` |
+| 目标仓库 | `rd.executor.repository.*` | `example-owner/example-repo`，base `main` |
 | Docker executor | `rd.executor.docker.*` | image `rd-bot/claude-code:local`，work branch allowlist 含 `requirement/*` |
 | Provider 1 | `rd.executor.docker.providers[0]` | `long-cat`，默认 Anthropic-compatible URL，token env `LONGCAT_API_KEY` |
 | Provider 2 | `rd.executor.docker.providers[1]` | `minimax`，`application.yaml` 默认 `openai-chat-completions` + `https://api.minimaxi.com/v1`；本轮验收通过 `MINIMAX_PROTOCOL=anthropic-compatible`、`MINIMAX_BASE_URL=https://api.minimaxi.com/anthropic` 接入 Docker Claude Code provider 链 |
@@ -108,9 +108,9 @@ Provider 前置探活已经通过；如需重新验证同一能力，需在当�
   -Drd.multi-agent.smoke.postgres-url=jdbc:postgresql://127.0.0.1:5432/ragent \
   -Drd.multi-agent.smoke.postgres-user=postgres \
   -Drd.multi-agent.smoke.postgres-password="$POSTGRES_PASSWORD" \
-  -Drd.multi-agent.smoke.repository-url=https://github.com/wanghehe123/rd-bot-waimai-acceptance-20260624-141045.git \
-  -Drd.multi-agent.smoke.repo-owner=wanghehe123 \
-  -Drd.multi-agent.smoke.repo-name=rd-bot-waimai-acceptance-20260624-141045 \
+  -Drd.multi-agent.smoke.repository-url=https://github.com/example-owner/example-repo.git \
+  -Drd.multi-agent.smoke.repo-owner=example-owner \
+  -Drd.multi-agent.smoke.repo-name=example-repo \
   -Drd.multi-agent.smoke.task-id=7479113030836555776 \
   -Drd.multi-agent.smoke.expected-provider-count=2 \
   -Drd.multi-agent.smoke.provider-secret-env-names=LONGCAT_API_KEY,MINIMAX_API_KEY \

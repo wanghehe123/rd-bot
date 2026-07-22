@@ -557,7 +557,7 @@ Provider 侧当前已完成最小门禁，还需要下一轮结构化改造：
 2026-07-05 01:05 已形成完整生产真实证据基线：
 
 - `provider-preflight-production-acceptance-20260704-160250.md/json` 已通过，`long-cat` 与 `minimax` 均以真实 HTTP 返回 200，`successfulProviderCount=2`。
-- `multi-agent-production-acceptance-20260704-103658.md/json` 已通过最小多 Agent 生产 smoke，主任务 `7479113030836555776` 完成四角色链路，PR 为 `https://github.com/wanghehe123/rd-bot-waimai-acceptance-20260624-141045/pull/15`，且记录 `timelineEvents=14`、`stageEvents=24`、`roleContextDistinctCount=4`、`qaReportEvidenceValidated=true`、`auditChainEvidenceValidated=true`。
+- `multi-agent-production-acceptance-20260704-103658.md/json` 已通过最小多 Agent 生产 smoke，主任务 `7479113030836555776` 完成四角色链路，PR 为 `https://github.com/example-owner/example-repo/pull/15`，且记录 `timelineEvents=14`、`stageEvents=24`、`roleContextDistinctCount=4`、`qaReportEvidenceValidated=true`、`auditChainEvidenceValidated=true`。
 - 真实失败推动的代码约束已落地：非编码角色使用独立 stage task id 做执行隔离；历史成功结果会归一化为 `solution-plan` 与 `qa-report` 协议；`needHumanAction` 只在出现时要求布尔值；最小 smoke 不再强制每阶段 provider attempt 数等于 provider 总数；`CODING_AGENT` 现在会把执行器返回的 `PATCH_DIFF`、`TEST_LOG`、`DOCKER_METADATA` 等辅助产物透传并持久化为阶段产物，供 #6 Docker coding 专项真实反查。
 - PR 发布链路已补齐远端可复核证据：`EngineRequirementPullRequestPublisherAdapter` 会把 `taskId` 和结构化结果中的 `rd-artifact://`/HTTP/S3 产物 URI 写入 PR body，并记录 `prBodyContainsTaskId`、`prBodyContainsArtifactLink` 等 metadata；`github-pr-remote-evidence-production-acceptance-20260704-165255.md/json` 已通过真实 GitHub PR #15 远端反查和 secret needle 扫描。
 - 指标审计链路已补齐真实 HTTP 入口：`/actuator/prometheus` 由 `PrometheusMetricsController` 从真实 PostgreSQL 聚合任务和阶段数据，`observability-metrics-production-acceptance-20260704-170114.md/json` 已证明 HTTP 200、关键指标存在、`stageMetricCount=12`、审计链和远端 PR trace 均绑定主任务。

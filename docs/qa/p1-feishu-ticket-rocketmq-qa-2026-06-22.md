@@ -188,7 +188,7 @@ Hikari connected to local PostgreSQL
   -Dtest=FeishuHelpdeskRealSmokeTest \
   -Dsurefire.failIfNoSpecifiedTests=false \
   -Drd.integration.feishu.enabled=true \
-  -Drd.feishu.helpdesk.app-id=cli_a9458f91d17b5cd6 \
+  -Drd.feishu.helpdesk.app-id=$FEISHU_APP_ID \
   test
 ```
 
