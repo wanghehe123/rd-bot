@@ -1,1 +1,0 @@
-{"mode":"memory","messages":[{"ticketId":"FS-MOCK-1","priority":"P1","traceId":"trace-demo-001","attempt":1,"source":"feishu","eventId":"evt-e8926222-4b17-464d-a6f0-78f2a038ba5d","eventType":"helpdesk.ticket.created_v1","createdAt":"2026-06-23T03:56:34.678077Z"}]}

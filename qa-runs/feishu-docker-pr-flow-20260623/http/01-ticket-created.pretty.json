@@ -1,8 +1,0 @@
-{
-    "success": true,
-    "messageId": "mem-1",
-    "targetTopic": "in-memory://RD_BOT_REPAIR_TICKET",
-    "targetTag": "P1",
-    "errorMessage": "",
-    "ticketId": "FS-MOCK-1"
-}
