@@ -79,19 +79,36 @@ public interface RepairWorkspaceRepositoryPort {
         }
     }
 
-    /** Repository cleanliness snapshot used by the QA no-mutation guard. */
-    record RepositoryState(boolean supported, boolean clean, String summary) {
+    /**
+     * Repository snapshot used by the QA no-mutation guard.
+     *
+     * <p>QA may start with a platform-applied Coding patch in a local-only workflow, so it must compare its
+     * post-run state with this immutable baseline rather than require a globally clean worktree.
+     */
+    record RepositoryState(boolean supported, boolean clean, String fingerprint, String summary) {
 
         public RepositoryState {
+            fingerprint = fingerprint == null ? "" : fingerprint.strip();
             summary = summary == null ? "" : summary.strip();
         }
 
+        /** Compatibility constructor for ports that can provide a stable state description but not a hash. */
+        public RepositoryState(boolean supported, boolean clean, String summary) {
+            this(supported, clean, legacyFingerprint(supported, clean, summary), summary);
+        }
+
         public static RepositoryState unsupported() {
-            return new RepositoryState(false, true, "");
+            return new RepositoryState(false, true, "unsupported", "");
         }
 
         public static RepositoryState cleanState() {
-            return new RepositoryState(true, true, "");
+            return new RepositoryState(true, true, "clean", "");
+        }
+
+        private static String legacyFingerprint(boolean supported, boolean clean, String summary) {
+            return (supported ? "supported" : "unsupported")
+                    + ":" + (clean ? "clean" : "dirty")
+                    + ":" + (summary == null ? "" : summary.strip());
         }
     }
 }

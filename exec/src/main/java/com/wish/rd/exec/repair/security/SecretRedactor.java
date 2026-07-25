@@ -54,6 +54,10 @@ public final class SecretRedactor {
         return value
                 .replaceAll("(?i)(authorization\\s*[=:]\\s*bearer\\s+)[A-Za-z0-9._~+/=-]+", "$1" + REDACTED)
                 .replaceAll("(?i)(token|api[_-]?key|password|secret|authorization)=([^\\s,;]+)", "$1=" + REDACTED)
+                .replaceAll(
+                        "(?i)(\\\"(?:token|api[_-]?key|password|secret|authorization)\\\"\\s*:\\s*\\\")[^\\\"]*(\\\")",
+                        "$1" + REDACTED + "$2"
+                )
                 .replaceAll("(?i)(bearer\\s+)[A-Za-z0-9._~+/=-]+", "$1" + REDACTED);
     }
 

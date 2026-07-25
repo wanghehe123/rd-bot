@@ -6,6 +6,7 @@ import com.wish.rd.exec.repair.docker.model.RepairWorkspace;
 import com.wish.rd.exec.repair.docker.RepairWorkspaceFactory;
 import com.wish.rd.exec.repair.docker.RepairWorkspaceRepositoryPort;
 import com.wish.rd.exec.repair.execution.model.RepairJobCommand;
+import com.wish.rd.exec.repair.execution.model.RepairInputAttachment;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -13,6 +14,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -105,6 +107,52 @@ class ProcessGitRepairWorkspaceRepositoryTest {
 
         assertEquals("origin-work-branch", prepareResult.metadataJson().get("checkoutSource"));
         assertTrue(Files.exists(workspace.repoDirectory().resolve("src/only-on-work-branch.txt")));
+    }
+
+    @Test
+    void shouldPrepareLocalOnlyQaFromBaseBranchInsteadOfAStaleRemoteWorkBranch() throws Exception {
+        assumeTrue(gitAvailable(), "git CLI is required");
+        Path seedRepository = temporaryDirectory.resolve("seed");
+        Path remoteRepository = temporaryDirectory.resolve("remote.git");
+        createSeedRepository(seedRepository, remoteRepository);
+        git(seedRepository, "checkout", "-b", "repair/task-qa-local-only");
+        Files.createDirectories(seedRepository.resolve("src"));
+        Files.writeString(
+                seedRepository.resolve("src/stale-remote-branch.txt"),
+                "must not enter isolated QA\n",
+                StandardCharsets.UTF_8
+        );
+        git(seedRepository, "add", "src/stale-remote-branch.txt");
+        git(seedRepository, "commit", "-m", "stale remote work branch");
+        git(seedRepository, "push", remoteRepository.toString(), "repair/task-qa-local-only");
+
+        RepairWorkspaceFactory factory = new RepairWorkspaceFactory(
+                temporaryDirectory.resolve("workspaces"),
+                "{\"type\":\"object\"}"
+        );
+        RepairJobCommand command = new RepairJobCommand(
+                "repair-qa-local-only",
+                "task-qa-local-only",
+                "FS-1002",
+                "Validate local candidate",
+                "Run QA.",
+                remoteRepository.toString(),
+                "local",
+                "waimai",
+                "main",
+                "repair/task-qa-local-only",
+                Map.of("agentRole", "QA_AGENT"),
+                Map.of("repositoryDeliveryMode", "LOCAL_ONLY")
+        );
+        RepairWorkspace workspace = factory.create(command);
+        ProcessGitRepairWorkspaceRepository repository =
+                new ProcessGitRepairWorkspaceRepository(new DockerExecutorProperties());
+
+        RepairWorkspaceRepositoryPort.RepositoryOperationResult prepared = repository.prepare(command, workspace);
+
+        assertEquals("LOCAL_ONLY", prepared.metadataJson().get("repositoryDeliveryMode"));
+        assertEquals("origin-base-branch", prepared.metadataJson().get("checkoutSource"));
+        assertFalse(Files.exists(workspace.repoDirectory().resolve("src/stale-remote-branch.txt")));
     }
 
     @Test
@@ -211,6 +259,50 @@ class ProcessGitRepairWorkspaceRepositoryTest {
         assertTrue(state.summary().contains("server/data (1)"), state.summary());
         assertTrue(state.summary().contains("client/package-lock.json (1)"), state.summary());
         assertTrue(state.summary().contains("trackedFiles=README.md"), state.summary());
+    }
+
+    @Test
+    void shouldApplyVerifiedCandidatePatchInASeparateQaCheckout() throws Exception {
+        assumeTrue(gitAvailable(), "git CLI is required");
+        Path seedRepository = temporaryDirectory.resolve("seed");
+        Path remoteRepository = temporaryDirectory.resolve("remote.git");
+        createSeedRepository(seedRepository, remoteRepository);
+        Files.writeString(seedRepository.resolve("README.md"), "# patched by coding stage\n", StandardCharsets.UTF_8);
+        String patch = git(seedRepository, "diff", "--", "README.md").stdout();
+        git(seedRepository, "checkout", "--", "README.md");
+
+        RepairWorkspaceFactory factory = new RepairWorkspaceFactory(
+                temporaryDirectory.resolve("workspaces"),
+                "{\"type\":\"object\"}"
+        );
+        RepairJobCommand command = new RepairJobCommand(
+                "repair-qa-1001",
+                "task-qa-1001",
+                "FS-1001",
+                "Validate coding candidate",
+                "Run QA.",
+                remoteRepository.toString(),
+                "local",
+                "waimai",
+                "main",
+                "repair/task-qa-1001",
+                Map.of("agentRole", "QA_AGENT"),
+                Map.of("applyCandidatePatch", "true", "repositoryDeliveryMode", "LOCAL_ONLY"),
+                List.of(new RepairInputAttachment(
+                        "candidate-patch.diff", "text/x-diff", patch.getBytes(StandardCharsets.UTF_8)
+                ))
+        );
+        RepairWorkspace workspace = factory.create(command);
+        ProcessGitRepairWorkspaceRepository repository =
+                new ProcessGitRepairWorkspaceRepository(new DockerExecutorProperties());
+
+        RepairWorkspaceRepositoryPort.RepositoryOperationResult result = repository.prepare(command, workspace);
+
+        assertEquals("# patched by coding stage\n",
+                Files.readString(workspace.repoDirectory().resolve("README.md")));
+        assertEquals("true", result.metadataJson().get("candidatePatchApplied"));
+        assertFalse(repository.repositoryState(command, workspace).clean(),
+                "the candidate patch is expected baseline state for QA, not a remote mutation");
     }
 
     private static boolean gitAvailable() {

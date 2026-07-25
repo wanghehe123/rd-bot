@@ -13,6 +13,9 @@ import org.springframework.stereotype.Component;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -53,15 +56,18 @@ public class ProcessGitRepairWorkspaceRepository implements RepairWorkspaceRepos
         Path repoDirectory = requireRepoDirectory(workspace);
         Files.createDirectories(repoDirectory);
 
+        boolean localOnly = "LOCAL_ONLY".equalsIgnoreCase(
+                command.policyJson().getOrDefault("repositoryDeliveryMode", "")
+        );
         boolean workBranchFetched;
         if (Files.isDirectory(repoDirectory.resolve(".git"))) {
             runGit(List.of(GIT_BINARY, "-C", repoDirectory.toString(), "fetch", "origin", command.baseBranch()));
-            workBranchFetched = fetchRemoteWorkBranch(repoDirectory, command.workBranch());
+            workBranchFetched = !localOnly && fetchRemoteWorkBranch(repoDirectory, command.workBranch());
         } else {
             requireEmptyDirectory(repoDirectory);
             runGit(List.of(GIT_BINARY, "clone", "--branch", command.baseBranch(), "--single-branch",
                     command.repositoryUrl(), repoDirectory.toString()));
-            workBranchFetched = fetchRemoteWorkBranch(repoDirectory, command.workBranch());
+            workBranchFetched = !localOnly && fetchRemoteWorkBranch(repoDirectory, command.workBranch());
         }
         runGit(List.of(
                 GIT_BINARY,
@@ -72,16 +78,19 @@ public class ProcessGitRepairWorkspaceRepository implements RepairWorkspaceRepos
                 command.workBranch(),
                 workBranchFetched ? "FETCH_HEAD" : "origin/" + command.baseBranch()
         ));
+        boolean candidatePatchApplied = applyCandidatePatchIfRequested(command, workspace, repoDirectory);
 
         runGit(List.of(GIT_BINARY, "-C", repoDirectory.toString(), "config", "user.name", properties.getUserName()));
         runGit(List.of(GIT_BINARY, "-C", repoDirectory.toString(), "config", "user.email", properties.getUserEmail()));
-        return new RepositoryOperationResult(Map.of(
-                "prepared", "true",
-                "baseBranch", command.baseBranch(),
-                "workBranch", command.workBranch(),
-                "checkoutSource", workBranchFetched ? "origin-work-branch" : "origin-base-branch",
-                "repository", repositoryName(command)
-        ));
+        Map<String, String> metadata = new LinkedHashMap<>();
+        metadata.put("prepared", "true");
+        metadata.put("baseBranch", command.baseBranch());
+        metadata.put("workBranch", command.workBranch());
+        metadata.put("repositoryDeliveryMode", localOnly ? "LOCAL_ONLY" : "PUBLISH");
+        metadata.put("checkoutSource", workBranchFetched ? "origin-work-branch" : "origin-base-branch");
+        metadata.put("repository", repositoryName(command));
+        metadata.put("candidatePatchApplied", Boolean.toString(candidatePatchApplied));
+        return new RepositoryOperationResult(metadata);
     }
 
     @Override
@@ -149,10 +158,19 @@ public class ProcessGitRepairWorkspaceRepository implements RepairWorkspaceRepos
                 "--porcelain=v1",
                 "--untracked-files=all"
         ));
-        String summary = repositoryStateSummary(status.stdout());
-        return status.stdout().isBlank()
-                ? RepositoryState.cleanState()
-                : new RepositoryState(true, false, summary);
+        String porcelain = status.stdout();
+        String summary = porcelain.isBlank() ? "" : repositoryStateSummary(porcelain);
+        return new RepositoryState(true, porcelain.isBlank(), repositoryStateFingerprint(porcelain), summary);
+    }
+
+    private static String repositoryStateFingerprint(String porcelain) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest((porcelain == null ? "" : porcelain).getBytes(StandardCharsets.UTF_8));
+            return "sha256:" + HexFormat.of().formatHex(digest);
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 is unavailable", exception);
+        }
     }
 
     private static String repositoryStateSummary(String porcelain) {
@@ -245,6 +263,57 @@ public class ProcessGitRepairWorkspaceRepository implements RepairWorkspaceRepos
                 workBranch
         ));
         return result.exitCode() == 0;
+    }
+
+    private boolean applyCandidatePatchIfRequested(
+            RepairJobCommand command,
+            RepairWorkspace workspace,
+            Path repoDirectory
+    ) throws IOException {
+        if (!Boolean.parseBoolean(command.policyJson().getOrDefault("applyCandidatePatch", "false"))) {
+            return false;
+        }
+        Path attachmentDirectory = workspace.inputDirectory().resolve("attachments").normalize();
+        Path patch = attachmentDirectory.resolve("candidate-patch.diff").normalize();
+        if (!patch.startsWith(attachmentDirectory) || !Files.isRegularFile(patch)) {
+            throw new IOException("local QA requires a verified candidate-patch.diff attachment");
+        }
+        // Reset the workspace to a clean HEAD before applying the candidate
+        // patch.  Previous QA attempts may have left staged or unstaged
+        // changes that cause `git apply --index` to fail with "patch does
+        // not apply".
+        runGit(List.of(
+                GIT_BINARY,
+                "-C",
+                repoDirectory.toString(),
+                "reset",
+                "--hard",
+                "HEAD"
+        ));
+        runGit(List.of(
+                GIT_BINARY,
+                "-C",
+                repoDirectory.toString(),
+                "apply",
+                "--index",
+                "--whitespace=nowarn",
+                patch.toString()
+        ));
+        CommandResult staged = tryRunGit(List.of(
+                GIT_BINARY,
+                "-C",
+                repoDirectory.toString(),
+                "diff",
+                "--cached",
+                "--quiet"
+        ));
+        if (staged.exitCode() == 0) {
+            throw new IOException("candidate-patch.diff did not produce a staged repository change");
+        }
+        if (staged.exitCode() != 1) {
+            throw new IOException("could not verify candidate-patch.diff application: " + limit(staged.stderr()));
+        }
+        return true;
     }
 
     private static CompletableFuture<String> readAsync(InputStream inputStream) {

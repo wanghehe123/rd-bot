@@ -98,7 +98,7 @@ class QaEvidenceBundleValidatorTest {
 
         assertFalse(validation.valid());
         assertTrue(validation.errors().contains(
-                "CURRENT evidence is missing task acceptance criterion: second current feature"));
+                "evidence is missing task acceptance criterion: second current feature"));
     }
 
     @Test

@@ -71,7 +71,8 @@ public final class QaEvidenceBundleValidator {
         if (acceptanceResults.isArray()) {
             int resultIndex = 0;
             for (JsonNode result : acceptanceResults) {
-                if ("CURRENT".equals(result.path("scope").asText("").strip())) {
+                String scope = result.path("scope").asText("").strip();
+                if ("CURRENT".equals(scope) || "REGRESSION".equals(scope)) {
                     String criterion = result.path("criteria").asText("").strip();
                     if (!criterion.isBlank()) {
                         currentCriteria.add(criterion);
@@ -123,7 +124,7 @@ public final class QaEvidenceBundleValidator {
                     .distinct()
                     .filter(criterion -> !currentCriteria.contains(criterion))
                     .forEach(criterion -> errors.add(
-                            "CURRENT evidence is missing task acceptance criterion: " + criterion));
+                            "evidence is missing task acceptance criterion: " + criterion));
         }
 
         String manifestReference = root.path("evidenceManifestArtifactId").asText("").strip();
@@ -198,7 +199,11 @@ public final class QaEvidenceBundleValidator {
             errors.add("QA evidence manifest is not valid JSON");
             return;
         }
-        if (root == null || !root.isObject() || root.path("version").asInt(-1) != 1
+        int manifestVersion = root.path("version").asInt(-1);
+        String manifestSchema = root.path("schema").asText("");
+        boolean validManifestVersion = manifestVersion == 1
+                || manifestSchema.toLowerCase(java.util.Locale.ROOT).contains("v1");
+        if (root == null || !root.isObject() || !validManifestVersion
                 || !root.path("artifacts").isArray()) {
             errors.add("QA evidence manifest must contain version 1 and an artifacts array");
             return;
