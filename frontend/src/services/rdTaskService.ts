@@ -156,6 +156,25 @@ export interface RdTaskRunningExecution {
   };
 }
 
+export interface RdTaskExecutionTraceEntry {
+  sequence: number;
+  kind: "SESSION_STARTED" | "ASSISTANT_TEXT" | "TOOL_STARTED" | "TOOL_COMPLETED" | "RESULT" | "RUNTIME_ERROR";
+  label: string;
+  detail: string;
+  error: boolean;
+}
+
+export interface RdTaskExecutionTrace {
+  version: number;
+  source: "LIVE" | "ARCHIVED";
+  available: boolean;
+  finalized: boolean;
+  truncated: boolean;
+  hasMore: boolean;
+  nextSequence: number;
+  entries: RdTaskExecutionTraceEntry[];
+}
+
 /** 已归档的角色实际 Prompt 与其绑定的 RAG 上下文。 */
 export interface RdTaskRolePromptResponse {
   taskId: string;
@@ -374,6 +393,20 @@ export const getRdTaskTimeline = (taskId: string): Promise<RdTaskStatusEvent[]> 
 
 export const getRdTaskExecutionOverview = (taskId: string): Promise<RdTaskExecutionOverview> =>
   api.get<RdTaskExecutionOverview, RdTaskExecutionOverview>(`/admin/rd-tasks/${taskId}/execution-overview`);
+
+export const getRdTaskExecutionTrace = (
+  taskId: string,
+  stageRunId: string,
+  query: { after?: number; limit?: number } = {}
+): Promise<RdTaskExecutionTrace> => {
+  const params = new URLSearchParams();
+  if (query.after && query.after > 0) params.set("after", String(query.after));
+  if (query.limit && query.limit > 0) params.set("limit", String(query.limit));
+  const suffix = params.toString();
+  return api.get<RdTaskExecutionTrace, RdTaskExecutionTrace>(
+    `/admin/rd-tasks/${taskId}/stage-runs/${stageRunId}/execution-trace${suffix ? `?${suffix}` : ""}`
+  );
+};
 
 export const getRdTaskRolePrompts = (taskId: string): Promise<RdTaskRolePromptResponse> =>
   api.get<RdTaskRolePromptResponse, RdTaskRolePromptResponse>(`/admin/rd-tasks/${taskId}/role-prompts`);

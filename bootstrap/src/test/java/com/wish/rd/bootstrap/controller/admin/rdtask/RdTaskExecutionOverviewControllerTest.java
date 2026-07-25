@@ -41,6 +41,7 @@ import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.containsString;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -246,6 +247,195 @@ class RdTaskExecutionOverviewControllerTest {
                 .andExpect(jsonPath("$.runningExecutions[0].containerName", is("rd-bot-repair-test")))
                 .andExpect(jsonPath("$.runningExecutions[0].tokenUsage.estimatedSpendCny", is(3.0240)))
                 .andExpect(jsonPath("$.runningExecutions[0].tokenUsage.estimatedCostUsd").doesNotExist());
+    }
+
+    @Test
+    void shouldExposeOnlyRedactedVisibleEventsForTheCurrentContainerStage() throws Exception {
+        RdRequirementTask task = registry.createRequirementTask(new CreateRequirementTaskCommand(
+                "执行轨迹测试",
+                "P1",
+                "https://github.com/example/repo.git",
+                "example",
+                "repo",
+                "main",
+                "显示正在执行的步骤",
+                List.of("轨迹不泄露隐私推理"),
+                false
+        ));
+        AgentStageRun stage = stageRunStore.save(new AgentStageRun(
+                "stage-trace-1001",
+                task.taskId(),
+                AgentRole.CODING_AGENT,
+                AgentStageStatus.RUNNING,
+                1,
+                task.taskId() + ":CODING_AGENT:1",
+                "", "", "", "claude-code", "[]", "{}", "", "",
+                1L, 1L, 1L, 0L
+        ));
+        Path outputDirectory = temporaryDirectory.resolve("trace-output");
+        Files.createDirectories(outputDirectory);
+        Files.writeString(outputDirectory.resolve("claude-events.jsonl"), """
+                {"type":"system","subtype":"init","session_id":"session-1"}
+                {"type":"assistant","message":{"content":[{"type":"thinking","thinking":"PRIVATE_CHAIN api_key=super-secret-value"},{"type":"text","text":"Inspecting SQLCompiler.get_order_by()."},{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"git grep SECRET=super-secret-value"}}]}}
+                {"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool-1","content":"token=super-secret-value","is_error":false}]}}
+                {"type":"result","subtype":"success","num_turns":3,"total_cost_usd":0.12}
+                """);
+        executionRegistry.register(
+                new RepairJobCommand(
+                        "repair-trace-1001",
+                        task.taskId(),
+                        "ticket-trace-1001",
+                        "执行轨迹测试",
+                        "prompt",
+                        "https://github.com/example/repo.git",
+                        "example",
+                        "repo",
+                        "main",
+                        "rd-bot/test",
+                        Map.of("workflowTaskId", task.taskId(), "stageRunId", stage.stageRunId()),
+                        Map.of()
+                ),
+                "claude-code",
+                new ContainerRunRequest(
+                        "rd-bot-trace-test",
+                        "rd-bot/claude-code:local",
+                        List.of("claude"),
+                        Map.of(),
+                        Map.of("/tmp/repo", "/workspace"),
+                        "/workspace",
+                        "bridge",
+                        true,
+                        false,
+                        outputDirectory
+                )
+        );
+
+        mockMvc.perform(get(
+                        "/admin/rd-tasks/{taskId}/stage-runs/{stageRunId}/execution-trace",
+                        task.taskId(), stage.stageRunId()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.source", is("LIVE")))
+                .andExpect(jsonPath("$.available", is(true)))
+                .andExpect(jsonPath("$.finalized", is(true)))
+                .andExpect(jsonPath("$.entries[*].kind", org.hamcrest.Matchers.hasItem("ASSISTANT_TEXT")))
+                .andExpect(jsonPath("$.entries[*].detail", org.hamcrest.Matchers.hasItem("Inspecting SQLCompiler.get_order_by().")))
+                .andExpect(jsonPath("$.entries[*].detail", org.hamcrest.Matchers.hasItem("Bash: git")))
+                .andExpect(content().string(not(containsString("PRIVATE_CHAIN"))))
+                .andExpect(content().string(not(containsString("super-secret-value"))))
+                .andExpect(content().string(not(containsString("git grep SECRET"))));
+    }
+
+    @Test
+    void shouldKeepPollingTheLiveTraceBeforeClaudeWritesItsFirstVisibleEvent() throws Exception {
+        RdRequirementTask task = registry.createRequirementTask(new CreateRequirementTaskCommand(
+                "实时轨迹启动测试",
+                "P1",
+                "https://github.com/example/repo.git",
+                "example",
+                "repo",
+                "main",
+                "容器刚启动时也保持实时轨迹通道",
+                List.of("不把运行中的空轨迹误判为归档轨迹"),
+                false
+        ));
+        AgentStageRun stage = stageRunStore.save(new AgentStageRun(
+                "stage-trace-starting-1001",
+                task.taskId(),
+                AgentRole.CODING_AGENT,
+                AgentStageStatus.RUNNING,
+                1,
+                task.taskId() + ":CODING_AGENT:1",
+                "", "", "", "claude-code", "[]", "{}", "", "",
+                1L, 1L, 1L, 0L
+        ));
+        Path outputDirectory = temporaryDirectory.resolve("trace-starting-output");
+        Files.createDirectories(outputDirectory);
+        executionRegistry.register(
+                new RepairJobCommand(
+                        "repair-trace-starting-1001",
+                        task.taskId(),
+                        "ticket-trace-starting-1001",
+                        "实时轨迹启动测试",
+                        "prompt",
+                        "https://github.com/example/repo.git",
+                        "example",
+                        "repo",
+                        "main",
+                        "rd-bot/test",
+                        Map.of("workflowTaskId", task.taskId(), "stageRunId", stage.stageRunId()),
+                        Map.of()
+                ),
+                "claude-code",
+                new ContainerRunRequest(
+                        "rd-bot-trace-starting-test",
+                        "rd-bot/claude-code:local",
+                        List.of("claude"),
+                        Map.of(),
+                        Map.of("/tmp/repo", "/workspace"),
+                        "/workspace",
+                        "bridge",
+                        true,
+                        false,
+                        outputDirectory
+                )
+        );
+
+        mockMvc.perform(get(
+                        "/admin/rd-tasks/{taskId}/stage-runs/{stageRunId}/execution-trace",
+                        task.taskId(), stage.stageRunId()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.source", is("LIVE")))
+                .andExpect(jsonPath("$.available", is(false)))
+                .andExpect(jsonPath("$.entries", hasSize(0)));
+    }
+
+    @Test
+    void shouldReturnArchivedSafeTraceWhenContainerIsNoLongerRunning() throws Exception {
+        RdRequirementTask task = registry.createRequirementTask(new CreateRequirementTaskCommand(
+                "已归档轨迹测试",
+                "P1",
+                "https://github.com/example/repo.git",
+                "example",
+                "repo",
+                "main",
+                "展示已归档的执行步骤",
+                List.of("不返回原始事件流"),
+                false
+        ));
+        AgentStageRun stage = stageRunStore.save(new AgentStageRun(
+                "stage-trace-archive-1001",
+                task.taskId(),
+                AgentRole.CODING_AGENT,
+                AgentStageStatus.SUCCEEDED,
+                1,
+                task.taskId() + ":CODING_AGENT:1",
+                "", "", "", "claude-code", "[]", "{}", "", "",
+                1L, 2L, 1L, 2L
+        ));
+        artifactStore.save(new AgentStageArtifact(
+                "trace-archive-1001",
+                stage.stageRunId(),
+                task.taskId(),
+                AgentRole.CODING_AGENT,
+                "CLAUDE_EVENTS",
+                "file:///private/never-return-raw-events.jsonl",
+                "Claude Code event stream.",
+                """
+                        {"version":1,"source":"ARCHIVED","available":true,"finalized":true,"truncated":false,"hasMore":false,"nextSequence":9001,"entries":[{"sequence":9001,"kind":"TOOL_COMPLETED","label":"Tool completed","detail":"Bash: git completed","error":false}]}
+                        """,
+                "sha256:test",
+                "{}",
+                3L
+        ));
+
+        mockMvc.perform(get(
+                        "/admin/rd-tasks/{taskId}/stage-runs/{stageRunId}/execution-trace",
+                        task.taskId(), stage.stageRunId()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.source", is("ARCHIVED")))
+                .andExpect(jsonPath("$.finalized", is(true)))
+                .andExpect(jsonPath("$.entries[0].detail", is("Bash: git completed")))
+                .andExpect(content().string(not(containsString("never-return-raw-events.jsonl"))));
     }
 
     @Test

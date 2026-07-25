@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -29,8 +29,10 @@ import {
   projectRoleResult,
   selectRoleAttempt
 } from "@/pages/admin/rdtask/roleWorkbenchModel";
+import { getRdTaskExecutionTrace } from "@/services/rdTaskService";
 import type {
   RdTask,
+  RdTaskExecutionTrace,
   RdTaskExecutionOverview,
   RdTaskQaEvidence,
   RdTaskRolePromptStage,
@@ -96,7 +98,7 @@ const QA_EVIDENCE_LABEL: Record<string, string> = {
   QA_EVIDENCE_MANIFEST: "证据清单"
 };
 
-export type RoleWorkbenchTab = "issues" | "evidence" | "runs";
+export type RoleWorkbenchTab = "issues" | "evidence" | "runs" | "trace";
 
 type TaskRoleWorkbenchProps = {
   task: RdTask;
@@ -317,10 +319,11 @@ export function TaskRoleWorkbench({
             </div>
           ) : (
             <Tabs value={selectedTab} onValueChange={(value) => onTabChange(value as RoleWorkbenchTab)}>
-              <TabsList className="grid h-11 w-full grid-cols-3 border-b border-slate-200 bg-white px-3 sm:w-[520px] sm:border-r">
+              <TabsList className="grid h-11 w-full grid-cols-4 border-b border-slate-200 bg-white px-3 sm:w-[680px] sm:border-r">
                 <InspectorTab value="issues">结果与问题</InspectorTab>
                 <InspectorTab value="evidence">输入与证据</InspectorTab>
                 <InspectorTab value="runs">运行记录</InspectorTab>
+                <InspectorTab value="trace">执行轨迹</InspectorTab>
               </TabsList>
               <TabsContent value="issues" className="m-0">
                 <RoleResultPanel
@@ -349,6 +352,9 @@ export function TaskRoleWorkbench({
               </TabsContent>
               <TabsContent value="runs" className="m-0">
                 <RoleHistoryPanel role={selectedRoleView} overview={overview} selectedStageRunId={selectedStage.stageRunId} />
+              </TabsContent>
+              <TabsContent value="trace" className="m-0">
+                <ExecutionTracePanel taskId={task.taskId} stage={selectedStage} />
               </TabsContent>
             </Tabs>
           )}
@@ -727,6 +733,103 @@ function RoleHistoryPanel({
       </section>
     </div>
   );
+}
+
+function ExecutionTracePanel({ taskId, stage }: { taskId: string; stage: RdTaskStageRun }) {
+  const [trace, setTrace] = useState<RdTaskExecutionTrace | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | undefined;
+    let after = 0;
+
+    const load = async () => {
+      try {
+        const next = await getRdTaskExecutionTrace(taskId, stage.stageRunId, { after, limit: 100 });
+        if (cancelled) return;
+        setTrace((current) => mergeTrace(current, next, after));
+        setError("");
+        after = next.source === "LIVE" ? next.nextSequence : 0;
+        if (stage.running && !next.finalized) {
+          timer = window.setTimeout(() => void load(), 1_500);
+        }
+      } catch (cause) {
+        if (!cancelled) {
+          setError(cause instanceof Error ? cause.message : "执行轨迹暂不可用");
+          if (stage.running) {
+            timer = window.setTimeout(() => void load(), 2_000);
+          }
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+
+    setTrace(null);
+    setLoading(true);
+    setError("");
+    void load();
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [stage.stageRunId, stage.running, taskId]);
+
+  return (
+    <div className="space-y-4 px-4 py-5 sm:px-5">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-3">
+        <div className="flex items-center gap-2 text-sm font-semibold text-slate-950">
+          {stage.running && !trace?.finalized ? <LoaderCircle className="h-4 w-4 animate-spin text-teal-600" /> : <TerminalSquare className="h-4 w-4 text-slate-600" />}
+          执行轨迹
+        </div>
+        {trace?.source ? <Badge variant="outline" className="border-slate-200 bg-white text-slate-600">{trace.source === "LIVE" ? "实时" : "已归档"}</Badge> : null}
+      </div>
+
+      {loading ? <LoadingLine label="正在读取执行轨迹" /> : null}
+      {!loading && error ? <PanelError message={error} /> : null}
+      {!loading && !error && trace?.truncated ? (
+        <div className="border-l-2 border-amber-500 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+          仅保留最近的执行事件。
+        </div>
+      ) : null}
+      {!loading && !error && (!trace || !trace.available || trace.entries.length === 0) ? (
+        <EmptyLine label={stage.running ? "等待容器产生可见事件。" : "该 Attempt 尚无可展示的执行轨迹。"} />
+      ) : null}
+      {!loading && !error && trace && trace.entries.length > 0 ? (
+        <ol className="divide-y divide-slate-200 border-y border-slate-200">
+          {trace.entries.map((entry) => (
+            <li key={`${entry.sequence}-${entry.kind}-${entry.detail}`} className="flex min-w-0 gap-3 py-3">
+              <TraceEventIcon entry={entry} />
+              <div className="min-w-0">
+                <div className={cn("text-sm font-medium", entry.error ? "text-rose-800" : "text-slate-800")}>{entry.label}</div>
+                {entry.detail ? <p className="mt-1 break-words text-xs leading-5 text-slate-600">{entry.detail}</p> : null}
+              </div>
+            </li>
+          ))}
+        </ol>
+      ) : null}
+    </div>
+  );
+}
+
+function mergeTrace(
+  current: RdTaskExecutionTrace | null,
+  next: RdTaskExecutionTrace,
+  after: number
+): RdTaskExecutionTrace {
+  if (!current || after <= 0 || current.source !== next.source) return next;
+  const seen = new Set(current.entries.map((entry) => entry.sequence));
+  const entries = [...current.entries, ...next.entries.filter((entry) => !seen.has(entry.sequence))].slice(-200);
+  return { ...next, entries };
+}
+
+function TraceEventIcon({ entry }: { entry: RdTaskExecutionTrace["entries"][number] }) {
+  if (entry.error) return <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-rose-600" />;
+  if (entry.kind === "RESULT") return <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />;
+  if (entry.kind === "TOOL_STARTED" || entry.kind === "TOOL_COMPLETED") return <TerminalSquare className="mt-0.5 h-4 w-4 shrink-0 text-slate-500" />;
+  return <Clock3 className="mt-0.5 h-4 w-4 shrink-0 text-teal-600" />;
 }
 
 function QaEvidenceList({ evidence }: { evidence: RdTaskQaEvidence[] }) {

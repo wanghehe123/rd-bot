@@ -18,6 +18,8 @@ import java.util.concurrent.TimeUnit;
 import com.wish.rd.exec.repair.docker.model.ContainerRunRequest;
 import com.wish.rd.exec.repair.docker.usage.ClaudeTokenUsageParser;
 import com.wish.rd.exec.repair.docker.usage.model.ClaudeTokenUsageSnapshot;
+import com.wish.rd.exec.repair.docker.trace.ClaudeExecutionTraceParser;
+import com.wish.rd.exec.repair.docker.trace.model.ClaudeExecutionTraceSnapshot;
 
 /**
  * Docker 执行运行态注册表，记录 taskId 到容器的映射，并提供手动停止入口。
@@ -28,6 +30,7 @@ public class DockerExecutionRegistry implements RepairExecutionControlPort {
     private final Map<String, RunningExecution> runningByTaskId = new ConcurrentHashMap<>();
     private final ContainerControlPort containerControlPort;
     private final ClaudeTokenUsageParser tokenUsageParser = new ClaudeTokenUsageParser();
+    private final ClaudeExecutionTraceParser executionTraceParser = new ClaudeExecutionTraceParser();
     private ScheduledExecutorService usageRefreshExecutor;
     private ScheduledFuture<?> usageRefreshTask;
 
@@ -103,6 +106,46 @@ public class DockerExecutionRegistry implements RepairExecutionControlPort {
         return runningByTaskId.values().stream()
                 .sorted(java.util.Comparator.comparing(RunningExecution::startedAtEpochMillis))
                 .toList();
+    }
+
+    /**
+     * Returns the safe, live trace for one running role stage. The raw event file never crosses this boundary.
+     */
+    public ClaudeExecutionTraceSnapshot executionTrace(
+            String workflowTaskId,
+            String stageRunId,
+            long afterSequence,
+            int limit
+    ) {
+        String normalizedTaskId = safe(workflowTaskId);
+        String normalizedStageRunId = safe(stageRunId);
+        if (normalizedTaskId.isBlank() || normalizedStageRunId.isBlank()) {
+            return ClaudeExecutionTraceSnapshot.unavailable("LIVE");
+        }
+        RunningExecution running = runningByTaskId.get(normalizedTaskId);
+        if (running == null || !normalizedStageRunId.equals(running.stageRunId())) {
+            return ClaudeExecutionTraceSnapshot.unavailable("LIVE");
+        }
+        Path outputDirectory = running.outputDirectory();
+        return executionTraceParser.parse(
+                outputDirectory == null ? null : outputDirectory.resolve("claude-events.jsonl"),
+                afterSequence,
+                limit
+        );
+    }
+
+    /**
+     * Reports whether this exact workflow stage still owns a live container registration.
+     * A newly started Claude session may not have written a visible event file yet.
+     */
+    public boolean isRunning(String workflowTaskId, String stageRunId) {
+        String normalizedTaskId = safe(workflowTaskId);
+        String normalizedStageRunId = safe(stageRunId);
+        if (normalizedTaskId.isBlank() || normalizedStageRunId.isBlank()) {
+            return false;
+        }
+        RunningExecution running = runningByTaskId.get(normalizedTaskId);
+        return running != null && normalizedStageRunId.equals(running.stageRunId());
     }
 
     @Override

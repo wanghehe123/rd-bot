@@ -218,7 +218,9 @@ export function RdTaskDetailPage() {
   const attemptParam = Number(searchParams.get("attempt") || "");
   const selectedAttemptNo = Number.isInteger(attemptParam) && attemptParam > 0 ? attemptParam : undefined;
   const tabParam = searchParams.get("tab");
-  const selectedRoleTab: RoleWorkbenchTab = tabParam === "evidence" || tabParam === "runs" ? tabParam : "issues";
+  const selectedRoleTab: RoleWorkbenchTab = tabParam === "evidence" || tabParam === "runs" || tabParam === "trace"
+    ? tabParam
+    : "issues";
 
   const updateWorkspaceQuery = useCallback((updates: Record<string, string | number | undefined>) => {
     setSearchParams((current) => {

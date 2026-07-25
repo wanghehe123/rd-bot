@@ -14,6 +14,8 @@ import com.wish.rd.engine.agent.model.AgentRole;
 import com.wish.rd.engine.agent.model.AgentStageArtifact;
 import com.wish.rd.engine.agent.model.AgentStageRun;
 import com.wish.rd.exec.repair.docker.impl.DockerExecutionRegistry;
+import com.wish.rd.exec.repair.docker.trace.ClaudeExecutionTraceParser;
+import com.wish.rd.exec.repair.docker.trace.model.ClaudeExecutionTraceSnapshot;
 import com.wish.rd.exec.repair.alert.BudgetCurrencyConverter;
 import com.wish.rd.rag.context.RoleContextPackageStore;
 import com.wish.rd.rag.context.impl.InMemoryRoleContextPackageStore;
@@ -28,6 +30,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -60,6 +63,7 @@ public class RdTaskExecutionOverviewController {
     private final DockerExecutorProperties dockerExecutorProperties;
     private final BudgetCurrencyConverter budgetCurrencyConverter;
     private final AgentStageProgressCalculator stageProgressCalculator;
+    private final ClaudeExecutionTraceParser executionTraceParser = new ClaudeExecutionTraceParser();
     private RdProjectTokenBudgetService projectTokenBudgetService;
 
     @Autowired(required = false)
@@ -213,6 +217,46 @@ public class RdTaskExecutionOverviewController {
                 stageViews,
                 runningExecutions
         );
+    }
+
+    /**
+     * Exposes a role-scoped, redacted trace for the currently running container or its archived safe snapshot.
+     */
+    @GetMapping("/admin/rd-tasks/{taskId}/stage-runs/{stageRunId}/execution-trace")
+    public ClaudeExecutionTraceSnapshot getExecutionTrace(
+            @PathVariable("taskId") String taskId,
+            @PathVariable("stageRunId") String stageRunId,
+            @RequestParam(name = "after", defaultValue = "0") long afterSequence,
+            @RequestParam(name = "limit", defaultValue = "100") int limit
+    ) {
+        RdTask task = findTask(taskId);
+        AgentStageRun stageRun = stageRunStore.listByTask(task.taskId()).stream()
+                .filter(candidate -> candidate.stageRunId().equals(stageRunId))
+                .findFirst()
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.NOT_FOUND,
+                        "stage run does not belong to task"
+                ));
+        ClaudeExecutionTraceSnapshot live = executionRegistry.executionTrace(
+                task.taskId(),
+                stageRun.stageRunId(),
+                Math.max(0L, afterSequence),
+                Math.max(1, Math.min(200, limit))
+        );
+        // Preserve the LIVE source while a container is registered, even before Claude has emitted
+        // its first safe user-visible event. Otherwise the UI treats the empty snapshot as archived
+        // and stops polling just as a role starts.
+        if (live.available() || executionRegistry.isRunning(task.taskId(), stageRun.stageRunId())) {
+            return live;
+        }
+        return artifactStore.listByTask(task.taskId()).stream()
+                .filter(artifact -> stageRun.stageRunId().equals(artifact.stageRunId()))
+                .filter(artifact -> "CLAUDE_EVENTS".equals(artifact.artifactType()))
+                .max(RdTaskExecutionOverviewController::compareArtifact)
+                .map(AgentStageArtifact::contentPreview)
+                .map(executionTraceParser::parsePersistedSnapshot)
+                .filter(ClaudeExecutionTraceSnapshot::available)
+                .orElseGet(() -> ClaudeExecutionTraceSnapshot.unavailable("ARCHIVED"));
     }
 
     private RdTask findTask(String taskId) {

@@ -20,5 +20,6 @@ public enum RepairArtifactType {
     QA_HTTP_TRANSCRIPT,
     QA_VIDEO,
     QA_EVIDENCE_MANIFEST,
+    HANDOFF_MARKDOWN,
     OTHER
 }
