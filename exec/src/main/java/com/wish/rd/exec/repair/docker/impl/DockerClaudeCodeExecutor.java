@@ -51,6 +51,7 @@ import com.wish.rd.exec.repair.docker.model.ContainerRunResult;
 import com.wish.rd.exec.repair.docker.model.RepairWorkspace;
 import com.wish.rd.exec.repair.docker.usage.ClaudeTokenUsageParser;
 import com.wish.rd.exec.repair.docker.usage.model.ClaudeTokenUsageSnapshot;
+import com.wish.rd.exec.repair.docker.trace.ClaudeExecutionTraceParser;
 
 import java.util.concurrent.TimeUnit;
 
@@ -62,7 +63,9 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
     private static final String CONTAINER_REPO_DIRECTORY = "/work/repo";
     private static final String CONTAINER_INPUT_DIRECTORY = "/work/input";
     private static final String CONTAINER_OUTPUT_DIRECTORY = "/work/output";
+    private static final String CONTAINER_CACHE_DIRECTORY = "/work/cache";
     private static final String CONTAINER_QA_SKILL_DIRECTORY = "/home/rdbot/.claude/skills/qa-playwright-cli:ro";
+    private static final String CONTAINER_HANDOFF_SKILL_DIRECTORY = "/home/rdbot/.claude/skills/role-handoff-document:ro";
     private static final String AUTH_TOKEN_ENV_ROUTER = "RD_CLAUDE_AUTH_TOKEN_ENV";
     private static final String API_KEY_ENV_ROUTER = "RD_CLAUDE_API_KEY_ENV";
     private static final String AGENT_RESULT_JSON_FIELD = "__agentResultJson";
@@ -73,6 +76,7 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
     private static final String QA_STARTUP_TIMEOUT_SECONDS = "120";
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     private static final ClaudeTokenUsageParser TOKEN_USAGE_PARSER = new ClaudeTokenUsageParser();
+    private static final ClaudeExecutionTraceParser EXECUTION_TRACE_PARSER = new ClaudeExecutionTraceParser();
 
     private final RepairWorkspaceFactory workspaceFactory;
     private final ContainerRunnerPort containerRunner;
@@ -402,6 +406,8 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
             Map<String, String> repositoryMetadata = new LinkedHashMap<>(
                     workspaceRepository.prepare(command, workspace).metadataJson()
             );
+            requireCandidatePatchApplication(command, repositoryMetadata);
+            RepairWorkspaceRepositoryPort.RepositoryState qaRepositoryBaseline = qaRepositoryBaseline(command, workspace);
             QaExecutionProfile qaProfile = resolveQaProfile(command, workspace);
             List<ClaudeCodeModelProvider> providers = configuration.providers();
             for (int index = 0; index < providers.size(); index++) {
@@ -421,7 +427,7 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
                         qaProfile
                 );
                 RepairExecutionResult guardedResult = enforceQaRepositoryUnchanged(
-                        command, workspace, outcome.result());
+                        command, workspace, qaRepositoryBaseline, outcome.result());
                 RepairExecutionResult providerResult = withRepositoryMetadata(guardedResult, repositoryMetadata);
                 markProviderHealth(provider, providerResult);
                 lastResult = providerResult;
@@ -446,7 +452,7 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
                 long startedAtEpochMillis = System.currentTimeMillis();
                 AttemptOutcome outcome = runProvider(command, workspace, provider, attempt, providers.size(), qaProfile);
                 RepairExecutionResult guardedResult = enforceQaRepositoryUnchanged(
-                        command, workspace, outcome.result());
+                        command, workspace, qaRepositoryBaseline, outcome.result());
                 RepairExecutionResult providerResult = withRepositoryMetadata(guardedResult, repositoryMetadata);
                 markProviderHealth(provider, providerResult);
                 lastResult = providerResult;
@@ -473,21 +479,43 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
         }
     }
 
+    /**
+     * A local QA stage must never silently fall back to a clean checkout. The candidate patch is the
+     * subject under test, so a repository adapter that cannot prove it staged the patch is a hard
+     * infrastructure failure before Claude Code receives provider credentials or starts a container.
+     */
+    private static void requireCandidatePatchApplication(
+            RepairJobCommand command,
+            Map<String, String> repositoryMetadata
+    ) throws IOException {
+        if (!Boolean.parseBoolean(command.policyJson().getOrDefault("applyCandidatePatch", "false"))) {
+            return;
+        }
+        String applied = repositoryMetadata == null ? "" : repositoryMetadata.getOrDefault("candidatePatchApplied", "");
+        if (!"true".equalsIgnoreCase(applied)) {
+            throw new IOException("local QA requires the Coding candidate patch to be applied in its isolated checkout");
+        }
+    }
+
     private RepairExecutionResult enforceQaRepositoryUnchanged(
             RepairJobCommand command,
             RepairWorkspace workspace,
+            RepairWorkspaceRepositoryPort.RepositoryState baseline,
             RepairExecutionResult result
     ) throws IOException {
         if (!"QA_AGENT".equals(agentRole(command))) {
             return result;
         }
         RepairWorkspaceRepositoryPort.RepositoryState state = workspaceRepository.repositoryState(command, workspace);
-        if (!state.supported() || state.clean()) {
+        if (!state.supported() || baseline == null || !baseline.supported()) {
             return result;
         }
-        String details = state.summary().length() <= 500
-                ? state.summary()
-                : state.summary().substring(0, 500);
+        boolean comparable = !baseline.fingerprint().isBlank() && !state.fingerprint().isBlank();
+        if ((comparable && baseline.fingerprint().equals(state.fingerprint()))
+                || (!comparable && baseline.clean() && state.clean())) {
+            return result;
+        }
+        String details = qaRepositoryStateDetails(baseline, state);
         String error = "QA left repository changes"
                 + (details.isBlank() ? "" : ": " + details);
         if (result != null && result.status() != RepairExecutionStatus.SUCCESS) {
@@ -529,6 +557,36 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
         );
     }
 
+    private RepairWorkspaceRepositoryPort.RepositoryState qaRepositoryBaseline(
+            RepairJobCommand command,
+            RepairWorkspace workspace
+    ) throws IOException {
+        if (!"QA_AGENT".equals(agentRole(command))) {
+            return RepairWorkspaceRepositoryPort.RepositoryState.unsupported();
+        }
+        return workspaceRepository.repositoryState(command, workspace);
+    }
+
+    private static String qaRepositoryStateDetails(
+            RepairWorkspaceRepositoryPort.RepositoryState baseline,
+            RepairWorkspaceRepositoryPort.RepositoryState current
+    ) {
+        String baselineSummary = abbreviateRepositoryState(baseline.summary());
+        String currentSummary = abbreviateRepositoryState(current.summary());
+        if (baselineSummary.isBlank()) {
+            return currentSummary;
+        }
+        if (currentSummary.isBlank()) {
+            return "baseline=" + baselineSummary + "; current=clean";
+        }
+        return "baseline=" + baselineSummary + "; current=" + currentSummary;
+    }
+
+    private static String abbreviateRepositoryState(String value) {
+        String normalized = value == null ? "" : value.strip();
+        return normalized.length() <= 500 ? normalized : normalized.substring(0, 500);
+    }
+
     private static String qaRepositoryMutationResultJson(String error) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("status", "FAILED");
@@ -554,13 +612,13 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
 
     private boolean repositoryPublishRequired(RepairJobCommand command) {
         if (command == null || command.policyJson() == null) {
-            return true;
+            return false;
         }
         String value = firstNonBlank(
                 command.policyJson().get("repositoryPublishRequired"),
                 command.policyJson().get("publishRepository")
         );
-        return value.isBlank() || Boolean.parseBoolean(value);
+        return Boolean.parseBoolean(value);
     }
 
     private RepairExecutionResult publishRepository(
@@ -751,16 +809,27 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
             Map<String, String> routedAuthEnv,
             QaExecutionProfile qaProfile
     ) {
-        boolean qaExecution = "QA_AGENT".equals(agentRole(command));
+        String role = agentRole(command);
+        boolean qaExecution = "QA_AGENT".equals(role);
+        boolean handoffExecution = isHandoffExecution(role);
         Map<String, String> mounts = new LinkedHashMap<>();
         mounts.put(workspace.repoDirectory().toString(), CONTAINER_REPO_DIRECTORY);
         mounts.put(workspace.inputDirectory().toString(), CONTAINER_INPUT_DIRECTORY);
         mounts.put(workspace.outputDirectory().toString(), CONTAINER_OUTPUT_DIRECTORY);
+        mounts.put(workspace.cacheDirectory().toString(), CONTAINER_CACHE_DIRECTORY);
         QaSkillConfiguration qaSkill = configuration.qaSkill();
         if (qaExecution && qaSkill.enabled()) {
             mounts.put(qaSkill.hostPath(), CONTAINER_QA_SKILL_DIRECTORY);
         }
+        HandoffSkillConfiguration handoffSkill = configuration.handoffSkill();
+        if (handoffExecution && handoffSkill.enabled()) {
+            mounts.put(handoffSkill.hostPath(), CONTAINER_HANDOFF_SKILL_DIRECTORY);
+        }
         Map<String, String> env = new LinkedHashMap<>(provider.env());
+        // 跨 attempt 持久的包管理器缓存：同任务重试不再全量重新下载依赖（审查报告 F3）。
+        env.put("npm_config_cache", CONTAINER_CACHE_DIRECTORY + "/npm");
+        env.put("PIP_CACHE_DIR", CONTAINER_CACHE_DIRECTORY + "/pip");
+        env.put("YARN_CACHE_FOLDER", CONTAINER_CACHE_DIRECTORY + "/yarn");
         if (routedAuthEnv != null) {
             routedAuthEnv.forEach((key, value) -> {
                 if (!normalizeEnvText(value).isBlank()) {
@@ -770,7 +839,6 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
         }
         env.putIfAbsent("RD_CLAUDE_PROVIDER_NAME", provider.name());
         env.put("RD_CLAUDE_PROVIDER_ATTEMPT", String.valueOf(attempt));
-        String role = agentRole(command);
         if (!role.isBlank()) {
             env.put("RD_AGENT_ROLE", role);
         }
@@ -785,6 +853,12 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
             env.put("RD_QA_SKILL_VERSION", qaSkill.version());
             env.put("RD_QA_SKILL_CHECKSUM", qaSkill.checksum());
             env.put("RD_QA_SKILL_POLICY_JSON", qaSkill.policyJson());
+        }
+        if (handoffExecution && handoffSkill.enabled()) {
+            env.put("RD_HANDOFF_SKILL_ID", handoffSkill.skillId());
+            env.put("RD_HANDOFF_SKILL_VERSION", handoffSkill.version());
+            env.put("RD_HANDOFF_SKILL_CHECKSUM", handoffSkill.checksum());
+            env.put("RD_HANDOFF_SKILL_POLICY_JSON", handoffSkill.policyJson());
         }
         if (qaExecution && qaProfile != null) {
             env.put("RD_QA_PROFILE_FILE", "/work/input/qa-profile.json");
@@ -803,7 +877,7 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
                 providerCount <= 1
                         ? safeContainerName(command.taskId())
                         : safeContainerName(command.taskId() + "-" + provider.name() + "-" + attempt),
-                qaExecution ? configuration.qaImage() : configuration.image(),
+                runtimeImage(command, qaExecution),
                 configuration.command(),
                 env,
                 mounts,
@@ -816,6 +890,23 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
                 qaExecution ? "1g" : "",
                 qaExecution ? QA_EXECUTION_TIMEOUT_MILLIS : 0L
         );
+    }
+
+    private String runtimeImage(RepairJobCommand command, boolean qaExecution) {
+        if (command != null
+                && "true".equalsIgnoreCase(normalizeEnvText(command.policyJson().get("runtimeImageVerified")))
+                && "CLAUDE_CODE".equalsIgnoreCase(normalizeEnvText(command.policyJson().get("runtimeAgentType")))) {
+            String candidate = normalizeEnvText(command.policyJson().get("runtimeImage"));
+            if (isSafeImageReference(candidate)) {
+                return candidate;
+            }
+        }
+        return qaExecution ? configuration.qaImage() : configuration.image();
+    }
+
+    private static boolean isSafeImageReference(String value) {
+        return value != null
+                && value.matches("[A-Za-z0-9][A-Za-z0-9._/-]*(?::[A-Za-z0-9][A-Za-z0-9._-]*)?(?:@[A-Za-z0-9:+._-]+)?");
     }
 
     private QaExecutionProfile resolveQaProfile(
@@ -1500,6 +1591,12 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
                 || "QA_AGENT".equals(agentRole);
     }
 
+    private static boolean isHandoffExecution(String role) {
+        return "REQUIREMENT_REVIEWER".equals(role)
+                || "SOLUTION_ARCHITECT".equals(role)
+                || "CODING_AGENT".equals(role);
+    }
+
     private static RepairExecutionStatus agentRoleStatus(String agentRole, String rawJson) {
         if (!"QA_AGENT".equals(agentRole)) {
             return RepairExecutionStatus.SUCCESS;
@@ -1578,6 +1675,7 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
             case "claude-events.jsonl" -> RepairArtifactType.CLAUDE_EVENTS;
             case "docker-meta.json" -> RepairArtifactType.DOCKER_METADATA;
             case "qa-evidence/manifest.json" -> RepairArtifactType.QA_EVIDENCE_MANIFEST;
+            case "handoff/next.md" -> RepairArtifactType.HANDOFF_MARKDOWN;
             default -> qaArtifactType(normalized);
         };
     }
@@ -1628,6 +1726,7 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
             case QA_HTTP_TRANSCRIPT -> "QA real HTTP request transcript.";
             case QA_VIDEO -> "QA browser failure video evidence.";
             case QA_EVIDENCE_MANIFEST -> "QA evidence integrity manifest.";
+            case HANDOFF_MARKDOWN -> "Markdown handoff for the direct downstream role.";
             default -> "Output artifact produced by the execution container.";
         };
     }
@@ -1639,6 +1738,10 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
             metadata.put("bytes", String.valueOf(size));
             metadata.put("sha256", sha256(path));
             metadata.put("contentType", contentType(path));
+            if (isClaudeEventStream(path)) {
+                metadata.put("contentPreview", EXECUTION_TRACE_PARSER.persistedSnapshot(path));
+                return Map.copyOf(metadata);
+            }
             long previewLimit = isQaEvidenceManifest(path)
                     ? MAX_QA_MANIFEST_PREVIEW_BYTES
                     : MAX_TEXT_PREVIEW_BYTES;
@@ -1656,6 +1759,10 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
     private static boolean isQaEvidenceManifest(Path path) {
         String normalized = path == null ? "" : path.toString().replace('\\', '/');
         return normalized.endsWith("/qa-evidence/manifest.json");
+    }
+
+    private static boolean isClaudeEventStream(Path path) {
+        return path != null && "claude-events.jsonl".equals(path.getFileName().toString());
     }
 
     private static String sha256(Path path) throws IOException {
@@ -1734,6 +1841,17 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
         metadata.put("qaSkillSource", "classpath:skills/qa-playwright-cli/SKILL.md");
         metadata.put("qaSkillInstallPath", request.mounts().entrySet().stream()
                 .filter(entry -> CONTAINER_QA_SKILL_DIRECTORY.equals(entry.getValue()))
+                .map(Map.Entry::getKey)
+                .findFirst()
+                .orElse(""));
+        metadata.put("handoffSkillId", request.env().getOrDefault("RD_HANDOFF_SKILL_ID", ""));
+        metadata.put("handoffSkillVersion", request.env().getOrDefault("RD_HANDOFF_SKILL_VERSION", ""));
+        metadata.put("handoffSkillChecksum", request.env().getOrDefault("RD_HANDOFF_SKILL_CHECKSUM", ""));
+        metadata.put("handoffSkillPolicyJson", request.env().getOrDefault("RD_HANDOFF_SKILL_POLICY_JSON", ""));
+        metadata.put("handoffSkillRole", request.env().getOrDefault("RD_AGENT_ROLE", ""));
+        metadata.put("handoffSkillSource", "classpath:skills/role-handoff-document/SKILL.md");
+        metadata.put("handoffSkillInstallPath", request.mounts().entrySet().stream()
+                .filter(entry -> CONTAINER_HANDOFF_SKILL_DIRECTORY.equals(entry.getValue()))
                 .map(Map.Entry::getKey)
                 .findFirst()
                 .orElse(""));
@@ -1866,7 +1984,8 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
             boolean removeAfterExit,
             boolean allowPrivileged,
             List<ClaudeCodeModelProvider> providers,
-            QaSkillConfiguration qaSkill
+            QaSkillConfiguration qaSkill,
+            HandoffSkillConfiguration handoffSkill
     ) {
 
         public Configuration {
@@ -1876,6 +1995,30 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
             networkMode = networkMode == null ? "" : networkMode.strip();
             providers = normalizeProviders(providers);
             qaSkill = qaSkill == null ? QaSkillConfiguration.disabled() : qaSkill;
+            handoffSkill = handoffSkill == null ? HandoffSkillConfiguration.disabled() : handoffSkill;
+        }
+
+        public Configuration(
+                String image,
+                String qaImage,
+                List<String> command,
+                String networkMode,
+                boolean removeAfterExit,
+                boolean allowPrivileged,
+                List<ClaudeCodeModelProvider> providers,
+                QaSkillConfiguration qaSkill
+        ) {
+            this(
+                    image,
+                    qaImage,
+                    command,
+                    networkMode,
+                    removeAfterExit,
+                    allowPrivileged,
+                    providers,
+                    qaSkill,
+                    HandoffSkillConfiguration.disabled()
+            );
         }
 
         public Configuration(
@@ -1965,7 +2108,22 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
                     removeAfterExit,
                     allowPrivileged,
                     providers,
-                    qaSkill
+                    qaSkill,
+                    handoffSkill
+            );
+        }
+
+        public Configuration withHandoffSkill(HandoffSkillConfiguration handoffSkill) {
+            return new Configuration(
+                    image,
+                    qaImage,
+                    command,
+                    networkMode,
+                    removeAfterExit,
+                    allowPrivileged,
+                    providers,
+                    qaSkill,
+                    handoffSkill
             );
         }
 
@@ -2035,6 +2193,46 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
 
         public static QaSkillConfiguration disabled() {
             return new QaSkillConfiguration("", "", "", "", "");
+        }
+    }
+
+    /**
+     * Verified role-handoff skill snapshot mounted read-only for review, planning, and coding stages.
+     */
+    public record HandoffSkillConfiguration(
+            String hostPath,
+            String skillId,
+            String version,
+            String checksum,
+            String policyJson
+    ) {
+
+        public HandoffSkillConfiguration {
+            hostPath = normalizeEnvText(hostPath);
+            skillId = normalizeEnvText(skillId);
+            version = normalizeEnvText(version);
+            checksum = normalizeEnvText(checksum);
+            policyJson = normalizeEnvText(policyJson);
+            boolean anyConfigured = !hostPath.isBlank()
+                    || !skillId.isBlank()
+                    || !version.isBlank()
+                    || !checksum.isBlank()
+                    || !policyJson.isBlank();
+            if (anyConfigured && (hostPath.isBlank()
+                    || skillId.isBlank()
+                    || version.isBlank()
+                    || checksum.isBlank()
+                    || policyJson.isBlank())) {
+                throw new IllegalArgumentException("enabled handoff skill configuration must be complete");
+            }
+        }
+
+        public boolean enabled() {
+            return !hostPath.isBlank();
+        }
+
+        public static HandoffSkillConfiguration disabled() {
+            return new HandoffSkillConfiguration("", "", "", "", "");
         }
     }
 

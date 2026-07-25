@@ -76,6 +76,84 @@ class DockerClaudeCodeExecutorTest {
     }
 
     @Test
+    void shouldMountPersistentPackageManagerCache() {
+        CapturingRunner runner = CapturingRunner.withResult(validResultJson("SUCCESS"));
+        DockerClaudeCodeExecutor executor = executor(runner);
+
+        executor.execute(command());
+
+        assertEquals(
+                "/work/cache",
+                runner.request().mounts().get(temporaryDirectory.resolve("task-1001/cache").toString())
+        );
+        assertEquals("/work/cache/npm", runner.request().env().get("npm_config_cache"));
+        assertEquals("/work/cache/pip", runner.request().env().get("PIP_CACHE_DIR"));
+        assertEquals("/work/cache/yarn", runner.request().env().get("YARN_CACHE_FOLDER"));
+    }
+
+    @Test
+    void shouldUseVerifiedProjectRuntimeImageForSelectedRole() {
+        CapturingRunner runner = CapturingRunner.withResult(validResultJson("SUCCESS"));
+        DockerClaudeCodeExecutor executor = executor(runner);
+
+        RepairExecutionResult result = executor.execute(command(
+                "task-project-runtime",
+                Map.of(
+                        "repositoryPublishRequired", "false",
+                        "runtimeImage", "rd-bot/project-runtime:verified",
+                        "runtimeImageVerified", "true",
+                        "runtimeAgentType", "CLAUDE_CODE"
+                ),
+                Map.of("agentRole", "CODING_AGENT")
+        ));
+
+        assertEquals(RepairExecutionStatus.SUCCESS, result.status());
+        assertEquals("rd-bot/project-runtime:verified", runner.request().image());
+    }
+
+    @Test
+    void shouldClassifyMarkdownHandoffAsAFirstClassArtifact() {
+        CapturingRunner runner = CapturingRunner.withResult(validResultJson("SUCCESS"))
+                .withExtraArtifact("handoff/next.md", "# Coding handoff\n\nImplement the plan.");
+        DockerClaudeCodeExecutor executor = executor(runner);
+
+        RepairExecutionResult result = executor.execute(command(
+                "task-handoff-artifact",
+                Map.of("repositoryPublishRequired", "false"),
+                Map.of("agentRole", "CODING_AGENT")
+        ));
+
+        assertEquals(RepairExecutionStatus.SUCCESS, result.status());
+        assertEquals("HANDOFF_MARKDOWN", artifact(result, "handoff/next.md").type().name());
+    }
+
+    @Test
+    void shouldMountVerifiedHandoffSkillForNonQaDeliveryRoles() {
+        CapturingRunner runner = CapturingRunner.withResult(validResultJson("SUCCESS"));
+        DockerClaudeCodeExecutor executor = executor(runner);
+
+        RepairExecutionResult result = executor.execute(command(
+                "task-handoff-skill",
+                Map.of("repositoryPublishRequired", "false"),
+                Map.of("agentRole", "CODING_AGENT")
+        ));
+
+        assertEquals(RepairExecutionStatus.SUCCESS, result.status());
+        assertEquals(
+                "/home/rdbot/.claude/skills/role-handoff-document:ro",
+                runner.request().mounts().get(temporaryDirectory.resolve("handoff-skill").toString())
+        );
+        assertEquals("role-handoff-document", runner.request().env().get("RD_HANDOFF_SKILL_ID"));
+        assertEquals("1.0.0", runner.request().env().get("RD_HANDOFF_SKILL_VERSION"));
+        assertEquals("role-handoff-document", result.dockerMetadataJson().get("handoffSkillId"));
+        assertEquals("CODING_AGENT", result.dockerMetadataJson().get("handoffSkillRole"));
+        assertEquals(
+                temporaryDirectory.resolve("handoff-skill").toString(),
+                result.dockerMetadataJson().get("handoffSkillInstallPath")
+        );
+    }
+
+    @Test
     void shouldValidateQaAgentResultWithQaProtocolInsteadOfCodingSchema() {
         CapturingRunner runner = CapturingRunner.withResult(validQaResultJson("PASSED"))
                 .withQaEvidenceArtifacts();
@@ -223,7 +301,7 @@ class DockerClaudeCodeExecutorTest {
 
         assertEquals(RepairExecutionStatus.FAILED_VALIDATION, result.status());
         assertTrue(result.errorMessage().contains(
-                "CURRENT evidence is missing task acceptance criterion: unmapped task criterion"));
+                "evidence is missing task acceptance criterion: unmapped task criterion"));
     }
 
     @Test
@@ -354,6 +432,69 @@ class DockerClaudeCodeExecutorTest {
     }
 
     @Test
+    void shouldAllowPlatformAppliedCandidatePatchButRejectQaChangesAfterThatBaseline() {
+        CapturingRunner acceptedRunner = CapturingRunner.withResult(validQaResultJson("PASSED"))
+                .withQaEvidenceArtifacts();
+        DockerClaudeCodeExecutor acceptedExecutor = executor(
+                new RepairWorkspaceFactory(temporaryDirectory, RESULT_SCHEMA_JSON),
+                acceptedRunner,
+                COMMAND,
+                new CandidatePatchBaselineRepositoryPort(false),
+                null
+        );
+
+        RepairExecutionResult accepted = acceptedExecutor.execute(command(
+                "task-qa-candidate-baseline",
+                Map.of("repositoryPublishRequired", "false", "applyCandidatePatch", "true"),
+                Map.of("agentRole", "QA_AGENT")
+        ));
+
+        assertEquals(RepairExecutionStatus.SUCCESS, accepted.status(), accepted.errorMessage());
+
+        CapturingRunner mutatedRunner = CapturingRunner.withResult(validQaResultJson("PASSED"))
+                .withQaEvidenceArtifacts();
+        DockerClaudeCodeExecutor mutatedExecutor = executor(
+                new RepairWorkspaceFactory(temporaryDirectory, RESULT_SCHEMA_JSON),
+                mutatedRunner,
+                COMMAND,
+                new CandidatePatchBaselineRepositoryPort(true),
+                null
+        );
+
+        RepairExecutionResult mutated = mutatedExecutor.execute(command(
+                "task-qa-candidate-baseline-mutated",
+                Map.of("repositoryPublishRequired", "false", "applyCandidatePatch", "true"),
+                Map.of("agentRole", "QA_AGENT")
+        ));
+
+        assertEquals(RepairExecutionStatus.FAILED, mutated.status());
+        assertTrue(mutated.errorMessage().contains("QA left repository changes"));
+    }
+
+    @Test
+    void shouldFailLocalQaBeforeStartingAContainerWhenCandidatePatchWasNotApplied() {
+        CapturingRunner runner = CapturingRunner.withResult(validQaResultJson("PASSED"))
+                .withQaEvidenceArtifacts();
+        DockerClaudeCodeExecutor executor = executor(
+                new RepairWorkspaceFactory(temporaryDirectory, RESULT_SCHEMA_JSON),
+                runner,
+                COMMAND,
+                RepairWorkspaceRepositoryPort.noop(),
+                null
+        );
+
+        RepairExecutionResult result = executor.execute(command(
+                "task-qa-missing-candidate-patch",
+                Map.of("repositoryPublishRequired", "false", "applyCandidatePatch", "true"),
+                Map.of("agentRole", "QA_AGENT")
+        ));
+
+        assertEquals(RepairExecutionStatus.FAILED, result.status());
+        assertTrue(result.errorMessage().contains("candidate patch to be applied"));
+        assertFalse(runner.wasCalled(), "the provider container must not start without the Coding patch");
+    }
+
+    @Test
     void shouldSkipRepositoryPublishWhenPolicyDisablesPublication() {
         CapturingRunner runner = CapturingRunner.withResult(validResultJson("SUCCESS"));
         RecordingRepositoryPort repositoryPort = new RecordingRepositoryPort();
@@ -369,6 +510,26 @@ class DockerClaudeCodeExecutorTest {
                 "task-1001-review",
                 Map.of("repositoryPublishRequired", "false")
         ));
+
+        assertEquals(RepairExecutionStatus.SUCCESS, result.status());
+        assertEquals(1, repositoryPort.prepared().size());
+        assertEquals(0, repositoryPort.published().size());
+        assertEquals("true", result.dockerMetadataJson().get("repositoryPublishSkipped"));
+    }
+
+    @Test
+    void shouldDefaultRepositoryPublicationToLocalOnly() {
+        CapturingRunner runner = CapturingRunner.withResult(validResultJson("SUCCESS"));
+        RecordingRepositoryPort repositoryPort = new RecordingRepositoryPort();
+        DockerClaudeCodeExecutor executor = executor(
+                new RepairWorkspaceFactory(temporaryDirectory, RESULT_SCHEMA_JSON),
+                runner,
+                COMMAND,
+                repositoryPort,
+                null
+        );
+
+        RepairExecutionResult result = executor.execute(command("task-local-only-default", Map.of()));
 
         assertEquals(RepairExecutionStatus.SUCCESS, result.status());
         assertEquals(1, repositoryPort.prepared().size());
@@ -445,7 +606,10 @@ class DockerClaudeCodeExecutorTest {
                 );
         DockerClaudeCodeExecutor executor = executor(runner);
 
-        RepairExecutionResult result = executor.execute(command());
+        RepairExecutionResult result = executor.execute(command(
+                "task-1001",
+                Map.of("repositoryPublishRequired", "true")
+        ));
 
         assertEquals(RepairExecutionStatus.FAILED, result.status());
         assertTrue(result.errorMessage().contains("Claude Code API error 402: Insufficient Balance"));
@@ -464,7 +628,10 @@ class DockerClaudeCodeExecutorTest {
                 );
         DockerClaudeCodeExecutor executor = executor(runner);
 
-        RepairExecutionResult result = executor.execute(command());
+        RepairExecutionResult result = executor.execute(command(
+                "task-1001",
+                Map.of("repositoryPublishRequired", "true")
+        ));
         JsonNode attempts = OBJECT_MAPPER.readTree(result.dockerMetadataJson().get("providerAttemptsJson"));
 
         assertEquals(1, attempts.size());
@@ -752,7 +919,10 @@ class DockerClaudeCodeExecutorTest {
                 healthStore
         );
 
-        RepairExecutionResult result = executor.execute(command());
+        RepairExecutionResult result = executor.execute(command(
+                "task-1001",
+                Map.of("repositoryPublishRequired", "true")
+        ));
 
         assertEquals(RepairExecutionStatus.FAILED, result.status());
         assertEquals("Repository publish failed.", result.summary());
@@ -797,6 +967,26 @@ class DockerClaudeCodeExecutorTest {
         assertEquals(RepairArtifactType.CLAUDE_EVENTS, artifact(result, "claude-events.jsonl").type());
         assertEquals(RepairArtifactType.DOCKER_METADATA, artifact(result, "docker-meta.json").type());
         assertEquals(RepairArtifactType.OTHER, artifact(result, "notes.md").type());
+    }
+
+    @Test
+    void shouldPersistOnlyRedactedClaudeTraceInsteadOfRawEventStream() {
+        DockerClaudeCodeExecutor executor = executor(CapturingRunner.withResult(validResultJson("SUCCESS"))
+                .withExtraArtifact("claude-events.jsonl", """
+                        {"type":"assistant","message":{"content":[{"type":"thinking","thinking":"PRIVATE_CHAIN token=super-secret-value"},{"type":"text","text":"Inspecting compiler ordering."},{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"git grep token=super-secret-value"}}]}}
+                        {"type":"result","subtype":"success"}
+                        """));
+
+        RepairExecutionResult result = executor.execute(command());
+
+        String persistedTrace = artifact(result, "claude-events.jsonl").metadataJson().get("contentPreview");
+        assertNotNull(persistedTrace);
+        assertTrue(persistedTrace.contains("\"version\":1"));
+        assertTrue(persistedTrace.contains("Inspecting compiler ordering."));
+        assertTrue(persistedTrace.contains("Bash: git"));
+        assertFalse(persistedTrace.contains("PRIVATE_CHAIN"));
+        assertFalse(persistedTrace.contains("super-secret-value"));
+        assertFalse(persistedTrace.contains("git grep token"));
     }
 
     @Test
@@ -849,7 +1039,10 @@ class DockerClaudeCodeExecutorTest {
                 null
         );
 
-        RepairExecutionResult result = executor.execute(command());
+        RepairExecutionResult result = executor.execute(command(
+                "task-1001",
+                Map.of("repositoryPublishRequired", "true")
+        ));
 
         assertEquals(RepairExecutionStatus.SUCCESS, result.status());
         assertEquals(1, repositoryPort.prepared().size());
@@ -875,7 +1068,10 @@ class DockerClaudeCodeExecutorTest {
                 null
         );
 
-        RepairExecutionResult result = executor.execute(command());
+        RepairExecutionResult result = executor.execute(command(
+                "task-1001",
+                Map.of("repositoryPublishRequired", "true")
+        ));
 
         assertEquals(RepairExecutionStatus.FAILED, result.status());
         assertEquals("Repository publish failed.", result.summary());
@@ -1025,7 +1221,13 @@ class DockerClaudeCodeExecutorTest {
                         "sha256:abc123",
                         "{\"allowed\":true}"
                 )
-        );
+        ).withHandoffSkill(new DockerClaudeCodeExecutor.HandoffSkillConfiguration(
+                temporaryDirectory.resolve("handoff-skill").toString(),
+                "role-handoff-document",
+                "1.0.0",
+                "sha256:handoff123",
+                "{\"allowed\":true}"
+        ));
         return new DockerClaudeCodeExecutor(
                 new RepairWorkspaceFactory(temporaryDirectory, RESULT_SCHEMA_JSON),
                 runner,
@@ -1091,7 +1293,13 @@ class DockerClaudeCodeExecutorTest {
                         "sha256:abc123",
                         "{\"allowed\":true}"
                 )
-        );
+        ).withHandoffSkill(new DockerClaudeCodeExecutor.HandoffSkillConfiguration(
+                temporaryDirectory.resolve("handoff-skill").toString(),
+                "role-handoff-document",
+                "1.0.0",
+                "sha256:handoff123",
+                "{\"allowed\":true}"
+        ));
         return new DockerClaudeCodeExecutor(
                 workspaceFactory,
                 runner,
@@ -1649,6 +1857,8 @@ class DockerClaudeCodeExecutorTest {
 
     private static final class MutatingQaRepositoryPort implements RepairWorkspaceRepositoryPort {
 
+        private int stateCalls;
+
         @Override
         public RepositoryOperationResult prepare(RepairJobCommand command, RepairWorkspace workspace) {
             return new RepositoryOperationResult(Map.of("prepared", "true"));
@@ -1661,7 +1871,38 @@ class DockerClaudeCodeExecutorTest {
 
         @Override
         public RepositoryState repositoryState(RepairJobCommand command, RepairWorkspace workspace) {
+            if (stateCalls++ == 0) {
+                return RepositoryState.cleanState();
+            }
             return new RepositoryState(true, false, " M src/App.tsx");
+        }
+    }
+
+    private static final class CandidatePatchBaselineRepositoryPort implements RepairWorkspaceRepositoryPort {
+
+        private final boolean mutateAfterProvider;
+        private int stateCalls;
+
+        private CandidatePatchBaselineRepositoryPort(boolean mutateAfterProvider) {
+            this.mutateAfterProvider = mutateAfterProvider;
+        }
+
+        @Override
+        public RepositoryOperationResult prepare(RepairJobCommand command, RepairWorkspace workspace) {
+            return new RepositoryOperationResult(Map.of("candidatePatchApplied", "true"));
+        }
+
+        @Override
+        public RepositoryOperationResult publish(RepairJobCommand command, RepairWorkspace workspace) {
+            return new RepositoryOperationResult(Map.of());
+        }
+
+        @Override
+        public RepositoryState repositoryState(RepairJobCommand command, RepairWorkspace workspace) {
+            if (stateCalls++ == 0 || !mutateAfterProvider) {
+                return new RepositoryState(true, false, "M  README.md");
+            }
+            return new RepositoryState(true, false, "M  README.md\n M src/Unexpected.java");
         }
     }
 }

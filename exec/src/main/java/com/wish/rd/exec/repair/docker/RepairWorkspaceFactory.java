@@ -60,16 +60,20 @@ public class RepairWorkspaceFactory {
         Path inputDirectory = taskRoot.resolve("input");
         Path repoDirectory = taskRoot.resolve("repo");
         Path outputDirectory = taskRoot.resolve("output");
+        Path cacheDirectory = taskRoot.resolve("cache");
         rejectSymlink(inputDirectory);
         rejectSymlink(repoDirectory);
         rejectSymlink(outputDirectory);
+        rejectSymlink(cacheDirectory);
         Files.createDirectories(inputDirectory);
         Files.createDirectories(repoDirectory);
         Files.createDirectories(outputDirectory);
+        Files.createDirectories(cacheDirectory);
         ensureRealPathInsideWorkspaceRoot(taskRoot);
         ensureRealPathInsideWorkspaceRoot(inputDirectory);
         ensureRealPathInsideWorkspaceRoot(repoDirectory);
         ensureRealPathInsideWorkspaceRoot(outputDirectory);
+        ensureRealPathInsideWorkspaceRoot(cacheDirectory);
 
         RepairWorkspaceFiles files = new RepairWorkspaceFiles(
                 inputDirectory.resolve("prompt.md"),
@@ -86,7 +90,7 @@ public class RepairWorkspaceFactory {
         Files.writeString(files.context(), toContextJson(command), StandardCharsets.UTF_8);
         Files.writeString(files.resultSchema(), resultSchemaJson(command), StandardCharsets.UTF_8);
 
-        return new RepairWorkspace(taskRoot, inputDirectory, repoDirectory, outputDirectory, files);
+        return new RepairWorkspace(taskRoot, inputDirectory, repoDirectory, outputDirectory, cacheDirectory, files);
     }
 
     private static void writeAttachments(Path inputDirectory, RepairJobCommand command) throws IOException {
@@ -211,6 +215,16 @@ public class RepairWorkspaceFactory {
                     "basis": {"type": "string", "pattern": "\\\\S"},
                     "historicalSamples": {"type": "array"}
                   }
+                },
+                "next_prompt": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["targetRole", "summary", "handoffArtifact"],
+                  "properties": {
+                    "targetRole": {"const": "SOLUTION_ARCHITECT"},
+                    "summary": {"type": "string", "maxLength": 1200},
+                    "handoffArtifact": {"const": "handoff/next.md"}
+                  }
                 }
               }
             }
@@ -248,6 +262,16 @@ public class RepairWorkspaceFactory {
                 "testPlan": {
                   "type": "array",
                   "minItems": 1
+                },
+                "next_prompt": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["targetRole", "summary", "handoffArtifact"],
+                  "properties": {
+                    "targetRole": {"const": "CODING_AGENT"},
+                    "summary": {"type": "string", "maxLength": 1200},
+                    "handoffArtifact": {"const": "handoff/next.md"}
+                  }
                 }
               }
             }

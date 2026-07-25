@@ -51,6 +51,21 @@ class RepairWorkspaceFactoryTest {
               "required": ["status"]
             }
             """;
+    private static final String CODING_HANDOFF_SCHEMA_JSON = """
+            {
+              "type": "object",
+              "properties": {
+                "next_prompt": {
+                  "type": "object",
+                  "properties": {
+                    "targetRole": {"const": "QA_AGENT"},
+                    "summary": {"type": "string", "maxLength": 1200},
+                    "handoffArtifact": {"const": "handoff/next.md"}
+                  }
+                }
+              }
+            }
+            """;
 
     @TempDir
     Path temporaryDirectory;
@@ -69,6 +84,16 @@ class RepairWorkspaceFactoryTest {
         assertTrue(Files.isDirectory(workspace.inputDirectory()));
         assertTrue(Files.isDirectory(workspace.repoDirectory()));
         assertTrue(Files.isDirectory(workspace.outputDirectory()));
+    }
+
+    @Test
+    void shouldCreatePersistentCacheDirectoryBesideRepo() throws IOException {
+        RepairWorkspaceFactory factory = new RepairWorkspaceFactory(temporaryDirectory, RESULT_SCHEMA_JSON);
+
+        RepairWorkspace workspace = factory.create(command("task-cache"));
+
+        assertEquals(workspace.root().resolve("cache"), workspace.cacheDirectory());
+        assertTrue(Files.isDirectory(workspace.cacheDirectory()));
     }
 
     @Test
@@ -114,6 +139,15 @@ class RepairWorkspaceFactoryTest {
         assertTrue(acceptanceItem.path("required").toString().contains("evidenceArtifactIds"));
         assertEquals("CURRENT", acceptanceItem.path("properties").path("scope").path("enum").get(0).asText());
         assertFalse(schema.path("required").toString().contains("changedFiles"));
+    }
+
+    @Test
+    void shouldExposeBoundedMarkdownHandoffContractForEachNonQaRole() throws IOException {
+        RepairWorkspaceFactory factory = new RepairWorkspaceFactory(temporaryDirectory, RESULT_SCHEMA_JSON);
+
+        assertHandoffTarget(factory, "REQUIREMENT_REVIEWER", "SOLUTION_ARCHITECT");
+        assertHandoffTarget(factory, "SOLUTION_ARCHITECT", "CODING_AGENT");
+        assertHandoffTarget(factory, "CODING_AGENT", "QA_AGENT");
     }
 
     @Test
@@ -198,6 +232,19 @@ class RepairWorkspaceFactoryTest {
         assertTrue(files.testLog().toAbsolutePath().normalize().startsWith(normalizedRoot));
         assertTrue(files.claudeEventsJsonl().toAbsolutePath().normalize().startsWith(normalizedRoot));
         assertTrue(files.dockerMetaJson().toAbsolutePath().normalize().startsWith(normalizedRoot));
+    }
+
+    private void assertHandoffTarget(RepairWorkspaceFactory factory, String role, String targetRole) throws IOException {
+        RepairWorkspaceFactory schemaFactory = "CODING_AGENT".equals(role)
+                ? new RepairWorkspaceFactory(temporaryDirectory, CODING_HANDOFF_SCHEMA_JSON)
+                : factory;
+        RepairWorkspace workspace = schemaFactory.create(command("task-handoff-" + role, role));
+        JsonNode schema = OBJECT_MAPPER.readTree(Files.readString(workspace.files().resultSchema(), StandardCharsets.UTF_8));
+        JsonNode nextPrompt = schema.path("properties").path("next_prompt");
+        assertEquals("object", nextPrompt.path("type").asText());
+        assertEquals(targetRole, nextPrompt.path("properties").path("targetRole").path("const").asText());
+        assertEquals("handoff/next.md", nextPrompt.path("properties").path("handoffArtifact").path("const").asText());
+        assertEquals(1200, nextPrompt.path("properties").path("summary").path("maxLength").asInt());
     }
 
     private static RepairJobCommand command(String taskId) {
