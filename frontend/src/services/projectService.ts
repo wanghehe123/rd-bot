@@ -100,6 +100,26 @@ export interface ProjectQaProfilePayload {
   regressionCommands: string[];
 }
 
+export type ProjectRuntimeRole =
+  | "REQUIREMENT_REVIEWER"
+  | "SOLUTION_ARCHITECT"
+  | "CODING_AGENT"
+  | "QA_AGENT";
+
+export interface ProjectRuntimeProfile {
+  projectId: string;
+  role: ProjectRuntimeRole;
+  agentType: "CLAUDE_CODE";
+  image: string;
+  dockerfileArtifactUri: string;
+  dockerfileSha256: string;
+  dockerfileName: string;
+  validationStatus: "VERIFIED";
+  validationSummary: string;
+  createTimeEpochMillis: number;
+  updateTimeEpochMillis: number;
+}
+
 export const getProjectsPage = (query: RdProjectListQuery = {}): Promise<RdProjectPage> =>
   api.get<RdProjectPage, RdProjectPage>("/admin/projects", {
     params: {
@@ -158,3 +178,38 @@ export const updateProjectQaProfile = (
   payload: ProjectQaProfilePayload
 ): Promise<ProjectQaProfile> =>
   api.put<ProjectQaProfile, ProjectQaProfile>(`/admin/projects/${projectId}/qa-profile`, payload);
+
+export const getProjectRuntimeProfiles = (projectId: string): Promise<ProjectRuntimeProfile[]> =>
+  api.get<ProjectRuntimeProfile[], ProjectRuntimeProfile[]>(`/admin/projects/${projectId}/runtime-profiles`);
+
+export const uploadProjectRuntimeProfile = (
+  projectId: string,
+  role: ProjectRuntimeRole,
+  dockerfile: File,
+  mutationToken: string
+): Promise<ProjectRuntimeProfile> => {
+  const formData = new FormData();
+  formData.append("agentType", "CLAUDE_CODE");
+  formData.append("dockerfile", dockerfile);
+  return api.put<ProjectRuntimeProfile, ProjectRuntimeProfile>(
+    `/admin/projects/${projectId}/runtime-profiles/${role}`,
+    formData,
+    {
+      headers: {
+        "Content-Type": "multipart/form-data",
+        "X-RD-Runtime-Profile-Token": mutationToken
+      },
+      timeout: 11 * 60 * 1000
+    }
+  );
+};
+
+export const deleteProjectRuntimeProfile = (
+  projectId: string,
+  role: ProjectRuntimeRole,
+  mutationToken: string
+): Promise<{ deleted: boolean }> =>
+  api.delete<{ deleted: boolean }, { deleted: boolean }>(
+    `/admin/projects/${projectId}/runtime-profiles/${role}`,
+    { headers: { "X-RD-Runtime-Profile-Token": mutationToken } }
+  );

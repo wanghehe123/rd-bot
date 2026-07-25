@@ -35,4 +35,17 @@ class MultiAgentOrchestrationSqlPolicyTest {
         assertTrue(content.contains("ADD COLUMN IF NOT EXISTS applicable_roles_json"));
         assertTrue(content.contains("CREATE INDEX IF NOT EXISTS idx_rd_experience_entries_scope"));
     }
+
+    @Test
+    void shouldProvideVerifiedClaudeCodeRuntimeProfileMigration() throws Exception {
+        Path sql = Path.of(System.getProperty("user.dir"))
+                .resolve("src/main/resources/sql/postgres/p7_project_runtime_profiles.sql");
+        String content = Files.readString(sql);
+
+        assertTrue(content.contains("CREATE TABLE IF NOT EXISTS rd_project_runtime_profiles"));
+        assertTrue(content.contains("PRIMARY KEY (project_id, role)"));
+        assertTrue(content.contains("agent_type = 'CLAUDE_CODE'"));
+        assertTrue(content.contains("validation_status = 'VERIFIED'"));
+        assertTrue(content.contains("idx_rd_project_runtime_profiles_updated"));
+    }
 }

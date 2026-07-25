@@ -18,6 +18,9 @@ import com.wish.rd.engine.agent.WorkflowExperienceStore;
 import com.wish.rd.rag.qa.QaValidationProfileService;
 import com.wish.rd.rag.qa.QaValidationProfileStore;
 import com.wish.rd.rag.qa.impl.InMemoryQaValidationProfileStore;
+import com.wish.rd.rag.project.runtime.ProjectRuntimeProfileService;
+import com.wish.rd.rag.project.runtime.ProjectRuntimeProfileStore;
+import com.wish.rd.rag.project.runtime.impl.InMemoryProjectRuntimeProfileStore;
 
 /** Shared in-memory stage stores for local mode so execution and overview see the same records. */
 @Configuration(proxyBeanMethods = false)
@@ -69,5 +72,17 @@ public class InMemoryAgentObservabilityConfiguration {
     @ConditionalOnMissingBean(QaValidationProfileService.class)
     QaValidationProfileService qaValidationProfileService(QaValidationProfileStore store) {
         return new QaValidationProfileService(store);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(ProjectRuntimeProfileStore.class)
+    ProjectRuntimeProfileStore projectRuntimeProfileStore() {
+        return new InMemoryProjectRuntimeProfileStore();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(ProjectRuntimeProfileService.class)
+    ProjectRuntimeProfileService projectRuntimeProfileService(ProjectRuntimeProfileStore store) {
+        return new ProjectRuntimeProfileService(store);
     }
 }

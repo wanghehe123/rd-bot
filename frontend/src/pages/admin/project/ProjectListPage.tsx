@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Bell, Database, FolderOpen, Gauge, LayoutTemplate, MonitorCheck, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { Bell, Container, Database, FolderOpen, Gauge, LayoutTemplate, MonitorCheck, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import {
@@ -54,14 +54,19 @@ import {
   getProjectTokenBudget,
   getProjectTaskTemplate,
   getProjectQaProfile,
+  getProjectRuntimeProfiles,
   updateProjectAlertConfig,
   updateProjectTokenBudget,
   updateProjectTaskTemplate,
   updateProjectQaProfile,
   updateProject,
+  uploadProjectRuntimeProfile,
+  deleteProjectRuntimeProfile,
   type RdProject,
   type ProjectAlertEventType,
   type ProjectQaMode,
+  type ProjectRuntimeProfile,
+  type ProjectRuntimeRole,
   type RdProjectPayload
 } from "@/services/projectService";
 import { getKnowledgeBases, type KnowledgeBase } from "@/services/knowledgeService";
@@ -93,6 +98,7 @@ export function ProjectListPage() {
   const [tokenBudgetTarget, setTokenBudgetTarget] = useState<RdProject | null>(null);
   const [templateTarget, setTemplateTarget] = useState<RdProject | null>(null);
   const [qaProfileTarget, setQaProfileTarget] = useState<RdProject | null>(null);
+  const [runtimeProfileTarget, setRuntimeProfileTarget] = useState<RdProject | null>(null);
   const [knowledgeTarget, setKnowledgeTarget] = useState<RdProject | null>(null);
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const [knowledgeBasesLoading, setKnowledgeBasesLoading] = useState(false);
@@ -323,6 +329,14 @@ export function ProjectListPage() {
                         </Tooltip>
                         <Tooltip>
                           <TooltipTrigger asChild>
+                            <Button size="icon" variant="outline" aria-label="运行镜像" onClick={() => setRuntimeProfileTarget(project)}>
+                              <Container className="h-4 w-4" />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>运行镜像</TooltipContent>
+                        </Tooltip>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
                             <Button size="icon" variant="outline" aria-label="飞书告警" onClick={() => setAlertTarget(project)}>
                               <Bell className="h-4 w-4" />
                             </Button>
@@ -386,6 +400,7 @@ export function ProjectListPage() {
       <ProjectTokenBudgetDialog project={tokenBudgetTarget} onOpenChange={(open) => !open && setTokenBudgetTarget(null)} />
       <ProjectTemplateDialog project={templateTarget} onOpenChange={(open) => !open && setTemplateTarget(null)} />
       <ProjectQaProfileDialog project={qaProfileTarget} onOpenChange={(open) => !open && setQaProfileTarget(null)} />
+      <ProjectRuntimeProfileDialog project={runtimeProfileTarget} onOpenChange={(open) => !open && setRuntimeProfileTarget(null)} />
       <ProjectKnowledgeBindingDialog
         project={knowledgeTarget}
         knowledgeBases={knowledgeBases}
@@ -912,6 +927,167 @@ function ProjectQaProfileDialog({ project, onOpenChange }: { project: RdProject 
         <DialogFooter className="shrink-0 border-t border-slate-200 pt-4">
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>取消</Button>
           <Button onClick={() => void save()} disabled={loading || saving}>{saving ? "保存中..." : "保存"}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+const RUNTIME_ROLE_OPTIONS: Array<{ value: ProjectRuntimeRole; label: string }> = [
+  { value: "REQUIREMENT_REVIEWER", label: "需求评审" },
+  { value: "SOLUTION_ARCHITECT", label: "方案设计" },
+  { value: "CODING_AGENT", label: "编码执行" },
+  { value: "QA_AGENT", label: "质量验证" }
+];
+const RUNTIME_PROFILE_CONTRACT_MARKER = "rd-bot-runtime-contract=v2";
+
+function ProjectRuntimeProfileDialog({ project, onOpenChange }: { project: RdProject | null; onOpenChange: (open: boolean) => void }) {
+  const [role, setRole] = useState<ProjectRuntimeRole>("CODING_AGENT");
+  const [profiles, setProfiles] = useState<ProjectRuntimeProfile[]>([]);
+  const [dockerfile, setDockerfile] = useState<File | null>(null);
+  const [mutationToken, setMutationToken] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!project) return;
+    setLoading(true);
+    setDockerfile(null);
+    setMutationToken("");
+    getProjectRuntimeProfiles(project.projectId).then((nextProfiles) => {
+      setProfiles(nextProfiles || []);
+    }).catch((error) => {
+      setProfiles([]);
+      toast.error(getErrorMessage(error, "加载运行镜像失败"));
+    }).finally(() => setLoading(false));
+  }, [project?.projectId]);
+
+  const activeProfile = profiles.find((profile) => profile.role === role);
+  const activeProfileUsesCurrentContract = !!activeProfile?.validationSummary.includes(RUNTIME_PROFILE_CONTRACT_MARKER);
+  const upload = async () => {
+    if (!project || !dockerfile) return;
+    if (!mutationToken.trim()) {
+      toast.error("请输入运行时操作令牌");
+      return;
+    }
+    setSaving(true);
+    try {
+      const profile = await uploadProjectRuntimeProfile(project.projectId, role, dockerfile, mutationToken);
+      setProfiles((current) => [...current.filter((item) => item.role !== role), profile]);
+      setDockerfile(null);
+      setMutationToken("");
+      toast.success("运行镜像已构建并验证");
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Dockerfile 构建或 Claude Code 验证失败"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const remove = async () => {
+    if (!project || !activeProfile) return;
+    if (!mutationToken.trim()) {
+      toast.error("请输入运行时操作令牌");
+      return;
+    }
+    setSaving(true);
+    try {
+      await deleteProjectRuntimeProfile(project.projectId, role, mutationToken);
+      setProfiles((current) => current.filter((item) => item.role !== role));
+      setMutationToken("");
+      toast.success("运行镜像已移除，后续任务将使用全局默认镜像");
+    } catch (error) {
+      toast.error(getErrorMessage(error, "移除运行镜像失败"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Dialog open={!!project} onOpenChange={onOpenChange}>
+      <DialogContent className="flex max-h-[calc(100vh-2rem)] flex-col overflow-hidden sm:max-w-[680px]">
+        <DialogHeader>
+          <DialogTitle>运行镜像</DialogTitle>
+          <DialogDescription>{project?.name} 的角色级 Claude Code Docker 运行时</DialogDescription>
+        </DialogHeader>
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
+          <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_180px]">
+            <div>
+              <label className="mb-2 block text-sm font-medium">交付角色</label>
+              <Select value={role} onValueChange={(value) => setRole(value as ProjectRuntimeRole)} disabled={loading || saving}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {RUNTIME_ROLE_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <label className="mb-2 block text-sm font-medium">Agent</label>
+              <div className="flex h-10 items-center border border-input bg-muted px-3 text-sm text-muted-foreground">Claude Code</div>
+            </div>
+          </div>
+
+          {activeProfile ? (
+            <div className="space-y-3 border-y border-slate-200 py-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <Badge
+                  variant="outline"
+                  className={activeProfileUsesCurrentContract
+                    ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                    : "border-amber-200 bg-amber-50 text-amber-700"}
+                >
+                  {activeProfileUsesCurrentContract ? "已验证" : "需重新构建"}
+                </Badge>
+                <span className="text-xs text-slate-500">{activeProfile.dockerfileName}</span>
+              </div>
+              {!activeProfileUsesCurrentContract && (
+                <p className="text-sm text-amber-700">
+                  当前镜像使用旧版运行时契约，不能用于新的任务执行。请重新上传该角色的 Dockerfile。
+                </p>
+              )}
+              <div className="space-y-1">
+                <span className="text-xs text-slate-500">镜像</span>
+                <code className="block break-all text-xs text-slate-700">{activeProfile.image}</code>
+              </div>
+              <div className="space-y-1">
+                <span className="text-xs text-slate-500">构建校验</span>
+                <p className="break-words text-sm text-slate-700">{activeProfile.validationSummary}</p>
+              </div>
+              <Button variant="outline" className="text-destructive hover:text-destructive" onClick={() => void remove()} disabled={saving}>
+                <Trash2 className="mr-2 h-4 w-4" />
+                移除镜像
+              </Button>
+            </div>
+          ) : (
+            <div className="border-y border-slate-200 py-4 text-sm text-slate-500">当前角色使用全局默认镜像。</div>
+          )}
+
+          <div>
+            <label className="mb-2 block text-sm font-medium">Dockerfile</label>
+            <Input
+              type="file"
+              onChange={(event) => setDockerfile(event.target.files?.item(0) || null)}
+              disabled={loading || saving}
+            />
+          </div>
+          <div>
+            <label className="mb-2 block text-sm font-medium">操作令牌</label>
+            <Input
+              type="password"
+              value={mutationToken}
+              onChange={(event) => setMutationToken(event.target.value)}
+              autoComplete="one-time-code"
+              disabled={loading || saving}
+            />
+          </div>
+        </div>
+        <DialogFooter className="shrink-0 border-t border-slate-200 pt-4">
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>关闭</Button>
+          <Button onClick={() => void upload()} disabled={loading || saving || !dockerfile}>
+            {saving ? "构建并验证中..." : "构建并启用"}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

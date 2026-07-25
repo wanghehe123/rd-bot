@@ -9,6 +9,8 @@ import com.wish.rd.rag.project.template.RdProjectTaskTemplateStore;
 import com.wish.rd.rag.project.RdProjectService;
 import com.wish.rd.rag.qa.QaValidationProfileService;
 import com.wish.rd.rag.qa.QaValidationProfileStore;
+import com.wish.rd.rag.project.runtime.ProjectRuntimeProfileService;
+import com.wish.rd.rag.project.runtime.ProjectRuntimeProfileStore;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -44,5 +46,13 @@ public class RdProjectControlPlaneConfiguration {
     @Bean
     QaValidationProfileService qaValidationProfileService(QaValidationProfileStore store) {
         return new QaValidationProfileService(store);
+    }
+
+    @Bean
+    ProjectRuntimeProfileService projectRuntimeProfileService(
+            ProjectRuntimeProfileStore store,
+            RdProjectService projectService
+    ) {
+        return new ProjectRuntimeProfileService(store, projectService::get);
     }
 }

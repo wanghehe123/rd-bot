@@ -79,6 +79,8 @@ rd:
     max-attempts: ${RD_REQUIREMENT_DELIVERY_MAX_ATTEMPTS:3}
     lease-millis: ${RD_REQUIREMENT_DELIVERY_LEASE_MILLIS:600000}
     recovery-interval-millis: ${RD_REQUIREMENT_DELIVERY_RECOVERY_INTERVAL_MILLIS:30000}
+    handoff:
+      max-tokens: ${RD_REQUIREMENT_DELIVERY_HANDOFF_MAX_TOKENS:4000}
   financial:
     cny-per-usd: ${RD_FINANCIAL_CNY_PER_USD:7.20}
   task-draft:
@@ -175,6 +177,10 @@ rd:
       image: ${RD_EXECUTOR_DOCKER_IMAGE:rd-bot/claude-code:local}
       qa-image: ${RD_EXECUTOR_DOCKER_QA_IMAGE:rd-bot/claude-code-qa:local}
       workspace-root: ${RD_EXECUTOR_DOCKER_WORKSPACE_ROOT:/tmp/rd-bot/repair-workspaces}
+      runtime-profiles:
+        # Uploading a Dockerfile builds untrusted operator input. Keep mutations disabled until an operator supplies
+        # this capability token through the environment; the UI keeps it only in memory for the current dialog.
+        upload-token: ${RD_RUNTIME_PROFILE_UPLOAD_TOKEN:}
       command: claude
       yolo-flag: --dangerously-skip-permissions
       output-format: stream-json
