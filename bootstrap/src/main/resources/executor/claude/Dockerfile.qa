@@ -8,7 +8,17 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     PLAYWRIGHT_MCP_CONFIG=/etc/rd-bot/playwright-cli.config.json
 
 RUN npm install -g "@playwright/cli@${PLAYWRIGHT_CLI_VERSION}" \
-    && node /usr/local/lib/node_modules/@playwright/cli/node_modules/playwright/cli.js install --with-deps chromium \
+    && node /usr/local/lib/node_modules/@playwright/cli/node_modules/playwright/cli.js install-deps chromium \
+    && for attempt in 1 2 3; do \
+        PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT=120000 \
+          node /usr/local/lib/node_modules/@playwright/cli/node_modules/playwright/cli.js install chromium && break; \
+        if [ "$attempt" -eq 3 ]; then \
+          echo "Playwright Chromium download failed after ${attempt} attempts" >&2; \
+          exit 1; \
+        fi; \
+        echo "Playwright Chromium download attempt ${attempt} failed; retrying" >&2; \
+        sleep "$attempt"; \
+      done \
     && npm cache clean --force \
     && chown -R rdbot:rdbot /ms-playwright /home/rdbot
 

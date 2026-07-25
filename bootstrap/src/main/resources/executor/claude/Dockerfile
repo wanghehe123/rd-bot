@@ -9,7 +9,9 @@ RUN apt-get update \
         git \
         jq \
         openssh-client \
-        sudo \
+        python3 \
+        python3-pip \
+        python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
@@ -17,10 +19,8 @@ RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
 
 RUN groupadd --system rdbot \
     && useradd --system --gid rdbot --create-home --home-dir /home/rdbot --shell /bin/bash rdbot \
-    && mkdir -p /work/input /work/repo /work/output \
+    && mkdir -p /work/input /work/repo /work/output /home/rdbot/.claude/skills /home/rdbot/.claude/session-env \
     && printf '%s\n' '{"bypassPermissionsModeAccepted":true}' > /home/rdbot/.claude.json \
-    && printf '%s\n' 'rdbot ALL=(root) NOPASSWD: /usr/bin/apt-get, /usr/bin/apt' > /etc/sudoers.d/rdbot-toolchain \
-    && chmod 0440 /etc/sudoers.d/rdbot-toolchain \
     && chown -R rdbot:rdbot /home/rdbot /work
 
 COPY rd-claude-entrypoint.sh /usr/local/bin/rd-claude-entrypoint

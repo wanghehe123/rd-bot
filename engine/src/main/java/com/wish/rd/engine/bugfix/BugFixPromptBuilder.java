@@ -131,7 +131,7 @@ public final class BugFixPromptBuilder {
 
                 ## 执行边界
                 只修改与工单直接相关的代码，并输出可解析的 JSON 结果。
-                如果验证命令依赖的工具链缺失，必须先按需安装缺失工具链再执行测试。当前隔离容器允许使用 `sudo apt-get update` 和 `sudo apt-get install -y <packages>` 安装开源构建工具，例如 Java 17、Maven、Node.js 或 npm。不要因为缺少工具链直接跳过测试；只有安装失败、包不可用或外部服务缺失时，才在测试日志中说明原因。
+                执行器会为任务提供已验证的项目运行时镜像。不要在任务期间运行 sudo、apt-get、apt、apk、yum 或其他系统级安装命令，也不要修改容器基础环境。若发现必要工具链确实缺失，记录具体缺失项和受影响的验证命令，以便维护者更新项目运行时 Dockerfile；仍需运行当前镜像中可执行的相关测试并如实报告结果。
 
                 ## Agent 系统消息
                 {{agentSystemMessage}}
