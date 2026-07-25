@@ -2,6 +2,7 @@ package com.wish.rd.engine.retry;
 
 import com.wish.rd.engine.agent.AgentStageRunStore;
 import com.wish.rd.engine.agent.AgentStageArtifactStore;
+import com.wish.rd.engine.agent.AgentStageTransitions;
 import com.wish.rd.engine.agent.model.AgentRole;
 import com.wish.rd.engine.agent.model.AgentStageRun;
 import com.wish.rd.engine.agent.model.AgentStageStatus;
@@ -345,6 +346,15 @@ public final class TaskRetryEngine {
             AgentRole role = roles.get(index);
             AgentStageRun latest = existing.stream().filter(stage -> stage.role() == role)
                     .max(STAGE_RECENCY).orElse(null);
+            if (latest != null && AgentStageTransitions.requiresFreshAttemptOnRecovery(latest.status())) {
+                latest = stageRunStore.transition(
+                        latest.stageRunId(),
+                        AgentStageStatus.FAILED_RETRYABLE,
+                        "ORCHESTRATION_INTERRUPTED",
+                        "previous role attempt was interrupted before it reached a terminal state",
+                        now()
+                );
+            }
             if (latest != null && !latest.status().isTerminal()) {
                 continue;
             }

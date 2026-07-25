@@ -63,6 +63,63 @@ class TaskRetryEngineTest {
     }
 
     @Test
+    void replacesInterruptedRunningAttemptBeforeRetryingItsRole() {
+        InMemoryAgentStageRunStore stages = new InMemoryAgentStageRunStore();
+        stages.save(stage("reviewer-1", AgentRole.REQUIREMENT_REVIEWER, 1, AgentStageStatus.SUCCEEDED));
+        stages.save(stage("architect-1", AgentRole.SOLUTION_ARCHITECT, 1, AgentStageStatus.SUCCEEDED));
+        stages.save(stage("coding-1", AgentRole.CODING_AGENT, 1, AgentStageStatus.FAILED_NEEDS_HUMAN));
+        stages.save(stage("coding-2", AgentRole.CODING_AGENT, 2, AgentStageStatus.RUNNING));
+        stages.save(stage("qa-1", AgentRole.QA_AGENT, 1, AgentStageStatus.PENDING));
+        FakeTaskPort tasks = new FakeTaskPort(task(RdTaskStatus.FAILED_NEEDS_HUMAN, "{}"));
+        TaskRetryEngine engine = engine(
+                tasks,
+                stages,
+                new InMemoryTaskRetryCheckpointStore(),
+                new ArrayList<>(),
+                new AtomicInteger()
+        );
+
+        engine.retry("task-1", "USER");
+
+        assertEquals(List.of(1, 2, 3), attempts(stages, AgentRole.CODING_AGENT));
+        AgentStageRun interrupted = stages.findById("coding-2").orElseThrow();
+        assertEquals(AgentStageStatus.FAILED_RETRYABLE, interrupted.status());
+        assertEquals("ORCHESTRATION_INTERRUPTED", interrupted.errorCategory());
+        assertEquals(AgentStageStatus.PENDING, latestStage(stages, AgentRole.CODING_AGENT).status());
+    }
+
+    @Test
+    void manuallyRecoversDeadLetteredTaskFromItsInterruptedRole() {
+        InMemoryAgentStageRunStore stages = new InMemoryAgentStageRunStore();
+        stages.save(stage("reviewer-1", AgentRole.REQUIREMENT_REVIEWER, 1, AgentStageStatus.SUCCEEDED));
+        stages.save(stage("architect-1", AgentRole.SOLUTION_ARCHITECT, 1, AgentStageStatus.SUCCEEDED));
+        stages.save(stage("coding-1", AgentRole.CODING_AGENT, 1, AgentStageStatus.FAILED_NEEDS_HUMAN));
+        stages.save(stage("coding-2", AgentRole.CODING_AGENT, 2, AgentStageStatus.RUNNING));
+        stages.save(stage("qa-1", AgentRole.QA_AGENT, 1, AgentStageStatus.PENDING));
+        FakeTaskPort tasks = new FakeTaskPort(task(RdTaskStatus.DEAD_LETTERED, """
+                {"failurePhase":"AGENT_ROLE","errorCategory":"IllegalStateException"}
+                """));
+        List<String> dispatched = new ArrayList<>();
+        TaskRetryEngine engine = engine(
+                tasks,
+                stages,
+                new InMemoryTaskRetryCheckpointStore(),
+                dispatched,
+                new AtomicInteger()
+        );
+
+        var checkpoint = engine.retry("task-1", "USER");
+
+        assertEquals(TaskRetryCheckpointStatus.DISPATCHED, checkpoint.status());
+        assertEquals(RdTaskStatus.RECOVERING, tasks.task.status());
+        assertEquals(List.of("task-1"), dispatched);
+        assertEquals(List.of(1, 2, 3), attempts(stages, AgentRole.CODING_AGENT));
+        assertEquals(AgentStageStatus.FAILED_RETRYABLE,
+                stages.findById("coding-2").orElseThrow().status());
+        assertEquals(AgentStageStatus.PENDING, latestStage(stages, AgentRole.CODING_AGENT).status());
+    }
+
+    @Test
     void createsNewAttemptForTerminalDownstreamRole() {
         InMemoryAgentStageRunStore stages = new InMemoryAgentStageRunStore();
         stages.save(stage("reviewer-1", AgentRole.REQUIREMENT_REVIEWER, 1, AgentStageStatus.SUCCEEDED));

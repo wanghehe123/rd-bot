@@ -2,6 +2,7 @@ package com.wish.rd.engine.retry;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.wish.rd.engine.agent.AgentStageTransitions;
 import com.wish.rd.engine.agent.model.AgentRole;
 import com.wish.rd.engine.agent.model.AgentStageRun;
 import com.wish.rd.engine.agent.model.AgentStageStatus;
@@ -90,7 +91,7 @@ public final class TaskRetryPointResolver {
             latest.merge(stage.role(), stage, (left, right) -> stageRecency(left, right) >= 0 ? left : right);
         }
         return latest.values().stream()
-                .filter(TaskRetryPointResolver::isFailedStage)
+                .filter(TaskRetryPointResolver::isRetryableFailureOrInterruptedAttempt)
                 .min(Comparator.comparingInt(stage -> ROLE_ORDER.getOrDefault(stage.role(), Integer.MAX_VALUE)))
                 .orElse(null);
     }
@@ -105,6 +106,10 @@ public final class TaskRetryPointResolver {
     private static boolean isFailedStage(AgentStageRun stage) {
         return stage.status() == AgentStageStatus.FAILED_RETRYABLE
                 || stage.status() == AgentStageStatus.FAILED_NEEDS_HUMAN;
+    }
+
+    private static boolean isRetryableFailureOrInterruptedAttempt(AgentStageRun stage) {
+        return isFailedStage(stage) || AgentStageTransitions.requiresFreshAttemptOnRecovery(stage.status());
     }
 
     private static AiReviewRun latestFailedReview(List<AiReviewRun> runs) {
@@ -164,7 +169,8 @@ public final class TaskRetryPointResolver {
     private static void requireRetryableStatus(RdTaskStatus status) {
         if (status != RdTaskStatus.REJECTED
                 && status != RdTaskStatus.FAILED_RETRYABLE
-                && status != RdTaskStatus.FAILED_NEEDS_HUMAN) {
+                && status != RdTaskStatus.FAILED_NEEDS_HUMAN
+                && status != RdTaskStatus.DEAD_LETTERED) {
             throw new IllegalStateException("task status is not retryable: " + status);
         }
     }

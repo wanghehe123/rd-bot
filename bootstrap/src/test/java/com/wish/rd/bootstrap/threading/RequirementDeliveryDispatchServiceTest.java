@@ -62,6 +62,31 @@ class RequirementDeliveryDispatchServiceTest {
     }
 
     @Test
+    void shouldPersistLinkageErrorAsRetryableFailureInsteadOfStrandingTheDeliveryJob() {
+        RequirementDeliveryEngine engine = mock(RequirementDeliveryEngine.class);
+        when(engine.submit("task-linkage")).thenThrow(new NoSuchMethodError("stale runtime artifact"));
+        InMemoryRdTaskStore taskStore = new InMemoryRdTaskStore();
+        taskStore.saveRequirementTask(requirementTask("task-linkage", RdTaskStatus.EXECUTING));
+        AtomicLong now = new AtomicLong(1_784_200_000_000L);
+        SnowflakeIdGenerator ids = new SnowflakeIdGenerator(1, 1, now::getAndIncrement);
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                taskStore, new InMemoryRdTaskStatusEventStore(), ids);
+        InMemoryRequirementDeliveryJobStore jobs = new InMemoryRequirementDeliveryJobStore();
+        RequirementDeliveryDispatchService dispatcher = new RequirementDeliveryDispatchService(
+                engine, new TaskExecutorAdapter(new SyncTaskExecutor()), jobs, ids, registry,
+                "test-worker", 3, 60_000L);
+
+        assertThrows(RuntimeException.class, () -> dispatcher.submit("task-linkage").join());
+
+        assertEquals(RequirementDeliveryJobStatus.FAILED_RETRYABLE,
+                jobs.findByTask("task-linkage").orElseThrow().status());
+        RdRequirementTask failed = (RdRequirementTask) registry.getTask("task-linkage");
+        assertEquals(RdTaskStatus.FAILED_RETRYABLE, failed.status());
+        org.junit.jupiter.api.Assertions.assertTrue(
+                failed.executionResultJson().contains("\"errorCategory\":\"NoSuchMethodError\""));
+    }
+
+    @Test
     void shouldKeepPersistedJobPendingWhenTheLocalExecutorRejectsScheduling() {
         RequirementDeliveryEngine engine = mock(RequirementDeliveryEngine.class);
         InMemoryRequirementDeliveryJobStore store = new InMemoryRequirementDeliveryJobStore();

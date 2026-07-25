@@ -225,7 +225,7 @@ public class RequirementDeliveryDispatchService {
             persistDeliveryOutcome(job, result);
             completeRetryCheckpoint(taskId, result.status(), result.errorMessage());
             future.complete(result);
-        } catch (RuntimeException exception) {
+        } catch (RuntimeException | LinkageError exception) {
             cancelHeartbeat(heartbeat);
             markTaskRetryableAfterException(taskId, exception);
             try {
@@ -317,7 +317,7 @@ public class RequirementDeliveryDispatchService {
         }
     }
 
-    private void markTaskRetryableAfterException(String taskId, RuntimeException exception) {
+    private void markTaskRetryableAfterException(String taskId, Throwable exception) {
         if (taskRegistry == null) {
             return;
         }
@@ -384,7 +384,7 @@ public class RequirementDeliveryDispatchService {
         }
     }
 
-    private String safeError(RuntimeException exception) {
+    private String safeError(Throwable exception) {
         String message = exception == null || exception.getMessage() == null
                 ? "requirement delivery failed"
                 : exception.getMessage();

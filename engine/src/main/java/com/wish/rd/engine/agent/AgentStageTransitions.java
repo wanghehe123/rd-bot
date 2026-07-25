@@ -59,4 +59,17 @@ public final class AgentStageTransitions {
             throw new IllegalStateException("illegal agent stage status transition: " + source + " -> " + target);
         }
     }
+
+    /**
+     * Returns whether a persisted attempt has advanced far enough that a new
+     * recovery dispatch must close it and create a fresh attempt instead of
+     * replaying a backwards state transition.
+     */
+    public static boolean requiresFreshAttemptOnRecovery(AgentStageStatus status) {
+        return status == AgentStageStatus.CONTEXT_READY
+                || status == AgentStageStatus.DISPATCHING
+                || status == AgentStageStatus.RUNNING
+                || status == AgentStageStatus.RESULT_COLLECTING
+                || status == AgentStageStatus.VERIFYING;
+    }
 }

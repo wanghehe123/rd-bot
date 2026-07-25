@@ -25,6 +25,8 @@ class RdTaskTransitionPolicyTest {
                 RdTaskType.REQUIREMENT, RdTaskStatus.RECOVERING, RdTaskStatus.FAILED_RETRYABLE));
         assertDoesNotThrow(() -> allow(RdTaskType.REQUIREMENT, RdTaskStatus.EXECUTING, RdTaskStatus.CANCELLED));
         assertDoesNotThrow(() -> allow(RdTaskType.REQUIREMENT, RdTaskStatus.CREATED, RdTaskStatus.DEAD_LETTERED));
+        assertDoesNotThrow(() -> allow(
+                RdTaskType.REQUIREMENT, RdTaskStatus.DEAD_LETTERED, RdTaskStatus.RECOVERING));
     }
 
     @Test
