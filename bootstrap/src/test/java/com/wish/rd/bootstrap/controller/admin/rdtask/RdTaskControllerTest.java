@@ -872,7 +872,7 @@ class RdTaskControllerTest {
                 "priority", "P2",
                 "repositoryUrl", "https://github.com/example/waimai.git",
                 "baseBranch", "main",
-                "expectedResult", "管理员可管理商品",
+                "expectedResult", "管理员可管理商品与支付渠道",
                 "acceptanceCriteria", List.of("前端构建通过"),
                 "materials", List.of(Map.of(
                         "sourceType", "MANUAL_TEXT",
@@ -942,7 +942,7 @@ class RdTaskControllerTest {
                 "priority", "P2",
                 "repositoryUrl", "https://github.com/example/waimai.git",
                 "baseBranch", "main",
-                "expectedResult", "管理员可管理商品",
+                "expectedResult", "管理员可管理商品与支付渠道",
                 "acceptanceCriteria", List.of("前端构建通过"),
                 "materials", List.of(Map.of(
                         "sourceType", "MANUAL_TEXT",

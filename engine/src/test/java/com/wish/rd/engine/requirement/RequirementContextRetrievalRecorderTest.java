@@ -97,7 +97,7 @@ class RequirementContextRetrievalRecorderTest {
     }
 
     @Test
-    void zeroEvidenceMustNotSucceedAsSufficient() {
+    void missingRequirementMaterialStillBlocksOnlyTheRolesThatNeedIt() {
         InMemoryRetrievalRunStore store = new InMemoryRetrievalRunStore();
         AtomicInteger ids = new AtomicInteger();
         RequirementContextRetrievalRecorder recorder = new RequirementContextRetrievalRecorder(
@@ -107,16 +107,20 @@ class RequirementContextRetrievalRecorderTest {
 
         recorder.record(task, List.of());
 
-        for (RetrievalRun run : store.listByTask(task.taskId())) {
-            assertNotEquals(RetrievalRunStatus.SUCCEEDED, run.status());
-            assertNotEquals(RetrievalRunStatus.SUCCEEDED_DEGRADED, run.status());
-            assertNotEquals(EvidenceQualityDecision.SUFFICIENT, run.qualityDecision());
-            assertTrue(run.status().isTerminal());
+        RetrievalRun base = run(store, task.taskId(), RetrievalConsumerType.REQUIREMENT_BASE, "");
+        RetrievalRun reviewer = run(store, task.taskId(), RetrievalConsumerType.AGENT_ROLE,
+                AgentRole.REQUIREMENT_REVIEWER.name());
+        assertEquals(RetrievalRunStatus.WAITING_INPUT, base.status());
+        assertEquals(RetrievalRunStatus.WAITING_INPUT, reviewer.status());
+        for (AgentRole role : List.of(AgentRole.SOLUTION_ARCHITECT, AgentRole.CODING_AGENT, AgentRole.QA_AGENT)) {
+            RetrievalRun run = run(store, task.taskId(), RetrievalConsumerType.AGENT_ROLE, role.name());
+            assertEquals(RetrievalRunStatus.SUCCEEDED_DEGRADED, run.status());
+            assertEquals(EvidenceQualityDecision.DEGRADED_ACCEPTABLE, run.qualityDecision());
         }
     }
 
     @Test
-    void requirementTextAloneMustNotSatisfyCodingOrQaCriticalEvidence() {
+    void requirementTextAloneAllowsCodingAndQaToDiscoverTheRepositoryWithinBounds() {
         InMemoryRetrievalRunStore store = new InMemoryRetrievalRunStore();
         AtomicInteger ids = new AtomicInteger();
         RequirementContextRetrievalRecorder recorder = new RequirementContextRetrievalRecorder(
@@ -131,12 +135,10 @@ class RequirementContextRetrievalRecorderTest {
                     .filter(candidate -> candidate.role().equals(role.name()))
                     .findFirst()
                     .orElseThrow();
-            assertNotEquals(RetrievalRunStatus.SUCCEEDED, run.status(),
-                    role + " cannot claim success from requirement prose alone");
-            assertNotEquals(RetrievalRunStatus.SUCCEEDED_DEGRADED, run.status(),
-                    role + " cannot degrade away missing critical evidence");
-            assertNotEquals(EvidenceQualityDecision.SUFFICIENT, run.qualityDecision());
-            assertTrue(run.stopReason().contains("关键证据"), run.stopReason());
+            assertEquals(RetrievalRunStatus.SUCCEEDED_DEGRADED, run.status(),
+                    role + " should receive a bounded repository discovery fallback");
+            assertEquals(EvidenceQualityDecision.DEGRADED_ACCEPTABLE, run.qualityDecision());
+            assertTrue(run.stopReason().contains("受限仓库发现"), run.stopReason());
         }
     }
 
@@ -206,8 +208,8 @@ class RequirementContextRetrievalRecorderTest {
 
         assertEquals(2, attempts(store, task.taskId(), RetrievalConsumerType.AGENT_ROLE,
                 AgentRole.QA_AGENT.name()));
-        assertEquals(RetrievalRunStatus.WAITING_INPUT, store.find(retry.runId()).orElseThrow().status(),
-                "a pre-created retry attempt must still enforce the QA critical-evidence gate");
+        assertEquals(RetrievalRunStatus.SUCCEEDED_DEGRADED, store.find(retry.runId()).orElseThrow().status(),
+                "a pre-created retry attempt must retain the QA repository-discovery fallback");
     }
 
     private static long attempts(
@@ -220,6 +222,19 @@ class RequirementContextRetrievalRecorderTest {
                 .filter(run -> run.consumerType() == consumerType)
                 .filter(run -> role.equals(run.role()))
                 .count();
+    }
+
+    private static RetrievalRun run(
+            InMemoryRetrievalRunStore store,
+            String taskId,
+            RetrievalConsumerType consumerType,
+            String role
+    ) {
+        return store.listByTask(taskId).stream()
+                .filter(candidate -> candidate.consumerType() == consumerType)
+                .filter(candidate -> role.equals(candidate.role()))
+                .findFirst()
+                .orElseThrow();
     }
 
     private static RdRequirementTask requirementTask() {

@@ -5,6 +5,10 @@ import com.wish.rd.engine.agent.AgentWorkflowAlertSinkPort;
 import com.wish.rd.engine.agent.WorkflowExperienceStore;
 import com.wish.rd.engine.agent.impl.InMemoryAgentStageArtifactStore;
 import com.wish.rd.engine.agent.impl.InMemoryAgentStageRunStore;
+import com.wish.rd.engine.agent.model.AgentRole;
+import com.wish.rd.engine.agent.model.AgentStageArtifact;
+import com.wish.rd.engine.agent.model.AgentStageRun;
+import com.wish.rd.engine.agent.model.AgentStageStatus;
 import com.wish.rd.engine.requirement.model.RequirementDeliveryResult;
 import com.wish.rd.engine.requirement.model.RequirementDeliveryReviewResult;
 import com.wish.rd.engine.requirement.model.RequirementPullRequestPublication;
@@ -62,6 +66,32 @@ class RequirementDeliveryResumeFromCheckpointTest {
         assertEquals(1, reviewerCalls.get());
         assertEquals(0, fixture.executorCalls.get());
         assertEquals(1, fixture.publisherCalls.get());
+    }
+
+    @Test
+    void deterministicReviewCheckpointRebuildsFromStageArtifactsWhenPersistedEvidenceIsTruncated() {
+        ResumeFixture fixture = resumeFixture(
+                TaskFailurePhase.DETERMINISTIC_REVIEW, truncatedDeliveryJson());
+        InMemoryAgentStageRunStore stageRuns = new InMemoryAgentStageRunStore();
+        InMemoryAgentStageArtifactStore artifacts = new InMemoryAgentStageArtifactStore();
+        seedSucceededStages(fixture.task().taskId(), stageRuns, artifacts);
+        AtomicInteger reviewerCalls = new AtomicInteger();
+        RequirementDeliveryEngine engine = fixture.engine(stageRuns, artifacts,
+                new RequirementDeliveryReviewer() {
+                    @Override
+                    public RequirementDeliveryReviewResult review(String taskId, String deliveryResultJson) {
+                        reviewerCalls.incrementAndGet();
+                        assertTrue(deliveryResultJson.contains("\\\"prBody\\\""), deliveryResultJson);
+                        assertTrue(deliveryResultJson.contains("\"resultJsonTruncated\":true"), deliveryResultJson);
+                        return RequirementDeliveryReviewResult.approved(taskId);
+                    }
+                });
+
+        RequirementDeliveryResult result = engine.submit(fixture.task().taskId());
+
+        assertEquals(RdTaskStatus.COMPLETED, result.status());
+        assertEquals(1, reviewerCalls.get());
+        assertEquals(0, fixture.executorCalls().get());
     }
 
     @Test
@@ -210,6 +240,53 @@ class RequirementDeliveryResumeFromCheckpointTest {
                 """;
     }
 
+    /** 每个阶段的 resultJson 都是被字符截断后不再合法的 RESULT_JSON 预览。 */
+    private static String truncatedDeliveryJson() {
+        return """
+                {"multiAgentStatus":"SUCCESS","multiAgentStages":[
+                  {"role":"REQUIREMENT_REVIEWER","success":true,"pullRequestUrl":"","resultJson":"%s"},
+                  {"role":"SOLUTION_ARCHITECT","success":true,"pullRequestUrl":"","resultJson":"%s"},
+                  {"role":"CODING_AGENT","success":true,"pullRequestUrl":"","resultJson":"%s"},
+                  {"role":"QA_AGENT","success":true,"pullRequestUrl":"","resultJson":"%s"}
+                ]}
+                """.formatted(
+                escaped(truncatedRolePreview()),
+                escaped(truncatedRolePreview()),
+                escaped(truncatedRolePreview()),
+                escaped(truncatedRolePreview())
+        );
+    }
+
+    private static String truncatedRolePreview() {
+        return "{\"status\":\"SUCCESS\",\"prBody\":\"## Summary\",\"largeRaw\":\"xxxxxxxx";
+    }
+
+    private static String escaped(String value) {
+        return value.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
+    private static void seedSucceededStages(
+            String taskId,
+            InMemoryAgentStageRunStore stageRuns,
+            InMemoryAgentStageArtifactStore artifacts
+    ) {
+        int index = 0;
+        for (AgentRole role : AgentRole.requirementDeliveryOrder()) {
+            index++;
+            String stageRunId = "stage-" + index;
+            String artifactId = "artifact-" + index;
+            artifacts.save(new AgentStageArtifact(
+                    artifactId, stageRunId, taskId, role, "RESULT_JSON",
+                    "rd-agent-stage://" + taskId + "/" + stageRunId + "/result",
+                    role.name() + " result json", truncatedRolePreview(), "sha256:" + artifactId,
+                    "{}", 100L + index));
+            stageRuns.save(new AgentStageRun(
+                    stageRunId, taskId, role, AgentStageStatus.SUCCEEDED, 1,
+                    taskId + ":" + role.name() + ":1", "", "", artifactId, "", "[]", "{}", "", "",
+                    100L + index, 200L + index, 100L + index, 200L + index));
+        }
+    }
+
     private static String withDeliveryReview(String value) {
         String normalized = value.strip();
         return normalized.substring(0, normalized.length() - 1)
@@ -236,6 +313,14 @@ class RequirementDeliveryResumeFromCheckpointTest {
             SnowflakeIdGenerator ids
     ) {
         RequirementDeliveryEngine engine(RequirementDeliveryReviewer reviewer) {
+            return engine(new InMemoryAgentStageRunStore(), new InMemoryAgentStageArtifactStore(), reviewer);
+        }
+
+        RequirementDeliveryEngine engine(
+                InMemoryAgentStageRunStore stageRuns,
+                InMemoryAgentStageArtifactStore artifacts,
+                RequirementDeliveryReviewer reviewer
+        ) {
             RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
                     registry, materials, request -> {
                         executorCalls.incrementAndGet();
@@ -243,7 +328,7 @@ class RequirementDeliveryResumeFromCheckpointTest {
                     },
                     new RequirementContextBuilder(), new RequirementPlanGenerator(),
                     new RuleBasedRequirementPolicyGate(), new AgentStagePlanner(ids::nextIdString),
-                    new InMemoryAgentStageRunStore(), new InMemoryAgentStageArtifactStore(),
+                    stageRuns, artifacts,
                     new RoleContextBuilder(), new InMemoryRoleContextPackageStore(),
                     AgentWorkflowAlertSinkPort.noop(), WorkflowExperienceStore.noop(), reviewer,
                     command -> {

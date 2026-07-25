@@ -1,6 +1,8 @@
 package com.wish.rd.engine.requirement;
 
+import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.JsonToken;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -10,6 +12,7 @@ import com.wish.rd.engine.agent.model.AgentRole;
 import com.wish.rd.engine.agent.AgentStagePlanner;
 import com.wish.rd.engine.agent.model.AgentStageRun;
 import com.wish.rd.engine.agent.AgentStageRunStore;
+import com.wish.rd.engine.agent.AgentStageTransitions;
 import com.wish.rd.engine.agent.model.AgentStageStatus;
 import com.wish.rd.engine.agent.model.AgentWorkflowAlert;
 import com.wish.rd.engine.agent.AgentWorkflowAlertSinkPort;
@@ -42,6 +45,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -80,6 +84,10 @@ import com.wish.rd.engine.retry.model.TaskRetryCheckpointStatus;
 public class RequirementDeliveryEngine {
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    /** 单角色阶段最大 attempt 数，防止协议失败引发的盲重试风暴（审查报告 F2）。 */
+    private static final int MAX_ROLE_ATTEMPTS = 3;
+    /** 单次回注的失败明细上限，防止巨型校验错误把 prompt 撑爆。 */
+    private static final int MAX_FAILURE_FEEDBACK_CHARS = 4_000;
     private static final Comparator<AgentStageRun> STAGE_RUN_RECENCY = Comparator
             .comparingInt(AgentStageRun::attemptNo)
             .thenComparingLong(AgentStageRun::createTimeEpochMillis)
@@ -901,7 +909,8 @@ public class RequirementDeliveryEngine {
         try {
             JsonNode root = OBJECT_MAPPER.readTree(persisted);
             if (root != null && root.isObject()
-                    && "SUCCESS".equals(root.path("multiAgentStatus").asText())) {
+                    && "SUCCESS".equals(root.path("multiAgentStatus").asText())
+                    && hasParseableStageResults(root.path("multiAgentStages"))) {
                 return RequirementExecutionResult.success(task.taskId(), "reused persisted delivery result", "", persisted);
             }
         } catch (JsonProcessingException ignored) {
@@ -919,6 +928,32 @@ public class RequirementDeliveryEngine {
         return RequirementExecutionResult.success(
                 task.taskId(), "recovered from immutable role artifacts", "",
                 mergeDeliveryResultJson("{}", "", stageResults));
+    }
+
+    /**
+     * 判断已落库的多角色结果里，每个阶段的 resultJson 是否仍是可解析的角色结果。
+     *
+     * <p>历史任务可能保存了被截断的 RESULT_JSON 预览，这类结果不能直接拿去复核，
+     * 必须回到不可变阶段产物重建，否则复核只会重复读到同一份坏数据。
+     *
+     * @param stages 已落库的 multiAgentStages 节点
+     * @return 全部阶段结果可解析时返回 true
+     */
+    private boolean hasParseableStageResults(JsonNode stages) {
+        if (stages == null || !stages.isArray()) {
+            return true;
+        }
+        for (JsonNode stage : stages) {
+            JsonNode result = stage.path("resultJson");
+            if (!result.isTextual()) {
+                continue;
+            }
+            String raw = safe(result.asText());
+            if (!raw.isBlank() && !isJsonObject(raw)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private String existingDeliveryReviewJson(String resultJson) {
@@ -996,7 +1031,23 @@ public class RequirementDeliveryEngine {
                 stageRunStore.save(pendingStage(task.taskId(), role, 1, now));
                 continue;
             }
-            if (isRetryableRequirementStatus(task.status()) && isRetryableStageFailure(latest)) {
+            if (isRetryableRequirementStatus(task.status())
+                    && AgentStageTransitions.requiresFreshAttemptOnRecovery(latest.status())) {
+                stageRunStore.transition(
+                        latest.stageRunId(),
+                        AgentStageStatus.FAILED_RETRYABLE,
+                        "ORCHESTRATION_INTERRUPTED",
+                        "previous role attempt was interrupted before it reached a terminal state",
+                        now
+                );
+                // attempt 硬上限：达到上限后不再开新 attempt，任务停在终态等待人工（CP-F2）。
+                if (latest.attemptNo() < MAX_ROLE_ATTEMPTS) {
+                    stageRunStore.save(pendingStage(task.taskId(), role, latest.attemptNo() + 1, now));
+                }
+                continue;
+            }
+            if (isRetryableRequirementStatus(task.status()) && isRetryableStageFailure(latest)
+                    && latest.attemptNo() < MAX_ROLE_ATTEMPTS) {
                 stageRunStore.save(pendingStage(task.taskId(), role, latest.attemptNo() + 1, now));
             }
         }
@@ -1033,6 +1084,13 @@ public class RequirementDeliveryEngine {
     private List<AgentStageRun> createQaRemediationAttempts(String taskId) {
         List<AgentStageRun> existing = stageRunStore.listByTask(taskId);
         long now = System.currentTimeMillis();
+        // 任一角色达到 attempt 上限则整体放弃补救，直接走人工失败分支（CP-F2）。
+        for (AgentRole role : List.of(AgentRole.CODING_AGENT, AgentRole.QA_AGENT)) {
+            AgentStageRun latest = latestStageOrNull(existing, role);
+            if (latest != null && latest.attemptNo() >= MAX_ROLE_ATTEMPTS) {
+                return List.of();
+            }
+        }
         List<AgentStageRun> created = new ArrayList<>(2);
         for (AgentRole role : List.of(AgentRole.CODING_AGENT, AgentRole.QA_AGENT)) {
             AgentStageRun latest = latestStageOrNull(existing, role);
@@ -1214,7 +1272,9 @@ public class RequirementDeliveryEngine {
                         aggregateAgentResultsJson("FAILED", pullRequestUrl, stageResults)
                 );
             }
-            String upstreamResultJson = stageResultsJson(stageResults);
+            // Persist complete role results for audit, but dispatch only a bounded handoff manifest.
+            // This keeps Docker metadata and raw model JSON out of downstream retrieval and prompts.
+            String upstreamResultJson = compactUpstreamHandoffJson(stageResults);
             if (role == AgentRole.CODING_AGENT && !qaRemediationResultJson.isBlank()) {
                 upstreamResultJson = qaRemediationUpstreamJson(upstreamResultJson, qaRemediationResultJson);
             }
@@ -1264,7 +1324,10 @@ public class RequirementDeliveryEngine {
                     policyDecision,
                     roleContext,
                     upstreamResultJson,
-                    recoveryPromptSection(activeRetry, role, recoveryEvidenceMaterials)
+                    joinPromptSections(
+                            recoveryPromptSection(activeRetry, role, recoveryEvidenceMaterials),
+                            previousFailureFeedbackSection(task.taskId(), role, stage.attemptNo())
+                    )
             );
             // DISPATCHING -> RUNNING：记录 prompt 快照后进入正式执行。
             stage = capturePromptArtifact(stage, rolePrompt);
@@ -1355,17 +1418,19 @@ public class RequirementDeliveryEngine {
                         && qaRemediationCount < 1
                         && isCodingRemediationRequested(roleResult.resultJson())) {
                     List<AgentStageRun> remediationStages = createQaRemediationAttempts(task.taskId());
-                    publishQaRemediationStarted(failedStage, remediationStages, roleResult.resultJson());
-                    return executeAgentStages(
-                            task,
-                            materials,
-                            context,
-                            plan,
-                            policyDecision,
-                            activeRetry,
-                            roleResult.resultJson(),
-                            qaRemediationCount + 1
-                    );
+                    if (!remediationStages.isEmpty()) {
+                        publishQaRemediationStarted(failedStage, remediationStages, roleResult.resultJson());
+                        return executeAgentStages(
+                                task,
+                                materials,
+                                context,
+                                plan,
+                                policyDecision,
+                                activeRetry,
+                                roleResult.resultJson(),
+                                qaRemediationCount + 1
+                        );
+                    }
                 }
                 // 任意角色 FAILED_NEEDS_HUMAN 都必须聚合为 NEEDS_HUMAN，
                 // 否则上层会把任务误标成 REJECTED（CP-06）。
@@ -2434,7 +2499,9 @@ public class RequirementDeliveryEngine {
                 # 角色上下文
                 %s
 
-                # 上游阶段结果
+                %s
+
+                # 上游交接摘要
                 %s
 
                 # Token 预算估算证据
@@ -2450,7 +2517,8 @@ public class RequirementDeliveryEngine {
                 role.name(),
                 roleInstruction(role),
                 roleContextJson(roleContext),
-                upstreamResultJson,
+                repositoryDiscoveryPromptSection(roleContext),
+                upstreamHandoffPromptSection(role, upstreamResultJson),
                 budgetEstimatePromptSection(role, task),
                 recoveryPromptSection,
                 buildPrompt(task, materials, context, plan, policyDecision),
@@ -2502,6 +2570,55 @@ public class RequirementDeliveryEngine {
             selectedMaterials.add(material);
         }
         return List.copyOf(selectedMaterials);
+    }
+
+    /**
+     * 生成上一轮失败反馈 prompt 段落，让重试 attempt 针对性自纠错而不是盲重跑（审查报告 F2）。
+     *
+     * <p>无历史失败 attempt 时返回空字符串，首轮 prompt 保持不变。
+     *
+     * @param taskId           RD 任务 ID
+     * @param role             当前角色
+     * @param currentAttemptNo 当前 attempt 序号
+     * @return 失败反馈段落或空字符串
+     */
+    private String previousFailureFeedbackSection(String taskId, AgentRole role, int currentAttemptNo) {
+        AgentStageRun previousFailure = stageRunStore.listByTask(taskId).stream()
+                .filter(stage -> stage.role() == role)
+                .filter(stage -> stage.attemptNo() < currentAttemptNo)
+                .filter(stage -> stage.status() == AgentStageStatus.FAILED_RETRYABLE
+                        || stage.status() == AgentStageStatus.FAILED_NEEDS_HUMAN)
+                .max(STAGE_RUN_RECENCY)
+                .orElse(null);
+        if (previousFailure == null || previousFailure.errorMessage().isBlank()) {
+            return "";
+        }
+        String detail = previousFailure.errorMessage();
+        if (detail.length() > MAX_FAILURE_FEEDBACK_CHARS) {
+            detail = detail.substring(0, MAX_FAILURE_FEEDBACK_CHARS) + "...(truncated)";
+        }
+        return """
+                # 上一轮失败反馈
+                上一次 %s 尝试（attempt %d）失败，错误分类：%s。
+                失败明细：
+                %s
+                请针对以上明细修正本轮输出（逐条补齐缺失或非法的结果字段），不要原样重复上一轮输出。
+                """.formatted(
+                role.name(),
+                previousFailure.attemptNo(),
+                previousFailure.errorCategory().isBlank() ? "UNKNOWN" : previousFailure.errorCategory(),
+                detail
+        ).strip();
+    }
+
+    private static String joinPromptSections(String first, String second) {
+        if (first.isBlank()) {
+            return second;
+        }
+        if (second.isBlank()) {
+            return first;
+        }
+        return first + "\n\n" + second;
     }
 
     /**
@@ -2588,16 +2705,22 @@ public class RequirementDeliveryEngine {
             case REQUIREMENT_REVIEWER -> """
                     - 只做需求评审，不修改代码，不创建 PR。
                     - 输出结构化需求评审结果，明确能否做、缺失信息、风险和验收覆盖。
+                    - 当评审允许进入下一角色时，使用已安装的 role-handoff-document Skill，把可执行交接写入 /work/output/handoff/next.md；预算见 context.json 的 roleHandoffMaxTokens。
+                    - 交接文档承载详细约束、验收、风险和待确认项；result.json 中只保留 next_prompt 的简短指针，绝不写对象存储地址或凭据。
                     - 结果必须写入 /work/output/result.json，且只使用当前角色输出 JSON 协议。
                     """.strip();
             case SOLUTION_ARCHITECT -> """
                     - 基于需求评审和证据制定开发方案，不修改代码，不创建 PR。
                     - 输出影响文件、接口/数据变更、实现步骤、验收映射和测试计划。
+                    - 使用已安装的 role-handoff-document Skill，把完整开发计划写入 /work/output/handoff/next.md，供 CODING_AGENT 作为受控附件读取；预算见 context.json 的 roleHandoffMaxTokens。
+                    - result.json 中的 next_prompt 只提供目标角色、短摘要和固定相对路径；不要把完整计划或 RustFS 地址复制进 JSON。
                     - 结果必须写入 /work/output/result.json，且只使用当前角色输出 JSON 协议。
                     """.strip();
             case CODING_AGENT -> """
                     - 根据需求评审和方案执行代码修改。
                     - 该阶段只负责代码修改和交付候选证据，不创建 PR。
+                    - 使用已安装的 role-handoff-document Skill，把变更、已执行测试、风险和 QA 注意事项写入 /work/output/handoff/next.md；预算见 context.json 的 roleHandoffMaxTokens。
+                    - result.json 中的 next_prompt 只提供目标角色、短摘要和固定相对路径；不得透传完整日志、Docker 元数据或对象存储地址。
                     - 成功时返回 prBody、changedFiles、testSummary 和真实测试证据，等待控制面复核后发布。
                     """.strip();
             case QA_AGENT -> """
@@ -2605,7 +2728,11 @@ public class RequirementDeliveryEngine {
                     - 先读取 /work/input/qa-profile.json，并遵循已安装的 qa-playwright-cli Skill；Web 项目且配置要求时必须执行真实 Chromium 浏览器验证。
                     - 不创建新 PR，也不得修改 /work/repo 中的跟踪文件；临时脚本只能写入 /work/output/qa-work。
                     - 当前需求验收（CURRENT）和受影响的既有关键路径回归（REGRESSION）都必须真实执行；任一必需检查缺少证据或被跳过都阻断交付。
-                    - 必须记录每条命令的退出码、耗时和日志；浏览器验证必须补充截图、trace、console 和 network 证据。
+                    - 必须记录每条命令的退出码、耗时和日志；每个 qa-evidence/ 日志文件必须非空，至少包含命令文本、退出码和时间戳；如果命令成功且无输出（如 git diff --check），在日志中写入命令和 exit code 0 及说明。浏览器验证必须补充截图、trace、console 和 network 证据。
+                    - evidenceArtifactIds 和 logArtifactId 只能引用 /work/output/qa-evidence/ 下实际存在的证据文件，不要引用 /work/output/qa-work/ 下的临时文件。
+                    - manifest.json 必须包含 "version": 1（整数）和 "artifacts" 数组；不要使用 "schema" 替代 "version"。
+                    - manifest.json 的每个 artifact 条目必须包含 "path"、"bytes"（文件精确字节数，整数）和 "sha256"（文件 SHA-256 哈希，小写十六进制 64 位字符串）三个字段；使用 sha256sum 命令获取准确值。
+                    - manifest.json 的 artifact path 只能以 "qa-evidence/" 开头；不要在 manifest 中列出 patch.diff、test.log 或任何 qa-evidence/ 以外的文件。
                     - PRODUCT_DEFECT 或 REGRESSION 失败必须建议退回 CODING_AGENT；环境、鉴权、QA 基础设施、需求歧义或 flaky 问题建议 HUMAN。
                     - 最后生成完整性 manifest，再把严格协议写入 /work/output/result.json。
                     """.strip();
@@ -2630,6 +2757,11 @@ public class RequirementDeliveryEngine {
                         "confidence": "LOW|MEDIUM|HIGH",
                         "basis": "基于四角色首轮、一次重试预留和给定历史实际 token 样本的模型判断",
                         "historicalSamples": []
+                      },
+                      "next_prompt": {
+                        "targetRole": "SOLUTION_ARCHITECT",
+                        "summary": "最多 1200 个字符的下游摘要",
+                        "handoffArtifact": "handoff/next.md"
                       }
                     }
                     """.strip();
@@ -2640,7 +2772,12 @@ public class RequirementDeliveryEngine {
                       "affectedFiles": ["预计影响文件"],
                       "implementationSteps": ["可执行开发步骤"],
                       "acceptanceMapping": [{"criteria":"验收标准","validation":"真实验证方式"}],
-                      "testPlan": [{"criteria":"验收标准","command":"真实测试命令"}]
+                      "testPlan": [{"criteria":"验收标准","command":"真实测试命令"}],
+                      "next_prompt": {
+                        "targetRole": "CODING_AGENT",
+                        "summary": "最多 1200 个字符的下游摘要",
+                        "handoffArtifact": "handoff/next.md"
+                      }
                     }
                     """.strip();
             case CODING_AGENT -> """
@@ -2653,7 +2790,12 @@ public class RequirementDeliveryEngine {
                       "testStatus": "PASSED|FAILED|SKIPPED",
                       "riskLevel": "LOW|MEDIUM|HIGH",
                       "prBody": "候选 PR 正文，包含改动和真实验证证据",
-                      "needHumanAction": false
+                      "needHumanAction": false,
+                      "next_prompt": {
+                        "targetRole": "QA_AGENT",
+                        "summary": "最多 1200 个字符的 QA 交接摘要",
+                        "handoffArtifact": "handoff/next.md"
+                      }
                     }
                     """.strip();
             case QA_AGENT -> """
@@ -2705,6 +2847,29 @@ public class RequirementDeliveryEngine {
         ).strip();
     }
 
+    /**
+     * Makes the controlled fallback operational rather than leaving it as an opaque evidence row in context JSON.
+     * The text is deliberately static: no retrieved source content or arbitrary command is promoted into the prompt.
+     */
+    private String repositoryDiscoveryPromptSection(RoleContextPackage roleContext) {
+        boolean required = roleContext != null && roleContext.evidence().stream().anyMatch(evidence ->
+                "REPOSITORY_DISCOVERY".equals(evidence.sourceType())
+                        && "REPOSITORY_DISCOVERY".equals(evidence.requiredEvidenceType())
+                        && evidence.sourceUri().startsWith("repo://")
+        );
+        if (!required) {
+            return "";
+        }
+        return """
+                # 受限仓库发现
+                角色特定检索证据暂缺。请在形成方案、修改代码或执行 QA 前完成受限仓库发现：
+                - 仅在当前 `/work/repo` 工作区内操作；最多 12 条只读命令、检查最多 20 个文件、读取最多 64 KiB。
+                - 仅使用 `rg`、`find`、`sed`、`git grep` 等普通仓库工具定位文件、符号和测试入口；不要联网搜索。
+                - 不访问基准参考答案、隐藏检查或仓库外路径，也不要切换提交、分支、提交代码或创建 PR。
+                - 在当前角色的结构化结果和直接下游交接中记录已定位的文件、符号、测试入口与尚存不确定性。
+                """.strip();
+    }
+
     private String evidenceJson(List<RoleContextEvidence> evidence) {
         return evidence.stream()
                 .map(item -> """
@@ -2725,13 +2890,322 @@ public class RequirementDeliveryEngine {
         return stageResults.stream().collect(Collectors.joining(",", "[", "]"));
     }
 
-    private String qaRemediationUpstreamJson(String stageResultsJson, String qaResultJson) {
-        return """
-                {"stages":%s,"qaRemediation":{"reason":"QA_CURRENT_OR_REGRESSION_FAILED","failedQaResult":%s}}
-                """.formatted(
-                stageResultsJson == null || stageResultsJson.isBlank() ? "[]" : stageResultsJson,
-                json(qaResultJson)
-        ).strip();
+    /**
+     * Keeps the complete stage result only in the audit trail and forwards a small, structured manifest to agents.
+     * RustFS object URIs remain necessary here for the server-side attachment resolver, but are never rendered into a
+     * model prompt.
+     */
+    private String compactUpstreamHandoffJson(List<String> stageResults) {
+        List<Map<String, Object>> stages = new ArrayList<>();
+        for (String rawStage : stageResults == null ? List.<String>of() : stageResults) {
+            try {
+                JsonNode stage = OBJECT_MAPPER.readTree(safe(rawStage));
+                if (stage == null || !stage.isObject()) {
+                    continue;
+                }
+                String role = safe(stage.path("role").asText(""));
+                if (role.isBlank()) {
+                    continue;
+                }
+                JsonNode roleResult = embeddedRoleResult(stage.path("resultJson"));
+                Map<String, Object> compact = new LinkedHashMap<>();
+                compact.put("role", role);
+                compact.put("success", stage.path("success").asBoolean(false));
+                String status = firstNonBlank(roleResult.path("status").asText(""), stage.path("status").asText(""));
+                if (!status.isBlank()) {
+                    compact.put("status", compactText(status));
+                }
+                String summary = firstNonBlank(stage.path("summary").asText(""), roleResult.path("summary").asText(""));
+                if (!summary.isBlank()) {
+                    compact.put("summary", compactText(summary));
+                }
+                String errorMessage = firstNonBlank(
+                        stage.path("errorMessage").asText(""), roleResult.path("errorMessage").asText("")
+                );
+                if (!errorMessage.isBlank()) {
+                    compact.put("errorMessage", compactText(errorMessage));
+                }
+                JsonNode handoff = roleResult.path("roleHandoff");
+                if (!handoff.isObject()) {
+                    handoff = stage.path("roleHandoff");
+                }
+                Map<String, Object> compactHandoff = compactHandoff(handoff, role);
+                if (!compactHandoff.isEmpty()) {
+                    compact.put("handoff", compactHandoff);
+                }
+                Map<String, Object> compactCandidatePatch = compactCandidatePatch(roleResult, role);
+                if (compactCandidatePatch.isEmpty()) {
+                    compactCandidatePatch = compactCandidatePatchManifest(stage.path("candidatePatch"), role);
+                }
+                if (!compactCandidatePatch.isEmpty()) {
+                    compact.put("candidatePatch", compactCandidatePatch);
+                }
+                stages.add(Map.copyOf(compact));
+            } catch (JsonProcessingException ignored) {
+                // An unparseable legacy stage remains audited, but cannot be safely passed to the next model.
+            }
+        }
+        return compactJson(Map.of("version", 1, "stages", List.copyOf(stages)));
+    }
+
+    private JsonNode embeddedRoleResult(JsonNode rawResult) {
+        if (rawResult == null || rawResult.isMissingNode() || rawResult.isNull()) {
+            return OBJECT_MAPPER.createObjectNode();
+        }
+        if (rawResult.isObject()) {
+            return rawResult;
+        }
+        if (!rawResult.isTextual()) {
+            return OBJECT_MAPPER.createObjectNode();
+        }
+        try {
+            JsonNode result = OBJECT_MAPPER.readTree(safe(rawResult.asText()));
+            return result != null && result.isObject() ? result : OBJECT_MAPPER.createObjectNode();
+        } catch (JsonProcessingException ignored) {
+            return OBJECT_MAPPER.createObjectNode();
+        }
+    }
+
+    private Map<String, Object> compactHandoff(JsonNode handoff, String fallbackSourceRole) {
+        if (handoff == null || !handoff.isObject()) {
+            return Map.of();
+        }
+        String sourceRole = firstNonBlank(handoff.path("sourceRole").asText(""), fallbackSourceRole);
+        String targetRole = safe(handoff.path("targetRole").asText(""));
+        String artifactName = safe(handoff.path("artifactName").asText(""));
+        String artifactUri = safe(handoff.path("artifactUri").asText(""));
+        String sha256 = safe(handoff.path("sha256").asText(""));
+        long bytes = handoff.path("bytes").asLong(-1L);
+        if (sourceRole.isBlank()
+                || targetRole.isBlank()
+                || !"handoff/next.md".equals(artifactName)
+                || !artifactUri.startsWith("s3://")
+                || !sha256.matches("(?:sha256:)?[0-9a-fA-F]{64}")
+                || bytes <= 0L) {
+            return Map.of();
+        }
+        Map<String, Object> compact = new LinkedHashMap<>();
+        compact.put("sourceRole", sourceRole);
+        compact.put("targetRole", targetRole);
+        compact.put("artifactName", artifactName);
+        compact.put("artifactUri", artifactUri);
+        compact.put("sha256", sha256);
+        compact.put("bytes", bytes);
+        String summary = safe(handoff.path("summary").asText(""));
+        if (!summary.isBlank()) {
+            compact.put("summary", compactText(summary));
+        }
+        return Map.copyOf(compact);
+    }
+
+    /**
+     * Carries the verified Coding diff as private server-side metadata only. The model receives neither its
+     * RustFS URI nor its contents; the executor rematerializes and applies it in the isolated QA worktree.
+     */
+    private Map<String, Object> compactCandidatePatch(JsonNode roleResult, String fallbackSourceRole) {
+        if (!AgentRole.CODING_AGENT.name().equalsIgnoreCase(safe(fallbackSourceRole))
+                || roleResult == null
+                || !roleResult.path("stageArtifacts").isArray()) {
+            return Map.of();
+        }
+        for (JsonNode artifact : roleResult.path("stageArtifacts")) {
+            if (artifact == null || !artifact.isObject()
+                    || !"PATCH_DIFF".equalsIgnoreCase(safe(artifact.path("type").asText("")))
+                    || !"patch.diff".equals(safe(artifact.path("name").asText("")))) {
+                continue;
+            }
+            JsonNode metadata = artifact.path("metadataJson");
+            String artifactUri = safe(artifact.path("uri").asText(""));
+            String sha256 = safe(metadata.path("sha256").asText(""));
+            long bytes = metadata.path("bytes").asLong(-1L);
+            if (!"true".equalsIgnoreCase(safe(metadata.path("candidatePatch").asText("")))
+                    || !artifactUri.startsWith("s3://")
+                    || !sha256.matches("(?:sha256:)?[0-9a-fA-F]{64}")
+                    || bytes <= 0L
+                    || bytes > 10L * 1024L * 1024L) {
+                continue;
+            }
+            Map<String, Object> compact = new LinkedHashMap<>();
+            compact.put("sourceRole", AgentRole.CODING_AGENT.name());
+            compact.put("targetRole", AgentRole.QA_AGENT.name());
+            compact.put("artifactName", "patch.diff");
+            compact.put("artifactUri", artifactUri);
+            compact.put("sha256", sha256);
+            compact.put("bytes", bytes);
+            return Map.copyOf(compact);
+        }
+        return Map.of();
+    }
+
+    private Map<String, Object> compactCandidatePatchManifest(
+            JsonNode candidatePatch,
+            String fallbackSourceRole
+    ) {
+        if (candidatePatch == null || !candidatePatch.isObject()) {
+            return Map.of();
+        }
+        String sourceRole = firstNonBlank(
+                safe(candidatePatch.path("sourceRole").asText("")), safe(fallbackSourceRole)
+        );
+        String targetRole = safe(candidatePatch.path("targetRole").asText(""));
+        String artifactName = safe(candidatePatch.path("artifactName").asText(""));
+        String artifactUri = safe(candidatePatch.path("artifactUri").asText(""));
+        String sha256 = safe(candidatePatch.path("sha256").asText(""));
+        long bytes = candidatePatch.path("bytes").asLong(-1L);
+        if (!AgentRole.CODING_AGENT.name().equalsIgnoreCase(sourceRole)
+                || !AgentRole.QA_AGENT.name().equalsIgnoreCase(targetRole)
+                || !"patch.diff".equals(artifactName)
+                || !artifactUri.startsWith("s3://")
+                || !sha256.matches("(?:sha256:)?[0-9a-fA-F]{64}")
+                || bytes <= 0L
+                || bytes > 10L * 1024L * 1024L) {
+            return Map.of();
+        }
+        Map<String, Object> compact = new LinkedHashMap<>();
+        compact.put("sourceRole", AgentRole.CODING_AGENT.name());
+        compact.put("targetRole", AgentRole.QA_AGENT.name());
+        compact.put("artifactName", "patch.diff");
+        compact.put("artifactUri", artifactUri);
+        compact.put("sha256", sha256);
+        compact.put("bytes", bytes);
+        return Map.copyOf(compact);
+    }
+
+    private String upstreamHandoffPromptSection(AgentRole role, String upstreamHandoffJson) {
+        List<String> stageLines = new ArrayList<>();
+        List<String> documentLines = new ArrayList<>();
+        List<String> candidatePatchLines = new ArrayList<>();
+        String remediation = "";
+        try {
+            JsonNode root = OBJECT_MAPPER.readTree(safe(upstreamHandoffJson));
+            if (root != null && root.path("stages").isArray()) {
+                for (JsonNode stage : root.path("stages")) {
+                    String sourceRole = safe(stage.path("role").asText(""));
+                    String status = firstNonBlank(stage.path("status").asText(""),
+                            stage.path("success").asBoolean(false) ? "SUCCESS" : "");
+                    String summary = safe(stage.path("summary").asText(""));
+                    if (!sourceRole.isBlank()) {
+                        stageLines.add("- " + sourceRole + ": "
+                                + firstNonBlank(status, "COMPLETED")
+                                + (summary.isBlank() ? "" : " - " + compactText(summary)));
+                    }
+                    JsonNode handoff = stage.path("handoff");
+                    if (handoff.isObject() && role.name().equalsIgnoreCase(handoff.path("targetRole").asText(""))) {
+                        String declaredSource = firstNonBlank(handoff.path("sourceRole").asText(""), sourceRole);
+                        String localPath = "/work/input/attachments/handoff-"
+                                + declaredSource.toLowerCase(Locale.ROOT) + ".md";
+                        String summaryText = safe(handoff.path("summary").asText(""));
+                        documentLines.add("- " + localPath + " (from " + declaredSource + ")"
+                                + (summaryText.isBlank() ? "" : ": " + compactText(summaryText)));
+                    }
+                    JsonNode candidatePatch = stage.path("candidatePatch");
+                    if (role == AgentRole.QA_AGENT && isVerifiedCandidatePatch(candidatePatch, sourceRole)) {
+                        candidatePatchLines.add("- /work/input/attachments/candidate-patch.diff"
+                                + " (from CODING_AGENT; platform-applied in this isolated QA checkout)");
+                    }
+                }
+            }
+            JsonNode qaRemediation = root == null ? null : root.path("qaRemediation");
+            if (qaRemediation != null && qaRemediation.isObject()) {
+                remediation = "\nQA remediation: " + firstNonBlank(
+                        qaRemediation.path("failureCategory").asText(""),
+                        qaRemediation.path("reason").asText(""),
+                        "QA_CURRENT_OR_REGRESSION_FAILED"
+                ) + "; " + compactText(qaRemediation.path("summary").asText(""));
+            }
+        } catch (JsonProcessingException ignored) {
+            return "No usable upstream handoff was produced.";
+        }
+        String stageSummary = stageLines.isEmpty() ? "- No upstream role has completed." : String.join("\n", stageLines);
+        String documents = documentLines.isEmpty()
+                ? "- No direct handoff document is attached for this role."
+                : "Attached verified handoff documents:\n" + String.join("\n", documentLines);
+        String candidatePatches = candidatePatchLines.isEmpty()
+                ? ""
+                : "\nVerified candidate patches:\n" + String.join("\n", candidatePatchLines);
+        return (stageSummary + "\n" + documents + candidatePatches + remediation).strip();
+    }
+
+    private boolean isVerifiedCandidatePatch(JsonNode candidatePatch, String fallbackSourceRole) {
+        if (candidatePatch == null || !candidatePatch.isObject()) {
+            return false;
+        }
+        String sourceRole = firstNonBlank(
+                candidatePatch.path("sourceRole").asText(""), fallbackSourceRole
+        );
+        String artifactName = safe(candidatePatch.path("artifactName").asText(""));
+        String artifactUri = safe(candidatePatch.path("artifactUri").asText(""));
+        String sha256 = safe(candidatePatch.path("sha256").asText(""));
+        long bytes = candidatePatch.path("bytes").asLong(-1L);
+        return AgentRole.CODING_AGENT.name().equalsIgnoreCase(sourceRole)
+                && AgentRole.QA_AGENT.name().equalsIgnoreCase(candidatePatch.path("targetRole").asText(""))
+                && "patch.diff".equals(artifactName)
+                && artifactUri.startsWith("s3://")
+                && sha256.matches("(?:sha256:)?[0-9a-fA-F]{64}")
+                && bytes > 0L
+                && bytes <= 10L * 1024L * 1024L;
+    }
+
+    private String qaRemediationUpstreamJson(String compactUpstreamJson, String qaResultJson) {
+        ObjectNode root;
+        try {
+            JsonNode parsed = OBJECT_MAPPER.readTree(safe(compactUpstreamJson));
+            root = parsed instanceof ObjectNode objectNode ? objectNode.deepCopy() : OBJECT_MAPPER.createObjectNode();
+        } catch (JsonProcessingException exception) {
+            root = OBJECT_MAPPER.createObjectNode();
+        }
+        if (!root.path("stages").isArray()) {
+            root.putArray("stages");
+        }
+        ObjectNode remediation = root.putObject("qaRemediation");
+        remediation.put("reason", "QA_CURRENT_OR_REGRESSION_FAILED");
+        try {
+            JsonNode qa = OBJECT_MAPPER.readTree(safe(qaResultJson));
+            if (qa != null && qa.isObject()) {
+                remediation.put("status", compactText(qa.path("status").asText("")));
+                remediation.put("failureCategory", compactText(qa.path("failureCategory").asText("")));
+                remediation.put("retryRecommendation", compactText(qa.path("retryRecommendation").asText("")));
+                remediation.put("summary", compactText(qa.path("summary").asText("")));
+                List<String> evidenceIds = new ArrayList<>();
+                String manifest = safe(qa.path("evidenceManifestArtifactId").asText(""));
+                if (!manifest.isBlank()) {
+                    evidenceIds.add(manifest);
+                }
+                if (qa.path("acceptanceResults").isArray()) {
+                    for (JsonNode acceptance : qa.path("acceptanceResults")) {
+                        String logArtifactId = safe(acceptance.path("logArtifactId").asText(""));
+                        if (!logArtifactId.isBlank()) {
+                            evidenceIds.add(logArtifactId);
+                        }
+                        if (acceptance.path("evidenceArtifactIds").isArray()) {
+                            for (JsonNode evidence : acceptance.path("evidenceArtifactIds")) {
+                                String evidenceId = safe(evidence.asText(""));
+                                if (!evidenceId.isBlank()) {
+                                    evidenceIds.add(evidenceId);
+                                }
+                            }
+                        }
+                    }
+                }
+                remediation.putPOJO("evidenceArtifactIds", List.copyOf(new LinkedHashSet<>(evidenceIds)));
+            }
+        } catch (JsonProcessingException ignored) {
+            remediation.put("summary", "QA result could not be parsed; inspect the stage audit record.");
+        }
+        return compactJson(root);
+    }
+
+    private String compactJson(Object value) {
+        try {
+            return OBJECT_MAPPER.writeValueAsString(value);
+        } catch (JsonProcessingException exception) {
+            return "{\"version\":1,\"stages\":[]}";
+        }
+    }
+
+    private String compactText(String value) {
+        String normalized = safe(value).replaceAll("[\\p{Cntrl}&&[^\\r\\n\\t]]", " ");
+        return normalized.length() <= 1_200 ? normalized : normalized.substring(0, 1_200) + "...";
     }
 
     private boolean isCodingRemediationRequested(String qaResultJson) {
@@ -2761,21 +3235,202 @@ public class RequirementDeliveryEngine {
     }
 
     private String reusedStageResultJson(AgentStageRun stage) {
-        AgentStageArtifact resultArtifact = artifactStore.listByTask(stage.taskId()).stream()
+        List<AgentStageArtifact> stageArtifacts = artifactStore.listByTask(stage.taskId()).stream()
                 .filter(artifact -> artifact.stageRunId().equals(stage.stageRunId()))
+                .toList();
+        AgentStageArtifact resultArtifact = stageArtifacts.stream()
                 .filter(artifact -> artifact.artifactId().equals(stage.resultArtifactId())
                         || "RESULT_JSON".equals(artifact.artifactType()))
                 .max(Comparator.comparingLong(AgentStageArtifact::createdAtEpochMillis))
                 .orElse(null);
-        return """
-                {"role":%s,"success":true,"reused":true,"status":%s,"sourceStageRunId":%s,"sourceArtifactId":%s,"resultJson":%s}
-                """.formatted(
-                json(stage.role().name()),
-                json("SUCCEEDED"),
-                json(stage.stageRunId()),
-                json(resultArtifact == null ? stage.resultArtifactId() : resultArtifact.artifactId()),
-                json(resultArtifact == null ? "" : resultArtifact.contentPreview())
-        ).strip();
+        Map<String, Object> reused = new LinkedHashMap<>();
+        reused.put("role", stage.role().name());
+        reused.put("success", true);
+        reused.put("reused", true);
+        reused.put("status", "SUCCEEDED");
+        reused.put("sourceStageRunId", stage.stageRunId());
+        reused.put("sourceArtifactId", resultArtifact == null ? stage.resultArtifactId() : resultArtifact.artifactId());
+        String resultPreview = resultArtifact == null ? "" : safe(resultArtifact.contentPreview());
+        if (resultPreview.isBlank() || isJsonObject(resultPreview)) {
+            reused.put("resultJson", resultPreview);
+        } else {
+            // RESULT_JSON 预览按字符截断，超长结果会被切断在字段中间而不再是合法 JSON。
+            // 复用时只保留已完整写入的顶层字段，交付复核才能读到结构合法且未被补全的角色证据。
+            reused.put("resultJson", salvageTruncatedResultJson(resultPreview));
+            reused.put("resultJsonTruncated", true);
+        }
+        Map<String, Object> handoff = persistedRoleHandoff(stage, stageArtifacts);
+        if (!handoff.isEmpty()) {
+            // RESULT_JSON is deliberately preview-truncated for audit storage. The separately persisted,
+            // integrity-checked Markdown artifact is the recovery source for downstream role handoff.
+            reused.put("roleHandoff", handoff);
+        }
+        Map<String, Object> candidatePatch = persistedCandidatePatch(stage, stageArtifacts);
+        if (!candidatePatch.isEmpty()) {
+            // PATCH_DIFF is persisted independently from the preview-truncated result for retry-safe local QA.
+            reused.put("candidatePatch", candidatePatch);
+        }
+        return compactJson(reused);
+    }
+
+    private boolean isJsonObject(String value) {
+        try {
+            JsonNode parsed = OBJECT_MAPPER.readTree(safe(value));
+            return parsed != null && parsed.isObject();
+        } catch (JsonProcessingException exception) {
+            return false;
+        }
+    }
+
+    /**
+     * 从被截断的 RESULT_JSON 预览中抢救出结构完整的顶层字段。
+     *
+     * <p>只保留能够被完整解析的键值对；被切断的那个字段及其之后的内容整体丢弃，
+     * 不做任何补全，避免用推断出来的内容冒充角色交付证据。
+     *
+     * @param preview 被截断的结果预览
+     * @return 合法的紧凑 JSON 对象；无法抢救时返回空串
+     */
+    private String salvageTruncatedResultJson(String preview) {
+        ObjectNode salvaged = OBJECT_MAPPER.createObjectNode();
+        try (JsonParser parser = OBJECT_MAPPER.getFactory().createParser(safe(preview))) {
+            if (parser.nextToken() != JsonToken.START_OBJECT) {
+                return "";
+            }
+            while (parser.nextToken() == JsonToken.FIELD_NAME) {
+                String field = parser.currentName();
+                parser.nextToken();
+                salvaged.set(field, OBJECT_MAPPER.readTree(parser));
+            }
+        } catch (IOException truncatedTail) {
+            // 截断处之后的内容不可解析，保留此前已完整读出的字段即可。
+        }
+        return salvaged.isEmpty() ? "" : compactJson(salvaged);
+    }
+
+    private Map<String, Object> persistedRoleHandoff(
+            AgentStageRun stage,
+            List<AgentStageArtifact> stageArtifacts
+    ) {
+        AgentRole targetRole = directDownstreamRole(stage.role());
+        if (targetRole == null) {
+            return Map.of();
+        }
+        return stageArtifacts.stream()
+                .filter(artifact -> "HANDOFF_MARKDOWN".equals(artifact.artifactType()))
+                .max(Comparator.comparingLong(AgentStageArtifact::createdAtEpochMillis))
+                .map(artifact -> persistedRoleHandoff(stage.role(), targetRole, artifact))
+                .orElseGet(Map::of);
+    }
+
+    private Map<String, Object> persistedRoleHandoff(
+            AgentRole sourceRole,
+            AgentRole targetRole,
+            AgentStageArtifact artifact
+    ) {
+        if (artifact == null || !artifact.artifactUri().startsWith("s3://")) {
+            return Map.of();
+        }
+        try {
+            JsonNode metadata = OBJECT_MAPPER.readTree(artifact.metadataJson());
+            if (metadata == null || !metadata.isObject()
+                    || !"handoff/next.md".equals(safe(metadata.path("artifactName").asText("")))) {
+                return Map.of();
+            }
+            String sha256 = firstNonBlank(
+                    safe(metadata.path("sha256").asText("")), artifact.contentHash()
+            );
+            long bytes = metadata.path("bytes").canConvertToLong()
+                    ? metadata.path("bytes").asLong(-1L)
+                    : parsePositiveLong(metadata.path("bytes").asText(""));
+            if (!sha256.matches("(?:sha256:)?[0-9a-fA-F]{64}") || bytes <= 0L) {
+                return Map.of();
+            }
+            Map<String, Object> handoff = new LinkedHashMap<>();
+            handoff.put("sourceRole", sourceRole.name());
+            handoff.put("targetRole", targetRole.name());
+            handoff.put("artifactName", "handoff/next.md");
+            handoff.put("artifactUri", artifact.artifactUri());
+            handoff.put("sha256", sha256);
+            handoff.put("bytes", bytes);
+            if (!artifact.summary().isBlank()) {
+                handoff.put("summary", compactText(artifact.summary()));
+            }
+            return Map.copyOf(handoff);
+        } catch (JsonProcessingException ignored) {
+            return Map.of();
+        }
+    }
+
+    private Map<String, Object> persistedCandidatePatch(
+            AgentStageRun stage,
+            List<AgentStageArtifact> stageArtifacts
+    ) {
+        if (stage.role() != AgentRole.CODING_AGENT) {
+            return Map.of();
+        }
+        return stageArtifacts.stream()
+                .filter(artifact -> "PATCH_DIFF".equals(artifact.artifactType()))
+                .max(Comparator.comparingLong(AgentStageArtifact::createdAtEpochMillis))
+                .map(artifact -> persistedCandidatePatch(stage.role(), artifact))
+                .orElseGet(Map::of);
+    }
+
+    private Map<String, Object> persistedCandidatePatch(
+            AgentRole sourceRole,
+            AgentStageArtifact artifact
+    ) {
+        if (sourceRole != AgentRole.CODING_AGENT
+                || artifact == null
+                || !artifact.artifactUri().startsWith("s3://")) {
+            return Map.of();
+        }
+        try {
+            JsonNode metadata = OBJECT_MAPPER.readTree(artifact.metadataJson());
+            if (metadata == null || !metadata.isObject()
+                    || !"true".equalsIgnoreCase(safe(metadata.path("candidatePatch").asText("")))) {
+                return Map.of();
+            }
+            String sha256 = firstNonBlank(
+                    safe(metadata.path("sha256").asText("")), artifact.contentHash()
+            );
+            long bytes = metadata.path("bytes").canConvertToLong()
+                    ? metadata.path("bytes").asLong(-1L)
+                    : parsePositiveLong(metadata.path("bytes").asText(""));
+            if (!sha256.matches("(?:sha256:)?[0-9a-fA-F]{64}")
+                    || bytes <= 0L
+                    || bytes > 10L * 1024L * 1024L) {
+                return Map.of();
+            }
+            Map<String, Object> candidatePatch = new LinkedHashMap<>();
+            candidatePatch.put("sourceRole", AgentRole.CODING_AGENT.name());
+            candidatePatch.put("targetRole", AgentRole.QA_AGENT.name());
+            candidatePatch.put("artifactName", "patch.diff");
+            candidatePatch.put("artifactUri", artifact.artifactUri());
+            candidatePatch.put("sha256", sha256);
+            candidatePatch.put("bytes", bytes);
+            return Map.copyOf(candidatePatch);
+        } catch (JsonProcessingException ignored) {
+            return Map.of();
+        }
+    }
+
+    private long parsePositiveLong(String value) {
+        try {
+            return Long.parseLong(safe(value));
+        } catch (NumberFormatException ignored) {
+            return -1L;
+        }
+    }
+
+    private AgentRole directDownstreamRole(AgentRole role) {
+        return switch (role) {
+            case REQUIREMENT_REVIEWER -> AgentRole.SOLUTION_ARCHITECT;
+            case SOLUTION_ARCHITECT -> AgentRole.CODING_AGENT;
+            case CODING_AGENT -> AgentRole.QA_AGENT;
+            case QA_AGENT -> null;
+            default -> null;
+        };
     }
 
     private String stageResultJson(AgentRole role, RequirementExecutionResult result) {

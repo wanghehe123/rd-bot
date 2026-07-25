@@ -14,9 +14,15 @@ import com.wish.rd.engine.agent.impl.InMemoryAgentStageRunStore;
 import com.wish.rd.engine.agent.model.WorkflowExperienceEntry;
 import com.wish.rd.engine.agent.WorkflowExperienceStore;
 import com.wish.rd.engine.agent.model.WorkflowExperienceType;
+import com.wish.rd.engine.retrieval.DeepRetrievalOrchestrator;
+import com.wish.rd.engine.retrieval.RequirementKnowledgeSearchPort;
+import com.wish.rd.engine.retrieval.model.RetrievalScope;
+import com.wish.rd.engine.retrieval.model.SearchResult;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
 import com.wish.rd.rag.context.impl.InMemoryRoleContextPackageStore;
 import com.wish.rd.rag.context.RoleContextBuilder;
+import com.wish.rd.rag.retrieval.run.RetrievalRunLifecycle;
+import com.wish.rd.rag.retrieval.run.impl.InMemoryRetrievalRunStore;
 import com.wish.rd.rag.runtime.model.CreateRequirementTaskCommand;
 import com.wish.rd.rag.runtime.impl.InMemoryRdTaskStatusEventStore;
 import com.wish.rd.rag.runtime.impl.InMemoryRdTaskStore;
@@ -159,7 +165,7 @@ class RequirementDeliveryEngineTest {
                 RdTaskStatus.COMPLETED.name()
         ), registry.timeline(task.taskId()).stream().map(event -> event.status()).toList());
         assertTrue(captured.getFirst().prompt().contains("# 角色上下文"));
-        assertTrue(captured.getFirst().prompt().contains("# 上游阶段结果"));
+        assertTrue(captured.getFirst().prompt().contains("# 上游交接摘要"));
         assertTrue(captured.getFirst().prompt().contains("# 需求摘要"));
         assertTrue(captured.getFirst().prompt().contains("# 实现计划"));
         assertTrue(captured.getFirst().prompt().contains("# 策略决策"));
@@ -213,6 +219,590 @@ class RequirementDeliveryEngineTest {
                                 && entry.evidenceQuality() > 0.0d
                                 && !entry.applicableRoles().isEmpty()),
                 "new workflow experiences must carry repository scope, quality, and applicable roles");
+    }
+
+    @Test
+    void shouldForwardOnlyCompactPrivateHandoffMetadataToTheNextRole() {
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(), new InMemoryRdTaskStatusEventStore(), generator());
+        InMemoryTaskMaterialStore materialStore = new InMemoryTaskMaterialStore();
+        RdRequirementTask task = createRequirementTask(
+                registry,
+                materialStore,
+                "handoff-material",
+                "紧凑交接测试",
+                "下游应只读取交接文档",
+                "验证角色间不再传播整段执行 JSON。"
+        );
+        List<RequirementExecutionRequest> captured = new CopyOnWriteArrayList<>();
+        String reviewerResult = """
+                {
+                  "decision": "APPROVED",
+                  "feasibility": "CAN_DO",
+                  "missingInformation": [],
+                  "risks": [],
+                  "acceptanceCoverage": ["前端构建通过"],
+                  "budgetEstimate": {
+                    "initialTokens": 80000,
+                    "retryReserveTokens": 20000,
+                    "estimatedTotalTokens": 100000,
+                    "confidence": "LOW",
+                    "basis": "完整交付估算",
+                    "historicalSamples": []
+                  },
+                  "largeRaw": "DO_NOT_FORWARD_RAW_ROLE_JSON",
+                  "dockerMetadata": {"image": "rd-bot/claude-code:local", "containerId": "container-raw"},
+                  "roleHandoff": {
+                    "sourceRole": "REQUIREMENT_REVIEWER",
+                    "targetRole": "SOLUTION_ARCHITECT",
+                    "artifactName": "handoff/next.md",
+                    "artifactUri": "s3://rd-role-handoffs/private-review.md",
+                    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "bytes": 321,
+                    "summary": "需求评审已经批准，详细约束见交接文档"
+                  }
+                }
+                """;
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry,
+                materialStore,
+                request -> {
+                    captured.add(request);
+                    if (request.role() == AgentRole.REQUIREMENT_REVIEWER) {
+                        return RequirementExecutionResult.success(request.taskId(), "评审通过", "", reviewerResult);
+                    }
+                    if (request.role() == AgentRole.CODING_AGENT) {
+                        return RequirementExecutionResult.success(request.taskId(), "实现完成", "", codingResultJson(request.role()));
+                    }
+                    return RequirementExecutionResult.success(
+                            request.taskId(), request.role().name() + " 完成", "", roleResultJson(request.role()));
+                },
+                new RequirementContextBuilder(),
+                new RequirementPlanGenerator(),
+                new RuleBasedRequirementPolicyGate(),
+                new AgentStagePlanner(new AtomicStageIdSupplier()),
+                new InMemoryAgentStageRunStore(),
+                new RoleContextBuilder(),
+                new InMemoryRoleContextPackageStore(),
+                AgentWorkflowAlertSinkPort.noop(),
+                WorkflowExperienceStore.noop(),
+                new RequirementDeliveryReviewer(),
+                new RecordingRequirementPullRequestPublisher()
+        );
+
+        RequirementDeliveryResult result = engine.submit(task.taskId());
+
+        assertEquals(RdTaskStatus.COMPLETED, result.status());
+        RequirementExecutionRequest architect = captured.stream()
+                .filter(request -> request.role() == AgentRole.SOLUTION_ARCHITECT)
+                .findFirst()
+                .orElseThrow();
+        assertTrue(architect.upstreamResultJson().contains("\"handoff\""));
+        assertFalse(architect.upstreamResultJson().contains("roleHandoff"));
+        assertFalse(architect.upstreamResultJson().contains("dockerMetadata"));
+        assertFalse(architect.upstreamResultJson().contains("DO_NOT_FORWARD_RAW_ROLE_JSON"));
+        assertTrue(architect.prompt().contains("# 上游交接摘要"));
+        assertTrue(architect.prompt().contains("/work/input/attachments/handoff-requirement_reviewer.md"));
+        assertFalse(architect.prompt().contains("s3://rd-role-handoffs/"));
+    }
+
+    @Test
+    void shouldForwardOnlyVerifiedCodingPatchMetadataToLocalQa() {
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(), new InMemoryRdTaskStatusEventStore(), generator());
+        InMemoryTaskMaterialStore materialStore = new InMemoryTaskMaterialStore();
+        RdRequirementTask task = createRequirementTask(
+                registry,
+                materialStore,
+                "candidate-patch-handoff",
+                "候选补丁交接测试",
+                "QA 必须在独立工作区验证 Coding 产生的补丁",
+                "禁止把完整执行 JSON 或 RustFS 地址交给下游模型。"
+        );
+        List<RequirementExecutionRequest> captured = new CopyOnWriteArrayList<>();
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry,
+                materialStore,
+                request -> {
+                    captured.add(request);
+                    if (request.role() == AgentRole.CODING_AGENT) {
+                        return RequirementExecutionResult.success(
+                                request.taskId(), "实现完成", "", codingResultWithCandidatePatchJson());
+                    }
+                    return RequirementExecutionResult.success(
+                            request.taskId(), request.role().name() + " 完成", "", roleResultJson(request.role()));
+                },
+                new RequirementContextBuilder(),
+                new RequirementPlanGenerator(),
+                new RuleBasedRequirementPolicyGate(),
+                new AgentStagePlanner(new AtomicStageIdSupplier()),
+                new InMemoryAgentStageRunStore(),
+                new RoleContextBuilder(),
+                new InMemoryRoleContextPackageStore(),
+                AgentWorkflowAlertSinkPort.noop(),
+                WorkflowExperienceStore.noop(),
+                new RequirementDeliveryReviewer(),
+                new RecordingRequirementPullRequestPublisher()
+        );
+
+        assertEquals(RdTaskStatus.COMPLETED, engine.submit(task.taskId()).status());
+
+        RequirementExecutionRequest qa = captured.stream()
+                .filter(request -> request.role() == AgentRole.QA_AGENT)
+                .findFirst()
+                .orElseThrow();
+        assertTrue(qa.upstreamResultJson().contains("\"candidatePatch\""));
+        assertTrue(qa.upstreamResultJson().contains("\"artifactName\":\"patch.diff\""));
+        assertFalse(qa.upstreamResultJson().contains("PRIVATE_PATCH_CONTENT_MUST_NOT_REACH_QA_PROMPT"));
+        assertTrue(qa.prompt().contains("/work/input/attachments/candidate-patch.diff"));
+        assertFalse(qa.prompt().contains("s3://rd-role-handoffs/"));
+    }
+
+    @Test
+    void shouldTellRolesToPerformBoundedRepositoryDiscoveryWhenRoleEvidenceIsMissing() {
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(), new InMemoryRdTaskStatusEventStore(), generator());
+        InMemoryTaskMaterialStore materialStore = new InMemoryTaskMaterialStore();
+        RdRequirementTask task = createRequirementTask(
+                registry,
+                materialStore,
+                "repository-discovery-material",
+                "受限仓库发现提示",
+                "在代码库内定位并修复问题",
+                "没有命中角色特定证据时，编码代理应在当前仓库中自行定位文件和测试入口。"
+        );
+        List<RequirementExecutionRequest> captured = new CopyOnWriteArrayList<>();
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry,
+                materialStore,
+                request -> {
+                    captured.add(request);
+                    return RequirementExecutionResult.success(
+                            request.taskId(), request.role().name() + " 完成", "",
+                            request.role() == AgentRole.CODING_AGENT
+                                    ? codingResultJson(request.role())
+                                    : roleResultJson(request.role())
+                    );
+                },
+                new RequirementContextBuilder(),
+                new RequirementPlanGenerator(),
+                new RuleBasedRequirementPolicyGate(),
+                new AgentStagePlanner(new AtomicStageIdSupplier()),
+                new InMemoryAgentStageRunStore(),
+                new RoleContextBuilder(),
+                new InMemoryRoleContextPackageStore(),
+                AgentWorkflowAlertSinkPort.noop(),
+                WorkflowExperienceStore.noop(),
+                new RequirementDeliveryReviewer(),
+                new RecordingRequirementPullRequestPublisher()
+        );
+        AtomicInteger retrievalIds = new AtomicInteger();
+        engine.setDeepRetrievalOrchestrator(new DeepRetrievalOrchestrator(
+                new RetrievalRunLifecycle(
+                        new InMemoryRetrievalRunStore(),
+                        () -> "retrieval-" + retrievalIds.incrementAndGet(),
+                        () -> 100L
+                ),
+                new RequirementKnowledgeSearchPort() {
+                    @Override
+                    public RetrievalScope resolveScope(RdRequirementTask ignored) {
+                        return new RetrievalScope(List.of("project-kb"), "example/waimai", true, "");
+                    }
+
+                    @Override
+                    public SearchResult search(
+                            RdRequirementTask ignored,
+                            AgentRole role,
+                            String query,
+                            RetrievalScope scope,
+                            int topK
+                    ) {
+                        return SearchResult.empty();
+                    }
+                }
+        ));
+
+        RequirementDeliveryResult result = engine.submit(task.taskId());
+
+        assertEquals(RdTaskStatus.COMPLETED, result.status());
+        for (AgentRole role : List.of(AgentRole.SOLUTION_ARCHITECT, AgentRole.CODING_AGENT, AgentRole.QA_AGENT)) {
+            RequirementExecutionRequest request = captured.stream()
+                    .filter(candidate -> candidate.role() == role)
+                    .findFirst()
+                    .orElseThrow();
+            assertTrue(request.prompt().contains("# 受限仓库发现"), request.prompt());
+            assertTrue(request.prompt().contains("在形成方案、修改代码或执行 QA 前完成受限仓库发现"), request.prompt());
+            assertTrue(request.prompt().contains("最多 12 条只读命令"), request.prompt());
+        }
+    }
+
+    @Test
+    void shouldReusePersistedHandoffArtifactWhenResultPreviewTruncatesOnRecovery() {
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(), new InMemoryRdTaskStatusEventStore(), generator());
+        InMemoryTaskMaterialStore materialStore = new InMemoryTaskMaterialStore();
+        RdRequirementTask task = createRequirementTask(
+                registry,
+                materialStore,
+                "reused-handoff-material",
+                "截断结果恢复测试",
+                "恢复执行时仍应传递受控交接文档",
+                "验证超过审计预览上限的结果不会丢失下游交接。"
+        );
+        List<RequirementExecutionRequest> captured = new CopyOnWriteArrayList<>();
+        AgentStageRunStore stageRunStore = new InMemoryAgentStageRunStore();
+        InMemoryAgentStageArtifactStore artifactStore = new InMemoryAgentStageArtifactStore();
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry,
+                materialStore,
+                request -> {
+                    captured.add(request);
+                    if (request.role() == AgentRole.REQUIREMENT_REVIEWER) {
+                        return RequirementExecutionResult.success(
+                                request.taskId(), "评审通过", "", largeReviewerResultWithHandoff());
+                    }
+                    if (request.role() == AgentRole.SOLUTION_ARCHITECT) {
+                        return RequirementExecutionResult.failure(
+                                request.taskId(), "让恢复链路停在方案设计阶段", "{\"status\":\"FAILED\"}");
+                    }
+                    return RequirementExecutionResult.success(
+                            request.taskId(), request.role().name() + " 完成", "", roleResultJson(request.role()));
+                },
+                new RequirementContextBuilder(),
+                new RequirementPlanGenerator(),
+                new RuleBasedRequirementPolicyGate(),
+                new AgentStagePlanner(new AtomicStageIdSupplier()),
+                stageRunStore,
+                artifactStore,
+                new RoleContextBuilder(),
+                new InMemoryRoleContextPackageStore(),
+                AgentWorkflowAlertSinkPort.noop(),
+                WorkflowExperienceStore.noop(),
+                new RequirementDeliveryReviewer(),
+                new RecordingRequirementPullRequestPublisher()
+        );
+
+        assertEquals(RdTaskStatus.FAILED_NEEDS_HUMAN, engine.submit(task.taskId()).status());
+        AgentStageArtifact reviewerResult = artifactStore.listByTask(task.taskId()).stream()
+                .filter(artifact -> artifact.role() == AgentRole.REQUIREMENT_REVIEWER)
+                .filter(artifact -> artifact.artifactType().equals("RESULT_JSON"))
+                .findFirst()
+                .orElseThrow();
+        assertEquals(20_000, reviewerResult.contentPreview().length());
+        assertFalse(reviewerResult.contentPreview().contains("\"roleHandoff\""));
+        assertTrue(artifactStore.listByTask(task.taskId()).stream()
+                .anyMatch(artifact -> artifact.role() == AgentRole.REQUIREMENT_REVIEWER
+                        && artifact.artifactType().equals("HANDOFF_MARKDOWN")));
+
+        assertEquals(RdTaskStatus.FAILED_NEEDS_HUMAN, engine.submit(task.taskId()).status());
+
+        List<RequirementExecutionRequest> architectRequests = captured.stream()
+                .filter(request -> request.role() == AgentRole.SOLUTION_ARCHITECT)
+                .toList();
+        assertEquals(2, architectRequests.size());
+        String recoveredUpstream = architectRequests.get(1).upstreamResultJson();
+        assertTrue(recoveredUpstream.contains("\"handoff\""));
+        assertTrue(recoveredUpstream.contains("s3://rd-role-handoffs/review-recovery.md"));
+        assertTrue(recoveredUpstream.contains("\"targetRole\":\"SOLUTION_ARCHITECT\""));
+    }
+
+    @Test
+    void shouldStopCreatingRoleAttemptsAfterMaxRoleAttempts() {
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(), new InMemoryRdTaskStatusEventStore(), generator());
+        InMemoryTaskMaterialStore materialStore = new InMemoryTaskMaterialStore();
+        RdRequirementTask task = createRequirementTask(
+                registry,
+                materialStore,
+                "attempt-cap-material",
+                "attempt 上限测试",
+                "重试风暴必须被 attempt 硬上限阻断",
+                "验证同一角色最多只能创建 3 次 attempt。"
+        );
+        List<RequirementExecutionRequest> captured = new CopyOnWriteArrayList<>();
+        AgentStageRunStore stageRunStore = new InMemoryAgentStageRunStore();
+        RequirementDeliveryEngine engine = failingArchitectEngine(registry, materialStore, captured, stageRunStore);
+
+        assertEquals(RdTaskStatus.FAILED_NEEDS_HUMAN, engine.submit(task.taskId()).status());
+        assertEquals(RdTaskStatus.FAILED_NEEDS_HUMAN, engine.submit(task.taskId()).status());
+        assertEquals(RdTaskStatus.FAILED_NEEDS_HUMAN, engine.submit(task.taskId()).status());
+        engine.submit(task.taskId());
+
+        List<AgentStageRun> architectStages = stageRunStore.listByTask(task.taskId()).stream()
+                .filter(stage -> stage.role() == AgentRole.SOLUTION_ARCHITECT)
+                .toList();
+        assertEquals(3, architectStages.size());
+        assertEquals(3, architectStages.stream().mapToInt(AgentStageRun::attemptNo).max().orElse(0));
+        assertEquals(3, captured.stream()
+                .filter(request -> request.role() == AgentRole.SOLUTION_ARCHITECT)
+                .count());
+    }
+
+    @Test
+    void shouldInjectPreviousFailureFeedbackIntoRetryPrompt() {
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(), new InMemoryRdTaskStatusEventStore(), generator());
+        InMemoryTaskMaterialStore materialStore = new InMemoryTaskMaterialStore();
+        RdRequirementTask task = createRequirementTask(
+                registry,
+                materialStore,
+                "failure-feedback-material",
+                "失败反馈回注测试",
+                "重试 attempt 必须看到上一轮失败明细",
+                "验证协议校验失败明细会回注重试 prompt。"
+        );
+        List<RequirementExecutionRequest> captured = new CopyOnWriteArrayList<>();
+        AgentStageRunStore stageRunStore = new InMemoryAgentStageRunStore();
+        RequirementDeliveryEngine engine = failingArchitectEngine(registry, materialStore, captured, stageRunStore);
+
+        assertEquals(RdTaskStatus.FAILED_NEEDS_HUMAN, engine.submit(task.taskId()).status());
+        assertEquals(RdTaskStatus.FAILED_NEEDS_HUMAN, engine.submit(task.taskId()).status());
+
+        List<RequirementExecutionRequest> architectRequests = captured.stream()
+                .filter(request -> request.role() == AgentRole.SOLUTION_ARCHITECT)
+                .toList();
+        assertEquals(2, architectRequests.size());
+        assertFalse(architectRequests.get(0).prompt().contains("上一轮失败反馈"));
+        assertTrue(architectRequests.get(1).prompt().contains("上一轮失败反馈"));
+        assertTrue(architectRequests.get(1).prompt().contains("缺少必填字段: implementationSteps"));
+    }
+
+    private RequirementDeliveryEngine failingArchitectEngine(
+            RagStreamTaskRegistry registry,
+            InMemoryTaskMaterialStore materialStore,
+            List<RequirementExecutionRequest> captured,
+            AgentStageRunStore stageRunStore
+    ) {
+        return new RequirementDeliveryEngine(
+                registry,
+                materialStore,
+                request -> {
+                    captured.add(request);
+                    if (request.role() == AgentRole.SOLUTION_ARCHITECT) {
+                        return RequirementExecutionResult.failure(
+                                request.taskId(), "缺少必填字段: implementationSteps", "{\"status\":\"FAILED\"}");
+                    }
+                    return RequirementExecutionResult.success(
+                            request.taskId(), request.role().name() + " 完成", "", roleResultJson(request.role()));
+                },
+                new RequirementContextBuilder(),
+                new RequirementPlanGenerator(),
+                new RuleBasedRequirementPolicyGate(),
+                new AgentStagePlanner(new AtomicStageIdSupplier()),
+                stageRunStore,
+                new InMemoryAgentStageArtifactStore(),
+                new RoleContextBuilder(),
+                new InMemoryRoleContextPackageStore(),
+                AgentWorkflowAlertSinkPort.noop(),
+                WorkflowExperienceStore.noop(),
+                new RequirementDeliveryReviewer(),
+                new RecordingRequirementPullRequestPublisher()
+        );
+    }
+
+    @Test
+    void shouldReusePersistedCandidatePatchWhenQaRetriesAfterResultPreviewTruncates() {
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(), new InMemoryRdTaskStatusEventStore(), generator());
+        InMemoryTaskMaterialStore materialStore = new InMemoryTaskMaterialStore();
+        RdRequirementTask task = createRequirementTask(
+                registry,
+                materialStore,
+                "reused-candidate-patch-material",
+                "候选补丁恢复测试",
+                "QA 重试时仍应收到已验证候选补丁",
+                "验证编码结果审计预览截断后仍能从独立产物恢复候选补丁。"
+        );
+        List<RequirementExecutionRequest> captured = new CopyOnWriteArrayList<>();
+        AgentStageRunStore stageRunStore = new InMemoryAgentStageRunStore();
+        InMemoryAgentStageArtifactStore artifactStore = new InMemoryAgentStageArtifactStore();
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry,
+                materialStore,
+                request -> {
+                    captured.add(request);
+                    if (request.role() == AgentRole.CODING_AGENT) {
+                        return RequirementExecutionResult.success(
+                                request.taskId(), "编码完成", "", largeCodingResultWithCandidatePatch());
+                    }
+                    if (request.role() == AgentRole.QA_AGENT) {
+                        return RequirementExecutionResult.failure(
+                                request.taskId(),
+                                "QA evidence protocol rejected",
+                                """
+                                        {
+                                          "status": "FAILED",
+                                          "failureCategory": "QA_INFRASTRUCTURE",
+                                          "retryRecommendation": "HUMAN"
+                                        }
+                                        """);
+                    }
+                    return RequirementExecutionResult.success(
+                            request.taskId(), request.role().name() + " 完成", "", roleResultJson(request.role()));
+                },
+                new RequirementContextBuilder(),
+                new RequirementPlanGenerator(),
+                new RuleBasedRequirementPolicyGate(),
+                new AgentStagePlanner(new AtomicStageIdSupplier()),
+                stageRunStore,
+                artifactStore,
+                new RoleContextBuilder(),
+                new InMemoryRoleContextPackageStore(),
+                AgentWorkflowAlertSinkPort.noop(),
+                WorkflowExperienceStore.noop(),
+                new RequirementDeliveryReviewer(),
+                new RecordingRequirementPullRequestPublisher()
+        );
+
+        assertEquals(RdTaskStatus.FAILED_NEEDS_HUMAN, engine.submit(task.taskId()).status());
+        AgentStageArtifact codingResult = artifactStore.listByTask(task.taskId()).stream()
+                .filter(artifact -> artifact.role() == AgentRole.CODING_AGENT)
+                .filter(artifact -> artifact.artifactType().equals("RESULT_JSON"))
+                .findFirst()
+                .orElseThrow();
+        assertEquals(20_000, codingResult.contentPreview().length());
+        assertFalse(codingResult.contentPreview().contains("\"candidatePatch\""));
+        assertTrue(artifactStore.listByTask(task.taskId()).stream()
+                .anyMatch(artifact -> artifact.role() == AgentRole.CODING_AGENT
+                        && artifact.artifactType().equals("PATCH_DIFF")));
+
+        assertEquals(RdTaskStatus.FAILED_NEEDS_HUMAN, engine.submit(task.taskId()).status());
+
+        List<RequirementExecutionRequest> qaRequests = captured.stream()
+                .filter(request -> request.role() == AgentRole.QA_AGENT)
+                .toList();
+        assertEquals(2, qaRequests.size());
+        String recoveredUpstream = qaRequests.get(1).upstreamResultJson();
+        assertTrue(recoveredUpstream.contains("\"candidatePatch\""), recoveredUpstream);
+        assertTrue(recoveredUpstream.contains("s3://rd-role-handoffs/private-candidate.patch"));
+        assertTrue(recoveredUpstream.contains("\"targetRole\":\"QA_AGENT\""));
+    }
+
+    @Test
+    void shouldApproveDeliveryReviewFromReusedCodingEvidenceAfterResultPreviewTruncates() {
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(), new InMemoryRdTaskStatusEventStore(), generator());
+        InMemoryTaskMaterialStore materialStore = new InMemoryTaskMaterialStore();
+        RdRequirementTask task = createRequirementTask(
+                registry,
+                materialStore,
+                "truncated-coding-evidence-material",
+                "截断交付证据复核测试",
+                "复用阶段仍应保留可复核的编码交付证据",
+                "验证编码结果审计预览截断后交付复核仍能读到 prBody 与 changedFiles。"
+        );
+        AgentStageRunStore stageRunStore = new InMemoryAgentStageRunStore();
+        InMemoryAgentStageArtifactStore artifactStore = new InMemoryAgentStageArtifactStore();
+        AtomicInteger qaAttempts = new AtomicInteger();
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry,
+                materialStore,
+                request -> {
+                    if (request.role() == AgentRole.CODING_AGENT) {
+                        return RequirementExecutionResult.success(
+                                request.taskId(), "编码完成", "", largeCodingResultWithDeliveryEvidence());
+                    }
+                    if (request.role() == AgentRole.QA_AGENT && qaAttempts.incrementAndGet() == 1) {
+                        return RequirementExecutionResult.failure(
+                                request.taskId(),
+                                "QA evidence protocol rejected",
+                                """
+                                        {
+                                          "status": "FAILED",
+                                          "failureCategory": "QA_INFRASTRUCTURE",
+                                          "retryRecommendation": "HUMAN"
+                                        }
+                                        """);
+                    }
+                    return RequirementExecutionResult.success(
+                            request.taskId(), request.role().name() + " 完成", "", roleResultJson(request.role()));
+                },
+                new RequirementContextBuilder(),
+                new RequirementPlanGenerator(),
+                new RuleBasedRequirementPolicyGate(),
+                new AgentStagePlanner(new AtomicStageIdSupplier()),
+                stageRunStore,
+                artifactStore,
+                new RoleContextBuilder(),
+                new InMemoryRoleContextPackageStore(),
+                AgentWorkflowAlertSinkPort.noop(),
+                WorkflowExperienceStore.noop(),
+                new RequirementDeliveryReviewer(),
+                new RecordingRequirementPullRequestPublisher()
+        );
+
+        assertEquals(RdTaskStatus.FAILED_NEEDS_HUMAN, engine.submit(task.taskId()).status());
+        AgentStageArtifact codingResult = artifactStore.listByTask(task.taskId()).stream()
+                .filter(artifact -> artifact.role() == AgentRole.CODING_AGENT)
+                .filter(artifact -> artifact.artifactType().equals("RESULT_JSON"))
+                .findFirst()
+                .orElseThrow();
+        assertEquals(20_000, codingResult.contentPreview().length());
+
+        RequirementDeliveryResult result = engine.submit(task.taskId());
+
+        assertEquals(RdTaskStatus.COMPLETED, result.status(), result.errorMessage());
+        assertTrue(result.resultJson().contains("\"resultJsonTruncated\":true"), result.resultJson());
+        assertTrue(result.resultJson().contains("\"approved\":true"), result.resultJson());
+    }
+
+    @Test
+    void shouldRejectDeliveryReviewWhenTruncatedCodingPreviewLosesEvidence() {
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(), new InMemoryRdTaskStatusEventStore(), generator());
+        InMemoryTaskMaterialStore materialStore = new InMemoryTaskMaterialStore();
+        RdRequirementTask task = createRequirementTask(
+                registry,
+                materialStore,
+                "truncated-coding-evidence-loss-material",
+                "截断交付证据缺失测试",
+                "证据被截断时交付复核必须拒绝",
+                "验证抢救出的顶层字段不含交付证据时不会放行。"
+        );
+        AtomicInteger qaAttempts = new AtomicInteger();
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry,
+                materialStore,
+                request -> {
+                    if (request.role() == AgentRole.CODING_AGENT) {
+                        return RequirementExecutionResult.success(
+                                request.taskId(), "编码完成", "", largeCodingResultWithoutDeliveryEvidence());
+                    }
+                    if (request.role() == AgentRole.QA_AGENT && qaAttempts.incrementAndGet() == 1) {
+                        return RequirementExecutionResult.failure(
+                                request.taskId(),
+                                "QA evidence protocol rejected",
+                                """
+                                        {
+                                          "status": "FAILED",
+                                          "failureCategory": "QA_INFRASTRUCTURE",
+                                          "retryRecommendation": "HUMAN"
+                                        }
+                                        """);
+                    }
+                    return RequirementExecutionResult.success(
+                            request.taskId(), request.role().name() + " 完成", "", roleResultJson(request.role()));
+                },
+                new RequirementContextBuilder(),
+                new RequirementPlanGenerator(),
+                new RuleBasedRequirementPolicyGate(),
+                new AgentStagePlanner(new AtomicStageIdSupplier()),
+                new InMemoryAgentStageRunStore(),
+                new InMemoryAgentStageArtifactStore(),
+                new RoleContextBuilder(),
+                new InMemoryRoleContextPackageStore(),
+                AgentWorkflowAlertSinkPort.noop(),
+                WorkflowExperienceStore.noop(),
+                new RequirementDeliveryReviewer(),
+                new RecordingRequirementPullRequestPublisher()
+        );
+
+        assertEquals(RdTaskStatus.FAILED_NEEDS_HUMAN, engine.submit(task.taskId()).status());
+        RequirementDeliveryResult result = engine.submit(task.taskId());
+
+        assertEquals(RdTaskStatus.REJECTED, result.status());
+        assertTrue(result.errorMessage().contains("CODING_AGENT delivery evidence is incomplete"),
+                result.errorMessage());
     }
 
     @Test
@@ -1375,7 +1965,7 @@ class RequirementDeliveryEngineTest {
                 materialStore,
                 "7820000000031",
                 "增加订单催单功能",
-                "订单详情页可以催单",
+                "支付成功后订单详情页可以催单",
                 "用户可以在订单详情页点击催单。"
         );
         AgentStageRunStore stageRunStore = new InMemoryAgentStageRunStore();
@@ -1408,26 +1998,14 @@ class RequirementDeliveryEngineTest {
                 WorkflowExperienceStore.noop()
         );
 
+        // 任务主体含“支付”：首次提交被策略门禁拦入审批。
         RequirementDeliveryResult first = engine.submit(task.taskId());
-        assertEquals(RdTaskStatus.FAILED_NEEDS_HUMAN, first.status());
+        assertEquals(RdTaskStatus.WAITING_APPROVAL, first.status());
 
-        materialStore.save(new TaskMaterial(
-                "7820000000032",
-                task.taskId(),
-                TaskMaterialType.REQUIREMENT_DOC,
-                TaskMaterialSourceType.MANUAL_TEXT,
-                "支付风险补充",
-                "",
-                "text/plain",
-                "sha256:payment",
-                "本需求涉及支付与权限变更，需要人工审批。",
-                "",
-                "",
-                "",
-                "{}",
-                2L,
-                2L
-        ));
+        // 人工审批后放行执行，编码阶段失败进入可恢复状态。
+        registry.approveRequirementTask(task.taskId(), "支付风险已人工确认");
+        RequirementDeliveryResult approved = engine.submit(task.taskId());
+        assertEquals(RdTaskStatus.FAILED_NEEDS_HUMAN, approved.status());
 
         RequirementDeliveryResult second = assertDoesNotThrow(() -> engine.submit(task.taskId()));
 
@@ -1550,6 +2128,70 @@ class RequirementDeliveryEngineTest {
                 .findFirst()
                 .orElseThrow()
                 .status());
+    }
+
+    @Test
+    void shouldReplaceInterruptedRunningStageWithFreshAttemptDuringRetryableResume() {
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(), new InMemoryRdTaskStatusEventStore(), generator());
+        InMemoryTaskMaterialStore materialStore = new InMemoryTaskMaterialStore();
+        RdRequirementTask task = createRequirementTask(
+                registry,
+                materialStore,
+                "interrupted-recovery-material",
+                "恢复中断的编码阶段",
+                "恢复时必须重新创建编码尝试",
+                "模拟进程中断后的角色阶段恢复。"
+        );
+        InMemoryAgentStageRunStore stages = new InMemoryAgentStageRunStore();
+        stages.save(AgentStageRun.pending("reviewer-1", task.taskId(), AgentRole.REQUIREMENT_REVIEWER, 1,
+                task.taskId() + ":REQUIREMENT_REVIEWER:1", 10L)
+                .withStatus(AgentStageStatus.SUCCEEDED, "", "", 20L));
+        stages.save(AgentStageRun.pending("architect-1", task.taskId(), AgentRole.SOLUTION_ARCHITECT, 1,
+                task.taskId() + ":SOLUTION_ARCHITECT:1", 10L)
+                .withStatus(AgentStageStatus.SUCCEEDED, "", "", 20L));
+        stages.save(AgentStageRun.pending("coding-1", task.taskId(), AgentRole.CODING_AGENT, 1,
+                task.taskId() + ":CODING_AGENT:1", 10L)
+                .withStatus(AgentStageStatus.FAILED_NEEDS_HUMAN, "AGENT_RESULT_REJECTED", "previous failure", 20L));
+        stages.save(AgentStageRun.pending("coding-2", task.taskId(), AgentRole.CODING_AGENT, 2,
+                task.taskId() + ":CODING_AGENT:2", 30L)
+                .withStatus(AgentStageStatus.RUNNING, "", "", 40L));
+        stages.save(AgentStageRun.pending("qa-1", task.taskId(), AgentRole.QA_AGENT, 1,
+                task.taskId() + ":QA_AGENT:1", 10L));
+        registry.markRequirementFailedRetryable(task.taskId(), "worker interrupted", "{\"failurePhase\":\"AGENT_ROLE\"}");
+
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry,
+                materialStore,
+                request -> RequirementExecutionResult.success(
+                        request.taskId(), request.role().name() + " recovered", "",
+                        request.role() == AgentRole.CODING_AGENT
+                                ? codingResultJson(request.role())
+                                : roleResultJson(request.role())
+                ),
+                new RequirementContextBuilder(),
+                new RequirementPlanGenerator(),
+                new RuleBasedRequirementPolicyGate(),
+                new AgentStagePlanner(new AtomicStageIdSupplier()),
+                stages,
+                new RoleContextBuilder(),
+                new InMemoryRoleContextPackageStore(),
+                AgentWorkflowAlertSinkPort.noop(),
+                WorkflowExperienceStore.noop(),
+                new RequirementDeliveryReviewer(),
+                new RecordingRequirementPullRequestPublisher()
+        );
+
+        RequirementDeliveryResult result = engine.submit(task.taskId());
+
+        assertEquals(RdTaskStatus.COMPLETED, result.status());
+        List<AgentStageRun> codingAttempts = stages.listByTask(task.taskId()).stream()
+                .filter(stage -> stage.role() == AgentRole.CODING_AGENT)
+                .toList();
+        assertEquals(List.of(1, 2, 3), codingAttempts.stream().map(AgentStageRun::attemptNo).toList());
+        assertEquals(AgentStageStatus.FAILED_RETRYABLE, codingAttempts.get(1).status());
+        assertEquals("ORCHESTRATION_INTERRUPTED", codingAttempts.get(1).errorCategory());
+        assertEquals(AgentStageStatus.SUCCEEDED, codingAttempts.get(2).status());
     }
 
     private SnowflakeIdGenerator generator() {
@@ -1677,6 +2319,99 @@ class RequirementDeliveryEngineTest {
                 """.formatted(providerName, providerName);
     }
 
+    private String largeReviewerResultWithHandoff() {
+        String largeRaw = "x".repeat(20_500);
+        return """
+                {
+                  "decision": "APPROVED",
+                  "feasibility": "CAN_DO",
+                  "missingInformation": [],
+                  "risks": [],
+                  "acceptanceCoverage": ["前端构建通过"],
+                  "budgetEstimate": {
+                    "initialTokens": 80,
+                    "retryReserveTokens": 20,
+                    "estimatedTotalTokens": 100,
+                    "confidence": "LOW",
+                    "basis": "恢复交接链路测试",
+                    "historicalSamples": []
+                  },
+                  "largeRaw": "%s",
+                  "stageArtifacts": [
+                    {
+                      "type": "HANDOFF_MARKDOWN",
+                      "name": "handoff/next.md",
+                      "uri": "s3://rd-role-handoffs/review-recovery.md",
+                      "summary": "受控需求评审交接",
+                      "contentPreview": "# Downstream Handoff",
+                      "metadataJson": {
+                        "artifactName": "handoff/next.md",
+                        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        "bytes": "321"
+                      }
+                    }
+                  ],
+                  "roleHandoff": {
+                    "sourceRole": "REQUIREMENT_REVIEWER",
+                    "targetRole": "SOLUTION_ARCHITECT",
+                    "artifactName": "handoff/next.md",
+                    "artifactUri": "s3://rd-role-handoffs/review-recovery.md",
+                    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "bytes": 321,
+                    "summary": "受控需求评审交接"
+                  }
+                }
+                """.formatted(largeRaw);
+    }
+
+    private String largeCodingResultWithCandidatePatch() {
+        String largeRaw = "x".repeat(20_500);
+        return """
+                {
+                  "status": "SUCCESS",
+                  "summary": "实现完成",
+                  "largeRaw": "%s",
+                  "stageArtifacts": [
+                    {
+                      "type": "PATCH_DIFF",
+                      "name": "patch.diff",
+                      "uri": "s3://rd-role-handoffs/private-candidate.patch",
+                      "summary": "Private candidate patch",
+                      "contentPreview": "PRIVATE_PATCH_CONTENT_MUST_NOT_REACH_QA_PROMPT",
+                      "metadataJson": {
+                        "candidatePatch": "true",
+                        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                        "bytes": "321"
+                      }
+                    }
+                  ]
+                }
+                """.formatted(largeRaw);
+    }
+
+    private String largeCodingResultWithDeliveryEvidence() {
+        return """
+                {
+                  "status": "SUCCESS",
+                  "summary": "实现完成",
+                  "prBody": "## Summary\\n- implement requirement",
+                  "changedFiles": "src/main/java/com/example/OrderController.java",
+                  "largeRaw": "%s"
+                }
+                """.formatted("x".repeat(20_500));
+    }
+
+    private String largeCodingResultWithoutDeliveryEvidence() {
+        return """
+                {
+                  "status": "SUCCESS",
+                  "largeRaw": "%s",
+                  "prBody": "## Summary\\n- implement requirement",
+                  "changedFiles": "src/main/java/com/example/OrderController.java"
+                }
+                """.formatted("x".repeat(20_500));
+    }
+
     private String codingResultJson(AgentRole role) {
         String providerName = "claude-code-" + role.name().toLowerCase();
         return """
@@ -1692,6 +2427,32 @@ class RequirementDeliveryEngineTest {
                   }
                 }
                 """.formatted(providerName, providerName);
+    }
+
+    private String codingResultWithCandidatePatchJson() {
+        return """
+                {
+                  "status": "SUCCESS",
+                  "summary": "实现完成",
+                  "changedFiles": "src/main/java/com/example/OrderController.java",
+                  "testSummary": "./mvnw test passed",
+                  "prBody": "## Summary\\n- implement requirement",
+                  "stageArtifacts": [
+                    {
+                      "type": "PATCH_DIFF",
+                      "name": "patch.diff",
+                      "uri": "s3://rd-role-handoffs/private-candidate.patch",
+                      "summary": "Private candidate patch",
+                      "contentPreview": "PRIVATE_PATCH_CONTENT_MUST_NOT_REACH_QA_PROMPT",
+                      "metadataJson": {
+                        "candidatePatch": "true",
+                        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                        "bytes": "321"
+                      }
+                    }
+                  ]
+                }
+                """;
     }
 
     private String qaPassedResultJson() {
