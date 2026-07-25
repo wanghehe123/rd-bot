@@ -16,6 +16,15 @@ import com.wish.rd.engine.requirement.model.RequirementPolicyDecision;
  */
 public final class RuleBasedRequirementPolicyGate {
 
+    /** 高危拦截关键词：全量扫描（含材料正文），宁可误杀不可放过。 */
+    private static final String[] UNSAFE_PATTERNS = {"生产数据", "线上数据库", "导出密钥", "secret"};
+
+    /** 人工审批高危短语：只扫任务主体，泛化词（配置/登录/token/auth/权限）已移除以消除误拦。 */
+    private static final String[] APPROVAL_PATTERNS = {
+            "支付", "payment", "删库", "drop table", "生产环境发布",
+            "修改权限模型", "鉴权改造", "security policy", "私钥", "credentials"
+    };
+
     /**
      * 评估需求任务是否可进入执行器。
      *
@@ -39,34 +48,40 @@ public final class RuleBasedRequirementPolicyGate {
             return new RequirementPolicyDecision("NEED_INFO", "MEDIUM", "需求任务缺少代码仓库");
         }
         String corpus = corpus(task, materials);
-        if (containsAny(corpus, "生产数据", "线上数据库", "导出密钥", "secret")) {
-            return new RequirementPolicyDecision("UNSAFE", "HIGH", "需求包含生产数据或密钥相关高危操作");
+        String unsafeHit = firstMatch(corpus, UNSAFE_PATTERNS);
+        if (unsafeHit != null) {
+            return new RequirementPolicyDecision("UNSAFE", "HIGH", "需求包含生产数据或密钥相关高危操作：" + unsafeHit);
         }
-        // 单独出现 token 无法证明密钥泄露，保留在审批分支避免自动放行。
-        if (containsAny(corpus, "auth", "security", "payment", "支付", "权限", "登录", "配置", "token")) {
-            return new RequirementPolicyDecision("WAITING_APPROVAL", "HIGH", "需求涉及高风险模块，等待人工审批");
+        // 审批门禁只看任务主体：材料正文是大段需求文档/代码片段，是误拦噪声的最大来源。
+        String approvalHit = firstMatch(taskCorpus(task), APPROVAL_PATTERNS);
+        if (approvalHit != null) {
+            return new RequirementPolicyDecision("WAITING_APPROVAL", "HIGH", "需求涉及高风险操作，等待人工审批：" + approvalHit);
         }
         return new RequirementPolicyDecision("ALLOWED", "LOW", "低风险需求，允许进入沙箱执行");
     }
 
     private String corpus(RdRequirementTask task, List<TaskMaterial> materials) {
-        String taskText = task == null
-                ? ""
-                : task.title() + " " + task.expectedResult() + " " + task.acceptanceCriteriaJson();
         String materialText = materials == null
                 ? ""
                 : materials.stream()
                 .map(TaskMaterial::contentPreview)
                 .reduce("", (left, right) -> left + " " + right);
-        return (taskText + " " + materialText).toLowerCase(Locale.ROOT);
+        return (taskCorpus(task) + " " + materialText).toLowerCase(Locale.ROOT);
     }
 
-    private boolean containsAny(String text, String... patterns) {
+    private String taskCorpus(RdRequirementTask task) {
+        String taskText = task == null
+                ? ""
+                : task.title() + " " + task.expectedResult() + " " + task.acceptanceCriteriaJson();
+        return taskText.toLowerCase(Locale.ROOT);
+    }
+
+    private String firstMatch(String text, String... patterns) {
         for (String pattern : patterns) {
             if (text.contains(pattern.toLowerCase(Locale.ROOT))) {
-                return true;
+                return pattern;
             }
         }
-        return false;
+        return null;
     }
 }
