@@ -1,0 +1,5 @@
+FROM rd-bot/claude-code-qa:local
+
+# The QA base extends the verified Python-enabled Claude runtime with Playwright
+# and Chromium. Keep the project profile immutable unless it needs an approved
+# apt-only extension.

@@ -1,0 +1,5 @@
+FROM rd-bot/claude-code:local
+
+# Python 3, pip, and venv are already provided by the verified base runtime.
+# This profile deliberately has no mutation so it remains valid under the
+# restricted runtime-profile contract.
