@@ -3,6 +3,8 @@ package com.wish.rd.bootstrap.executor;
 import com.wish.rd.bootstrap.executor.impl.EngineRequirementExecutorAdapter;
 import com.wish.rd.bootstrap.executor.impl.EngineRequirementPullRequestPublisherAdapter;
 import com.wish.rd.bootstrap.executor.impl.ObjectStorageQaEvidencePublisher;
+import com.wish.rd.bootstrap.executor.impl.ObjectStorageRoleHandoffPublisher;
+import com.wish.rd.bootstrap.executor.impl.RoleHandoffAttachmentResolver;
 
 import com.wish.rd.bootstrap.threading.RdBotThreadPoolConfiguration;
 import com.wish.rd.engine.requirement.RequirementExecutorPort;
@@ -10,6 +12,7 @@ import com.wish.rd.engine.requirement.RequirementPullRequestPublisherPort;
 import com.wish.rd.exec.repair.code.CodePlatformPort;
 import com.wish.rd.exec.repair.execution.RepairExecutorPort;
 import com.wish.rd.rag.qa.QaValidationProfileService;
+import com.wish.rd.rag.project.runtime.ProjectRuntimeProfileService;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -37,6 +40,12 @@ public class EngineRequirementExecutorConfiguration {
                         .getBeanProvider(QaValidationProfileService.class),
                 new org.springframework.beans.factory.support.StaticListableBeanFactory()
                         .getBeanProvider(ObjectStorageQaEvidencePublisher.class),
+                new org.springframework.beans.factory.support.StaticListableBeanFactory()
+                        .getBeanProvider(ProjectRuntimeProfileService.class),
+                new org.springframework.beans.factory.support.StaticListableBeanFactory()
+                        .getBeanProvider(ObjectStorageRoleHandoffPublisher.class),
+                new org.springframework.beans.factory.support.StaticListableBeanFactory()
+                        .getBeanProvider(RoleHandoffAttachmentResolver.class),
                 executorIoTaskExecutor
         );
     }
@@ -55,6 +64,9 @@ public class EngineRequirementExecutorConfiguration {
             ObjectProvider<com.wish.rd.bootstrap.executor.impl.TaskMaterialAttachmentResolver> attachmentResolverProvider,
             ObjectProvider<QaValidationProfileService> qaValidationProfileServiceProvider,
             ObjectProvider<ObjectStorageQaEvidencePublisher> qaEvidencePublisherProvider,
+            ObjectProvider<ProjectRuntimeProfileService> runtimeProfileServiceProvider,
+            ObjectProvider<ObjectStorageRoleHandoffPublisher> handoffPublisherProvider,
+            ObjectProvider<RoleHandoffAttachmentResolver> handoffAttachmentResolverProvider,
             @Qualifier(RdBotThreadPoolConfiguration.EXECUTOR_IO_EXECUTOR_BEAN)
             AsyncTaskExecutor executorIoTaskExecutor
     ) {
@@ -67,7 +79,10 @@ public class EngineRequirementExecutorConfiguration {
                 executorIoTaskExecutor,
                 attachmentResolverProvider.getIfAvailable(),
                 qaValidationProfileServiceProvider.getIfAvailable(),
-                qaEvidencePublisherProvider.getIfAvailable()
+                qaEvidencePublisherProvider.getIfAvailable(),
+                runtimeProfileServiceProvider.getIfAvailable(),
+                handoffPublisherProvider.getIfAvailable(),
+                handoffAttachmentResolverProvider.getIfAvailable()
         );
     }
 

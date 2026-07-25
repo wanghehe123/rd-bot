@@ -3,6 +3,7 @@ package com.wish.rd.bootstrap.executor;
 import com.wish.rd.bootstrap.executor.impl.InMemoryRepairAlertSink;
 import com.wish.rd.bootstrap.financial.FinancialProperties;
 import com.wish.rd.bootstrap.skill.impl.QaPlaywrightSkillProvisioner;
+import com.wish.rd.bootstrap.skill.impl.RoleHandoffDocumentSkillProvisioner;
 
 import com.wish.rd.exec.repair.alert.RepairAlertSinkPort;
 import com.wish.rd.exec.repair.alert.RepairExecutionWatchdog;
@@ -140,6 +141,22 @@ public class DockerExecutorConfiguration {
         return provision;
     }
 
+    /** Provisions the governed Markdown handoff skill mounted for review, planning, and coding roles. */
+    @Bean
+    @ConditionalOnBean(ContainerRunnerPort.class)
+    @ConditionalOnMissingBean
+    public RoleHandoffDocumentSkillProvisioner.Provision roleHandoffDocumentSkillProvision(
+            DockerExecutorProperties properties
+    ) {
+        RoleHandoffDocumentSkillProvisioner.Provision provision = new RoleHandoffDocumentSkillProvisioner(
+                properties.getWorkspaceRoot().resolve("_role-handoff-skills")
+        ).provision();
+        if (!provision.installed()) {
+            throw new IllegalStateException("failed to provision role handoff skill: " + provision.message());
+        }
+        return provision;
+    }
+
     /**
      * Exposes Docker Claude Code execution as the exec repair executor port.
      *
@@ -166,18 +183,25 @@ public class DockerExecutorConfiguration {
             DockerExecutionRegistry executionRegistry,
             ExecutionAllowlistPolicy executionAllowlistPolicy,
             QaPlaywrightSkillProvisioner.Provision qaSkillProvision,
+            RoleHandoffDocumentSkillProvisioner.Provision handoffSkillProvision,
             ObjectProvider<RepairWorkspaceRepositoryPort> repositoryPortProvider,
             ObjectProvider<FinancialProperties> financialPropertiesProvider
     ) {
-        DockerClaudeCodeExecutor.Configuration configuration = properties.toExecutorConfiguration().withQaSkill(
-                new DockerClaudeCodeExecutor.QaSkillConfiguration(
+        DockerClaudeCodeExecutor.Configuration configuration = properties.toExecutorConfiguration()
+                .withQaSkill(new DockerClaudeCodeExecutor.QaSkillConfiguration(
                         qaSkillProvision.installPath(),
                         qaSkillProvision.skillId(),
                         qaSkillProvision.version(),
                         qaSkillProvision.checksum(),
                         qaSkillProvision.policyJson()
-                )
-        );
+                ))
+                .withHandoffSkill(new DockerClaudeCodeExecutor.HandoffSkillConfiguration(
+                        handoffSkillProvision.installPath(),
+                        handoffSkillProvision.skillId(),
+                        handoffSkillProvision.version(),
+                        handoffSkillProvision.checksum(),
+                        handoffSkillProvision.policyJson()
+                ));
         return new DockerClaudeCodeExecutor(
                 workspaceFactory,
                 containerRunner,

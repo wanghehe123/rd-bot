@@ -20,6 +20,7 @@ import com.wish.rd.rag.runtime.model.RdRequirementTask;
 import com.wish.rd.rag.runtime.model.TaskMaterial;
 import com.wish.rd.rag.qa.QaValidationProfileService;
 import com.wish.rd.rag.qa.model.QaValidationProfile;
+import com.wish.rd.rag.project.runtime.ProjectRuntimeProfileService;
 import org.springframework.core.task.AsyncTaskExecutor;
 import org.springframework.core.task.TaskRejectedException;
 
@@ -50,16 +51,19 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
     private final TaskMaterialAttachmentResolver attachmentResolver;
     private final QaValidationProfileService qaValidationProfileService;
     private final ObjectStorageQaEvidencePublisher qaEvidencePublisher;
+    private final ProjectRuntimeProfileService runtimeProfileService;
+    private final ObjectStorageRoleHandoffPublisher handoffPublisher;
+    private final RoleHandoffAttachmentResolver handoffAttachmentResolver;
 
     public EngineRequirementExecutorAdapter(RepairExecutorPort repairExecutor) {
-        this(repairExecutor, null, null, null, null);
+        this(repairExecutor, null, null, null, null, null);
     }
 
     public EngineRequirementExecutorAdapter(
             RepairExecutorPort repairExecutor,
             AsyncTaskExecutor executorIoTaskExecutor
     ) {
-        this(repairExecutor, executorIoTaskExecutor, null, null, null);
+        this(repairExecutor, executorIoTaskExecutor, null, null, null, null);
     }
 
     public EngineRequirementExecutorAdapter(
@@ -67,7 +71,7 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
             AsyncTaskExecutor executorIoTaskExecutor,
             TaskMaterialAttachmentResolver attachmentResolver
     ) {
-        this(repairExecutor, executorIoTaskExecutor, attachmentResolver, null, null);
+        this(repairExecutor, executorIoTaskExecutor, attachmentResolver, null, null, null);
     }
 
     public EngineRequirementExecutorAdapter(
@@ -76,7 +80,7 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
             TaskMaterialAttachmentResolver attachmentResolver,
             QaValidationProfileService qaValidationProfileService
     ) {
-        this(repairExecutor, executorIoTaskExecutor, attachmentResolver, qaValidationProfileService, null);
+        this(repairExecutor, executorIoTaskExecutor, attachmentResolver, qaValidationProfileService, null, null);
     }
 
     public EngineRequirementExecutorAdapter(
@@ -86,11 +90,54 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
             QaValidationProfileService qaValidationProfileService,
             ObjectStorageQaEvidencePublisher qaEvidencePublisher
     ) {
+        this(
+                repairExecutor,
+                executorIoTaskExecutor,
+                attachmentResolver,
+                qaValidationProfileService,
+                qaEvidencePublisher,
+                null
+        );
+    }
+
+    public EngineRequirementExecutorAdapter(
+            RepairExecutorPort repairExecutor,
+            AsyncTaskExecutor executorIoTaskExecutor,
+            TaskMaterialAttachmentResolver attachmentResolver,
+            QaValidationProfileService qaValidationProfileService,
+            ObjectStorageQaEvidencePublisher qaEvidencePublisher,
+            ProjectRuntimeProfileService runtimeProfileService
+    ) {
+        this(
+                repairExecutor,
+                executorIoTaskExecutor,
+                attachmentResolver,
+                qaValidationProfileService,
+                qaEvidencePublisher,
+                runtimeProfileService,
+                null,
+                null
+        );
+    }
+
+    public EngineRequirementExecutorAdapter(
+            RepairExecutorPort repairExecutor,
+            AsyncTaskExecutor executorIoTaskExecutor,
+            TaskMaterialAttachmentResolver attachmentResolver,
+            QaValidationProfileService qaValidationProfileService,
+            ObjectStorageQaEvidencePublisher qaEvidencePublisher,
+            ProjectRuntimeProfileService runtimeProfileService,
+            ObjectStorageRoleHandoffPublisher handoffPublisher,
+            RoleHandoffAttachmentResolver handoffAttachmentResolver
+    ) {
         this.repairExecutor = Objects.requireNonNull(repairExecutor, "repairExecutor must not be null");
         this.executorIoTaskExecutor = executorIoTaskExecutor;
         this.attachmentResolver = attachmentResolver;
         this.qaValidationProfileService = qaValidationProfileService;
         this.qaEvidencePublisher = qaEvidencePublisher;
+        this.runtimeProfileService = runtimeProfileService;
+        this.handoffPublisher = handoffPublisher;
+        this.handoffAttachmentResolver = handoffAttachmentResolver;
     }
 
     public EngineRequirementExecutorAdapter(
@@ -122,6 +169,19 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
                         request.taskId(),
                         "QA evidence persistence failed: " + safeMessage(exception),
                         qaEvidencePersistenceFailureJson(repairResult, exception)
+                );
+            }
+        }
+        if (request.role() != AgentRole.QA_AGENT
+                && repairResult.status() == RepairExecutionStatus.SUCCESS
+                && handoffPublisher != null) {
+            try {
+                repairResult = handoffPublisher.publish(request.role(), repairResult);
+            } catch (RuntimeException exception) {
+                return RequirementExecutionResult.failure(
+                        request.taskId(),
+                        "role handoff persistence failed: " + safeMessage(exception),
+                        handoffPersistenceFailureJson(repairResult, exception)
                 );
             }
         }
@@ -179,6 +239,8 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
         RdRequirementTask task = request.task();
         RepositoryParts repository = repositoryParts(task);
         String executionTaskId = executionTaskId(request);
+        List<com.wish.rd.exec.repair.execution.model.RepairInputAttachment> attachments = inputAttachments(request);
+        requireVerifiedCandidatePatchForLocalQa(request, attachments);
         return new RepairJobCommand(
                 executionTaskId,
                 executionTaskId,
@@ -190,10 +252,23 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
                 repository.name(),
                 task.baseBranch(),
                 workBranch(task),
-                contextJson(request),
-                policyJson(request),
-                attachmentResolver == null ? List.of() : attachmentResolver.resolve(request.materials())
+                contextJson(request, attachments),
+                policyJson(request, attachments),
+                attachments
         );
+    }
+
+    private List<com.wish.rd.exec.repair.execution.model.RepairInputAttachment> inputAttachments(
+            RequirementExecutionRequest request
+    ) {
+        List<com.wish.rd.exec.repair.execution.model.RepairInputAttachment> attachments = new ArrayList<>();
+        if (attachmentResolver != null) {
+            attachments.addAll(attachmentResolver.resolve(request.materials()));
+        }
+        if (handoffAttachmentResolver != null) {
+            attachments.addAll(handoffAttachmentResolver.resolve(request.role().name(), request.upstreamResultJson()));
+        }
+        return List.copyOf(attachments);
     }
 
     private String executionTaskId(RequirementExecutionRequest request) {
@@ -203,14 +278,57 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
         return request.taskId() + "-" + request.role().name().toLowerCase(java.util.Locale.ROOT);
     }
 
-    private Map<String, String> policyJson(RequirementExecutionRequest request) {
-        return Map.of(
-                "bridge", "engine-requirement-executor",
-                "repositoryPublishRequired", Boolean.toString(request.role() == AgentRole.CODING_AGENT)
-        );
+    private Map<String, String> policyJson(
+            RequirementExecutionRequest request,
+            List<com.wish.rd.exec.repair.execution.model.RepairInputAttachment> attachments
+    ) {
+        Map<String, String> policy = new LinkedHashMap<>();
+        policy.put("bridge", "engine-requirement-executor");
+        // A coding stage may produce a local patch without publishing it. Only an explicit
+        // task-level PR requirement grants the executor permission to mutate the remote.
+        policy.put("repositoryPublishRequired", Boolean.toString(request.pullRequestRequired()));
+        policy.put("repositoryDeliveryMode", request.pullRequestRequired() ? "PUBLISH" : "LOCAL_ONLY");
+        policy.put("applyCandidatePatch", Boolean.toString(shouldApplyCandidatePatch(request, attachments)));
+        appendProjectRuntimePolicy(policy, request);
+        return Map.copyOf(policy);
     }
 
-    private Map<String, String> contextJson(RequirementExecutionRequest request) {
+    private void appendProjectRuntimePolicy(
+            Map<String, String> policy,
+            RequirementExecutionRequest request
+    ) {
+        if (runtimeProfileService == null || request == null || request.task() == null) {
+            return;
+        }
+        String projectId = request.task().projectId();
+        if (projectId == null || projectId.isBlank()) {
+            return;
+        }
+        runtimeProfileService.list(projectId).stream()
+                .filter(profile -> request.role().name().equals(profile.role()))
+                .filter(profile -> ProjectRuntimeProfileService.VERIFIED_STATUS.equals(profile.validationStatus()))
+                .filter(profile -> ProjectRuntimeProfileService.SUPPORTED_AGENT_TYPE.equals(profile.agentType()))
+                .filter(profile -> !ProjectRuntimeProfileService.usesCurrentRuntimeProfileContract(profile))
+                .findFirst()
+                .ifPresent(profile -> {
+                    throw new IllegalStateException(
+                            "project runtime profile for " + request.role().name()
+                                    + " was verified under a legacy Dockerfile contract; re-upload it before execution"
+                    );
+                });
+        runtimeProfileService.resolveVerified(projectId, request.role().name()).ifPresent(profile -> {
+            policy.put("runtimeImage", profile.image());
+            policy.put("runtimeImageVerified", "true");
+            policy.put("runtimeAgentType", profile.agentType());
+            policy.put("runtimeProfileRole", profile.role());
+            policy.put("runtimeProfileDockerfileSha256", profile.dockerfileSha256());
+        });
+    }
+
+    private Map<String, String> contextJson(
+            RequirementExecutionRequest request,
+            List<com.wish.rd.exec.repair.execution.model.RepairInputAttachment> attachments
+    ) {
         Map<String, String> context = new LinkedHashMap<>();
         RdRequirementTask task = request.task();
         context.put("workflowTaskId", request.taskId());
@@ -223,10 +341,148 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
         context.put("expectedResult", task.expectedResult());
         context.put("acceptanceCriteriaJson", task.acceptanceCriteriaJson());
         context.put("roleContextJson", request.roleContextJson());
-        context.put("upstreamResultJson", request.upstreamResultJson());
+        context.put("upstreamHandoffManifestJson", handoffManifestForWorkspace(request, attachments));
+        if (handoffPublisher != null) {
+            context.put("roleHandoffMaxTokens", String.valueOf(handoffPublisher.maxTokens()));
+        }
         context.put("materials", materialSummary(request.materials()));
         appendQaProfileContext(context, request, task);
         return Map.copyOf(context);
+    }
+
+    private String handoffManifestForWorkspace(
+            RequirementExecutionRequest request,
+            List<com.wish.rd.exec.repair.execution.model.RepairInputAttachment> attachments
+    ) {
+        if (request == null || request.upstreamResultJson() == null || request.upstreamResultJson().isBlank()) {
+            return "[]";
+        }
+        try {
+            JsonNode root = OBJECT_MAPPER.readTree(request.upstreamResultJson());
+            if (root == null || !root.path("stages").isArray()) {
+                return "[]";
+            }
+            List<Map<String, Object>> manifests = new ArrayList<>();
+            for (JsonNode stage : root.path("stages")) {
+                JsonNode handoff = stage.has("handoff") ? stage.path("handoff") : stage.path("roleHandoff");
+                if (!handoff.isObject()
+                        || !request.role().name().equalsIgnoreCase(handoff.path("targetRole").asText(""))) {
+                    continue;
+                }
+                String sourceRole = firstNonBlank(
+                        handoff.path("sourceRole").asText(""), stage.path("role").asText("")
+                );
+                if (sourceRole.isBlank()) {
+                    continue;
+                }
+                Map<String, Object> item = new LinkedHashMap<>();
+                item.put("sourceRole", sourceRole);
+                item.put("targetRole", request.role().name());
+                item.put("path", "/work/input/attachments/handoff-"
+                        + sourceRole.toLowerCase(java.util.Locale.ROOT) + ".md");
+                item.put("sha256", handoff.path("sha256").asText(""));
+                item.put("bytes", handoff.path("bytes").asLong(0L));
+                item.put("summary", handoff.path("summary").asText(""));
+                manifests.add(Map.copyOf(item));
+
+                // Continue scanning the stage for a Coding candidate patch below; a stage may contain both a
+                // Markdown handoff and the patch that local QA will validate.
+            }
+            if (shouldApplyCandidatePatch(request, attachments)) {
+                for (JsonNode stage : root.path("stages")) {
+                    JsonNode candidatePatch = stage.path("candidatePatch");
+                    if (!isCandidatePatchForLocalQa(candidatePatch, stage.path("role").asText(""))) {
+                        continue;
+                    }
+                    Map<String, Object> item = new LinkedHashMap<>();
+                    item.put("sourceRole", AgentRole.CODING_AGENT.name());
+                    item.put("targetRole", AgentRole.QA_AGENT.name());
+                    item.put("path", "/work/input/attachments/candidate-patch.diff");
+                    item.put("sha256", candidatePatch.path("sha256").asText(""));
+                    item.put("bytes", candidatePatch.path("bytes").asLong(0L));
+                    item.put("applied", true);
+                    manifests.add(Map.copyOf(item));
+                    break;
+                }
+            }
+            return OBJECT_MAPPER.writeValueAsString(manifests);
+        } catch (Exception ignored) {
+            return "[]";
+        }
+    }
+
+    private void requireVerifiedCandidatePatchForLocalQa(
+            RequirementExecutionRequest request,
+            List<com.wish.rd.exec.repair.execution.model.RepairInputAttachment> attachments
+    ) {
+        if (request == null
+                || request.role() != AgentRole.QA_AGENT
+                || request.pullRequestRequired()
+                || !hasCodingStage(request.upstreamResultJson())) {
+            return;
+        }
+        if (!hasCandidatePatchAttachment(attachments)) {
+            throw new IllegalStateException(
+                    "local QA requires a verified candidate patch from the successful CODING_AGENT stage"
+            );
+        }
+    }
+
+    private boolean shouldApplyCandidatePatch(
+            RequirementExecutionRequest request,
+            List<com.wish.rd.exec.repair.execution.model.RepairInputAttachment> attachments
+    ) {
+        return request != null
+                && request.role() == AgentRole.QA_AGENT
+                && !request.pullRequestRequired()
+                && hasCandidatePatchAttachment(attachments);
+    }
+
+    private static boolean hasCandidatePatchAttachment(
+            List<com.wish.rd.exec.repair.execution.model.RepairInputAttachment> attachments
+    ) {
+        return (attachments == null ? List.<com.wish.rd.exec.repair.execution.model.RepairInputAttachment>of() : attachments)
+                .stream()
+                .anyMatch(attachment -> "candidate-patch.diff".equals(attachment.filename())
+                        && "text/x-diff".equalsIgnoreCase(attachment.mimeType()));
+    }
+
+    private static boolean hasCodingStage(String upstreamResultJson) {
+        if (upstreamResultJson == null || upstreamResultJson.isBlank()) {
+            return false;
+        }
+        try {
+            JsonNode root = OBJECT_MAPPER.readTree(upstreamResultJson);
+            if (root == null || !root.path("stages").isArray()) {
+                return false;
+            }
+            for (JsonNode stage : root.path("stages")) {
+                if (AgentRole.CODING_AGENT.name().equalsIgnoreCase(stage.path("role").asText(""))) {
+                    return true;
+                }
+            }
+        } catch (Exception ignored) {
+            // The handoff resolver owns malformed manifests; this guard does not downgrade their failure.
+        }
+        return false;
+    }
+
+    private static boolean isCandidatePatchForLocalQa(JsonNode candidatePatch, String fallbackSourceRole) {
+        if (candidatePatch == null || !candidatePatch.isObject()) {
+            return false;
+        }
+        String sourceRole = firstNonBlank(
+                candidatePatch.path("sourceRole").asText(""), fallbackSourceRole
+        );
+        String sha256 = candidatePatch.path("sha256").asText("").strip();
+        long bytes = candidatePatch.path("bytes").asLong(-1L);
+        return AgentRole.CODING_AGENT.name().equalsIgnoreCase(sourceRole)
+                && AgentRole.QA_AGENT.name().equalsIgnoreCase(candidatePatch.path("targetRole").asText(""))
+                && "patch.diff".equals(candidatePatch.path("artifactName").asText(""))
+                && candidatePatch.path("artifactUri").asText("").startsWith("s3://")
+                && sha256.matches("(?:sha256:)?[0-9a-fA-F]{64}")
+                && bytes > 0L
+                && bytes <= 10L * 1024L * 1024L;
     }
 
     private void appendQaProfileContext(
@@ -287,6 +543,7 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
         value.put("testMetadata", repairResult.testMetadataJson());
         value.put("riskMetadata", repairResult.riskMetadataJson());
         value.put("stageArtifacts", stageArtifacts(repairResult));
+        appendRoleHandoff(request, repairResult, value);
         if (!repairResult.errorMessage().isBlank()) {
             value.putIfAbsent("errorMessage", repairResult.errorMessage());
         }
@@ -295,6 +552,74 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
         } catch (JsonProcessingException exception) {
             return "{\"status\":\"FAILED\",\"errorMessage\":\"failed to serialize execution result\"}";
         }
+    }
+
+    private void appendRoleHandoff(
+            RequirementExecutionRequest request,
+            RepairExecutionResult repairResult,
+            Map<String, Object> value
+    ) {
+        if (request == null || request.role() == AgentRole.QA_AGENT) {
+            return;
+        }
+        AgentRole targetRole = directDownstreamRole(request.role());
+        if (targetRole == null) {
+            return;
+        }
+        RepairArtifact artifact = repairResult.artifacts().stream()
+                .filter(candidate -> candidate.type() == com.wish.rd.exec.repair.execution.model.RepairArtifactType.HANDOFF_MARKDOWN)
+                .findFirst()
+                .orElse(null);
+        if (artifact == null || artifact.uri().isBlank() || !artifact.uri().startsWith("s3://")) {
+            return;
+        }
+        JsonNode nextPrompt = nextPrompt(value);
+        String declaredTarget = nextPrompt == null ? "" : nextPrompt.path("targetRole").asText("").strip();
+        if (!declaredTarget.isBlank() && !targetRole.name().equalsIgnoreCase(declaredTarget)) {
+            return;
+        }
+        Map<String, Object> handoff = new LinkedHashMap<>();
+        handoff.put("sourceRole", request.role().name());
+        handoff.put("targetRole", targetRole.name());
+        handoff.put("artifactName", artifact.name());
+        handoff.put("artifactUri", artifact.uri());
+        handoff.put("sha256", artifact.metadataJson().getOrDefault("sha256", ""));
+        handoff.put("bytes", parseLong(artifact.metadataJson().get("bytes")));
+        handoff.put("summary", nextPrompt == null
+                ? repairResult.summary()
+                : firstNonBlank(nextPrompt.path("summary").asText(""), repairResult.summary()));
+        value.put("roleHandoff", Map.copyOf(handoff));
+    }
+
+    private static long parseLong(String value) {
+        try {
+            return value == null ? 0L : Long.parseLong(value.strip());
+        } catch (NumberFormatException exception) {
+            return 0L;
+        }
+    }
+
+    /**
+     * Accept the explicit snake_case protocol while keeping the earlier camelCase draft readable.
+     */
+    private static JsonNode nextPrompt(Map<String, Object> value) {
+        if (value == null) {
+            return null;
+        }
+        Object raw = value.containsKey("next_prompt")
+                ? value.get("next_prompt")
+                : value.get("nextPrompt");
+        return raw instanceof JsonNode node && node.isObject() ? node : null;
+    }
+
+    private static AgentRole directDownstreamRole(AgentRole role) {
+        return switch (role) {
+            case REQUIREMENT_REVIEWER -> AgentRole.SOLUTION_ARCHITECT;
+            case SOLUTION_ARCHITECT -> AgentRole.CODING_AGENT;
+            case CODING_AGENT -> AgentRole.QA_AGENT;
+            case QA_AGENT -> null;
+            default -> null;
+        };
     }
 
     private List<Map<String, Object>> stageArtifacts(RepairExecutionResult repairResult) {
@@ -539,6 +864,22 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
         }
     }
 
+    private String handoffPersistenceFailureJson(
+            RepairExecutionResult repairResult,
+            RuntimeException exception
+    ) {
+        Map<String, Object> value = expandedAgentResult(repairResult.rawResultJson());
+        value.put("status", "FAILED");
+        value.put("summary", "role handoff could not be persisted");
+        value.put("handoffPersistenceError", safeMessage(exception));
+        value.put("stageArtifacts", List.of());
+        try {
+            return OBJECT_MAPPER.writeValueAsString(value);
+        } catch (JsonProcessingException ignored) {
+            return "{\"status\":\"FAILED\",\"summary\":\"role handoff could not be persisted\"}";
+        }
+    }
+
     private static String safeMessage(RuntimeException exception) {
         if (exception == null || exception.getMessage() == null || exception.getMessage().isBlank()) {
             return "unknown persistence error";
@@ -552,6 +893,19 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
             return node.isTextual() ? node.asText("").strip() : node.toString();
         }
         return value == null ? "" : value.toString().strip();
+    }
+
+    private static String firstNonBlank(String... values) {
+        if (values == null) {
+            return "";
+        }
+        for (String value : values) {
+            String normalized = value == null ? "" : value.strip();
+            if (!normalized.isBlank()) {
+                return normalized;
+            }
+        }
+        return "";
     }
 
     private Map<String, Object> expandedAgentResult(Map<String, String> rawResultJson) {

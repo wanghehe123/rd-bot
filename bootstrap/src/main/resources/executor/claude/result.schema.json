@@ -49,6 +49,23 @@
     },
     "needHumanAction": {
       "type": "boolean"
+    },
+    "next_prompt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["targetRole", "summary", "handoffArtifact"],
+      "properties": {
+        "targetRole": {
+          "const": "QA_AGENT"
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 1200
+        },
+        "handoffArtifact": {
+          "const": "handoff/next.md"
+        }
+      }
     }
   },
   "allOf": [

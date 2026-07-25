@@ -1,5 +1,7 @@
 package com.wish.rd.engine.retrieval;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wish.rd.engine.agent.model.AgentRole;
 import com.wish.rd.engine.retrieval.model.ChannelAudit;
 import com.wish.rd.engine.retrieval.model.RetrievalOutcome;
@@ -29,9 +31,12 @@ import java.util.Set;
 
 /**
  * Runs one project-scoped requirement retrieval attempt and applies deterministic role evidence gates.
- * Upstream role output is used only to refine the query; it is never promoted to evidence by itself.
+ * Raw upstream role output is used only to refine the query. A structurally valid handoff manifest addressed to the
+ * current role can satisfy the corresponding role gate; the RustFS object remains content-verified before execution.
  */
 public final class DeepRetrievalOrchestrator {
+
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     private static final Set<String> ARCHITECT_TYPES = Set.of(
             "ARCHITECTURE", "INTERFACE", "API_CONTRACT", "DATABASE_SCHEMA"
@@ -107,40 +112,59 @@ public final class DeepRetrievalOrchestrator {
         appendChannelAudits(run.runId(), searchResult.channels());
         appendMaterialEvidence(run.runId(), safeMaterials);
         List<RoleContextEvidence> roots = rootEvidence(task, safeMaterials, scope);
-        List<RoleContextEvidence> candidates = mergeCandidates(roots, searchResult.candidates());
-        Selection selection = select(role, consumer, roots, searchResult.candidates(), Math.max(1, topK));
+        List<RoleContextEvidence> handoffCandidates = directedHandoffEvidence(
+                role, upstreamClues, Math.max(task.createTimeEpochMillis(), task.updateTimeEpochMillis())
+        );
+        List<RoleContextEvidence> candidates = mergeCandidates(roots, searchResult.candidates(), handoffCandidates);
+        List<RoleContextEvidence> nonRootCandidates = new ArrayList<>(
+                searchResult.candidates() == null ? List.of() : searchResult.candidates());
+        nonRootCandidates.addAll(handoffCandidates);
+        Selection selection = select(role, consumer, roots, nonRootCandidates, Math.max(1, topK));
         List<String> missing = missingEvidence(task, consumer, role, scope, selection.selected());
+        boolean repositoryDiscoveryFallback = allowsRepositoryDiscoveryFallback(consumer, role, missing);
+        List<RoleContextEvidence> selectedEvidence = new ArrayList<>(selection.selected());
+        if (repositoryDiscoveryFallback) {
+            selectedEvidence.add(repositoryDiscoveryEvidence(task, role, missing));
+        }
+        selectedEvidence = deduplicate(selectedEvidence);
 
-        for (RoleContextEvidence evidence : selection.selected()) {
+        for (RoleContextEvidence evidence : selectedEvidence) {
             append(run.runId(), "SELECTED_EVIDENCE", evidence.sourceUri(), evidencePreview(evidence),
                     evidence.contentHash().isBlank() ? sha256(evidence.summary()) : evidence.contentHash());
         }
 
         EvidenceQualityDecision decision = missing.isEmpty()
-                ? EvidenceQualityDecision.SUFFICIENT : EvidenceQualityDecision.NEED_INPUT;
+                ? EvidenceQualityDecision.SUFFICIENT
+                : repositoryDiscoveryFallback
+                ? EvidenceQualityDecision.DEGRADED_ACCEPTABLE
+                : EvidenceQualityDecision.NEED_INPUT;
         String reason = missing.isEmpty()
                 ? "角色关键证据门禁通过"
+                : repositoryDiscoveryFallback
+                ? "缺少角色关键证据: " + String.join(",", missing) + "；已降级为受限仓库发现"
                 : "缺少角色关键证据: " + String.join(",", missing);
-        String quality = qualityReport(decision, scope, candidates.size(), selection, missing, reason);
+        Selection finalSelection = new Selection(selectedEvidence, selection.omittedIds());
+        String quality = qualityReport(decision, scope, candidates.size(), finalSelection, missing, reason);
         RetrievalRunArtifact qualityArtifact = append(
                 run.runId(), "QUALITY_REPORT", "rag://retrieval/quality", quality, sha256(quality)
         );
 
-        RetrievalRun terminal = missing.isEmpty()
-                ? lifecycle.complete(run.runId(), candidates.size(), selection.selected().size(), false, reason)
-                : lifecycle.waitForInput(run.runId(), candidates.size(), selection.selected().size(), reason);
+        RetrievalRun terminal = missing.isEmpty() || repositoryDiscoveryFallback
+                ? lifecycle.complete(
+                        run.runId(), candidates.size(), selectedEvidence.size(), repositoryDiscoveryFallback, reason)
+                : lifecycle.waitForInput(run.runId(), candidates.size(), selectedEvidence.size(), reason);
         append(run.runId(), "RETRIEVAL_OUTCOME", "rag://retrieval/outcome",
                 "outcome=" + terminal.status().name()
                         + "; candidates=" + candidates.size()
-                        + "; selected=" + selection.selected().size()
+                        + "; selected=" + selectedEvidence.size()
                         + "; reason=" + reason,
                 sha256(terminal.status().name() + reason));
         RagRetrievalTrace.outcome(
-                run.runId(), terminal.status().name(), candidates.size(), selection.selected().size(), reason
+                run.runId(), terminal.status().name(), candidates.size(), selectedEvidence.size(), reason
         );
         return new RetrievalOutcome(
-                run.runId(), terminal.status(), consumer, role, safe(stageRunId), selection.selected(),
-                decision, qualityArtifact.artifactId(), missing, selection.omittedIds(), reason
+                run.runId(), terminal.status(), consumer, role, safe(stageRunId), selectedEvidence,
+                terminal.qualityDecision(), qualityArtifact.artifactId(), missing, selection.omittedIds(), reason
         );
     }
 
@@ -303,6 +327,54 @@ public final class DeepRetrievalOrchestrator {
         return List.copyOf(missing);
     }
 
+    /**
+     * Missing semantic role evidence is recoverable inside an already constrained repository checkout.
+     * Scope, task-root, acceptance, and retrieval-channel failures are not recoverable by this fallback.
+     */
+    private boolean allowsRepositoryDiscoveryFallback(
+            RetrievalConsumerType consumer,
+            AgentRole role,
+            List<String> missingEvidence
+    ) {
+        if (consumer != RetrievalConsumerType.AGENT_ROLE || role == null || missingEvidence == null
+                || missingEvidence.isEmpty()) {
+            return false;
+        }
+        String recoverableType = switch (role) {
+            case SOLUTION_ARCHITECT -> "ARCHITECTURE_OR_INTERFACE";
+            case CODING_AGENT -> "CODE_SYMBOL";
+            case QA_AGENT -> "TEST_ENTRY";
+            default -> "";
+        };
+        return !recoverableType.isBlank()
+                && missingEvidence.stream().allMatch(recoverableType::equals);
+    }
+
+    private RoleContextEvidence repositoryDiscoveryEvidence(
+            RdRequirementTask task,
+            AgentRole role,
+            List<String> missingEvidence
+    ) {
+        String repository = firstNonBlank(repositoryFingerprint(task), "workspace");
+        String summary = "未检索到 " + String.join(",", missingEvidence)
+                + "；在当前工作区先进行受限仓库发现：最多 12 条只读命令、检查最多 20 个文件、读取最多 64 KiB。"
+                + "仅使用 rg/find/sed/git grep 等普通仓库工具，记录定位到的文件、符号和测试入口；"
+                + "不要访问基准参考答案、隐藏检查或仓库外路径。";
+        return new RoleContextEvidence(
+                "repository-discovery-" + safe(task.taskId()) + "-" + role.name().toLowerCase(Locale.ROOT),
+                "REPOSITORY_DISCOVERY",
+                "repo://" + repository + "/discovery",
+                role.name() + " 受限仓库发现",
+                sha256(summary),
+                summary,
+                Math.max(task.createTimeEpochMillis(), task.updateTimeEpochMillis()),
+                "role-specific RAG evidence was unavailable; bounded repository discovery is required",
+                1.0d,
+                "REPOSITORY_DISCOVERY",
+                false
+        );
+    }
+
     private void appendChannelAudits(String runId, List<ChannelAudit> channels) {
         for (ChannelAudit channel : channels == null ? List.<ChannelAudit>of() : channels) {
             String preview = "channel=" + channel.channel()
@@ -359,7 +431,8 @@ public final class DeepRetrievalOrchestrator {
                 + "; knowledgeBaseIds=" + String.join(",", scope.knowledgeBaseIds())
                 + "; repository=" + scope.repositoryFingerprint()
                 + "; topK=" + Math.max(1, topK)
-                + "; upstreamOutputIsQueryOnly=true";
+                + "; rawUpstreamOutputIsQueryOnly=true"
+                + "; directedHandoffManifestEligible=true";
     }
 
     private String qualityReport(
@@ -408,13 +481,120 @@ public final class DeepRetrievalOrchestrator {
         return safe(task.repositoryUrl()).toLowerCase(Locale.ROOT);
     }
 
+    private List<RoleContextEvidence> directedHandoffEvidence(
+            AgentRole role,
+            String upstreamClues,
+            long collectedAtEpochMillis
+    ) {
+        if (role == null || safe(upstreamClues).isBlank()) {
+            return List.of();
+        }
+        List<RoleContextEvidence> evidence = new ArrayList<>();
+        try {
+            JsonNode root = OBJECT_MAPPER.readTree(upstreamClues);
+            if (root == null || !root.isObject()) {
+                return List.of();
+            }
+            JsonNode stages = root.path("stages");
+            if (stages.isArray()) {
+                for (JsonNode stage : stages) {
+                    if (stage != null && stage.isObject()) {
+                        addDirectedHandoffEvidence(
+                                evidence,
+                                role,
+                                stage.has("handoff") ? stage.path("handoff") : stage.path("roleHandoff"),
+                                stage.path("role").asText(""),
+                                collectedAtEpochMillis
+                        );
+                    }
+                }
+            }
+            if (root.has("roleHandoff")) {
+                addDirectedHandoffEvidence(
+                        evidence, role, root.path("roleHandoff"), root.path("sourceRole").asText(""),
+                        collectedAtEpochMillis
+                );
+            }
+        } catch (Exception ignored) {
+            // The raw upstream output remains query-only when it is not a valid compact handoff manifest.
+        }
+        return deduplicate(evidence);
+    }
+
+    private void addDirectedHandoffEvidence(
+            List<RoleContextEvidence> evidence,
+            AgentRole role,
+            JsonNode handoff,
+            String fallbackSourceRole,
+            long collectedAtEpochMillis
+    ) {
+        if (handoff == null || !handoff.isObject()
+                || !role.name().equalsIgnoreCase(safe(handoff.path("targetRole").asText("")))) {
+            return;
+        }
+        String sourceRole = firstNonBlank(handoff.path("sourceRole").asText(""), fallbackSourceRole);
+        String artifactName = safe(handoff.path("artifactName").asText(""));
+        String artifactUri = safe(handoff.path("artifactUri").asText(""));
+        String digest = normalizeSha256(handoff.path("sha256").asText(""));
+        long bytes = handoff.path("bytes").asLong(-1L);
+        if (sourceRole.isBlank()
+                || !"handoff/next.md".equals(artifactName)
+                || !artifactUri.startsWith("s3://")
+                || digest.isBlank()
+                || bytes <= 0L) {
+            return;
+        }
+        String evidenceType = handoffEvidenceType(role);
+        if (evidenceType.isBlank()) {
+            return;
+        }
+        String summary = firstNonBlank(
+                bounded(handoff.path("summary").asText(""), 600),
+                "Controlled handoff document from " + sourceRole
+        );
+        evidence.add(new RoleContextEvidence(
+                "role-handoff-" + digest,
+                "ROLE_HANDOFF",
+                artifactUri,
+                "Handoff from " + sourceRole,
+                "sha256:" + digest,
+                summary,
+                collectedAtEpochMillis,
+                "directed handoff manifest; content verified before executor attachment",
+                1.0d,
+                evidenceType,
+                false
+        ));
+    }
+
+    private String handoffEvidenceType(AgentRole role) {
+        return switch (role) {
+            case SOLUTION_ARCHITECT -> "ARCHITECTURE";
+            case CODING_AGENT -> "CODE_SYMBOL";
+            case QA_AGENT -> "TEST_ENTRY";
+            default -> "";
+        };
+    }
+
+    private String normalizeSha256(String value) {
+        String normalized = safe(value);
+        if (normalized.startsWith("sha256:")) {
+            normalized = normalized.substring("sha256:".length());
+        }
+        return normalized.matches("[0-9a-fA-F]{64}") ? normalized.toLowerCase(Locale.ROOT) : "";
+    }
+
     private List<RoleContextEvidence> mergeCandidates(
             List<RoleContextEvidence> roots,
-            List<RoleContextEvidence> searched
+            List<RoleContextEvidence> searched,
+            List<RoleContextEvidence> handoffs
     ) {
         List<RoleContextEvidence> merged = new ArrayList<>(roots);
         if (searched != null) {
             merged.addAll(searched);
+        }
+        if (handoffs != null) {
+            merged.addAll(handoffs);
         }
         return deduplicate(merged);
     }

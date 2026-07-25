@@ -2,6 +2,9 @@ package com.wish.rd.bootstrap.executor;
 
 import com.wish.rd.bootstrap.executor.impl.EngineRequirementExecutorAdapter;
 import com.wish.rd.bootstrap.executor.impl.ObjectStorageQaEvidencePublisher;
+import com.wish.rd.bootstrap.executor.impl.ObjectStorageRoleHandoffPublisher;
+import com.wish.rd.bootstrap.executor.impl.RoleHandoffAttachmentResolver;
+import com.wish.rd.bootstrap.executor.impl.RoleHandoffProperties;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -24,6 +27,9 @@ import com.wish.rd.rag.qa.QaValidationProfileStore;
 import com.wish.rd.rag.qa.model.QaValidationProfile;
 import com.wish.rd.rag.qa.model.QaValidationProfileCommand;
 import com.wish.rd.rag.ingestion.impl.InMemoryObjectStorageService;
+import com.wish.rd.rag.project.runtime.ProjectRuntimeProfileService;
+import com.wish.rd.rag.project.runtime.impl.InMemoryProjectRuntimeProfileStore;
+import com.wish.rd.rag.project.runtime.model.ProjectRuntimeProfileCommand;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -37,10 +43,12 @@ import java.util.List;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class EngineRequirementExecutorAdapterTest {
@@ -423,7 +431,7 @@ class EngineRequirementExecutorAdapterTest {
     }
 
     @Test
-    void shouldRequestRepositoryPublicationOnlyForCodingAgent() {
+    void shouldRequireExplicitPullRequestPermissionBeforePublishingCodingRepository() {
         RecordingRepairExecutor repairExecutor = new RecordingRepairExecutor();
         EngineRequirementExecutorAdapter adapter = new EngineRequirementExecutorAdapter(repairExecutor);
 
@@ -451,6 +459,16 @@ class EngineRequirementExecutorAdapterTest {
                 "task-1001",
                 task(),
                 List.of(),
+                "write code and publish",
+                AgentRole.CODING_AGENT,
+                "{}",
+                true,
+                "[]"
+        ));
+        adapter.execute(new RequirementExecutionRequest(
+                "task-1001",
+                task(),
+                List.of(),
                 "qa",
                 AgentRole.QA_AGENT,
                 "{}",
@@ -459,13 +477,15 @@ class EngineRequirementExecutorAdapterTest {
         ));
 
         assertEquals("false", repairExecutor.commands().get(0).policyJson().get("repositoryPublishRequired"));
-        assertEquals("true", repairExecutor.commands().get(1).policyJson().get("repositoryPublishRequired"));
-        assertEquals("false", repairExecutor.commands().get(2).policyJson().get("repositoryPublishRequired"));
+        assertEquals("false", repairExecutor.commands().get(1).policyJson().get("repositoryPublishRequired"));
+        assertEquals("true", repairExecutor.commands().get(2).policyJson().get("repositoryPublishRequired"));
+        assertEquals("false", repairExecutor.commands().get(3).policyJson().get("repositoryPublishRequired"));
         assertEquals("task-1001-requirement_reviewer", repairExecutor.commands().get(0).taskId());
         assertEquals("task-1001", repairExecutor.commands().get(1).taskId());
-        assertEquals("task-1001-qa_agent", repairExecutor.commands().get(2).taskId());
+        assertEquals("task-1001", repairExecutor.commands().get(2).taskId());
+        assertEquals("task-1001-qa_agent", repairExecutor.commands().get(3).taskId());
         assertEquals("task-1001", repairExecutor.commands().get(0).contextJson().get("taskId"));
-        assertEquals("task-1001", repairExecutor.commands().get(2).contextJson().get("taskId"));
+        assertEquals("task-1001", repairExecutor.commands().get(3).contextJson().get("taskId"));
     }
 
     @Test
@@ -493,6 +513,313 @@ class EngineRequirementExecutorAdapterTest {
         assertTrue(profileJson.contains("\"mode\":\"REQUIRED\""));
         assertTrue(profileJson.contains("\"baseUrl\":\"http://127.0.0.1:4173\""));
         assertTrue(profileJson.contains("\"regressionCommands\":[\"npm test\"]"));
+    }
+
+    @Test
+    void shouldInjectOnlyVerifiedProjectRuntimeImageIntoExecutorPolicy() {
+        RecordingRepairExecutor repairExecutor = new RecordingRepairExecutor();
+        ProjectRuntimeProfileService runtimeProfiles = new ProjectRuntimeProfileService(
+                new InMemoryProjectRuntimeProfileStore()
+        );
+        runtimeProfiles.save(new ProjectRuntimeProfileCommand(
+                "7486000000000000005",
+                "CODING_AGENT",
+                "CLAUDE_CODE",
+                "rd-bot/project-7486000000000000005-coding:verified",
+                "s3://rd-project-runtime-dockerfiles/coding.Dockerfile",
+                "c".repeat(64),
+                "Dockerfile",
+                ProjectRuntimeProfileService.RUNTIME_PROFILE_CONTRACT_MARKER + "; claude runtime smoke verified"
+        ));
+        EngineRequirementExecutorAdapter adapter = new EngineRequirementExecutorAdapter(
+                repairExecutor,
+                null,
+                null,
+                null,
+                null,
+                runtimeProfiles
+        );
+
+        adapter.execute(new RequirementExecutionRequest(
+                "task-project-runtime",
+                projectTask(),
+                List.of(),
+                "implement",
+                AgentRole.CODING_AGENT,
+                "{}",
+                false,
+                "[]"
+        ));
+
+        Map<String, String> policy = repairExecutor.commands().getFirst().policyJson();
+        assertEquals("rd-bot/project-7486000000000000005-coding:verified", policy.get("runtimeImage"));
+        assertEquals("true", policy.get("runtimeImageVerified"));
+        assertEquals("CLAUDE_CODE", policy.get("runtimeAgentType"));
+    }
+
+    @Test
+    void shouldPersistAndRematerializePrivateMarkdownHandoffWithoutPassingRawRoleJson() throws Exception {
+        byte[] handoffBytes = """
+                # Implementation Plan
+
+                Update the serializer and run the focused regression test.
+                """.getBytes(StandardCharsets.UTF_8);
+        Path handoffPath = tempDirectory.resolve("handoff").resolve("next.md");
+        Files.createDirectories(handoffPath.getParent());
+        Files.write(handoffPath, handoffBytes);
+        RepairArtifact handoffArtifact = new RepairArtifact(
+                RepairArtifactType.HANDOFF_MARKDOWN,
+                "handoff/next.md",
+                handoffPath.toUri().toString(),
+                "Architecture plan for coding",
+                Map.of(
+                        "bytes", String.valueOf(handoffBytes.length),
+                        "sha256", sha256(handoffBytes),
+                        "contentType", "text/markdown"
+                )
+        );
+        List<RepairJobCommand> commands = new java.util.ArrayList<>();
+        RepairExecutorPort repairExecutor = command -> {
+            commands.add(command);
+            if ("SOLUTION_ARCHITECT".equals(command.contextJson().get("agentRole"))) {
+                return new RepairExecutionResult(
+                        RepairExecutionStatus.SUCCESS,
+                        "Architecture is ready",
+                        "",
+                        List.of(handoffArtifact),
+                        Map.of("__agentResultJson", """
+                                {
+                                  "summary": "Architecture is ready",
+                                  "next_prompt": {
+                                    "targetRole": "CODING_AGENT",
+                                    "summary": "Use the verified Markdown plan",
+                                    "handoffArtifact": "handoff/next.md"
+                                  }
+                                }
+                                """),
+                        Map.of("containerId", "raw-container-metadata"),
+                        Map.of(),
+                        Map.of(),
+                        Map.of(),
+                        ""
+                );
+            }
+            return new RepairExecutionResult(
+                    RepairExecutionStatus.SUCCESS,
+                    "Coding is ready",
+                    "",
+                    List.of(),
+                    Map.of("status", "SUCCESS"),
+                    Map.of(),
+                    Map.of(),
+                    Map.of(),
+                    Map.of(),
+                    ""
+            );
+        };
+        InMemoryObjectStorageService storage = new InMemoryObjectStorageService();
+        RoleHandoffProperties handoffProperties = new RoleHandoffProperties();
+        handoffProperties.setMaxTokens(512);
+        EngineRequirementExecutorAdapter adapter = new EngineRequirementExecutorAdapter(
+                repairExecutor,
+                null,
+                null,
+                null,
+                null,
+                null,
+                new ObjectStorageRoleHandoffPublisher(storage, handoffProperties),
+                new RoleHandoffAttachmentResolver(storage, handoffProperties)
+        );
+
+        RequirementExecutionResult architectResult = adapter.execute(new RequirementExecutionRequest(
+                "task-handoff",
+                task(),
+                List.of(),
+                "design",
+                AgentRole.SOLUTION_ARCHITECT,
+                "{}",
+                false,
+                "{\"version\":1,\"stages\":[]}"
+        ));
+
+        assertTrue(architectResult.success(), architectResult::errorMessage);
+        JsonNode handoff = OBJECT_MAPPER.readTree(architectResult.resultJson()).path("roleHandoff");
+        assertEquals("CODING_AGENT", handoff.path("targetRole").asText());
+        assertTrue(handoff.path("artifactUri").asText().startsWith("s3://rd-role-handoffs/"));
+        String upstream = "{\"version\":1,\"stages\":[{\"role\":\"SOLUTION_ARCHITECT\",\"handoff\":"
+                + handoff + "}]}";
+
+        adapter.execute(new RequirementExecutionRequest(
+                "task-handoff",
+                task(),
+                List.of(),
+                "implement",
+                AgentRole.CODING_AGENT,
+                "{}",
+                false,
+                upstream
+        ));
+
+        RepairJobCommand codingCommand = commands.get(1);
+        assertEquals(1, codingCommand.attachments().size());
+        assertEquals("handoff-solution_architect.md", codingCommand.attachments().getFirst().filename());
+        assertEquals(new String(handoffBytes, StandardCharsets.UTF_8),
+                new String(codingCommand.attachments().getFirst().content(), StandardCharsets.UTF_8));
+        String localManifest = codingCommand.contextJson().get("upstreamHandoffManifestJson");
+        assertTrue(localManifest.contains("/work/input/attachments/handoff-solution_architect.md"));
+        assertFalse(localManifest.contains("s3://"));
+        assertEquals("512", codingCommand.contextJson().get("roleHandoffMaxTokens"));
+        assertFalse(codingCommand.contextJson().containsKey("upstreamResultJson"));
+    }
+
+    @Test
+    void shouldAttachAndApplyVerifiedCodingPatchForLocalQa() throws Exception {
+        byte[] patchBytes = """
+                diff --git a/README.md b/README.md
+                index 0000000..1111111 100644
+                --- a/README.md
+                +++ b/README.md
+                @@ -1 +1 @@
+                -before
+                +after
+                """.getBytes(StandardCharsets.UTF_8);
+        Path patchPath = tempDirectory.resolve("coding").resolve("patch.diff");
+        Files.createDirectories(patchPath.getParent());
+        Files.write(patchPath, patchBytes);
+        RepairArtifact candidatePatch = new RepairArtifact(
+                RepairArtifactType.PATCH_DIFF,
+                "patch.diff",
+                patchPath.toUri().toString(),
+                "Candidate coding patch",
+                Map.of(
+                        "bytes", String.valueOf(patchBytes.length),
+                        "sha256", sha256(patchBytes),
+                        "contentType", "text/x-diff"
+                )
+        );
+        List<RepairJobCommand> commands = new java.util.ArrayList<>();
+        RepairExecutorPort repairExecutor = command -> {
+            commands.add(command);
+            return new RepairExecutionResult(
+                    RepairExecutionStatus.SUCCESS,
+                    "stage complete",
+                    "",
+                    "CODING_AGENT".equals(command.contextJson().get("agentRole"))
+                            ? List.of(candidatePatch)
+                            : List.of(),
+                    Map.of("__agentResultJson", """
+                            {"status":"SUCCESS","summary":"stage complete","changedFiles":[],"testCommands":[],
+                            "testStatus":"PASSED","riskLevel":"LOW","prBody":"","needHumanAction":false}
+                            """),
+                    Map.of(),
+                    Map.of(),
+                    Map.of(),
+                    Map.of(),
+                    ""
+            );
+        };
+        InMemoryObjectStorageService storage = new InMemoryObjectStorageService();
+        RoleHandoffProperties handoffProperties = new RoleHandoffProperties();
+        EngineRequirementExecutorAdapter adapter = new EngineRequirementExecutorAdapter(
+                repairExecutor,
+                null,
+                null,
+                null,
+                null,
+                null,
+                new ObjectStorageRoleHandoffPublisher(storage, handoffProperties),
+                new RoleHandoffAttachmentResolver(storage, handoffProperties)
+        );
+
+        RequirementExecutionResult codingResult = adapter.execute(new RequirementExecutionRequest(
+                "task-local-qa-patch",
+                task(),
+                List.of(),
+                "implement",
+                AgentRole.CODING_AGENT,
+                "{}",
+                false,
+                "{\"version\":1,\"stages\":[]}"
+        ));
+
+        JsonNode candidate = null;
+        for (JsonNode artifact : OBJECT_MAPPER.readTree(codingResult.resultJson()).path("stageArtifacts")) {
+            if ("patch.diff".equals(artifact.path("name").asText())) {
+                candidate = artifact;
+                break;
+            }
+        }
+        assertTrue(candidate != null);
+        String upstream = """
+                {"version":1,"stages":[{"role":"CODING_AGENT","candidatePatch":{
+                "sourceRole":"CODING_AGENT","targetRole":"QA_AGENT","artifactName":"patch.diff",
+                "artifactUri":"%s","sha256":"%s","bytes":%d}}]}
+                """.formatted(
+                candidate.path("uri").asText(),
+                candidate.path("metadataJson").path("sha256").asText(),
+                candidate.path("metadataJson").path("bytes").asLong()
+        );
+
+        adapter.execute(new RequirementExecutionRequest(
+                "task-local-qa-patch",
+                task(),
+                List.of(),
+                "verify",
+                AgentRole.QA_AGENT,
+                "{}",
+                false,
+                upstream
+        ));
+
+        RepairJobCommand qaCommand = commands.get(1);
+        assertEquals("true", qaCommand.policyJson().get("applyCandidatePatch"));
+        assertEquals(1, qaCommand.attachments().size());
+        assertEquals("candidate-patch.diff", qaCommand.attachments().getFirst().filename());
+        assertEquals(new String(patchBytes, StandardCharsets.UTF_8),
+                new String(qaCommand.attachments().getFirst().content(), StandardCharsets.UTF_8));
+        assertTrue(qaCommand.contextJson().get("upstreamHandoffManifestJson")
+                .contains("/work/input/attachments/candidate-patch.diff"));
+        assertFalse(qaCommand.contextJson().get("upstreamHandoffManifestJson").contains("s3://"));
+    }
+
+    @Test
+    void shouldRejectLocalQaBeforeExecutionWhenCodingStageHasNoVerifiedCandidatePatch() {
+        AtomicInteger executorInvocations = new AtomicInteger();
+        InMemoryObjectStorageService storage = new InMemoryObjectStorageService();
+        RoleHandoffProperties handoffProperties = new RoleHandoffProperties();
+        EngineRequirementExecutorAdapter adapter = new EngineRequirementExecutorAdapter(
+                ignored -> {
+                    executorInvocations.incrementAndGet();
+                    return new RepairExecutionResult(
+                            RepairExecutionStatus.SUCCESS, "unexpected execution", "", List.of(),
+                            Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), ""
+                    );
+                },
+                null,
+                null,
+                null,
+                null,
+                null,
+                new ObjectStorageRoleHandoffPublisher(storage, handoffProperties),
+                new RoleHandoffAttachmentResolver(storage, handoffProperties)
+        );
+
+        IllegalStateException exception = assertThrows(IllegalStateException.class, () -> adapter.execute(
+                new RequirementExecutionRequest(
+                        "task-local-qa-without-patch",
+                        task(),
+                        List.of(),
+                        "verify the implementation",
+                        AgentRole.QA_AGENT,
+                        "{}",
+                        false,
+                        "{\"version\":1,\"stages\":[{\"role\":\"CODING_AGENT\"}]}"
+                )
+        ));
+
+        assertEquals("local QA requires a verified candidate patch from the successful CODING_AGENT stage",
+                exception.getMessage());
+        assertEquals(0, executorInvocations.get());
     }
 
     private RequirementExecutionRequest request() {
@@ -705,6 +1032,27 @@ class EngineRequirementExecutorAdapterTest {
                 false
         );
         return RdRequirementTask.created("task-1001", command, 1000L);
+    }
+
+    private RdRequirementTask projectTask() {
+        return RdRequirementTask.created("task-project-runtime", new CreateRequirementTaskCommand(
+                "项目运行时任务",
+                "P1",
+                "ADMIN",
+                "",
+                "",
+                "7486000000000000005",
+                "runtime-test",
+                "Runtime Test",
+                "https://github.com/acme/order.git",
+                "acme",
+                "order",
+                "main",
+                "完成需求",
+                List.of("测试通过"),
+                List.of(),
+                false
+        ), 1000L);
     }
 
     private static final class RecordingCodePlatform implements CodePlatformPort {

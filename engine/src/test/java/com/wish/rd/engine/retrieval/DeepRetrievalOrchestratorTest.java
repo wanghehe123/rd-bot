@@ -96,7 +96,7 @@ class DeepRetrievalOrchestratorTest {
     }
 
     @Test
-    void requirementProseWithoutCriticalRoleEvidenceWaitsForInput() {
+    void requirementProseWithoutRoleSpecificEvidenceUsesBoundedRepositoryDiscovery() {
         InMemoryRetrievalRunStore store = new InMemoryRetrievalRunStore();
         AtomicInteger ids = new AtomicInteger();
         DeepRetrievalOrchestrator orchestrator = new DeepRetrievalOrchestrator(
@@ -109,10 +109,212 @@ class DeepRetrievalOrchestratorTest {
                 task, List.of(requirementMaterial(task.taskId())), RetrievalConsumerType.AGENT_ROLE,
                 AgentRole.QA_AGENT, "stage-qa-1", "", 8);
 
+        assertEquals(RetrievalRunStatus.SUCCEEDED_DEGRADED, outcome.status());
+        assertEquals(EvidenceQualityDecision.DEGRADED_ACCEPTABLE, outcome.qualityDecision());
+        assertTrue(outcome.stopReason().contains("受限仓库发现"), outcome.stopReason());
+        assertTrue(outcome.missingEvidenceTypes().contains("TEST_ENTRY"));
+        assertTrue(outcome.selectedEvidence().stream().anyMatch(item ->
+                item.sourceType().equals("REPOSITORY_DISCOVERY")
+                        && item.requiredEvidenceType().equals("REPOSITORY_DISCOVERY")
+        ));
+        assertTrue(store.listArtifacts(outcome.runId()).stream().anyMatch(artifact ->
+                artifact.artifactType().equals("SELECTED_EVIDENCE")
+                        && artifact.contentPreview().contains("受限仓库发现")
+        ));
+    }
+
+    @Test
+    void acceptsValidDirectedHandoffManifestAsArchitectEvidence() {
+        InMemoryRetrievalRunStore store = new InMemoryRetrievalRunStore();
+        AtomicInteger ids = new AtomicInteger();
+        RequirementKnowledgeSearchPort searchPort = new RequirementKnowledgeSearchPort() {
+            @Override
+            public RetrievalScope resolveScope(RdRequirementTask task) {
+                return new RetrievalScope(List.of("django-kb"), "github.com/django/django", true, "");
+            }
+
+            @Override
+            public SearchResult search(
+                    RdRequirementTask task,
+                    AgentRole role,
+                    String query,
+                    RetrievalScope scope,
+                    int topK
+            ) {
+                return SearchResult.empty();
+            }
+        };
+        DeepRetrievalOrchestrator orchestrator = new DeepRetrievalOrchestrator(
+                new RetrievalRunLifecycle(store, () -> "id-" + ids.incrementAndGet(), () -> 100L),
+                searchPort
+        );
+        RdRequirementTask task = requirementTask();
+        String handoff = """
+                {
+                  "version": 1,
+                  "stages": [
+                    {
+                      "role": "REQUIREMENT_REVIEWER",
+                      "success": true,
+                      "handoff": {
+                        "sourceRole": "REQUIREMENT_REVIEWER",
+                        "targetRole": "SOLUTION_ARCHITECT",
+                        "artifactName": "handoff/next.md",
+                        "artifactUri": "s3://rd-role-handoffs/django-plan.md",
+                        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        "bytes": 4449,
+                        "summary": "Inspect SQLCompiler.get_order_by and preserve each RawSQL ordering expression."
+                      }
+                    }
+                  ]
+                }
+                """;
+
+        RetrievalOutcome outcome = orchestrator.retrieve(
+                task, List.of(requirementMaterial(task.taskId())), RetrievalConsumerType.AGENT_ROLE,
+                AgentRole.SOLUTION_ARCHITECT, "stage-architect-1", handoff, 8
+        );
+
+        assertEquals(RetrievalRunStatus.SUCCEEDED, outcome.status());
+        assertEquals(EvidenceQualityDecision.SUFFICIENT, outcome.qualityDecision());
+        assertTrue(outcome.missingEvidenceTypes().isEmpty());
+        assertTrue(outcome.selectedEvidence().stream().anyMatch(item ->
+                item.sourceType().equals("ROLE_HANDOFF")
+                        && item.requiredEvidenceType().equals("ARCHITECTURE")
+                        && item.sourceUri().equals("s3://rd-role-handoffs/django-plan.md")
+        ));
+    }
+
+    @Test
+    void replacesInvalidHandoffWithBoundedRepositoryDiscovery() {
+        InMemoryRetrievalRunStore store = new InMemoryRetrievalRunStore();
+        AtomicInteger ids = new AtomicInteger();
+        RequirementKnowledgeSearchPort searchPort = new RequirementKnowledgeSearchPort() {
+            @Override
+            public RetrievalScope resolveScope(RdRequirementTask task) {
+                return new RetrievalScope(List.of("django-kb"), "github.com/django/django", true, "");
+            }
+
+            @Override
+            public SearchResult search(
+                    RdRequirementTask task,
+                    AgentRole role,
+                    String query,
+                    RetrievalScope scope,
+                    int topK
+            ) {
+                return SearchResult.empty();
+            }
+        };
+        DeepRetrievalOrchestrator orchestrator = new DeepRetrievalOrchestrator(
+                new RetrievalRunLifecycle(store, () -> "id-" + ids.incrementAndGet(), () -> 100L),
+                searchPort
+        );
+        RdRequirementTask task = requirementTask();
+        String invalidHandoff = """
+                {
+                  "stages": [{
+                    "role": "REQUIREMENT_REVIEWER",
+                    "handoff": {
+                      "sourceRole": "REQUIREMENT_REVIEWER",
+                      "targetRole": "SOLUTION_ARCHITECT",
+                      "artifactName": "handoff/next.md",
+                      "artifactUri": "https://example.test/plan.md",
+                      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                      "bytes": 4449
+                    }
+                  }]
+                }
+                """;
+
+        RetrievalOutcome outcome = orchestrator.retrieve(
+                task, List.of(requirementMaterial(task.taskId())), RetrievalConsumerType.AGENT_ROLE,
+                AgentRole.SOLUTION_ARCHITECT, "stage-architect-1", invalidHandoff, 8
+        );
+
+        assertEquals(RetrievalRunStatus.SUCCEEDED_DEGRADED, outcome.status());
+        assertTrue(outcome.missingEvidenceTypes().contains("ARCHITECTURE_OR_INTERFACE"));
+        assertFalse(outcome.selectedEvidence().stream()
+                .anyMatch(item -> item.sourceType().equals("ROLE_HANDOFF")));
+        assertTrue(outcome.selectedEvidence().stream()
+                .anyMatch(item -> item.sourceType().equals("REPOSITORY_DISCOVERY")));
+    }
+
+    @Test
+    void doesNotDegradeAwayMissingProjectKnowledgeScope() {
+        InMemoryRetrievalRunStore store = new InMemoryRetrievalRunStore();
+        AtomicInteger ids = new AtomicInteger();
+        RequirementKnowledgeSearchPort searchPort = new RequirementKnowledgeSearchPort() {
+            @Override
+            public RetrievalScope resolveScope(RdRequirementTask task) {
+                return new RetrievalScope(List.of(), "github.com/example/waimai", true,
+                        "project has no knowledge-base binding");
+            }
+
+            @Override
+            public SearchResult search(
+                    RdRequirementTask task,
+                    AgentRole role,
+                    String query,
+                    RetrievalScope scope,
+                    int topK
+            ) {
+                return SearchResult.empty();
+            }
+        };
+        DeepRetrievalOrchestrator orchestrator = new DeepRetrievalOrchestrator(
+                new RetrievalRunLifecycle(store, () -> "id-" + ids.incrementAndGet(), () -> 100L),
+                searchPort
+        );
+        RdRequirementTask task = requirementTask();
+
+        RetrievalOutcome outcome = orchestrator.retrieve(
+                task, List.of(requirementMaterial(task.taskId())), RetrievalConsumerType.AGENT_ROLE,
+                AgentRole.CODING_AGENT, "stage-code-1", "", 8
+        );
+
         assertEquals(RetrievalRunStatus.WAITING_INPUT, outcome.status());
         assertEquals(EvidenceQualityDecision.NEED_INPUT, outcome.qualityDecision());
-        assertTrue(outcome.stopReason().contains("关键证据"), outcome.stopReason());
-        assertTrue(outcome.missingEvidenceTypes().contains("TEST_ENTRY"));
+        assertTrue(outcome.missingEvidenceTypes().contains("PROJECT_KNOWLEDGE_SCOPE"));
+        assertFalse(outcome.selectedEvidence().stream()
+                .anyMatch(item -> item.sourceType().equals("REPOSITORY_DISCOVERY")));
+    }
+
+    @Test
+    void doesNotDegradeSearchChannelFailures() {
+        InMemoryRetrievalRunStore store = new InMemoryRetrievalRunStore();
+        AtomicInteger ids = new AtomicInteger();
+        RequirementKnowledgeSearchPort searchPort = new RequirementKnowledgeSearchPort() {
+            @Override
+            public RetrievalScope resolveScope(RdRequirementTask task) {
+                return new RetrievalScope(List.of("waimai-kb"), "github.com/example/waimai", true, "");
+            }
+
+            @Override
+            public SearchResult search(
+                    RdRequirementTask task,
+                    AgentRole role,
+                    String query,
+                    RetrievalScope scope,
+                    int topK
+            ) {
+                throw new IllegalStateException("vector search unavailable");
+            }
+        };
+        DeepRetrievalOrchestrator orchestrator = new DeepRetrievalOrchestrator(
+                new RetrievalRunLifecycle(store, () -> "id-" + ids.incrementAndGet(), () -> 100L),
+                searchPort
+        );
+        RdRequirementTask task = requirementTask();
+
+        RetrievalOutcome outcome = orchestrator.retrieve(
+                task, List.of(requirementMaterial(task.taskId())), RetrievalConsumerType.AGENT_ROLE,
+                AgentRole.CODING_AGENT, "stage-code-1", "", 8
+        );
+
+        assertEquals(RetrievalRunStatus.FAILED_RETRYABLE, outcome.status());
+        assertTrue(outcome.missingEvidenceTypes().contains("SEARCH_CHANNEL"));
+        assertFalse(outcome.succeeded());
     }
 
     private static RoleContextEvidence evidence(
