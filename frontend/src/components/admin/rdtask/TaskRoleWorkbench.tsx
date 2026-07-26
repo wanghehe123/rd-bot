@@ -1,4 +1,5 @@
-import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -8,7 +9,9 @@ import {
   FileText,
   GitBranch,
   LoaderCircle,
+  Radio,
   Search,
+  ShieldCheck,
   TerminalSquare
 } from "lucide-react";
 
@@ -18,6 +21,7 @@ import {
 } from "@/components/admin/rdtask/TaskFailureRecoveryWorkbench";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
@@ -41,6 +45,22 @@ import type {
 } from "@/services/rdTaskService";
 import { retrievalRunStatusClass, retrievalRunStatusLabel, type RetrievalRun } from "@/services/retrievalRunService";
 import type { TaskFailureRecoverySnapshot } from "@/services/taskRetryService";
+import {
+  agentRuntimeEventsPath,
+  getAgentRuntimeEvents,
+  getAgentRuntimeSnapshot,
+  type AgentRuntimeEvent,
+  type AgentRuntimeEventSnapshot
+} from "@/services/executionTraceService";
+import { runtimeEventDetail, runtimeEventLabel, snapshotFields } from "@/pages/admin/project/agentRuntimePresentation";
+import {
+  clearTaskAgentExecutionProfileOverride,
+  getAgentExecutionProfiles,
+  getTaskAgentExecutionProfileOverride,
+  setTaskAgentExecutionProfileOverride,
+  type AgentExecutionProfile,
+  type AgentExecutionRole
+} from "@/services/projectService";
 
 const MarkdownRenderer = lazy(() => (
   import("@/components/chat/MarkdownRenderer").then((module) => ({ default: module.MarkdownRenderer }))
@@ -351,7 +371,11 @@ export function TaskRoleWorkbench({
                 />
               </TabsContent>
               <TabsContent value="runs" className="m-0">
-                <RoleHistoryPanel role={selectedRoleView} overview={overview} selectedStageRunId={selectedStage.stageRunId} />
+                <div className="space-y-4 px-4 py-5 sm:px-5">
+                  <RuntimeExecutionProfilePanel taskId={task.taskId} stage={selectedStage} />
+                  <TaskRuntimeOverridePanel task={task} stage={selectedStage} />
+                  <RoleHistoryPanel role={selectedRoleView} overview={overview} selectedStageRunId={selectedStage.stageRunId} />
+                </div>
               </TabsContent>
               <TabsContent value="trace" className="m-0">
                 <ExecutionTracePanel taskId={task.taskId} stage={selectedStage} />
@@ -660,6 +684,191 @@ function RoleEvidencePanel({
   );
 }
 
+function TaskRuntimeOverridePanel({ task, stage }: { task: RdTask; stage: RdTaskStageRun }) {
+  const [profiles, setProfiles] = useState<AgentExecutionProfile[]>([]);
+  const [override, setOverride] = useState<AgentExecutionProfile | null>(null);
+  const [selectedProfileId, setSelectedProfileId] = useState("");
+  const [mutationToken, setMutationToken] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (task.taskType !== "REQUIREMENT" || !task.projectId) {
+      setProfiles([]);
+      setOverride(null);
+      setSelectedProfileId("");
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    setMutationToken("");
+    Promise.all([
+      getAgentExecutionProfiles(task.projectId),
+      getTaskAgentExecutionProfileOverride(task.taskId, stage.role as AgentExecutionRole).catch(() => null)
+    ]).then(([nextProfiles, nextOverride]) => {
+      if (cancelled) return;
+      setProfiles(nextProfiles || []);
+      setOverride(nextOverride);
+      setSelectedProfileId(nextOverride?.profileId || "");
+    }).catch(() => {
+      if (!cancelled) {
+        setProfiles([]);
+        setOverride(null);
+        setSelectedProfileId("");
+      }
+    }).finally(() => {
+      if (!cancelled) setLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [stage.role, task.projectId, task.taskId, task.taskType]);
+
+  if (task.taskType !== "REQUIREMENT") return null;
+
+  const roleProfiles = profiles.filter((profile) => profile.role === stage.role);
+  const save = async () => {
+    if (!selectedProfileId || !mutationToken.trim()) {
+      toast.error("请选择同角色 Profile 并输入操作令牌");
+      return;
+    }
+    setSaving(true);
+    try {
+      const next = await setTaskAgentExecutionProfileOverride(
+        task.taskId,
+        stage.role as AgentExecutionRole,
+        selectedProfileId,
+        mutationToken
+      );
+      setOverride(roleProfiles.find((profile) => profile.profileId === next.profileId) || null);
+      setMutationToken("");
+      toast.success("任务级执行策略已设置；新 Attempt 才会读取它");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "设置任务级执行策略失败");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const clear = async () => {
+    if (!mutationToken.trim()) {
+      toast.error("请输入操作令牌");
+      return;
+    }
+    setSaving(true);
+    try {
+      await clearTaskAgentExecutionProfileOverride(task.taskId, stage.role as AgentExecutionRole, mutationToken);
+      setOverride(null);
+      setSelectedProfileId("");
+      setMutationToken("");
+      toast.success("任务级执行策略已清除，将回到项目默认或兼容默认");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "清除任务级执行策略失败");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <section className="border border-slate-200 bg-white">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-3 py-3">
+        <div className="text-sm font-semibold text-slate-950">任务级执行策略</div>
+        <Badge variant="outline" className={override ? "border-amber-200 bg-amber-50 text-amber-800" : "border-slate-200 bg-white text-slate-600"}>{override ? "TASK_OVERRIDE" : "未覆盖"}</Badge>
+      </div>
+      <div className="space-y-3 px-3 py-3">
+        <p className="text-xs leading-5 text-slate-600">只允许选择当前角色所属项目的已注册 Profile。已有 Attempt 的不可变快照不会被修改。</p>
+        <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,220px)]">
+          <Select value={selectedProfileId || "__empty__"} onValueChange={(value) => setSelectedProfileId(value === "__empty__" ? "" : value)} disabled={loading || saving}>
+            <SelectTrigger><SelectValue placeholder="选择任务级 Profile" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__empty__">不设置覆盖</SelectItem>
+              {roleProfiles.filter((profile) => profile.enabled).map((profile) => <SelectItem key={profile.profileId} value={profile.profileId}>{profile.name} · {profile.runtimeType}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <Input type="password" placeholder="操作令牌" value={mutationToken} onChange={(event) => setMutationToken(event.target.value)} disabled={loading || saving} autoComplete="one-time-code" />
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" onClick={() => void save()} disabled={loading || saving || !selectedProfileId}>应用到后续 Attempt</Button>
+          <Button size="sm" variant="outline" onClick={() => void clear()} disabled={loading || saving || !override}>清除任务覆盖</Button>
+          {override ? <span className="self-center text-xs text-slate-500">当前：{override.name} · {override.runtimeType}</span> : null}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function RuntimeExecutionProfilePanel({ taskId, stage }: { taskId: string; stage: RdTaskStageRun }) {
+  const [snapshot, setSnapshot] = useState<Awaited<ReturnType<typeof getAgentRuntimeSnapshot>> | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    setSnapshot(null);
+    getAgentRuntimeSnapshot(taskId, stage.stageRunId).then((next) => {
+      if (!cancelled) setSnapshot(next);
+    }).catch((cause) => {
+      if (!cancelled) setError(cause instanceof Error ? cause.message : "执行快照暂不可用");
+    }).finally(() => {
+      if (!cancelled) setLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [stage.stageRunId, taskId]);
+
+  if (loading) return <LoadingLine label="正在读取执行快照" />;
+  if (error) return <PanelError message={error} />;
+  if (!snapshot) return <EmptyLine label="该 Attempt 尚无不可变执行快照。" />;
+
+  let parsed: Record<string, unknown> = {};
+  try {
+    const value = JSON.parse(snapshot.snapshotJson);
+    if (value && typeof value === "object" && !Array.isArray(value)) parsed = value as Record<string, unknown>;
+  } catch {
+    parsed = {};
+  }
+  const fields = snapshotFields(parsed);
+  const imageReference = typeof parsed.imageReference === "string" ? parsed.imageReference : typeof parsed.image === "string" ? parsed.image : "-";
+  const imageDigest = typeof parsed.imageDigest === "string" ? parsed.imageDigest : "未写入快照";
+
+  return (
+    <section className="border border-slate-200 bg-white">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-3 py-3">
+        <div className="flex items-center gap-2 text-sm font-semibold text-slate-950"><ShieldCheck className="h-4 w-4 text-teal-700" />不可变执行快照</div>
+        <Badge variant="outline" className="border-slate-200 bg-white text-slate-600">{fields.resolvedFrom}</Badge>
+      </div>
+      <dl className="grid gap-3 px-3 py-3 text-xs sm:grid-cols-2 lg:grid-cols-4">
+        <SnapshotMeta label="Runtime" value={fields.runtime} />
+        <SnapshotMeta label="Provider" value={fields.provider} />
+        <SnapshotMeta label="Model" value={fields.model} />
+        <SnapshotMeta label="Protocol" value={fields.protocol} />
+        <SnapshotMeta label="Tool Policy" value={fields.toolPolicy} />
+        <SnapshotMeta label="Extension Set" value={fields.extensionSet} />
+        <SnapshotMeta label="Image" value={imageReference} />
+        <SnapshotMeta label="Image Digest" value={imageDigest} />
+      </dl>
+      <div className="border-t border-slate-200 px-3 py-3 text-xs text-slate-500">
+        <div>Snapshot ID：<code className="break-all text-slate-700">{snapshot.snapshotId}</code></div>
+        <div className="mt-1">Snapshot Hash：<code className="break-all text-slate-700">{snapshot.snapshotHash}</code></div>
+        <div className="mt-1">Credential 环境变量：<code className="break-all text-slate-700">{fields.credentialVariable}</code></div>
+      </div>
+    </section>
+  );
+}
+
+function SnapshotMeta({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0">
+      <dt className="text-slate-500">{label}</dt>
+      <dd className="mt-1 break-all font-medium text-slate-800">{value || "-"}</dd>
+    </div>
+  );
+}
+
 function RoleHistoryPanel({
   role,
   overview,
@@ -736,6 +945,256 @@ function RoleHistoryPanel({
 }
 
 function ExecutionTracePanel({ taskId, stage }: { taskId: string; stage: RdTaskStageRun }) {
+  const [runtimeEventsAvailable, setRuntimeEventsAvailable] = useState(false);
+  return (
+    <div className="space-y-4">
+      <RuntimeExecutionEventsPanel
+        taskId={taskId}
+        stage={stage}
+        onAvailabilityChange={setRuntimeEventsAvailable}
+      />
+      {!runtimeEventsAvailable ? <LegacyExecutionTracePanel taskId={taskId} stage={stage} /> : null}
+    </div>
+  );
+}
+
+const RUNTIME_EVENT_TYPES = [
+  "RUNTIME_READY",
+  "AGENT_STARTED",
+  "AGENT_SETTLED",
+  "RUNTIME_STOPPED",
+  "TURN_STARTED",
+  "TURN_COMPLETED",
+  "ASSISTANT_TEXT_DELTA",
+  "ASSISTANT_TEXT_COMPLETED",
+  "TOOL_STARTED",
+  "TOOL_PROGRESS",
+  "TOOL_COMPLETED",
+  "TOOL_BLOCKED",
+  "PROVIDER_REQUESTED",
+  "PROVIDER_RESPONDED",
+  "PROVIDER_RETRYING",
+  "COMPACTION_STARTED",
+  "COMPACTION_COMPLETED",
+  "RESOURCES_LOADED",
+  "EXTENSION_FAILED",
+  "USAGE_UPDATED",
+  "RESULT_SUBMITTED",
+  "RESULT_REJECTED",
+  "ARTIFACT_WRITTEN",
+  "PROTOCOL_ERROR"
+] as const;
+
+function RuntimeExecutionEventsPanel({
+  taskId,
+  stage,
+  onAvailabilityChange
+}: {
+  taskId: string;
+  stage: RdTaskStageRun;
+  onAvailabilityChange: (available: boolean) => void;
+}) {
+  const [trace, setTrace] = useState<AgentRuntimeEventSnapshot | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [transport, setTransport] = useState<"SSE" | "POLL" | "ARCHIVED" | "NONE">("NONE");
+  const cursorRef = useRef(0);
+  const finalizedRef = useRef(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    let source: EventSource | null = null;
+    let pollTimer: number | undefined;
+    let polling = false;
+
+    cursorRef.current = 0;
+    finalizedRef.current = false;
+    setTrace(null);
+    setLoading(true);
+    setError("");
+    setTransport("NONE");
+    onAvailabilityChange(false);
+
+    const mergeEvent = (event: AgentRuntimeEvent) => {
+      if (cancelled) return;
+      finalizedRef.current = finalizedRef.current
+        || event.eventType === "AGENT_SETTLED"
+        || event.eventType === "RUNTIME_STOPPED";
+      cursorRef.current = Math.max(cursorRef.current, event.sequence || event.sourceSequence || 0);
+      setTrace((current) => mergeRuntimeTrace(current, {
+        version: 1,
+        source: "LIVE",
+        available: true,
+        finalized: finalizedRef.current,
+        truncated: current?.truncated || false,
+        hasMore: false,
+        nextSequence: cursorRef.current,
+        events: [event]
+      }));
+      onAvailabilityChange(true);
+      setLoading(false);
+    };
+
+    const schedulePoll = () => {
+      if (cancelled || pollTimer || finalizedRef.current || !stage.running) return;
+      pollTimer = window.setTimeout(() => {
+        pollTimer = undefined;
+        void poll();
+      }, 1_500);
+    };
+
+    const poll = async () => {
+      if (cancelled || polling || finalizedRef.current) return;
+      polling = true;
+      try {
+        const next = await getAgentRuntimeEvents(taskId, stage.stageRunId, {
+          after: cursorRef.current,
+          limit: 100
+        });
+        if (cancelled) return;
+        cursorRef.current = Math.max(cursorRef.current, next.nextSequence);
+        finalizedRef.current = next.finalized;
+        setTrace((current) => mergeRuntimeTrace(current, next));
+        setTransport(next.source === "ARCHIVED" ? "ARCHIVED" : "POLL");
+        setLoading(false);
+        setError("");
+        if (next.available) onAvailabilityChange(true);
+        if (!next.finalized && stage.running && !source) schedulePoll();
+      } catch (cause) {
+        if (!cancelled) {
+          setError(cause instanceof Error ? cause.message : "运行时事件暂不可用");
+          setLoading(false);
+          if (stage.running && !source) schedulePoll();
+        }
+      } finally {
+        polling = false;
+      }
+    };
+
+    const openSse = () => {
+      if (cancelled || !stage.running || finalizedRef.current) return;
+      if (pollTimer) {
+        window.clearTimeout(pollTimer);
+        pollTimer = undefined;
+      }
+      try {
+        source = new EventSource(agentRuntimeEventsPath(taskId, stage.stageRunId, {
+          after: cursorRef.current,
+          limit: 100
+        }));
+        source.onopen = () => {
+          if (!cancelled) setTransport("SSE");
+        };
+        const handleMessage = (message: MessageEvent<string>) => {
+          try {
+            mergeEvent(JSON.parse(message.data) as AgentRuntimeEvent);
+          } catch {
+            setError("运行时 SSE 事件格式无效");
+          }
+        };
+        source.onmessage = handleMessage;
+        for (const eventType of RUNTIME_EVENT_TYPES) {
+          source.addEventListener(eventType, handleMessage as EventListener);
+        }
+        source.onerror = () => {
+          source?.close();
+          source = null;
+          if (!cancelled && !finalizedRef.current) {
+            setTransport("POLL");
+            void poll();
+          }
+        };
+      } catch (cause) {
+        source = null;
+        setTransport("POLL");
+        setError(cause instanceof Error ? cause.message : "无法建立运行时 SSE");
+        void poll();
+      }
+    };
+
+    void (async () => {
+      await poll();
+      if (!cancelled && stage.running && !finalizedRef.current) openSse();
+    })();
+
+    return () => {
+      cancelled = true;
+      if (pollTimer) window.clearTimeout(pollTimer);
+      source?.close();
+    };
+  }, [onAvailabilityChange, stage.running, stage.stageRunId, taskId]);
+
+  if (!stage.running && !loading && !trace?.available) return null;
+
+  return (
+    <section className="border border-slate-200 bg-white px-4 py-4 sm:px-5">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-3">
+        <div className="flex items-center gap-2 text-sm font-semibold text-slate-950">
+          <Radio className={cn("h-4 w-4", stage.running ? "text-teal-600" : "text-slate-500")} />
+          运行时事件
+        </div>
+        <div className="flex items-center gap-2 text-xs text-slate-500">
+          {transport !== "NONE" ? <Badge variant="outline" className="border-slate-200 bg-white text-slate-600">{transport === "SSE" ? "SSE 实时" : transport === "POLL" ? "轮询降级" : "已归档"}</Badge> : null}
+          {trace?.events[0]?.runtimeType ? <span>{trace.events[0].runtimeType}</span> : null}
+        </div>
+      </div>
+      {loading ? <LoadingLine label="正在连接运行时事件" /> : null}
+      {!loading && error && !trace?.available ? <PanelError message={error} /> : null}
+      {!loading && trace?.truncated ? <div className="border-l-2 border-amber-500 bg-amber-50 px-3 py-2 text-xs text-amber-900">事件窗口已截断，仅展示保留范围。</div> : null}
+      {!loading && trace?.available && trace.events.length > 0 ? (
+        <ol className="mt-3 divide-y divide-slate-200 border-y border-slate-200">
+          {trace.events.slice(-120).map((event, index) => {
+            const isError = event.eventType === "PROTOCOL_ERROR" || event.eventType === "EXTENSION_FAILED" || event.eventType === "RESULT_REJECTED";
+            return (
+              <li key={`${event.sequence || event.sourceSequence || index}-${event.eventType}`} className="flex min-w-0 gap-3 py-3">
+                {isError ? <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-rose-600" /> : event.eventType === "RESULT_SUBMITTED" ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" /> : <Radio className="mt-0.5 h-4 w-4 shrink-0 text-teal-600" />}
+                <div className="min-w-0 flex-1">
+                  <div className={cn("flex flex-wrap items-center justify-between gap-2 text-sm font-medium", isError ? "text-rose-800" : "text-slate-800")}>
+                    <span>{runtimeEventLabel(event)}</span>
+                    <span className="text-[11px] font-normal text-slate-400">{formatRuntimeEventTime(event.occurredAt)}</span>
+                  </div>
+                  {runtimeEventDetail(event) ? <p className="mt-1 break-words text-xs leading-5 text-slate-600">{runtimeEventDetail(event)}</p> : null}
+                  <p className="mt-1 break-all text-[11px] text-slate-400">{event.provider || "-"}{event.model ? ` · ${event.model}` : ""} · #{event.sequence || event.sourceSequence || "-"}</p>
+                </div>
+              </li>
+            );
+          })}
+        </ol>
+      ) : null}
+      {!loading && !error && !trace?.available && stage.running ? <EmptyLine label="等待容器产生可见运行时事件。" /> : null}
+    </section>
+  );
+}
+
+function mergeRuntimeTrace(
+  current: AgentRuntimeEventSnapshot | null,
+  next: AgentRuntimeEventSnapshot
+): AgentRuntimeEventSnapshot {
+  const existing = current?.events || [];
+  const seen = new Set(existing.map((event) => event.sequence || event.sourceSequence || 0));
+  const additions = next.events.filter((event) => {
+    const key = event.sequence || event.sourceSequence || 0;
+    return key <= 0 || !seen.has(key);
+  });
+  const events = [...existing, ...additions].sort((left, right) => (
+    (left.sequence || left.sourceSequence || 0) - (right.sequence || right.sourceSequence || 0)
+  )).slice(-200);
+  return {
+    ...next,
+    available: current?.available || next.available || events.length > 0,
+    finalized: current?.finalized || next.finalized || events.some((event) => event.eventType === "RUNTIME_STOPPED" || event.eventType === "AGENT_SETTLED"),
+    nextSequence: Math.max(current?.nextSequence || 0, next.nextSequence || 0, ...events.map((event) => event.sequence || event.sourceSequence || 0)),
+    events
+  };
+}
+
+function formatRuntimeEventTime(value: string): string {
+  if (!value) return "";
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleTimeString();
+}
+
+function LegacyExecutionTracePanel({ taskId, stage }: { taskId: string; stage: RdTaskStageRun }) {
   const [trace, setTrace] = useState<RdTaskExecutionTrace | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");

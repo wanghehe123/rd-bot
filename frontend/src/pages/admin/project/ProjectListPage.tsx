@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Bell, Container, Database, FolderOpen, Gauge, LayoutTemplate, MonitorCheck, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { Bell, Container, Database, FolderOpen, Gauge, LayoutTemplate, MonitorCheck, Pencil, Plus, RefreshCw, SlidersHorizontal, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import {
@@ -62,7 +62,17 @@ import {
   updateProject,
   uploadProjectRuntimeProfile,
   deleteProjectRuntimeProfile,
+  bindProjectAgentExecutionProfile,
+  createAgentExecutionProfile,
+  getAgentExecutionProfiles,
+  getModelProviderProfiles,
+  updateAgentExecutionProfile,
   type RdProject,
+  type AgentExecutionProfile,
+  type AgentExecutionProfilePayload,
+  type AgentExecutionRole,
+  type AgentRuntimeType,
+  type ModelProviderProfile,
   type ProjectAlertEventType,
   type ProjectQaMode,
   type ProjectRuntimeProfile,
@@ -99,6 +109,7 @@ export function ProjectListPage() {
   const [templateTarget, setTemplateTarget] = useState<RdProject | null>(null);
   const [qaProfileTarget, setQaProfileTarget] = useState<RdProject | null>(null);
   const [runtimeProfileTarget, setRuntimeProfileTarget] = useState<RdProject | null>(null);
+  const [agentProfileTarget, setAgentProfileTarget] = useState<RdProject | null>(null);
   const [knowledgeTarget, setKnowledgeTarget] = useState<RdProject | null>(null);
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const [knowledgeBasesLoading, setKnowledgeBasesLoading] = useState(false);
@@ -337,6 +348,14 @@ export function ProjectListPage() {
                         </Tooltip>
                         <Tooltip>
                           <TooltipTrigger asChild>
+                            <Button size="icon" variant="outline" aria-label="Agent 执行策略" onClick={() => setAgentProfileTarget(project)}>
+                              <SlidersHorizontal className="h-4 w-4" />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>Agent 执行策略</TooltipContent>
+                        </Tooltip>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
                             <Button size="icon" variant="outline" aria-label="飞书告警" onClick={() => setAlertTarget(project)}>
                               <Bell className="h-4 w-4" />
                             </Button>
@@ -401,6 +420,7 @@ export function ProjectListPage() {
       <ProjectTemplateDialog project={templateTarget} onOpenChange={(open) => !open && setTemplateTarget(null)} />
       <ProjectQaProfileDialog project={qaProfileTarget} onOpenChange={(open) => !open && setQaProfileTarget(null)} />
       <ProjectRuntimeProfileDialog project={runtimeProfileTarget} onOpenChange={(open) => !open && setRuntimeProfileTarget(null)} />
+      <AgentExecutionProfileDialog project={agentProfileTarget} onOpenChange={(open) => !open && setAgentProfileTarget(null)} />
       <ProjectKnowledgeBindingDialog
         project={knowledgeTarget}
         knowledgeBases={knowledgeBases}
@@ -1088,6 +1108,235 @@ function ProjectRuntimeProfileDialog({ project, onOpenChange }: { project: RdPro
           <Button onClick={() => void upload()} disabled={loading || saving || !dockerfile}>
             {saving ? "构建并验证中..." : "构建并启用"}
           </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+const AGENT_RUNTIME_ROLE_OPTIONS: Array<{ value: AgentExecutionRole; label: string }> = [
+  { value: "REQUIREMENT_REVIEWER", label: "需求评审" },
+  { value: "SOLUTION_ARCHITECT", label: "方案设计" },
+  { value: "CODING_AGENT", label: "编码执行" },
+  { value: "QA_AGENT", label: "质量验证" }
+];
+
+const AGENT_RUNTIME_OPTIONS: Array<{ value: AgentRuntimeType; label: string }> = [
+  { value: "PI", label: "Pi Agent" },
+  { value: "CLAUDE_CODE", label: "Claude Code" },
+  { value: "MODEL_ONLY", label: "Model Only" }
+];
+
+function AgentExecutionProfileDialog({ project, onOpenChange }: { project: RdProject | null; onOpenChange: (open: boolean) => void }) {
+  const [profiles, setProfiles] = useState<AgentExecutionProfile[]>([]);
+  const [providers, setProviders] = useState<ModelProviderProfile[]>([]);
+  const [selectedProfileId, setSelectedProfileId] = useState("");
+  const [profileId, setProfileId] = useState("");
+  const [role, setRole] = useState<AgentExecutionRole>("CODING_AGENT");
+  const [name, setName] = useState("");
+  const [runtimeType, setRuntimeType] = useState<AgentRuntimeType>("PI");
+  const [providerProfileId, setProviderProfileId] = useState("");
+  const [modelOverride, setModelOverride] = useState("");
+  const [extensionSetId, setExtensionSetId] = useState("");
+  const [extensionSetVersion, setExtensionSetVersion] = useState("0");
+  const [toolPolicyId, setToolPolicyId] = useState("legacy-host-bound");
+  const [toolPolicyVersion, setToolPolicyVersion] = useState("1");
+  const [enabled, setEnabled] = useState(true);
+  const [version, setVersion] = useState("1");
+  const [mutationToken, setMutationToken] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const resetForm = () => {
+    setSelectedProfileId("");
+    setProfileId("");
+    setRole("CODING_AGENT");
+    setName("");
+    setRuntimeType("PI");
+    setProviderProfileId("");
+    setModelOverride("");
+    setExtensionSetId("");
+    setExtensionSetVersion("0");
+    setToolPolicyId("legacy-host-bound");
+    setToolPolicyVersion("1");
+    setEnabled(true);
+    setVersion("1");
+  };
+
+  useEffect(() => {
+    if (!project) return;
+    setLoading(true);
+    setMutationToken("");
+    Promise.all([
+      getAgentExecutionProfiles(project.projectId),
+      getModelProviderProfiles()
+    ]).then(([nextProfiles, nextProviders]) => {
+      setProfiles(nextProfiles || []);
+      setProviders(nextProviders || []);
+      resetForm();
+    }).catch((error) => {
+      setProfiles([]);
+      setProviders([]);
+      resetForm();
+      toast.error(getErrorMessage(error, "加载 Agent 执行策略失败"));
+    }).finally(() => setLoading(false));
+  }, [project?.projectId]);
+
+  const selectProfile = (value: string) => {
+    setSelectedProfileId(value);
+    const selected = profiles.find((item) => item.profileId === value);
+    if (!selected) {
+      resetForm();
+      return;
+    }
+    setProfileId(selected.profileId);
+    setRole(selected.role);
+    setName(selected.name);
+    setRuntimeType(selected.runtimeType);
+    setProviderProfileId(selected.providerProfileId);
+    setModelOverride(selected.modelOverride);
+    setExtensionSetId(selected.extensionSetId);
+    setExtensionSetVersion(String(selected.extensionSetVersion));
+    setToolPolicyId(selected.toolPolicyId);
+    setToolPolicyVersion(String(selected.toolPolicyVersion));
+    setEnabled(selected.enabled);
+    setVersion(String(selected.version));
+  };
+
+  const payload = (): AgentExecutionProfilePayload => ({
+    profileId: profileId.trim(),
+    role,
+    name: name.trim(),
+    runtimeType,
+    providerProfileId: providerProfileId.trim(),
+    modelOverride: modelOverride.trim(),
+    extensionSetId: extensionSetId.trim(),
+    extensionSetVersion: Math.max(0, Number(extensionSetVersion) || 0),
+    toolPolicyId: toolPolicyId.trim(),
+    toolPolicyVersion: Math.max(1, Number(toolPolicyVersion) || 1),
+    enabled,
+    version: Math.max(1, Number(version) || 1)
+  });
+
+  const save = async () => {
+    if (!project || !mutationToken.trim()) {
+      toast.error("请输入 Agent 运行时操作令牌");
+      return;
+    }
+    if (!profileId.trim() || !name.trim() || !providerProfileId.trim() || !toolPolicyId.trim()) {
+      toast.error("请填写 Profile ID、名称、Provider 和 Tool Policy");
+      return;
+    }
+    if (runtimeType === "PI" && role !== "CODING_AGENT") {
+      toast.error("Pi Agent 只允许绑定编码执行角色");
+      return;
+    }
+    setSaving(true);
+    try {
+      const next = selectedProfileId
+        ? await updateAgentExecutionProfile(project.projectId, selectedProfileId, payload(), mutationToken)
+        : await createAgentExecutionProfile(project.projectId, payload(), mutationToken);
+      setProfiles((current) => [...current.filter((item) => item.profileId !== next.profileId), next]);
+      setSelectedProfileId(next.profileId);
+      setProfileId(next.profileId);
+      setVersion(String(next.version));
+      setMutationToken("");
+      toast.success("Agent 执行策略已保存");
+    } catch (error) {
+      toast.error(getErrorMessage(error, "保存 Agent 执行策略失败"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const bindDefault = async () => {
+    if (!project || !selectedProfileId || !mutationToken.trim()) {
+      toast.error("请选择已保存的 Profile 并输入操作令牌");
+      return;
+    }
+    setSaving(true);
+    try {
+      await bindProjectAgentExecutionProfile(project.projectId, role, selectedProfileId, mutationToken);
+      setMutationToken("");
+      toast.success(`${AGENT_RUNTIME_ROLE_OPTIONS.find((item) => item.value === role)?.label || role} 默认策略已切换`);
+    } catch (error) {
+      toast.error(getErrorMessage(error, "绑定项目默认策略失败"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Dialog open={!!project} onOpenChange={onOpenChange}>
+      <DialogContent className="flex max-h-[calc(100vh-2rem)] flex-col overflow-hidden sm:max-w-[760px]">
+        <DialogHeader>
+          <DialogTitle>Agent 执行策略</DialogTitle>
+          <DialogDescription>{project?.name} 的注册 Profile、Provider 与项目角色默认绑定</DialogDescription>
+        </DialogHeader>
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
+          <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_180px]">
+            <div>
+              <label className="mb-2 block text-sm font-medium">已注册 Profile</label>
+              <Select value={selectedProfileId || "__new__"} onValueChange={(value) => selectProfile(value === "__new__" ? "" : value)} disabled={loading || saving}>
+                <SelectTrigger><SelectValue placeholder="新建 Profile" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__new__">新建 Profile</SelectItem>
+                  {profiles.map((item) => (
+                    <SelectItem key={item.profileId} value={item.profileId}>
+                      {item.name} · {item.runtimeType} · {item.role}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex items-end text-xs text-slate-500">运行中的 Attempt 不会被 Profile 编辑影响。</div>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div><label className="mb-2 block text-sm font-medium">Profile ID</label><Input value={profileId} onChange={(event) => setProfileId(event.target.value)} disabled={loading || saving || !!selectedProfileId} placeholder="coding-pi-canary" /></div>
+            <div><label className="mb-2 block text-sm font-medium">名称</label><Input value={name} onChange={(event) => setName(event.target.value)} disabled={loading || saving} placeholder="Pi 编码灰度" /></div>
+            <div>
+              <label className="mb-2 block text-sm font-medium">角色</label>
+              <Select value={role} onValueChange={(value) => setRole(value as AgentExecutionRole)} disabled={loading || saving || !!selectedProfileId}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>{AGENT_RUNTIME_ROLE_OPTIONS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+            <div>
+              <label className="mb-2 block text-sm font-medium">执行器</label>
+              <Select value={runtimeType} onValueChange={(value) => setRuntimeType(value as AgentRuntimeType)} disabled={loading || saving}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>{AGENT_RUNTIME_OPTIONS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+            <div>
+              <label className="mb-2 block text-sm font-medium">Provider Profile</label>
+              <Select value={providerProfileId || "__empty__"} onValueChange={(value) => setProviderProfileId(value === "__empty__" ? "" : value)} disabled={loading || saving}>
+                <SelectTrigger><SelectValue placeholder="选择 Provider" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__empty__">未选择</SelectItem>
+                  {providers.filter((item) => item.enabled).map((item) => <SelectItem key={item.providerId} value={item.providerId}>{item.displayName || item.providerId} · {item.protocol}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div><label className="mb-2 block text-sm font-medium">模型覆盖</label><Input value={modelOverride} onChange={(event) => setModelOverride(event.target.value)} disabled={loading || saving} placeholder="留空使用 Provider 默认模型" /></div>
+            <div><label className="mb-2 block text-sm font-medium">Extension Set ID</label><Input value={extensionSetId} onChange={(event) => setExtensionSetId(event.target.value)} disabled={loading || saving} placeholder="可选，必须已验证" /></div>
+            <div><label className="mb-2 block text-sm font-medium">Extension Set Version</label><Input type="number" min="0" value={extensionSetVersion} onChange={(event) => setExtensionSetVersion(event.target.value)} disabled={loading || saving} /></div>
+            <div><label className="mb-2 block text-sm font-medium">Tool Policy ID</label><Input value={toolPolicyId} onChange={(event) => setToolPolicyId(event.target.value)} disabled={loading || saving} placeholder="legacy-host-bound" /></div>
+            <div><label className="mb-2 block text-sm font-medium">Tool Policy Version</label><Input type="number" min="1" value={toolPolicyVersion} onChange={(event) => setToolPolicyVersion(event.target.value)} disabled={loading || saving} /></div>
+          </div>
+
+          {runtimeType === "PI" && role !== "CODING_AGENT" ? <p className="border-l-2 border-rose-500 bg-rose-50 px-3 py-2 text-xs text-rose-800">Pi Agent 当前仅允许编码执行角色，保存会被拒绝。</p> : null}
+          <div className="flex flex-wrap items-center gap-4 border-y border-slate-200 py-3 text-sm">
+            <label className="flex items-center gap-2"><input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} disabled={loading || saving} />允许解析使用</label>
+            <label className="flex items-center gap-2">Profile 版本 <Input className="h-9 w-24" type="number" min="1" value={version} onChange={(event) => setVersion(event.target.value)} disabled={loading || saving || !!selectedProfileId} /></label>
+          </div>
+          <div><label className="mb-2 block text-sm font-medium">Agent 运行时操作令牌</label><Input type="password" value={mutationToken} onChange={(event) => setMutationToken(event.target.value)} autoComplete="one-time-code" disabled={loading || saving} /></div>
+        </div>
+        <DialogFooter className="shrink-0 flex-wrap border-t border-slate-200 pt-4">
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>关闭</Button>
+          <Button variant="outline" onClick={() => void bindDefault()} disabled={loading || saving || !selectedProfileId}>绑定当前角色默认</Button>
+          <Button onClick={() => void save()} disabled={loading || saving}>{saving ? "保存中..." : selectedProfileId ? "更新 Profile" : "注册 Profile"}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

@@ -9,6 +9,7 @@ import {
   type RdTaskStatusEvent,
   type TaskMaterial
 } from "@/services/rdTaskService";
+import type { AgentExecutionProfileSnapshot } from "@/services/projectService";
 
 export type ExecutionTraceQuery = {
   projectId?: string;
@@ -66,6 +67,34 @@ export type ExecutionTraceDetail = {
   auditEvents: ExecutionTraceAuditEvent[];
 };
 
+export type AgentRuntimeEvent = {
+  protocol: "rd-agent-event/v1";
+  eventType: string;
+  sequence?: number;
+  sourceSequence?: number;
+  stageRunId: string;
+  taskId: string;
+  role: string;
+  runtimeType: string;
+  snapshotId: string;
+  provider: string;
+  model: string;
+  occurredAt: string;
+  payload: Record<string, unknown>;
+  redacted: boolean;
+};
+
+export type AgentRuntimeEventSnapshot = {
+  version: number;
+  source: "LIVE" | "ARCHIVED" | string;
+  available: boolean;
+  finalized: boolean;
+  truncated: boolean;
+  hasMore: boolean;
+  nextSequence: number;
+  events: AgentRuntimeEvent[];
+};
+
 export function getExecutionTraces(query: ExecutionTraceQuery = {}): Promise<ExecutionTracePageResult> {
   return api.get<ExecutionTracePageResult, ExecutionTracePageResult>("/admin/execution-traces", {
     params: {
@@ -95,4 +124,32 @@ export async function getExecutionTraceDetail(taskId: string): Promise<Execution
     getExecutionTraceAuditEvents(taskId)
   ]);
   return { task, overview, materials, timeline, auditEvents };
+}
+
+export const getAgentRuntimeSnapshot = (
+  taskId: string,
+  stageRunId: string
+): Promise<AgentExecutionProfileSnapshot> =>
+  api.get<AgentExecutionProfileSnapshot, AgentExecutionProfileSnapshot>(
+    `/admin/rd-tasks/${taskId}/stage-runs/${stageRunId}/execution-profile`
+  );
+
+export const getAgentRuntimeEvents = (
+  taskId: string,
+  stageRunId: string,
+  query: { after?: number; limit?: number } = {}
+): Promise<AgentRuntimeEventSnapshot> =>
+  api.get<AgentRuntimeEventSnapshot, AgentRuntimeEventSnapshot>(
+    agentRuntimeEventsPath(taskId, stageRunId, query)
+  );
+
+export function agentRuntimeEventsPath(
+  taskId: string,
+  stageRunId: string,
+  query: { after?: number; limit?: number } = {}
+): string {
+  const params = new URLSearchParams();
+  if (query.after && query.after > 0) params.set("after", String(query.after));
+  params.set("limit", String(query.limit && query.limit > 0 ? query.limit : 100));
+  return `/admin/rd-tasks/${encodeURIComponent(taskId)}/stage-runs/${encodeURIComponent(stageRunId)}/execution-events?${params.toString()}`;
 }

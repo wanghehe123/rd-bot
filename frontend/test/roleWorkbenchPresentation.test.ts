@@ -42,3 +42,12 @@ test("does not surface unrelated recovery loading or errors inside another attem
   assert.match(workbench, /unresolvedRagTargetsSelectedAttempt/);
   assert.match(workbench, /isRetryableRequirementTaskStatus\(task\.status\)/);
 });
+
+test("shows immutable runtime snapshots and keeps observation one-way", () => {
+  assert.match(workbench, /RuntimeExecutionProfilePanel/);
+  assert.match(workbench, /getAgentRuntimeSnapshot/);
+  assert.match(workbench, /new EventSource/);
+  assert.match(workbench, /轮询降级/);
+  assert.match(workbench, /没有.*command|运行时事件/);
+  assert.doesNotMatch(workbench, /stdin/);
+});

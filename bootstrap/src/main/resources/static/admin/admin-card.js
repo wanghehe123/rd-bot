@@ -25,23 +25,23 @@ import{c as gt,r as o,j as f,A as $e,H as St}from"./admin-knowledge.js";import{b
     margin-right: `).concat(a,"px ").concat(r,`;
     `),t==="padding"&&"padding-right: ".concat(a,"px ").concat(r,";")].filter(Boolean).join(""),`
   }
-
+  
   .`).concat(be,` {
     right: `).concat(a,"px ").concat(r,`;
   }
-
+  
   .`).concat(Ee,` {
     margin-right: `).concat(a,"px ").concat(r,`;
   }
-
+  
   .`).concat(be," .").concat(be,` {
     right: 0 `).concat(r,`;
   }
-
+  
   .`).concat(Ee," .").concat(Ee,` {
     margin-right: 0 `).concat(r,`;
   }
-
+  
   body[`).concat(ve,`] {
     `).concat(Dn,": ").concat(a,`px;
   }

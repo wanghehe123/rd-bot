@@ -120,6 +120,70 @@ export interface ProjectRuntimeProfile {
   updateTimeEpochMillis: number;
 }
 
+export type AgentRuntimeType = "PI" | "CLAUDE_CODE" | "MODEL_ONLY";
+export type AgentExecutionRole = ProjectRuntimeRole;
+export type ModelProviderProtocol =
+  | "ANTHROPIC_COMPATIBLE"
+  | "ANTHROPIC_MESSAGES"
+  | "OPENAI_CHAT_COMPLETIONS"
+  | "OPENAI_COMPLETIONS"
+  | "OPENAI_RESPONSES"
+  | "GOOGLE_GENERATIVE_AI";
+
+export interface ModelProviderProfile {
+  providerId: string;
+  displayName: string;
+  protocol: ModelProviderProtocol;
+  baseUrl: string;
+  modelId: string;
+  credentialEnvironmentVariable: string;
+  enabled: boolean;
+  version: number;
+}
+
+export interface AgentExecutionProfile {
+  profileId: string;
+  projectId: string;
+  role: AgentExecutionRole;
+  name: string;
+  runtimeType: AgentRuntimeType;
+  providerProfileId: string;
+  modelOverride: string;
+  extensionSetId: string;
+  extensionSetVersion: number;
+  toolPolicyId: string;
+  toolPolicyVersion: number;
+  enabled: boolean;
+  version: number;
+}
+
+export interface AgentExecutionProfilePayload {
+  profileId: string;
+  role: AgentExecutionRole;
+  name: string;
+  runtimeType: AgentRuntimeType;
+  providerProfileId: string;
+  modelOverride: string;
+  extensionSetId: string;
+  extensionSetVersion: number;
+  toolPolicyId: string;
+  toolPolicyVersion: number;
+  enabled: boolean;
+  version: number;
+}
+
+export interface AgentExecutionProfileSnapshot {
+  snapshotId: string;
+  stageRunId: string;
+  taskId: string;
+  role: string;
+  attemptNo: number;
+  runtimeType: AgentRuntimeType;
+  snapshotJson: string;
+  snapshotHash: string;
+  resolvedAtEpochMillis: number;
+}
+
 export const getProjectsPage = (query: RdProjectListQuery = {}): Promise<RdProjectPage> =>
   api.get<RdProjectPage, RdProjectPage>("/admin/projects", {
     params: {
@@ -212,4 +276,77 @@ export const deleteProjectRuntimeProfile = (
   api.delete<{ deleted: boolean }, { deleted: boolean }>(
     `/admin/projects/${projectId}/runtime-profiles/${role}`,
     { headers: { "X-RD-Runtime-Profile-Token": mutationToken } }
+  );
+
+export const getModelProviderProfiles = (): Promise<ModelProviderProfile[]> =>
+  api.get<ModelProviderProfile[], ModelProviderProfile[]>("/admin/model-provider-profiles");
+
+export const getAgentExecutionProfiles = (projectId: string): Promise<AgentExecutionProfile[]> =>
+  api.get<AgentExecutionProfile[], AgentExecutionProfile[]>(
+    `/admin/projects/${projectId}/agent-execution-profiles`
+  );
+
+export const createAgentExecutionProfile = (
+  projectId: string,
+  payload: AgentExecutionProfilePayload,
+  mutationToken: string
+): Promise<AgentExecutionProfile> =>
+  api.post<AgentExecutionProfile, AgentExecutionProfile>(
+    `/admin/projects/${projectId}/agent-execution-profiles`,
+    payload,
+    { headers: { "X-RD-Agent-Runtime-Token": mutationToken } }
+  );
+
+export const updateAgentExecutionProfile = (
+  projectId: string,
+  profileId: string,
+  payload: AgentExecutionProfilePayload,
+  mutationToken: string
+): Promise<AgentExecutionProfile> =>
+  api.put<AgentExecutionProfile, AgentExecutionProfile>(
+    `/admin/projects/${projectId}/agent-execution-profiles/${encodeURIComponent(profileId)}`,
+    payload,
+    { headers: { "X-RD-Agent-Runtime-Token": mutationToken } }
+  );
+
+export const bindProjectAgentExecutionProfile = (
+  projectId: string,
+  role: AgentExecutionRole,
+  profileId: string,
+  mutationToken: string
+): Promise<{ projectId: string; role: string; profileId: string }> =>
+  api.put<{ projectId: string; role: string; profileId: string }, { projectId: string; role: string; profileId: string }>(
+    `/admin/projects/${projectId}/agent-execution-profiles/${role}/default`,
+    { profileId },
+    { headers: { "X-RD-Agent-Runtime-Token": mutationToken } }
+  );
+
+export const setTaskAgentExecutionProfileOverride = (
+  taskId: string,
+  role: AgentExecutionRole,
+  profileId: string,
+  mutationToken: string
+): Promise<{ taskId: string; projectId: string; role: string; profileId: string }> =>
+  api.put<{ taskId: string; projectId: string; role: string; profileId: string }, { taskId: string; projectId: string; role: string; profileId: string }>(
+    `/admin/rd-tasks/${encodeURIComponent(taskId)}/agent-execution-profile-overrides/${role}`,
+    { profileId },
+    { headers: { "X-RD-Agent-Runtime-Token": mutationToken } }
+  );
+
+export const getTaskAgentExecutionProfileOverride = (
+  taskId: string,
+  role: AgentExecutionRole
+): Promise<AgentExecutionProfile> =>
+  api.get<AgentExecutionProfile, AgentExecutionProfile>(
+    `/admin/rd-tasks/${encodeURIComponent(taskId)}/agent-execution-profile-overrides/${role}`
+  );
+
+export const clearTaskAgentExecutionProfileOverride = (
+  taskId: string,
+  role: AgentExecutionRole,
+  mutationToken: string
+): Promise<{ taskId: string; role: string; deleted: boolean }> =>
+  api.delete<{ taskId: string; role: string; deleted: boolean }, { taskId: string; role: string; deleted: boolean }>(
+    `/admin/rd-tasks/${encodeURIComponent(taskId)}/agent-execution-profile-overrides/${role}`,
+    { headers: { "X-RD-Agent-Runtime-Token": mutationToken } }
   );
