@@ -1,0 +1,47 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "rd-pi-request-v1.schema.json",
+  "title": "RD Pi one-shot request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "protocol",
+    "snapshotId",
+    "stageRunId",
+    "taskId",
+    "role",
+    "prompt",
+    "provider",
+    "model",
+    "repoPath",
+    "inputPath",
+    "outputPath",
+    "resourceManifestPath",
+    "toolPolicy"
+  ],
+  "properties": {
+    "protocol": { "const": "rd-pi-request/v1" },
+    "snapshotId": { "type": "string", "minLength": 1 },
+    "stageRunId": { "type": "string", "minLength": 1 },
+    "taskId": { "type": "string", "minLength": 1 },
+    "role": {
+      "type": "string",
+      "enum": ["REQUIREMENT_REVIEWER", "SOLUTION_ARCHITECT", "CODING_AGENT", "QA_AGENT"]
+    },
+    "prompt": { "type": "string", "minLength": 1 },
+    "provider": { "type": "string", "minLength": 1 },
+    "model": { "type": "string", "minLength": 1 },
+    "repoPath": { "type": "string", "const": "/work/repo" },
+    "inputPath": { "type": "string", "const": "/work/input" },
+    "outputPath": { "type": "string", "const": "/work/output" },
+    "resourceManifestPath": { "type": "string", "const": "/work/input/resource-manifest.json" },
+    "api": { "type": "string", "minLength": 1 },
+    "baseUrl": { "type": "string", "format": "uri" },
+    "authHeader": { "type": "boolean" },
+    "credentialEnvironmentVariable": { "type": "string", "pattern": "^[A-Z_][A-Z0-9_]*$" },
+    "toolPolicy": { "type": "object" },
+    "extensionSet": { "type": "object" },
+    "contextFiles": { "type": "array", "items": { "type": "string" } },
+    "metadata": { "type": "object" }
+  }
+}

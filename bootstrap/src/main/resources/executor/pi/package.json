@@ -1,0 +1,16 @@
+{
+  "name": "rd-pi-bridge",
+  "private": true,
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "bridge": "node src/rd-pi-bridge.mjs"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.82.1",
+    "typebox": "1.1.38"
+  }
+}

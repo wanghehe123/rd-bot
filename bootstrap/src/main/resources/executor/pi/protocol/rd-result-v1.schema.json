@@ -1,0 +1,24 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "rd-result-v1.schema.json",
+  "title": "RD agent structured result",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["status", "summary"],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["SUCCESS", "FAILED", "NEED_INFO", "UNSAFE"]
+    },
+    "summary": { "type": "string" },
+    "changedFiles": { "type": "array", "items": { "type": "string" } },
+    "testStatus": { "type": "string" },
+    "testCommands": { "type": "array", "items": { "type": "string" } },
+    "acceptanceResults": { "type": "array" },
+    "failureCategory": { "type": "string" },
+    "retryRecommendation": { "type": "string" },
+    "next_prompt": { "type": "object" },
+    "roleHandoff": { "type": "object" },
+    "candidatePatch": { "type": "object" }
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "rd-agent-event-v1.schema.json",
+  "title": "RD normalized agent event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "protocol",
+    "eventType",
+    "sourceSequence",
+    "stageRunId",
+    "taskId",
+    "role",
+    "occurredAt",
+    "payload"
+  ],
+  "properties": {
+    "protocol": { "const": "rd-agent-event/v1" },
+    "eventType": {
+      "type": "string",
+      "enum": [
+        "RUNTIME_READY", "AGENT_STARTED", "AGENT_SETTLED", "RUNTIME_STOPPED",
+        "TURN_STARTED", "TURN_COMPLETED", "ASSISTANT_TEXT_DELTA", "ASSISTANT_TEXT_COMPLETED",
+        "TOOL_STARTED", "TOOL_PROGRESS", "TOOL_COMPLETED", "TOOL_BLOCKED",
+        "PROVIDER_REQUESTED", "PROVIDER_RESPONDED", "PROVIDER_RETRYING",
+        "COMPACTION_STARTED", "COMPACTION_COMPLETED", "RESOURCES_LOADED",
+        "EXTENSION_FAILED", "USAGE_UPDATED", "RESULT_SUBMITTED", "RESULT_REJECTED",
+        "ARTIFACT_WRITTEN", "PROTOCOL_ERROR"
+      ]
+    },
+    "sourceSequence": { "type": "integer", "minimum": 0 },
+    "stageRunId": { "type": "string", "minLength": 1 },
+    "taskId": { "type": "string", "minLength": 1 },
+    "role": {
+      "type": "string",
+      "enum": ["REQUIREMENT_REVIEWER", "SOLUTION_ARCHITECT", "CODING_AGENT", "QA_AGENT"]
+    },
+    "occurredAt": { "type": "string", "minLength": 1 },
+    "payload": { "type": "object" },
+    "redacted": { "type": "boolean" }
+  }
+}
