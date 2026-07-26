@@ -60,3 +60,4 @@ qa-runs/
 *.local
 application-local.yml
 application-local.yaml
+private-repos/

@@ -12,6 +12,9 @@
     <out-dir>/task.json   终态任务视图（GET /admin/rd-tasks/{taskId}）
 
 退出码：0 终态 COMPLETED；1 其他终态（FAILED/STOPPED/超时）；2 参数错误；3 提示词校验失败。
+
+验收标准：优先读 qa-runs/swebench-lite-10/acceptance/<instance>.json（JSON 字符串数组，
+应为具体可执行的标准，如 "python3 tests/runtests.py xxx 通过"）；缺省兼容旧通用三条。
 """
 
 import argparse
@@ -24,7 +27,8 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-TERMINAL_STATUSES = {"COMPLETED", "FAILED", "STOPPED", "CANCELLED"}
+# REJECTED：PR 发布失败也是终态（流水线可能已全绿，交付物在工作区，单独归档）
+TERMINAL_STATUSES = {"COMPLETED", "FAILED", "FAILED_NEEDS_HUMAN", "STOPPED", "CANCELLED", "REJECTED"}
 # 门禁态：不算终态，但要单独记录（统计门禁拦截率用）
 GATE_STATUSES = {"WAITING_APPROVAL"}
 
@@ -72,13 +76,21 @@ def main() -> int:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # 验收标准：逐题定制优先（QA 证据需逐条映射，通用占位会被 delivery review 拒绝）
+    criteria_path = Path(args.run_plan).parent / "acceptance" / f"{args.instance}.json"
+    if criteria_path.exists():
+        acceptance_criteria = json.loads(criteria_path.read_text())
+    else:
+        acceptance_criteria = ["补丁可 git apply", "相关回归测试通过", "QA 产出结构化验收证据"]
+        print(f"warning: {criteria_path} not found, using generic criteria", file=sys.stderr)
+
     started_at = now_iso()
     created = api(base_url, "/admin/rd-tasks/requirements", {
         "projectId": task_plan["project"]["project_id"],
         "title": f"SWE-bench {args.instance}",
         "priority": "P1",
         "expectedResult": "按需求材料产出可应用补丁并通过回归测试",
-        "acceptanceCriteria": ["补丁可 git apply", "相关回归测试通过", "QA 产出结构化验收证据"],
+        "acceptanceCriteria": acceptance_criteria,
         "materials": [{
             "sourceType": "MANUAL_TEXT",
             "title": f"swebench-{args.instance}-prompt",

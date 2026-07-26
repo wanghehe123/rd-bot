@@ -49,7 +49,9 @@ run_claude_code() {
 
   started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   set +e
+  # --model sonnet：与 RD-Bot 容器同模型（网关映射 LongCat-2.0）；不加会被全局 settings 的 haiku 覆盖导致 400
   ( cd "$workspace" && claude -p --bare --dangerously-skip-permissions --no-session-persistence \
+      --model sonnet \
       --output-format stream-json --verbose \
       --max-budget-usd "$MAX_BUDGET_USD" --max-turns "$MAX_TURNS" \
     ) < "$prompt" > "$out/claude-events.jsonl" 2> "$out/claude-stderr.log"
