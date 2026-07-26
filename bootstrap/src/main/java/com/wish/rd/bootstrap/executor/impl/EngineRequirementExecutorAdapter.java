@@ -13,6 +13,8 @@ import com.wish.rd.exec.repair.execution.model.RepairExecutionResult;
 import com.wish.rd.exec.repair.execution.model.RepairExecutionStatus;
 import com.wish.rd.exec.repair.execution.RepairExecutorPort;
 import com.wish.rd.exec.repair.execution.model.RepairJobCommand;
+import com.wish.rd.exec.repair.runtime.model.AgentRuntimeExecutionRequest;
+import com.wish.rd.exec.repair.runtime.AgentRuntimeRouter;
 import com.wish.rd.exec.repair.result.AgentRoleResultValidator;
 import com.wish.rd.exec.repair.result.QaEvidenceBundleValidator;
 import com.wish.rd.exec.repair.result.model.AgentRoleResultValidation;
@@ -21,6 +23,8 @@ import com.wish.rd.rag.runtime.model.TaskMaterial;
 import com.wish.rd.rag.qa.QaValidationProfileService;
 import com.wish.rd.rag.qa.model.QaValidationProfile;
 import com.wish.rd.rag.project.runtime.ProjectRuntimeProfileService;
+import com.wish.rd.rag.project.agent.AgentExecutionProfileSnapshotStore;
+import com.wish.rd.rag.project.agent.model.AgentExecutionProfileSnapshot;
 import org.springframework.core.task.AsyncTaskExecutor;
 import org.springframework.core.task.TaskRejectedException;
 
@@ -54,16 +58,18 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
     private final ProjectRuntimeProfileService runtimeProfileService;
     private final ObjectStorageRoleHandoffPublisher handoffPublisher;
     private final RoleHandoffAttachmentResolver handoffAttachmentResolver;
+    private final AgentRuntimeConfiguration agentRuntimeConfiguration;
 
     public EngineRequirementExecutorAdapter(RepairExecutorPort repairExecutor) {
-        this(repairExecutor, null, null, null, null, null);
+        this(repairExecutor, null, null, null, null, null, null, null, AgentRuntimeConfiguration.disabled());
     }
 
     public EngineRequirementExecutorAdapter(
             RepairExecutorPort repairExecutor,
             AsyncTaskExecutor executorIoTaskExecutor
     ) {
-        this(repairExecutor, executorIoTaskExecutor, null, null, null, null);
+        this(repairExecutor, executorIoTaskExecutor, null, null, null, null, null, null,
+                AgentRuntimeConfiguration.disabled());
     }
 
     public EngineRequirementExecutorAdapter(
@@ -71,7 +77,8 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
             AsyncTaskExecutor executorIoTaskExecutor,
             TaskMaterialAttachmentResolver attachmentResolver
     ) {
-        this(repairExecutor, executorIoTaskExecutor, attachmentResolver, null, null, null);
+        this(repairExecutor, executorIoTaskExecutor, attachmentResolver, null, null, null, null, null,
+                AgentRuntimeConfiguration.disabled());
     }
 
     public EngineRequirementExecutorAdapter(
@@ -80,7 +87,8 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
             TaskMaterialAttachmentResolver attachmentResolver,
             QaValidationProfileService qaValidationProfileService
     ) {
-        this(repairExecutor, executorIoTaskExecutor, attachmentResolver, qaValidationProfileService, null, null);
+        this(repairExecutor, executorIoTaskExecutor, attachmentResolver, qaValidationProfileService, null, null,
+                null, null, AgentRuntimeConfiguration.disabled());
     }
 
     public EngineRequirementExecutorAdapter(
@@ -96,7 +104,10 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
                 attachmentResolver,
                 qaValidationProfileService,
                 qaEvidencePublisher,
-                null
+                null,
+                null,
+                null,
+                AgentRuntimeConfiguration.disabled()
         );
     }
 
@@ -116,7 +127,8 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
                 qaEvidencePublisher,
                 runtimeProfileService,
                 null,
-                null
+                null,
+                AgentRuntimeConfiguration.disabled()
         );
     }
 
@@ -130,6 +142,30 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
             ObjectStorageRoleHandoffPublisher handoffPublisher,
             RoleHandoffAttachmentResolver handoffAttachmentResolver
     ) {
+        this(
+                repairExecutor,
+                executorIoTaskExecutor,
+                attachmentResolver,
+                qaValidationProfileService,
+                qaEvidencePublisher,
+                runtimeProfileService,
+                handoffPublisher,
+                handoffAttachmentResolver,
+                AgentRuntimeConfiguration.disabled()
+        );
+    }
+
+    public EngineRequirementExecutorAdapter(
+            RepairExecutorPort repairExecutor,
+            AsyncTaskExecutor executorIoTaskExecutor,
+            TaskMaterialAttachmentResolver attachmentResolver,
+            QaValidationProfileService qaValidationProfileService,
+            ObjectStorageQaEvidencePublisher qaEvidencePublisher,
+            ProjectRuntimeProfileService runtimeProfileService,
+            ObjectStorageRoleHandoffPublisher handoffPublisher,
+            RoleHandoffAttachmentResolver handoffAttachmentResolver,
+            AgentRuntimeConfiguration agentRuntimeConfiguration
+    ) {
         this.repairExecutor = Objects.requireNonNull(repairExecutor, "repairExecutor must not be null");
         this.executorIoTaskExecutor = executorIoTaskExecutor;
         this.attachmentResolver = attachmentResolver;
@@ -138,6 +174,9 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
         this.runtimeProfileService = runtimeProfileService;
         this.handoffPublisher = handoffPublisher;
         this.handoffAttachmentResolver = handoffAttachmentResolver;
+        this.agentRuntimeConfiguration = agentRuntimeConfiguration == null
+                ? AgentRuntimeConfiguration.disabled()
+                : agentRuntimeConfiguration;
     }
 
     public EngineRequirementExecutorAdapter(
@@ -147,13 +186,50 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
         this(repairExecutor);
     }
 
+    public EngineRequirementExecutorAdapter(
+            RepairExecutorPort repairExecutor,
+            AgentRuntimeConfiguration agentRuntimeConfiguration
+    ) {
+        this(
+                repairExecutor,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                agentRuntimeConfiguration
+        );
+    }
+
+    /** Configuration for the requirement-delivery-only runtime router. */
+    public record AgentRuntimeConfiguration(
+            boolean enabled,
+            AgentRuntimeRouter router,
+            AgentExecutionProfileSnapshotStore snapshotStore
+    ) {
+
+        public AgentRuntimeConfiguration {
+            if (enabled && (router == null || snapshotStore == null)) {
+                throw new IllegalArgumentException(
+                        "enabled agent runtime requires router and snapshotStore"
+                );
+            }
+        }
+
+        public static AgentRuntimeConfiguration disabled() {
+            return new AgentRuntimeConfiguration(false, null, null);
+        }
+    }
+
     @Override
     public RequirementExecutionResult execute(RequirementExecutionRequest request) {
         if (request == null) {
             throw new IllegalArgumentException("request must not be null");
         }
         RepairJobCommand command = toRepairCommand(request);
-        RepairExecutionResult repairResult = executeRepair(command);
+        RepairExecutionResult repairResult = executeRepair(request, command);
         if (repairResult == null) {
             return RequirementExecutionResult.failure(
                     request.taskId(),
@@ -235,6 +311,41 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
         }
     }
 
+    private RepairExecutionResult executeRepair(
+            RequirementExecutionRequest request,
+            RepairJobCommand command
+    ) {
+        if (!agentRuntimeConfiguration.enabled()) {
+            return executeRepair(command);
+        }
+        String snapshotId = request.executionProfileSnapshotId();
+        if (snapshotId.isBlank()) {
+            throw new IllegalStateException(
+                    "agent runtime is enabled but execution profile snapshot id is blank"
+            );
+        }
+        AgentExecutionProfileSnapshot snapshot = agentRuntimeConfiguration.snapshotStore()
+                .findBySnapshotId(snapshotId)
+                .orElseThrow(() -> new IllegalStateException(
+                        "execution profile snapshot not found: " + snapshotId
+                ));
+        if (!snapshot.stageRunId().equals(request.stageRunId())
+                || !snapshot.taskId().equals(request.taskId())
+                || !snapshot.role().equals(request.role().name())) {
+            throw new IllegalStateException(
+                    "execution profile snapshot identity does not match request: " + snapshotId
+            );
+        }
+        if (!snapshot.hasValidIntegrityHash()) {
+            throw new IllegalStateException(
+                    "execution profile snapshot is corrupt: " + snapshotId
+            );
+        }
+        return agentRuntimeConfiguration.router().execute(
+                new AgentRuntimeExecutionRequest(snapshot, command)
+        );
+    }
+
     private RepairJobCommand toRepairCommand(RequirementExecutionRequest request) {
         RdRequirementTask task = request.task();
         RepositoryParts repository = repositoryParts(task);
@@ -289,6 +400,10 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
         policy.put("repositoryPublishRequired", Boolean.toString(request.pullRequestRequired()));
         policy.put("repositoryDeliveryMode", request.pullRequestRequired() ? "PUBLISH" : "LOCAL_ONLY");
         policy.put("applyCandidatePatch", Boolean.toString(shouldApplyCandidatePatch(request, attachments)));
+        if (request.executionProfileSnapshotId() != null
+                && !request.executionProfileSnapshotId().isBlank()) {
+            policy.put("executionProfileSnapshotId", request.executionProfileSnapshotId());
+        }
         appendProjectRuntimePolicy(policy, request);
         return Map.copyOf(policy);
     }
@@ -297,6 +412,9 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
             Map<String, String> policy,
             RequirementExecutionRequest request
     ) {
+        if (agentRuntimeConfiguration.enabled()) {
+            return;
+        }
         if (runtimeProfileService == null || request == null || request.task() == null) {
             return;
         }
@@ -342,6 +460,10 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
         context.put("acceptanceCriteriaJson", task.acceptanceCriteriaJson());
         context.put("roleContextJson", request.roleContextJson());
         context.put("upstreamHandoffManifestJson", handoffManifestForWorkspace(request, attachments));
+        if (request.executionProfileSnapshotId() != null
+                && !request.executionProfileSnapshotId().isBlank()) {
+            context.put("executionProfileSnapshotId", request.executionProfileSnapshotId());
+        }
         if (handoffPublisher != null) {
             context.put("roleHandoffMaxTokens", String.valueOf(handoffPublisher.maxTokens()));
         }
@@ -625,6 +747,9 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
     private List<Map<String, Object>> stageArtifacts(RepairExecutionResult repairResult) {
         List<Map<String, Object>> artifacts = new ArrayList<>();
         for (RepairArtifact artifact : repairResult.artifacts()) {
+            if (isRestrictedPrivateArtifact(artifact)) {
+                continue;
+            }
             Map<String, Object> value = new LinkedHashMap<>();
             value.put("type", artifact.type().name());
             value.put("name", artifact.name());
@@ -647,6 +772,13 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
             artifacts.add(Map.copyOf(dockerMetadata));
         }
         return List.copyOf(artifacts);
+    }
+
+    private static boolean isRestrictedPrivateArtifact(RepairArtifact artifact) {
+        return artifact != null
+                && ("true".equalsIgnoreCase(artifact.metadataJson().get("restricted"))
+                || artifact.type() == com.wish.rd.exec.repair.execution.model.RepairArtifactType.PI_RAW_EVENTS
+                || artifact.type() == com.wish.rd.exec.repair.execution.model.RepairArtifactType.PI_SESSION);
     }
 
     private void normalizeRoleResult(

@@ -4,6 +4,8 @@ import com.wish.rd.engine.agent.AgentStageArtifactStore;
 import com.wish.rd.engine.agent.AgentStageRunStore;
 import com.wish.rd.engine.agent.impl.InMemoryAgentStageArtifactStore;
 import com.wish.rd.engine.agent.impl.InMemoryAgentStageRunStore;
+import com.wish.rd.exec.repair.pi.AgentPrivateArtifactIndex;
+import com.wish.rd.exec.repair.pi.impl.InMemoryAgentPrivateArtifactIndex;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
@@ -26,6 +28,12 @@ import com.wish.rd.rag.project.runtime.impl.InMemoryProjectRuntimeProfileStore;
 @Configuration(proxyBeanMethods = false)
 @ConditionalOnProperty(name = "rd.knowledge.store", havingValue = "memory", matchIfMissing = true)
 public class InMemoryAgentObservabilityConfiguration {
+    @Bean
+    @ConditionalOnMissingBean(AgentPrivateArtifactIndex.class)
+    AgentPrivateArtifactIndex agentPrivateArtifactIndex() {
+        return new InMemoryAgentPrivateArtifactIndex();
+    }
+
     @Bean
     @ConditionalOnMissingBean(AgentStageRunStore.class)
     AgentStageRunStore agentStageRunStore() {

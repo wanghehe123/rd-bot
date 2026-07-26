@@ -160,7 +160,47 @@ public class ProcessGitRepairWorkspaceRepository implements RepairWorkspaceRepos
         ));
         String porcelain = status.stdout();
         String summary = porcelain.isBlank() ? "" : repositoryStateSummary(porcelain);
-        return new RepositoryState(true, porcelain.isBlank(), repositoryStateFingerprint(porcelain), summary);
+        return new RepositoryState(
+                true,
+                porcelain.isBlank(),
+                contentLevelFingerprint(repoDirectory, porcelain),
+                summary
+        );
+    }
+
+    /**
+     * 内容级仓库指纹：对 QA 仅执行 git add（暂存状态变化、内容零变化）不敏感。
+     *
+     * <p>旧实现对 porcelain 全文哈希，状态码从 {@code " M"} 变 {@code "M "} 就会误判
+     * “QA 篡改仓库”（django-11019 实跑误拦）。现改为：
+     * {@code git diff HEAD}（对暂存/未暂存不敏感）+ 未跟踪文件路径及内容哈希。
+     * HEAD 不可用时回退 porcelain 哈希。
+     */
+    private String contentLevelFingerprint(Path repoDirectory, String porcelain) throws IOException {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            CommandResult diff = runGit(List.of(
+                    GIT_BINARY, "-C", repoDirectory.toString(), "diff", "HEAD"
+            ));
+            digest.update(diff.stdout().getBytes(StandardCharsets.UTF_8));
+            for (String line : (porcelain == null ? "" : porcelain).split("\n")) {
+                if (!line.startsWith("??")) {
+                    continue;
+                }
+                String path = line.substring(2).strip();
+                digest.update(("\0" + path + "\0").getBytes(StandardCharsets.UTF_8));
+                Path file = repoDirectory.resolve(path);
+                if (Files.isRegularFile(file)) {
+                    digest.update(Files.readAllBytes(file));
+                }
+            }
+            return "sha256:" + HexFormat.of().formatHex(digest.digest());
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 is unavailable", exception);
+        } catch (IOException exception) {
+            // HEAD 不可用（空仓等）：回退到旧的 porcelain 哈希，保持可比较性
+            return repositoryStateFingerprint(porcelain);
+        }
     }
 
     private static String repositoryStateFingerprint(String porcelain) {

@@ -4,6 +4,7 @@ import com.wish.rd.bootstrap.executor.DockerExecutorProperties;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wish.rd.exec.repair.docker.ContainerControlPort;
+import com.wish.rd.exec.repair.docker.ContainerOutputListener;
 import com.wish.rd.exec.repair.docker.model.ContainerRunRequest;
 import com.wish.rd.exec.repair.docker.model.ContainerRunResult;
 import com.wish.rd.exec.repair.docker.ContainerRunnerPort;
@@ -15,6 +16,8 @@ import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.Reader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -30,6 +33,7 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 /**
  * 基于 {@link ProcessBuilder} 的 Docker CLI 容器执行适配器。
@@ -39,7 +43,8 @@ import java.util.concurrent.TimeUnit;
  */
 @Component
 @ConditionalOnProperty(prefix = "rd.executor.docker", name = "enabled", havingValue = "true")
-public class ProcessContainerRunner implements ContainerRunnerPort, ContainerControlPort {
+public class ProcessContainerRunner implements ContainerRunnerPort, com.wish.rd.exec.repair.docker.StreamingContainerRunnerPort,
+        ContainerControlPort {
 
     private static final String DOCKER_BINARY = "docker";
     private static final long CONTROL_COMMAND_TIMEOUT_MILLIS = 30_000L;
@@ -47,6 +52,7 @@ public class ProcessContainerRunner implements ContainerRunnerPort, ContainerCon
 
     private final DockerExecutorProperties properties;
     private final TimedCommandLauncher commandLauncher;
+    private final StreamingTimedCommandLauncher streamingCommandLauncher;
 
     /**
      * 创建生产 Docker CLI runner。
@@ -55,7 +61,11 @@ public class ProcessContainerRunner implements ContainerRunnerPort, ContainerCon
      */
     @Autowired
     public ProcessContainerRunner(DockerExecutorProperties properties) {
-        this(properties, (TimedCommandLauncher) ProcessContainerRunner::launchProcess);
+        this(
+                properties,
+                (TimedCommandLauncher) ProcessContainerRunner::launchProcess,
+                ProcessContainerRunner::launchProcessStreaming
+        );
     }
 
     /**
@@ -67,7 +77,8 @@ public class ProcessContainerRunner implements ContainerRunnerPort, ContainerCon
     public ProcessContainerRunner(DockerExecutorProperties properties, CommandLauncher commandLauncher) {
         this(
                 properties,
-                (argv, environment, timeoutMillis) -> commandLauncher.launch(argv, environment)
+                (argv, environment, timeoutMillis) -> commandLauncher.launch(argv, environment),
+                ProcessContainerRunner::launchProcessStreaming
         );
     }
 
@@ -78,8 +89,25 @@ public class ProcessContainerRunner implements ContainerRunnerPort, ContainerCon
      * @param commandLauncher  支持硬超时的命令启动器
      */
     public ProcessContainerRunner(DockerExecutorProperties properties, TimedCommandLauncher commandLauncher) {
+        this(properties, commandLauncher, ProcessContainerRunner::launchProcessStreaming);
+    }
+
+    /**
+     * Creates a runner with separately injectable synchronous and streaming
+     * launchers. The split keeps existing Claude tests and callers compatible
+     * while allowing Pi to observe stdout before the container exits.
+     */
+    public ProcessContainerRunner(
+            DockerExecutorProperties properties,
+            TimedCommandLauncher commandLauncher,
+            StreamingTimedCommandLauncher streamingCommandLauncher
+    ) {
         this.properties = Objects.requireNonNull(properties, "properties must not be null");
         this.commandLauncher = Objects.requireNonNull(commandLauncher, "commandLauncher must not be null");
+        this.streamingCommandLauncher = Objects.requireNonNull(
+                streamingCommandLauncher,
+                "streamingCommandLauncher must not be null"
+        );
     }
 
     @Override
@@ -94,6 +122,35 @@ public class ProcessContainerRunner implements ContainerRunnerPort, ContainerCon
             cleanupTimedOutContainer(request.containerName());
         }
         writeDockerMetadata(request, argv, commandResult);
+        return containerRunResult(request, argv, commandResult);
+    }
+
+    @Override
+    public ContainerRunResult run(ContainerRunRequest request, ContainerOutputListener listener) throws IOException {
+        if (request == null) {
+            throw new IllegalArgumentException("request must not be null");
+        }
+        ContainerOutputListener safeListener = listener == null ? ContainerOutputListener.noop() : listener;
+        Files.createDirectories(request.outputDirectory());
+        List<String> argv = buildCommand(request);
+        CommandResult commandResult = launchStreaming(
+                argv,
+                request.env(),
+                request.executionTimeoutMillis(),
+                safeListener
+        );
+        if (commandResult.timedOut()) {
+            cleanupTimedOutContainer(request.containerName());
+        }
+        writeDockerMetadata(request, argv, commandResult);
+        return containerRunResult(request, argv, commandResult);
+    }
+
+    private ContainerRunResult containerRunResult(
+            ContainerRunRequest request,
+            List<String> argv,
+            CommandResult commandResult
+    ) {
         return new ContainerRunResult(
                 commandResult.exitCode(),
                 commandResult.durationMillis(),
@@ -200,6 +257,31 @@ public class ProcessContainerRunner implements ContainerRunnerPort, ContainerCon
         }
     }
 
+    private CommandResult launchStreaming(
+            List<String> argv,
+            Map<String, String> environment,
+            long timeoutMillis,
+            ContainerOutputListener listener
+    ) throws IOException {
+        try {
+            CommandResult result = streamingCommandLauncher.launch(
+                    argv,
+                    processEnvironment(environment),
+                    Math.max(0L, timeoutMillis),
+                    listener
+            );
+            if (result == null) {
+                throw new IOException("streaming docker command launcher returned null result");
+            }
+            return result;
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new IOException("streaming docker command interrupted", exception);
+        } catch (RuntimeException exception) {
+            throw new IOException("container output listener failed", exception);
+        }
+    }
+
     private void cleanupTimedOutContainer(String containerName) {
         try {
             launch(
@@ -290,6 +372,60 @@ public class ProcessContainerRunner implements ContainerRunnerPort, ContainerCon
         return new CommandResult(exitCode, durationMillis, await(stdout), stderrValue, timedOut);
     }
 
+    /**
+     * Streams decoded UTF-8 chunks while retaining the exact aggregate output
+     * for the normal container result. A short polling loop also terminates the
+     * process when an output listener rejects the protocol stream.
+     */
+    private static CommandResult launchProcessStreaming(
+            List<String> argv,
+            Map<String, String> environment,
+            long timeoutMillis,
+            ContainerOutputListener listener
+    ) throws IOException, InterruptedException {
+        Instant startedAt = Instant.now();
+        ProcessBuilder processBuilder = new ProcessBuilder(argv);
+        processBuilder.environment().putAll(environment);
+        Process process = processBuilder.start();
+        CompletableFuture<String> stdout = readStreamingAsync(
+                process.getInputStream(),
+                listener == null ? ignored -> { } : listener::onStdout
+        );
+        CompletableFuture<String> stderr = readStreamingAsync(
+                process.getErrorStream(),
+                listener == null ? ignored -> { } : listener::onStderr
+        );
+        boolean timedOut = false;
+        long deadline = timeoutMillis > 0L
+                ? System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis)
+                : Long.MAX_VALUE;
+        while (process.isAlive()) {
+            IOException streamFailure = firstStreamFailure(stdout, stderr);
+            if (streamFailure != null) {
+                destroyProcess(process);
+                throw streamFailure;
+            }
+            if (timeoutMillis > 0L && System.nanoTime() >= deadline) {
+                timedOut = true;
+                destroyProcess(process);
+                break;
+            }
+            process.waitFor(50L, TimeUnit.MILLISECONDS);
+        }
+        int exitCode;
+        if (timedOut) {
+            exitCode = 124;
+        } else {
+            exitCode = process.exitValue();
+        }
+        long durationMillis = Duration.between(startedAt, Instant.now()).toMillis();
+        String stderrValue = await(stderr);
+        if (timedOut) {
+            stderrValue = (stderrValue + "\ndocker command timed out after " + timeoutMillis + "ms").strip();
+        }
+        return new CommandResult(exitCode, durationMillis, await(stdout), stderrValue, timedOut);
+    }
+
     private static CompletableFuture<String> readAsync(InputStream inputStream) {
         return CompletableFuture.supplyAsync(() -> {
             try (InputStream source = inputStream) {
@@ -298,6 +434,61 @@ public class ProcessContainerRunner implements ContainerRunnerPort, ContainerCon
                 throw new CompletionException(exception);
             }
         });
+    }
+
+    private static CompletableFuture<String> readStreamingAsync(
+            InputStream inputStream,
+            Consumer<String> consumer
+    ) {
+        return CompletableFuture.supplyAsync(() -> {
+            StringBuilder output = new StringBuilder();
+            try (Reader reader = new InputStreamReader(inputStream, StandardCharsets.UTF_8)) {
+                char[] buffer = new char[4096];
+                int read;
+                while ((read = reader.read(buffer)) >= 0) {
+                    if (read == 0) {
+                        continue;
+                    }
+                    String chunk = new String(buffer, 0, read);
+                    output.append(chunk);
+                    consumer.accept(chunk);
+                }
+                return output.toString();
+            } catch (IOException exception) {
+                throw new CompletionException(exception);
+            } catch (RuntimeException exception) {
+                throw new CompletionException(new IOException("container output listener failed", exception));
+            }
+        });
+    }
+
+    private static IOException firstStreamFailure(
+            CompletableFuture<String> stdout,
+            CompletableFuture<String> stderr
+    ) {
+        for (CompletableFuture<String> stream : List.of(stdout, stderr)) {
+            if (!stream.isCompletedExceptionally()) {
+                continue;
+            }
+            try {
+                stream.join();
+            } catch (CompletionException exception) {
+                Throwable cause = exception.getCause();
+                if (cause instanceof IOException ioException) {
+                    return ioException;
+                }
+                return new IOException("container output stream failed", cause);
+            }
+        }
+        return null;
+    }
+
+    private static void destroyProcess(Process process) throws InterruptedException {
+        process.destroy();
+        if (!process.waitFor(2L, TimeUnit.SECONDS)) {
+            process.destroyForcibly();
+            process.waitFor(2L, TimeUnit.SECONDS);
+        }
     }
 
     private static String await(CompletableFuture<String> output) throws IOException {
@@ -399,6 +590,18 @@ public class ProcessContainerRunner implements ContainerRunnerPort, ContainerCon
                 List<String> argv,
                 Map<String, String> environment,
                 long timeoutMillis
+        ) throws IOException, InterruptedException;
+    }
+
+    /** Command launcher variant that receives stdout/stderr chunks while running. */
+    @FunctionalInterface
+    public interface StreamingTimedCommandLauncher {
+
+        CommandResult launch(
+                List<String> argv,
+                Map<String, String> environment,
+                long timeoutMillis,
+                ContainerOutputListener listener
         ) throws IOException, InterruptedException;
     }
 

@@ -11,7 +11,9 @@ import com.wish.rd.engine.requirement.RequirementExecutorPort;
 import com.wish.rd.engine.requirement.RequirementPullRequestPublisherPort;
 import com.wish.rd.exec.repair.code.CodePlatformPort;
 import com.wish.rd.exec.repair.execution.RepairExecutorPort;
+import com.wish.rd.exec.repair.runtime.AgentRuntimeRouter;
 import com.wish.rd.rag.qa.QaValidationProfileService;
+import com.wish.rd.rag.project.agent.AgentExecutionProfileSnapshotStore;
 import com.wish.rd.rag.project.runtime.ProjectRuntimeProfileService;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -46,6 +48,11 @@ public class EngineRequirementExecutorConfiguration {
                         .getBeanProvider(ObjectStorageRoleHandoffPublisher.class),
                 new org.springframework.beans.factory.support.StaticListableBeanFactory()
                         .getBeanProvider(RoleHandoffAttachmentResolver.class),
+                new org.springframework.beans.factory.support.StaticListableBeanFactory()
+                        .getBeanProvider(AgentRuntimeRouter.class),
+                new org.springframework.beans.factory.support.StaticListableBeanFactory()
+                        .getBeanProvider(AgentExecutionProfileSnapshotStore.class),
+                new AgentRuntimeProperties(),
                 executorIoTaskExecutor
         );
     }
@@ -67,12 +74,29 @@ public class EngineRequirementExecutorConfiguration {
             ObjectProvider<ProjectRuntimeProfileService> runtimeProfileServiceProvider,
             ObjectProvider<ObjectStorageRoleHandoffPublisher> handoffPublisherProvider,
             ObjectProvider<RoleHandoffAttachmentResolver> handoffAttachmentResolverProvider,
+            ObjectProvider<AgentRuntimeRouter> agentRuntimeRouterProvider,
+            ObjectProvider<AgentExecutionProfileSnapshotStore> snapshotStoreProvider,
+            AgentRuntimeProperties agentRuntimeProperties,
             @Qualifier(RdBotThreadPoolConfiguration.EXECUTOR_IO_EXECUTOR_BEAN)
             AsyncTaskExecutor executorIoTaskExecutor
     ) {
         RepairExecutorPort repairExecutor = repairExecutorProvider.getIfAvailable();
         if (repairExecutor == null) {
             return RequirementExecutorPort.unavailable();
+        }
+        EngineRequirementExecutorAdapter.AgentRuntimeConfiguration agentRuntimeConfiguration =
+                EngineRequirementExecutorAdapter.AgentRuntimeConfiguration.disabled();
+        if (agentRuntimeProperties != null && agentRuntimeProperties.isEnabled()) {
+            AgentRuntimeRouter router = agentRuntimeRouterProvider.getIfAvailable();
+            AgentExecutionProfileSnapshotStore snapshotStore = snapshotStoreProvider.getIfAvailable();
+            if (router == null || snapshotStore == null) {
+                throw new IllegalStateException(
+                        "rd.executor.agent-runtime.enabled requires runtime router and snapshot store"
+                );
+            }
+            agentRuntimeConfiguration = new EngineRequirementExecutorAdapter.AgentRuntimeConfiguration(
+                    true, router, snapshotStore
+            );
         }
         return new EngineRequirementExecutorAdapter(
                 repairExecutor,
@@ -82,7 +106,8 @@ public class EngineRequirementExecutorConfiguration {
                 qaEvidencePublisherProvider.getIfAvailable(),
                 runtimeProfileServiceProvider.getIfAvailable(),
                 handoffPublisherProvider.getIfAvailable(),
-                handoffAttachmentResolverProvider.getIfAvailable()
+                handoffAttachmentResolverProvider.getIfAvailable(),
+                agentRuntimeConfiguration
         );
     }
 

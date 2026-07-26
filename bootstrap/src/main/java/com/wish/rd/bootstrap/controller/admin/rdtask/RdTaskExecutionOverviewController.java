@@ -17,6 +17,10 @@ import com.wish.rd.exec.repair.docker.impl.DockerExecutionRegistry;
 import com.wish.rd.exec.repair.docker.trace.ClaudeExecutionTraceParser;
 import com.wish.rd.exec.repair.docker.trace.model.ClaudeExecutionTraceSnapshot;
 import com.wish.rd.exec.repair.alert.BudgetCurrencyConverter;
+import com.wish.rd.exec.repair.runtime.model.AgentExecutionEvent;
+import com.wish.rd.exec.repair.runtime.AgentExecutionEventParser;
+import com.wish.rd.exec.repair.runtime.AgentExecutionEventStore;
+import com.wish.rd.exec.repair.runtime.model.AgentExecutionTraceSnapshot;
 import com.wish.rd.rag.context.RoleContextPackageStore;
 import com.wish.rd.rag.context.impl.InMemoryRoleContextPackageStore;
 import com.wish.rd.rag.context.model.RoleContextPackage;
@@ -28,8 +32,11 @@ import com.wish.rd.rag.runtime.model.RdTaskStatus;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
@@ -41,6 +48,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -60,6 +69,7 @@ public class RdTaskExecutionOverviewController {
     private final AgentStageArtifactStore artifactStore;
     private final RoleContextPackageStore contextPackageStore;
     private final DockerExecutionRegistry executionRegistry;
+    private final AgentExecutionEventStore eventStore;
     private final DockerExecutorProperties dockerExecutorProperties;
     private final BudgetCurrencyConverter budgetCurrencyConverter;
     private final AgentStageProgressCalculator stageProgressCalculator;
@@ -78,6 +88,7 @@ public class RdTaskExecutionOverviewController {
             ObjectProvider<AgentStageArtifactStore> artifactStoreProvider,
             ObjectProvider<RoleContextPackageStore> contextPackageStoreProvider,
             ObjectProvider<DockerExecutionRegistry> executionRegistryProvider,
+            ObjectProvider<AgentExecutionEventStore> eventStoreProvider,
             ObjectProvider<DockerExecutorProperties> dockerExecutorPropertiesProvider,
             ObjectProvider<FinancialProperties> financialPropertiesProvider
     ) {
@@ -87,6 +98,7 @@ public class RdTaskExecutionOverviewController {
                 artifactStoreProvider.getIfAvailable(InMemoryAgentStageArtifactStore::new),
                 contextPackageStoreProvider.getIfAvailable(InMemoryRoleContextPackageStore::new),
                 executionRegistryProvider.getIfAvailable(DockerExecutionRegistry::noop),
+                eventStoreProvider.getIfAvailable(AgentExecutionEventStore::noop),
                 dockerExecutorPropertiesProvider.getIfAvailable(DockerExecutorProperties::new),
                 financialPropertiesProvider.getIfAvailable(FinancialProperties::new).toBudgetCurrencyConverter()
         );
@@ -105,6 +117,7 @@ public class RdTaskExecutionOverviewController {
                 new InMemoryAgentStageArtifactStore(),
                 contextPackageStore,
                 executionRegistry,
+                AgentExecutionEventStore.noop(),
                 dockerExecutorProperties,
                 new FinancialProperties().toBudgetCurrencyConverter()
         );
@@ -124,6 +137,7 @@ public class RdTaskExecutionOverviewController {
                 artifactStore,
                 contextPackageStore,
                 executionRegistry,
+                AgentExecutionEventStore.noop(),
                 dockerExecutorProperties,
                 new FinancialProperties().toBudgetCurrencyConverter()
         );
@@ -135,6 +149,7 @@ public class RdTaskExecutionOverviewController {
             AgentStageArtifactStore artifactStore,
             RoleContextPackageStore contextPackageStore,
             DockerExecutionRegistry executionRegistry,
+            AgentExecutionEventStore eventStore,
             DockerExecutorProperties dockerExecutorProperties,
             BudgetCurrencyConverter budgetCurrencyConverter
     ) {
@@ -145,6 +160,7 @@ public class RdTaskExecutionOverviewController {
                 ? new InMemoryRoleContextPackageStore()
                 : contextPackageStore;
         this.executionRegistry = executionRegistry == null ? DockerExecutionRegistry.noop() : executionRegistry;
+        this.eventStore = eventStore == null ? AgentExecutionEventStore.noop() : eventStore;
         this.dockerExecutorProperties = dockerExecutorProperties == null
                 ? new DockerExecutorProperties()
                 : dockerExecutorProperties;
@@ -230,13 +246,7 @@ public class RdTaskExecutionOverviewController {
             @RequestParam(name = "limit", defaultValue = "100") int limit
     ) {
         RdTask task = findTask(taskId);
-        AgentStageRun stageRun = stageRunStore.listByTask(task.taskId()).stream()
-                .filter(candidate -> candidate.stageRunId().equals(stageRunId))
-                .findFirst()
-                .orElseThrow(() -> new ResponseStatusException(
-                        HttpStatus.NOT_FOUND,
-                        "stage run does not belong to task"
-                ));
+        AgentStageRun stageRun = findStageRun(task.taskId(), stageRunId);
         ClaudeExecutionTraceSnapshot live = executionRegistry.executionTrace(
                 task.taskId(),
                 stageRun.stageRunId(),
@@ -257,6 +267,154 @@ public class RdTaskExecutionOverviewController {
                 .map(executionTraceParser::parsePersistedSnapshot)
                 .filter(ClaudeExecutionTraceSnapshot::available)
                 .orElseGet(() -> ClaudeExecutionTraceSnapshot.unavailable("ARCHIVED"));
+    }
+
+    /** Returns the runtime-neutral normalized event stream for Pi and future agent runtimes. */
+    @GetMapping(
+            value = "/admin/rd-tasks/{taskId}/stage-runs/{stageRunId}/execution-events",
+            produces = MediaType.APPLICATION_JSON_VALUE
+    )
+    public AgentExecutionTraceSnapshot getExecutionEvents(
+            @PathVariable("taskId") String taskId,
+            @PathVariable("stageRunId") String stageRunId,
+            @RequestParam(name = "after", defaultValue = "0") long afterSequence,
+            @RequestParam(name = "limit", defaultValue = "100") int limit
+    ) {
+        RdTask task = findTask(taskId);
+        findStageRun(task.taskId(), stageRunId);
+        AgentExecutionTraceSnapshot live = eventStore.snapshot(
+                task.taskId(),
+                stageRunId,
+                Math.max(0L, afterSequence),
+                Math.max(1, Math.min(200, limit))
+        );
+        if (live.available()) {
+            return live;
+        }
+        return artifactStore.listByTask(task.taskId()).stream()
+                .filter(artifact -> stageRunId.equals(artifact.stageRunId()))
+                .filter(artifact -> "AGENT_EVENTS".equals(artifact.artifactType()))
+                .max(RdTaskExecutionOverviewController::compareArtifact)
+                .map(AgentStageArtifact::contentPreview)
+                .map(content -> AgentExecutionEventParser.parseJsonl(
+                        content,
+                        task.taskId(),
+                        stageRunId,
+                        Math.max(0L, afterSequence),
+                        Math.max(1, Math.min(200, limit))
+                ))
+                .orElse(live);
+    }
+
+    /**
+     * Opens a one-way SSE observation stream. There is deliberately no command
+     * endpoint paired with this method, so browser disconnects cannot steer Pi.
+     */
+    @GetMapping(
+            value = "/admin/rd-tasks/{taskId}/stage-runs/{stageRunId}/execution-events",
+            produces = MediaType.TEXT_EVENT_STREAM_VALUE
+    )
+    public SseEmitter streamExecutionEvents(
+            @PathVariable("taskId") String taskId,
+            @PathVariable("stageRunId") String stageRunId,
+            @RequestParam(name = "after", defaultValue = "0") long afterSequence,
+            @RequestParam(name = "limit", defaultValue = "100") int limit,
+            @RequestHeader(name = "Last-Event-ID", required = false) String lastEventId
+    ) {
+        RdTask task = findTask(taskId);
+        findStageRun(task.taskId(), stageRunId);
+        long cursor = Math.max(Math.max(0L, afterSequence), parseSequence(lastEventId));
+        int boundedLimit = Math.max(1, Math.min(200, limit));
+        SseEmitter emitter = new SseEmitter(30_000L);
+        Object sendLock = new Object();
+        AtomicLong delivered = new AtomicLong(cursor);
+        AtomicReference<AutoCloseable> subscriptionRef = new AtomicReference<>();
+        Runnable closeSubscription = () -> closeSubscription(subscriptionRef.getAndSet(null));
+        emitter.onCompletion(closeSubscription);
+        emitter.onTimeout(() -> {
+            closeSubscription.run();
+            emitter.complete();
+        });
+        emitter.onError(ignored -> closeSubscription.run());
+
+        try {
+            AutoCloseable subscription = eventStore.subscribe(task.taskId(), stageRunId, event -> {
+                synchronized (sendLock) {
+                    if (event.sequence() <= delivered.get()) {
+                        return;
+                    }
+                    try {
+                        sendEvent(emitter, event);
+                        delivered.set(event.sequence());
+                    } catch (java.io.IOException exception) {
+                        closeSubscription.run();
+                        emitter.completeWithError(exception);
+                    }
+                }
+            });
+            subscriptionRef.set(subscription);
+            AgentExecutionTraceSnapshot snapshot = eventStore.snapshot(
+                    task.taskId(), stageRunId, cursor, boundedLimit
+            );
+            synchronized (sendLock) {
+                for (JsonNode event : snapshot.events()) {
+                    long sequence = event.path("sequence").asLong(0L);
+                    if (sequence <= delivered.get()) {
+                        continue;
+                    }
+                    sendEvent(emitter, new AgentExecutionEvent(sequence, "", event));
+                    delivered.set(sequence);
+                }
+            }
+            if (snapshot.finalized()) {
+                closeSubscription.run();
+                emitter.complete();
+            }
+        } catch (java.io.IOException exception) {
+            closeSubscription.run();
+            emitter.completeWithError(exception);
+        } catch (RuntimeException exception) {
+            closeSubscription.run();
+            emitter.completeWithError(exception);
+        }
+        return emitter;
+    }
+
+    private AgentStageRun findStageRun(String taskId, String stageRunId) {
+        return stageRunStore.listByTask(taskId).stream()
+                .filter(candidate -> candidate.stageRunId().equals(stageRunId))
+                .findFirst()
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.NOT_FOUND,
+                        "stage run does not belong to task"
+                ));
+    }
+
+    private static void sendEvent(SseEmitter emitter, AgentExecutionEvent event) throws java.io.IOException {
+        String eventType = event.event().path("eventType").asText("AGENT_EVENT");
+        emitter.send(SseEmitter.event()
+                .id(String.valueOf(event.sequence()))
+                .name(eventType)
+                .data(event.event()));
+    }
+
+    private static void closeSubscription(AutoCloseable subscription) {
+        if (subscription == null) {
+            return;
+        }
+        try {
+            subscription.close();
+        } catch (Exception ignored) {
+            // A disconnected client has no recovery action here.
+        }
+    }
+
+    private static long parseSequence(String value) {
+        try {
+            return value == null || value.isBlank() ? 0L : Math.max(0L, Long.parseLong(value.strip()));
+        } catch (NumberFormatException ignored) {
+            return 0L;
+        }
     }
 
     private RdTask findTask(String taskId) {
