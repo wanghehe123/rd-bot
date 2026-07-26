@@ -1,6 +1,7 @@
 package com.wish.rd.bootstrap.controller.admin.rdtask;
 
 import com.wish.rd.bootstrap.executor.DockerExecutorProperties;
+import com.wish.rd.bootstrap.financial.FinancialProperties;
 import com.wish.rd.engine.agent.AgentStageRunStore;
 import com.wish.rd.engine.agent.AgentStageArtifactStore;
 import com.wish.rd.engine.agent.impl.InMemoryAgentStageRunStore;
@@ -13,6 +14,7 @@ import com.wish.rd.engine.bugfix.observability.BugFixStageRecorder;
 import com.wish.rd.exec.repair.docker.impl.DockerExecutionRegistry;
 import com.wish.rd.exec.repair.docker.model.ContainerRunRequest;
 import com.wish.rd.exec.repair.execution.model.RepairJobCommand;
+import com.wish.rd.exec.repair.runtime.impl.InMemoryAgentExecutionEventStore;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
 import com.wish.rd.rag.context.RoleContextPackageStore;
 import com.wish.rd.rag.context.impl.InMemoryRoleContextPackageStore;
@@ -53,6 +55,7 @@ class RdTaskExecutionOverviewControllerTest {
     private AgentStageArtifactStore artifactStore;
     private RoleContextPackageStore contextPackageStore;
     private DockerExecutionRegistry executionRegistry;
+    private InMemoryAgentExecutionEventStore eventStore;
 
     @TempDir
     Path temporaryDirectory;
@@ -67,6 +70,7 @@ class RdTaskExecutionOverviewControllerTest {
         artifactStore = new InMemoryAgentStageArtifactStore();
         contextPackageStore = new InMemoryRoleContextPackageStore();
         executionRegistry = DockerExecutionRegistry.noop();
+        eventStore = new InMemoryAgentExecutionEventStore();
         DockerExecutorProperties properties = new DockerExecutorProperties();
         properties.setBudgetAlertCny(new java.math.BigDecimal("54.00"));
         mockMvc = MockMvcBuilders.standaloneSetup(new RdTaskExecutionOverviewController(
@@ -75,8 +79,48 @@ class RdTaskExecutionOverviewControllerTest {
                 artifactStore,
                 contextPackageStore,
                 executionRegistry,
-                properties
+                eventStore,
+                properties,
+                new FinancialProperties().toBudgetCurrencyConverter()
         )).build();
+    }
+
+    @Test
+    void shouldExposeRuntimeNeutralPiEventsWithReplayCursor() throws Exception {
+        RdRequirementTask task = registry.createRequirementTask(new CreateRequirementTaskCommand(
+                "Pi 事件接口测试",
+                "P1",
+                "https://github.com/example/repo.git",
+                "example",
+                "repo",
+                "main",
+                "展示 Pi 生命周期事件",
+                List.of("事件可以从 Java 侧回放"),
+                false
+        ));
+        AgentStageRun stage = stageRunStore.save(new AgentStageRun(
+                "stage-pi-events-1001",
+                task.taskId(),
+                AgentRole.CODING_AGENT,
+                AgentStageStatus.RUNNING,
+                1,
+                task.taskId() + ":CODING_AGENT:1",
+                "", "", "", "pi", "[]", "{}", "", "",
+                1L, 1L, 1L, 0L
+        ));
+        eventStore.onEvent("rd-bot-pi-test", event(1, task.taskId(), stage.stageRunId(), "RUNTIME_READY"));
+        eventStore.onEvent("rd-bot-pi-test", event(2, task.taskId(), stage.stageRunId(), "AGENT_SETTLED"));
+
+        mockMvc.perform(get(
+                        "/admin/rd-tasks/{taskId}/stage-runs/{stageRunId}/execution-events",
+                        task.taskId(), stage.stageRunId())
+                        .param("after", "1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.source", is("LIVE")))
+                .andExpect(jsonPath("$.finalized", is(true)))
+                .andExpect(jsonPath("$.events", hasSize(1)))
+                .andExpect(jsonPath("$.events[0].sequence", is(2)))
+                .andExpect(jsonPath("$.events[0].eventType", is("AGENT_SETTLED")));
     }
 
     @Test
@@ -525,5 +569,16 @@ class RdTaskExecutionOverviewControllerTest {
     private SnowflakeIdGenerator generator() {
         AtomicLong now = new AtomicLong(1_783_000_000_000L);
         return new SnowflakeIdGenerator(1, 1, now::getAndIncrement);
+    }
+
+    private static com.fasterxml.jackson.databind.JsonNode event(
+            long sourceSequence,
+            String taskId,
+            String stageRunId,
+            String eventType
+    ) throws Exception {
+        return new com.fasterxml.jackson.databind.ObjectMapper().readTree("""
+                {"protocol":"rd-agent-event/v1","sourceSequence":%d,"taskId":"%s","stageRunId":"%s","role":"CODING_AGENT","eventType":"%s"}
+                """.formatted(sourceSequence, taskId, stageRunId, eventType));
     }
 }

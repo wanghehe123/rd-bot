@@ -49,6 +49,7 @@ import com.wish.rd.engine.requirement.model.RequirementDeliveryResult;
 import com.wish.rd.engine.requirement.model.RequirementDeliveryReviewResult;
 import com.wish.rd.engine.requirement.model.RequirementExecutionRequest;
 import com.wish.rd.engine.requirement.model.RequirementExecutionResult;
+import com.wish.rd.engine.requirement.model.RequirementExecutionProfileResolution;
 import com.wish.rd.engine.requirement.model.RequirementPullRequestPublication;
 import com.wish.rd.engine.requirement.model.RequirementPullRequestPublishCommand;
 
@@ -125,6 +126,9 @@ class RequirementDeliveryEngineTest {
                 new RequirementDeliveryReviewer(),
                 pullRequestPublisher
         );
+        engine.setExecutionProfileResolver((resolvedTask, role, stageRunId, attemptNo) ->
+                new RequirementExecutionProfileResolution("snapshot-" + stageRunId)
+        );
 
         RequirementDeliveryResult result = engine.submit(task.taskId());
 
@@ -142,6 +146,9 @@ class RequirementDeliveryEngineTest {
         ), captured.stream().map(RequirementExecutionRequest::role).toList());
         assertEquals(List.of(false, false, false, false),
                 captured.stream().map(RequirementExecutionRequest::pullRequestRequired).toList());
+        assertEquals(4, captured.stream()
+                .filter(request -> !request.executionProfileSnapshotId().isBlank())
+                .count());
         assertEquals(task.taskId(), pullRequestPublisher.command().taskId());
         assertEquals("requirement/" + task.taskId(), pullRequestPublisher.command().workBranch());
         assertTrue(pullRequestPublisher.command().deliveryResultJson().contains("\"deliveryReview\""));
@@ -1396,6 +1403,168 @@ class RequirementDeliveryEngineTest {
         assertEquals(1, scenario.alertSink().alerts().stream()
                 .filter(alert -> alert.type() == AgentWorkflowAlertType.QA_REMEDIATION_STARTED)
                 .count());
+    }
+
+    @Test
+    void shouldSkipPullRequestPublicationForPatchOnlyDelivery() {
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(),
+                new InMemoryRdTaskStatusEventStore(),
+                generator());
+        InMemoryTaskMaterialStore materialStore = new InMemoryTaskMaterialStore();
+        RdRequirementTask task = registry.createRequirementTask(new CreateRequirementTaskCommand(
+                "SWE-bench django__django-11019",
+                "P1",
+                "https://github.com/example/swebench.git",
+                "example",
+                "swebench",
+                "main",
+                "按需求材料产出可应用补丁并通过回归测试",
+                List.of("补丁可 git apply", "不提交、不推送、不创建 PR"),
+                false
+        ));
+        materialStore.save(new TaskMaterial(
+                "7820000000030",
+                task.taskId(),
+                TaskMaterialType.REQUIREMENT_DOC,
+                TaskMaterialSourceType.MANUAL_TEXT,
+                "需求正文",
+                "",
+                "text/markdown",
+                "sha256:swebench-patch-only",
+                "补丁即交付，不允许提交或创建 PR。",
+                "",
+                "",
+                "",
+                "{}",
+                1L,
+                1L
+        ));
+        AgentStageRunStore stageRunStore = new InMemoryAgentStageRunStore();
+        RecordingRequirementPullRequestPublisher pullRequestPublisher = new RecordingRequirementPullRequestPublisher();
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry,
+                materialStore,
+                request -> {
+                    if (request.role() == AgentRole.CODING_AGENT) {
+                        return RequirementExecutionResult.success(
+                                request.taskId(), "实现完成", "", codingResultJson(request.role()));
+                    }
+                    return RequirementExecutionResult.success(
+                            request.taskId(), request.role().name() + " 完成", "", roleResultJson(request.role()));
+                },
+                new RequirementContextBuilder(),
+                new RequirementPlanGenerator(),
+                new RuleBasedRequirementPolicyGate(),
+                new AgentStagePlanner(new AtomicStageIdSupplier()),
+                stageRunStore,
+                new RoleContextBuilder(),
+                new InMemoryRoleContextPackageStore(),
+                AgentWorkflowAlertSinkPort.noop(),
+                WorkflowExperienceStore.noop(),
+                new RequirementDeliveryReviewer(),
+                pullRequestPublisher
+        );
+
+        RequirementDeliveryResult result = engine.submit(task.taskId());
+
+        // 验收标准明确禁止创建 PR（SWE-bench 补丁即交付）：跳过发布器，直接完成
+        assertEquals(RdTaskStatus.COMPLETED, result.status());
+        assertEquals("", result.pullRequestUrl());
+        assertEquals(null, pullRequestPublisher.command());
+        assertEquals(RdTaskStatus.COMPLETED, registry.getTask(task.taskId()).status());
+        assertTrue(result.resultJson().contains("\"deliveryReview\""));
+    }
+
+    @Test
+    void shouldPropagateEnvironmentNotesAndApplyLightweightModeForPatchOnlyDelivery() {
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(),
+                new InMemoryRdTaskStatusEventStore(),
+                generator());
+        InMemoryTaskMaterialStore materialStore = new InMemoryTaskMaterialStore();
+        RdRequirementTask task = registry.createRequirementTask(new CreateRequirementTaskCommand(
+                "SWE-bench django__django-11019",
+                "P1",
+                "https://github.com/example/swebench.git",
+                "example",
+                "swebench",
+                "main",
+                "按需求材料产出可应用补丁并通过回归测试",
+                List.of("补丁可 git apply", "不提交、不推送、不创建 PR"),
+                false
+        ));
+        materialStore.save(new TaskMaterial(
+                "7820000000031",
+                task.taskId(),
+                TaskMaterialType.REQUIREMENT_DOC,
+                TaskMaterialSourceType.MANUAL_TEXT,
+                "需求正文",
+                "",
+                "text/markdown",
+                "sha256:swebench-env-notes",
+                "补丁即交付，不允许提交或创建 PR。",
+                "",
+                "",
+                "",
+                "{}",
+                1L,
+                1L
+        ));
+        String reviewerEnvironmentNote = "python3.13 已移除 cgi 模块，测试需用 stub 注入 PYTHONPATH";
+        List<RequirementExecutionRequest> captured = new CopyOnWriteArrayList<>();
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry,
+                materialStore,
+                request -> {
+                    captured.add(request);
+                    if (request.role() == AgentRole.CODING_AGENT) {
+                        return RequirementExecutionResult.success(
+                                request.taskId(), "实现完成", "", codingResultJson(request.role()));
+                    }
+                    String resultJson = roleResultJson(request.role());
+                    if (request.role() == AgentRole.REQUIREMENT_REVIEWER) {
+                        // 评审角色实测发现环境坑，按输出协议记录 environmentNotes
+                        resultJson = resultJson.replaceFirst("\\{",
+                                "{\n  \"environmentNotes\": [\"" + reviewerEnvironmentNote + "\"],");
+                    }
+                    return RequirementExecutionResult.success(
+                            request.taskId(), request.role().name() + " 完成", "", resultJson);
+                },
+                new RequirementContextBuilder(),
+                new RequirementPlanGenerator(),
+                new RuleBasedRequirementPolicyGate(),
+                new AgentStagePlanner(new AtomicStageIdSupplier()),
+                new InMemoryAgentStageRunStore(),
+                new RoleContextBuilder(),
+                new InMemoryRoleContextPackageStore(),
+                AgentWorkflowAlertSinkPort.noop(),
+                WorkflowExperienceStore.noop(),
+                new RequirementDeliveryReviewer(),
+                new RecordingRequirementPullRequestPublisher()
+        );
+
+        RequirementDeliveryResult result = engine.submit(task.taskId());
+
+        assertEquals(RdTaskStatus.COMPLETED, result.status());
+        assertEquals(4, captured.size());
+        // P1: 输出协议要求各角色记录 environmentNotes
+        assertTrue(captured.getFirst().prompt().contains("\"environmentNotes\""),
+                "reviewer output contract must include environmentNotes");
+        // P1: 上游实测环境备忘必须传导到所有下游角色 prompt，避免重复探测
+        for (int i = 1; i < 4; i++) {
+            assertTrue(captured.get(i).prompt().contains("环境备忘"),
+                    "downstream prompt #" + i + " must carry environment notes section");
+            assertTrue(captured.get(i).prompt().contains(reviewerEnvironmentNote),
+                    "downstream prompt #" + i + " must carry reviewer environment note");
+        }
+        // P2: 补丁即交付任务对 REVIEWER/ARCHITECT 启用轻量模式，消除重复复现
+        assertTrue(captured.getFirst().prompt().contains("轻量交付模式"),
+                "reviewer prompt must enable lightweight mode for patch-only delivery");
+        assertTrue(captured.get(1).prompt().contains("轻量交付模式"),
+                "architect prompt must enable lightweight mode for patch-only delivery");
+        assertTrue(captured.get(1).prompt().contains("禁止重新复现"),
+                "architect must reuse reviewer reproduction instead of redoing it");
     }
 
     @Test

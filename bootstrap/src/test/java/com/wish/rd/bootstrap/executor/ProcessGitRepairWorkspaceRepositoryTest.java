@@ -19,6 +19,7 @@ import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
@@ -259,6 +260,40 @@ class ProcessGitRepairWorkspaceRepositoryTest {
         assertTrue(state.summary().contains("server/data (1)"), state.summary());
         assertTrue(state.summary().contains("client/package-lock.json (1)"), state.summary());
         assertTrue(state.summary().contains("trackedFiles=README.md"), state.summary());
+    }
+
+    @Test
+    void shouldKeepFingerprintStableWhenQaOnlyStagesUnchangedContent() throws Exception {
+        assumeTrue(gitAvailable(), "git CLI is required");
+        Path seedRepository = temporaryDirectory.resolve("seed");
+        Path remoteRepository = temporaryDirectory.resolve("remote.git");
+        createSeedRepository(seedRepository, remoteRepository);
+
+        RepairWorkspaceFactory factory = new RepairWorkspaceFactory(
+                temporaryDirectory.resolve("workspaces"),
+                "{\"type\":\"object\"}"
+        );
+        RepairJobCommand command = command(remoteRepository.toString());
+        RepairWorkspace workspace = factory.create(command);
+        ProcessGitRepairWorkspaceRepository repository =
+                new ProcessGitRepairWorkspaceRepository(new DockerExecutorProperties());
+        repository.prepare(command, workspace);
+
+        // 模拟候选补丁：工作区有未暂存修改（baseline）
+        Files.writeString(workspace.repoDirectory().resolve("README.md"), "changed\n", StandardCharsets.UTF_8);
+        RepairWorkspaceRepositoryPort.RepositoryState baseline = repository.repositoryState(command, workspace);
+
+        // QA 只执行了 git add（内容零变化）：fingerprint 必须稳定，否则误判“QA 篡改仓库”
+        git(workspace.repoDirectory(), "add", "README.md");
+        RepairWorkspaceRepositoryPort.RepositoryState staged = repository.repositoryState(command, workspace);
+        assertEquals(baseline.fingerprint(), staged.fingerprint(),
+                "staging unchanged content must not change the repository fingerprint");
+
+        // 真实内容变化：fingerprint 必须变化
+        Files.writeString(workspace.repoDirectory().resolve("README.md"), "changed again\n", StandardCharsets.UTF_8);
+        RepairWorkspaceRepositoryPort.RepositoryState mutated = repository.repositoryState(command, workspace);
+        assertNotEquals(baseline.fingerprint(), mutated.fingerprint(),
+                "real content mutation must change the repository fingerprint");
     }
 
     @Test

@@ -2,6 +2,7 @@ package com.wish.rd.bootstrap;
 
 import com.wish.rd.bootstrap.executor.DockerExecutorProperties;
 import com.wish.rd.bootstrap.executor.impl.ProcessContainerRunner;
+import com.wish.rd.exec.repair.docker.ContainerOutputListener;
 import com.wish.rd.exec.repair.docker.model.ContainerRunRequest;
 import com.wish.rd.exec.repair.docker.model.ContainerRunResult;
 import com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor;
@@ -24,6 +25,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ProcessContainerRunnerTest {
@@ -300,6 +302,77 @@ class ProcessContainerRunnerTest {
         runner.run(request);
 
         assertEquals(1_200_000L, capturedTimeout.get());
+    }
+
+    @Test
+    void shouldStreamContainerOutputBeforeTheRunnerReturns() throws IOException {
+        DockerExecutorProperties properties = new DockerExecutorProperties();
+        StringBuilder streamedStdout = new StringBuilder();
+        StringBuilder streamedStderr = new StringBuilder();
+        ProcessContainerRunner runner = new ProcessContainerRunner(
+                properties,
+                (argv, environment, timeoutMillis) -> new ProcessContainerRunner.CommandResult(0, 1, "", ""),
+                (argv, environment, timeoutMillis, listener) -> {
+                    listener.onStdout("{\"protocol\":\"rd-agent-event/v1\"}");
+                    listener.onStdout("\n");
+                    listener.onStderr("diagnostic\n");
+                    Files.createDirectories(temporaryDirectory.resolve("output"));
+                    Files.writeString(
+                            temporaryDirectory.resolve("output/result.json"),
+                            "{\"status\":\"FAILED\",\"summary\":\"done\"}",
+                            StandardCharsets.UTF_8
+                    );
+                    return new ProcessContainerRunner.CommandResult(0, 1, "all stdout", "all stderr");
+                }
+        );
+        ContainerRunRequest request = request(
+                properties,
+                Map.of(),
+                Map.of(temporaryDirectory.resolve("workspace").toString(), "/work")
+        );
+
+        ContainerRunResult result = runner.run(request, new ContainerOutputListener() {
+            @Override
+            public void onStdout(String chunk) {
+                streamedStdout.append(chunk);
+            }
+
+            @Override
+            public void onStderr(String chunk) {
+                streamedStderr.append(chunk);
+            }
+        });
+
+        assertEquals(0, result.exitCode());
+        assertEquals("{\"protocol\":\"rd-agent-event/v1\"}\n", streamedStdout.toString());
+        assertEquals("diagnostic\n", streamedStderr.toString());
+        assertEquals("all stdout", result.stdout());
+        assertEquals("all stderr", result.stderr());
+    }
+
+    @Test
+    void shouldPropagateStreamingListenerFailureAsAnIoFailure() {
+        DockerExecutorProperties properties = new DockerExecutorProperties();
+        ProcessContainerRunner runner = new ProcessContainerRunner(
+                properties,
+                (argv, environment, timeoutMillis) -> new ProcessContainerRunner.CommandResult(0, 1, "", ""),
+                (argv, environment, timeoutMillis, listener) -> {
+                    listener.onStdout("bad event");
+                    return new ProcessContainerRunner.CommandResult(0, 1, "", "");
+                }
+        );
+        ContainerRunRequest request = request(
+                properties,
+                Map.of(),
+                Map.of(temporaryDirectory.resolve("workspace").toString(), "/work")
+        );
+
+        assertThrows(IOException.class, () -> runner.run(request, new ContainerOutputListener() {
+            @Override
+            public void onStdout(String chunk) {
+                throw new IllegalArgumentException("invalid event");
+            }
+        }));
     }
 
     @Test

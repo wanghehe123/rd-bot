@@ -76,6 +76,15 @@ class DockerClaudeCodeExecutorTest {
     }
 
     @Test
+    void shouldParseQaExecutionTimeoutWithFloorAndFallback() {
+        assertEquals(1_200_000L, DockerClaudeCodeExecutor.parseQaExecutionTimeoutMillis(null));
+        assertEquals(1_200_000L, DockerClaudeCodeExecutor.parseQaExecutionTimeoutMillis(" "));
+        assertEquals(1_200_000L, DockerClaudeCodeExecutor.parseQaExecutionTimeoutMillis("not-a-number"));
+        assertEquals(2_400_000L, DockerClaudeCodeExecutor.parseQaExecutionTimeoutMillis("2400000"));
+        assertEquals(60_000L, DockerClaudeCodeExecutor.parseQaExecutionTimeoutMillis("1"));
+    }
+
+    @Test
     void shouldMountPersistentPackageManagerCache() {
         CapturingRunner runner = CapturingRunner.withResult(validResultJson("SUCCESS"));
         DockerClaudeCodeExecutor executor = executor(runner);
