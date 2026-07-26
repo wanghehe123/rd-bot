@@ -62,6 +62,7 @@ import com.wish.rd.engine.requirement.model.RequirementContextPackage;
 import com.wish.rd.engine.requirement.model.RequirementDeliveryResult;
 import com.wish.rd.engine.requirement.model.RequirementDeliveryReviewResult;
 import com.wish.rd.engine.requirement.model.RequirementExecutionRequest;
+import com.wish.rd.engine.requirement.model.RequirementExecutionProfileResolution;
 import com.wish.rd.engine.requirement.model.RequirementExecutionResult;
 import com.wish.rd.engine.requirement.model.RequirementPlan;
 import com.wish.rd.engine.requirement.model.RequirementPolicyDecision;
@@ -88,6 +89,8 @@ public class RequirementDeliveryEngine {
     private static final int MAX_ROLE_ATTEMPTS = 3;
     /** 单次回注的失败明细上限，防止巨型校验错误把 prompt 撑爆。 */
     private static final int MAX_FAILURE_FEEDBACK_CHARS = 4_000;
+    /** 单个上游阶段随交接清单传导的环境备忘条数上限，防止 prompt 膨胀。 */
+    private static final int MAX_ENVIRONMENT_NOTES = 8;
     private static final Comparator<AgentStageRun> STAGE_RUN_RECENCY = Comparator
             .comparingInt(AgentStageRun::attemptNo)
             .thenComparingLong(AgentStageRun::createTimeEpochMillis)
@@ -114,6 +117,8 @@ public class RequirementDeliveryEngine {
     private AiDeliveryReviewEngine aiDeliveryReviewEngine;
     private TaskRetryCheckpointStore taskRetryCheckpointStore;
     private RdProjectTokenBudgetService projectTokenBudgetService;
+    private RequirementExecutionProfileResolverPort executionProfileResolver =
+            RequirementExecutionProfileResolverPort.unavailable();
 
     @Autowired(required = false)
     void setDeepRetrievalOrchestrator(DeepRetrievalOrchestrator orchestrator) {
@@ -135,6 +140,13 @@ public class RequirementDeliveryEngine {
     @Autowired(required = false)
     void setProjectTokenBudgetService(RdProjectTokenBudgetService projectTokenBudgetService) {
         this.projectTokenBudgetService = projectTokenBudgetService;
+    }
+
+    @Autowired(required = false)
+    void setExecutionProfileResolver(RequirementExecutionProfileResolverPort executionProfileResolver) {
+        this.executionProfileResolver = executionProfileResolver == null
+                ? RequirementExecutionProfileResolverPort.unavailable()
+                : executionProfileResolver;
     }
 
     public RequirementDeliveryEngine(
@@ -827,8 +839,13 @@ public class RequirementDeliveryEngine {
     ) {
         // VALIDATING -> PR_CREATING：复核通过后，将复核结果与执行产物合并，提交 PR 生成阶段。
         requirementTask = taskRegistry.markRequirementPrCreating(requirementTask.taskId(), reviewedResultJson);
-        RequirementPullRequestPublication publication = publishPullRequest(requirementTask, reviewedResultJson);
-        if (!publication.success() || publication.pullRequestUrl().isBlank()) {
+        // 补丁即交付（SWE-bench 类）：验收标准明确禁止创建 PR，跳过发布器；
+        // 空 PR URL 会让 RepairTaskMergeSyncEngine 静默跳过，不产生同步告警噪音。
+        boolean patchOnlyDelivery = isPatchOnlyDelivery(requirementTask);
+        RequirementPullRequestPublication publication = patchOnlyDelivery
+                ? RequirementPullRequestPublication.success(requirementTask.taskId(), "", "", "{}")
+                : publishPullRequest(requirementTask, reviewedResultJson);
+        if (!publication.success() || (!patchOnlyDelivery && publication.pullRequestUrl().isBlank())) {
             String reason = publication.errorMessage().isBlank()
                     ? "pull request publication failed"
                     : publication.errorMessage();
@@ -969,8 +986,12 @@ public class RequirementDeliveryEngine {
     private RequirementDeliveryResult resumePullRequestPublication(RdRequirementTask task) {
         String reviewedResultJson = task.executionResultJson();
         RdRequirementTask publishing = taskRegistry.markRequirementPrCreating(task.taskId(), reviewedResultJson);
-        RequirementPullRequestPublication publication = publishPullRequest(publishing, reviewedResultJson);
-        if (!publication.success() || publication.pullRequestUrl().isBlank()) {
+        // 补丁即交付：与首次发布同样跳过 PR 发布器（历史 REJECTED 任务 retry 也要能走到完成）
+        boolean patchOnlyDelivery = isPatchOnlyDelivery(publishing);
+        RequirementPullRequestPublication publication = patchOnlyDelivery
+                ? RequirementPullRequestPublication.success(publishing.taskId(), "", "", "{}")
+                : publishPullRequest(publishing, reviewedResultJson);
+        if (!publication.success() || (!patchOnlyDelivery && publication.pullRequestUrl().isBlank())) {
             String reason = publication.errorMessage().isBlank()
                     ? "pull request publication failed"
                     : publication.errorMessage();
@@ -1331,6 +1352,45 @@ public class RequirementDeliveryEngine {
             );
             // DISPATCHING -> RUNNING：记录 prompt 快照后进入正式执行。
             stage = capturePromptArtifact(stage, rolePrompt);
+            RequirementExecutionProfileResolution executionProfileResolution;
+            try {
+                executionProfileResolution = executionProfileResolver.resolve(
+                        task,
+                        role,
+                        stage.stageRunId(),
+                        stage.attemptNo()
+                );
+            } catch (RuntimeException exception) {
+                boolean retryable = profileResolutionFailureIsRetryable(exception);
+                AgentStageStatus failureStatus = retryable
+                        ? AgentStageStatus.FAILED_RETRYABLE
+                        : AgentStageStatus.FAILED_NEEDS_HUMAN;
+                String category = profileResolutionFailureCategory(exception, retryable);
+                String reason = safe(exception.getMessage());
+                AgentStageRun failedStage = stageRunStore.transition(
+                        stage.stageRunId(),
+                        failureStatus,
+                        category,
+                        reason,
+                        System.currentTimeMillis()
+                );
+                publishStageAlert(
+                        failedStage,
+                        retryable
+                                ? AgentWorkflowAlertType.STAGE_FAILED_RETRYABLE
+                                : AgentWorkflowAlertType.STAGE_FAILED_NEEDS_HUMAN,
+                        reason.isBlank() ? category : reason
+                );
+                return RequirementExecutionResult.failure(
+                        task.taskId(),
+                        "agent execution profile resolution failed: " + role,
+                        aggregateAgentResultsJson(
+                                retryable ? "FAILED" : "NEEDS_HUMAN",
+                                pullRequestUrl,
+                                stageResults
+                        )
+                );
+            }
             stage = transitionStage(stage, AgentStageStatus.RUNNING, "", "");
             RequirementExecutionResult roleResult;
             try {
@@ -1345,7 +1405,8 @@ public class RequirementDeliveryEngine {
                                 roleContextJson(roleContext),
                                 false,
                                 upstreamResultJson,
-                                stage.stageRunId()
+                                stage.stageRunId(),
+                                executionProfileResolution.snapshotId()
                         ))
                 );
             } catch (RuntimeException exception) {
@@ -1723,6 +1784,62 @@ public class RequirementDeliveryEngine {
     private boolean needsHumanInterventionResult(RequirementExecutionResult result) {
         String status = aggregateStatus(result == null ? "" : result.resultJson());
         return "NEEDS_HUMAN".equals(status) || "FAILED_NEEDS_HUMAN".equals(status);
+    }
+
+    private boolean profileResolutionFailureIsRetryable(RuntimeException exception) {
+        String message = safe(exception == null ? "" : exception.getMessage()).toUpperCase(Locale.ROOT);
+        return message.contains("AGENT_RUNTIME_SNAPSHOT_UNAVAILABLE");
+    }
+
+    private String profileResolutionFailureCategory(RuntimeException exception, boolean retryable) {
+        String message = safe(exception == null ? "" : exception.getMessage());
+        String upper = message.toUpperCase(Locale.ROOT);
+        if (upper.contains("AGENT_RUNTIME_SNAPSHOT_CORRUPT")) {
+            return "AGENT_RUNTIME_SNAPSHOT_CORRUPT";
+        }
+        if (upper.contains("AGENT_RUNTIME_SNAPSHOT_UNAVAILABLE")) {
+            return "AGENT_RUNTIME_SNAPSHOT_UNAVAILABLE";
+        }
+        if (upper.contains("AGENT_RUNTIME_PROFILE_INVALID")) {
+            return "AGENT_RUNTIME_PROFILE_INVALID";
+        }
+        return retryable ? "AGENT_RUNTIME_SNAPSHOT_UNAVAILABLE" : "AGENT_RUNTIME_PROFILE_INVALID";
+    }
+
+    /**
+     * 补丁即交付判定：验收标准显式禁止创建 PR（SWE-bench 评测红线）时，
+     * 交付物为工作区补丁本体，对零提交分支建 PR 必然 422，应直接完成。
+     */
+    private boolean isPatchOnlyDelivery(RdRequirementTask task) {
+        String criteria = safe(task.acceptanceCriteriaJson());
+        return criteria.contains("不创建 PR")
+                || criteria.contains("不创建PR")
+                || criteria.contains("禁止创建 PR")
+                || criteria.toLowerCase(java.util.Locale.ROOT).contains("do not open a pull request");
+    }
+
+    /**
+     * 轻量交付模式（P2）：补丁即交付类小任务中 REVIEWER 与 ARCHITECT 的“复现 bug→定位→给方案”
+     * 工作高度重叠。让评审一次性把定位做实，架构直接沿用评审结论，消除重复复现（实测约 10 分钟/$1.5 每题）。
+     * 仅作用于 prompt 层，不改变四角色状态机与交付复核链路。
+     */
+    private String lightweightDeliveryPromptSection(AgentRole role, RdRequirementTask task) {
+        if (!isPatchOnlyDelivery(task)) {
+            return "";
+        }
+        return switch (role) {
+            case REQUIREMENT_REVIEWER -> """
+                    # 轻量交付模式（补丁即交付）
+                    - 本任务为小补丁类交付：评审时一次性完成缺陷定位（文件/符号/根因）并写进交接文档，供下游直接复用。
+                    - 不要展开与验收标准无关的风险面；评审目标是让 SOLUTION_ARCHITECT 免于重新复现。
+                    """.strip();
+            case SOLUTION_ARCHITECT -> """
+                    # 轻量交付模式（补丁即交付）
+                    - 上游评审已完成缺陷复现与定位：直接基于其交接文档制定方案，禁止重新复现 bug、禁止重复环境探测。
+                    - 方案只聚焦：改哪个文件/函数、算法要点、回归测试点与验证命令；控制在最小充分范围，不做展开式架构分析。
+                    """.strip();
+            default -> "";
+        };
     }
 
     private RequirementPullRequestPublication publishPullRequest(RdRequirementTask task, String reviewedResultJson) {
@@ -2511,6 +2628,8 @@ public class RequirementDeliveryEngine {
 
                 %s
 
+                %s
+
                 # 当前角色输出 JSON 协议
                 %s
                 """.formatted(
@@ -2520,6 +2639,7 @@ public class RequirementDeliveryEngine {
                 repositoryDiscoveryPromptSection(roleContext),
                 upstreamHandoffPromptSection(role, upstreamResultJson),
                 budgetEstimatePromptSection(role, task),
+                lightweightDeliveryPromptSection(role, task),
                 recoveryPromptSection,
                 buildPrompt(task, materials, context, plan, policyDecision),
                 roleOutputContract(role)
@@ -2704,6 +2824,7 @@ public class RequirementDeliveryEngine {
         return switch (role) {
             case REQUIREMENT_REVIEWER -> """
                     - 只做需求评审，不修改代码，不创建 PR。
+                    - 把本轮实测发现的环境事实（缺依赖、替代命令、必需环境变量、可用测试入口）写入 result.json 的 environmentNotes，供下游直接沿用。
                     - 输出结构化需求评审结果，明确能否做、缺失信息、风险和验收覆盖。
                     - 当评审允许进入下一角色时，使用已安装的 role-handoff-document Skill，把可执行交接写入 /work/output/handoff/next.md；预算见 context.json 的 roleHandoffMaxTokens。
                     - 交接文档承载详细约束、验收、风险和待确认项；result.json 中只保留 next_prompt 的简短指针，绝不写对象存储地址或凭据。
@@ -2711,6 +2832,7 @@ public class RequirementDeliveryEngine {
                     """.strip();
             case SOLUTION_ARCHITECT -> """
                     - 基于需求评审和证据制定开发方案，不修改代码，不创建 PR。
+                    - 上游环境备忘视为已验证事实直接沿用；本轮新发现的环境事实追加写入 result.json 的 environmentNotes。
                     - 输出影响文件、接口/数据变更、实现步骤、验收映射和测试计划。
                     - 使用已安装的 role-handoff-document Skill，把完整开发计划写入 /work/output/handoff/next.md，供 CODING_AGENT 作为受控附件读取；预算见 context.json 的 roleHandoffMaxTokens。
                     - result.json 中的 next_prompt 只提供目标角色、短摘要和固定相对路径；不要把完整计划或 RustFS 地址复制进 JSON。
@@ -2718,6 +2840,7 @@ public class RequirementDeliveryEngine {
                     """.strip();
             case CODING_AGENT -> """
                     - 根据需求评审和方案执行代码修改。
+                    - 上游环境备忘视为已验证事实直接沿用，不要重复探测；本轮新发现的环境事实（含可用的测试执行方式）追加写入 result.json 的 environmentNotes，供 QA 直接沿用。
                     - 该阶段只负责代码修改和交付候选证据，不创建 PR。
                     - 使用已安装的 role-handoff-document Skill，把变更、已执行测试、风险和 QA 注意事项写入 /work/output/handoff/next.md；预算见 context.json 的 roleHandoffMaxTokens。
                     - result.json 中的 next_prompt 只提供目标角色、短摘要和固定相对路径；不得透传完整日志、Docker 元数据或对象存储地址。
@@ -2725,10 +2848,13 @@ public class RequirementDeliveryEngine {
                     """.strip();
             case QA_AGENT -> """
                     - 基于代码交付候选包、验收标准和真实命令执行 QA 复核。
+                    - 上游环境备忘（含 CODING_AGENT 已验证的测试执行方式）视为已验证事实直接沿用，不要从零重复探测环境。
                     - 先读取 /work/input/qa-profile.json，并遵循已安装的 qa-playwright-cli Skill；Web 项目且配置要求时必须执行真实 Chromium 浏览器验证。
                     - 不创建新 PR，也不得修改 /work/repo 中的跟踪文件；临时脚本只能写入 /work/output/qa-work。
+                    - 退出状态契约：验证过程中允许用 git stash/checkout 做原始态对照，但写 result.json 前必须恢复原状——/work/repo 退出时必须保持候选补丁在位的状态（git diff HEAD 非空且与进入时一致），丢弃补丁即判基础设施失败。
                     - 当前需求验收（CURRENT）和受影响的既有关键路径回归（REGRESSION）都必须真实执行；任一必需检查缺少证据或被跳过都阻断交付。
                     - 必须记录每条命令的退出码、耗时和日志；每个 qa-evidence/ 日志文件必须非空，至少包含命令文本、退出码和时间戳；如果命令成功且无输出（如 git diff --check），在日志中写入命令和 exit code 0 及说明。浏览器验证必须补充截图、trace、console 和 network 证据。
+                    - 如用包装脚本记录命令，必须以 bash -c '完整命令行' 方式执行；直接把带环境变量前缀的命令（如 PYTHONPATH=x cmd）当参数逐词执行会报 127；时间预算优先保障真实命令执行与 result.json 落盘，深度分析写进 summary 即可，不要因分析耗尽容器超时。
                     - evidenceArtifactIds 和 logArtifactId 只能引用 /work/output/qa-evidence/ 下实际存在的证据文件，不要引用 /work/output/qa-work/ 下的临时文件。
                     - manifest.json 必须包含 "version": 1（整数）和 "artifacts" 数组；不要使用 "schema" 替代 "version"。
                     - manifest.json 的每个 artifact 条目必须包含 "path"、"bytes"（文件精确字节数，整数）和 "sha256"（文件 SHA-256 哈希，小写十六进制 64 位字符串）三个字段；使用 sha256sum 命令获取准确值。
@@ -2750,6 +2876,7 @@ public class RequirementDeliveryEngine {
                       "missingInformation": [],
                       "risks": [],
                       "acceptanceCoverage": ["每条验收标准的覆盖判断"],
+                      "environmentNotes": ["本轮实测的环境事实（缺依赖/替代命令/必需环境变量/可用测试入口）；无则空数组"],
                       "budgetEstimate": {
                         "initialTokens": 0,
                         "retryReserveTokens": 0,
@@ -2773,6 +2900,7 @@ public class RequirementDeliveryEngine {
                       "implementationSteps": ["可执行开发步骤"],
                       "acceptanceMapping": [{"criteria":"验收标准","validation":"真实验证方式"}],
                       "testPlan": [{"criteria":"验收标准","command":"真实测试命令"}],
+                      "environmentNotes": ["本轮实测的环境事实；无新发现则空数组"],
                       "next_prompt": {
                         "targetRole": "CODING_AGENT",
                         "summary": "最多 1200 个字符的下游摘要",
@@ -2789,6 +2917,7 @@ public class RequirementDeliveryEngine {
                       "testCommands": ["真实执行过的命令"],
                       "testStatus": "PASSED|FAILED|SKIPPED",
                       "riskLevel": "LOW|MEDIUM|HIGH",
+                      "environmentNotes": ["本轮实测的环境事实（供 QA 直接沿用）；无新发现则空数组"],
                       "prBody": "候选 PR 正文，包含改动和真实验证证据",
                       "needHumanAction": false,
                       "next_prompt": {
@@ -2925,6 +3054,10 @@ public class RequirementDeliveryEngine {
                 if (!errorMessage.isBlank()) {
                     compact.put("errorMessage", compactText(errorMessage));
                 }
+                List<String> environmentNotes = compactEnvironmentNotes(roleResult.path("environmentNotes"));
+                if (!environmentNotes.isEmpty()) {
+                    compact.put("environmentNotes", environmentNotes);
+                }
                 JsonNode handoff = roleResult.path("roleHandoff");
                 if (!handoff.isObject()) {
                     handoff = stage.path("roleHandoff");
@@ -2946,6 +3079,31 @@ public class RequirementDeliveryEngine {
             }
         }
         return compactJson(Map.of("version", 1, "stages", List.copyOf(stages)));
+    }
+
+    /**
+     * 环境备忘跨角色传导（P1）：上游角色实测的环境事实（缺依赖、替代命令、必需环境变量等）
+     * 随交接清单传给下游，避免同一个环境坑被多个角色各自重新发现（实测浪费 5~8 分钟/$1 每题）。
+     */
+    private List<String> compactEnvironmentNotes(JsonNode environmentNotes) {
+        if (environmentNotes == null || !environmentNotes.isArray()) {
+            return List.of();
+        }
+        List<String> notes = new ArrayList<>();
+        for (JsonNode note : environmentNotes) {
+            if (!note.isTextual()) {
+                continue;
+            }
+            String text = compactText(note.asText());
+            if (text.isBlank()) {
+                continue;
+            }
+            notes.add(text);
+            if (notes.size() >= MAX_ENVIRONMENT_NOTES) {
+                break;
+            }
+        }
+        return List.copyOf(notes);
     }
 
     private JsonNode embeddedRoleResult(JsonNode rawResult) {
@@ -3075,6 +3233,7 @@ public class RequirementDeliveryEngine {
         List<String> stageLines = new ArrayList<>();
         List<String> documentLines = new ArrayList<>();
         List<String> candidatePatchLines = new ArrayList<>();
+        List<String> environmentNoteLines = new ArrayList<>();
         String remediation = "";
         try {
             JsonNode root = OBJECT_MAPPER.readTree(safe(upstreamHandoffJson));
@@ -3088,6 +3247,12 @@ public class RequirementDeliveryEngine {
                         stageLines.add("- " + sourceRole + ": "
                                 + firstNonBlank(status, "COMPLETED")
                                 + (summary.isBlank() ? "" : " - " + compactText(summary)));
+                    }
+                    for (JsonNode note : stage.path("environmentNotes")) {
+                        if (note.isTextual() && !note.asText().isBlank()
+                                && environmentNoteLines.size() < MAX_ENVIRONMENT_NOTES) {
+                            environmentNoteLines.add("- [" + sourceRole + "] " + compactText(note.asText()));
+                        }
                     }
                     JsonNode handoff = stage.path("handoff");
                     if (handoff.isObject() && role.name().equalsIgnoreCase(handoff.path("targetRole").asText(""))) {
@@ -3123,7 +3288,10 @@ public class RequirementDeliveryEngine {
         String candidatePatches = candidatePatchLines.isEmpty()
                 ? ""
                 : "\nVerified candidate patches:\n" + String.join("\n", candidatePatchLines);
-        return (stageSummary + "\n" + documents + candidatePatches + remediation).strip();
+        String environmentNotes = environmentNoteLines.isEmpty()
+                ? ""
+                : "\n环境备忘（上游角色已实测验证，直接沿用，不要重复探测）:\n" + String.join("\n", environmentNoteLines);
+        return (stageSummary + "\n" + documents + candidatePatches + environmentNotes + remediation).strip();
     }
 
     private boolean isVerifiedCandidatePatch(JsonNode candidatePatch, String fallbackSourceRole) {

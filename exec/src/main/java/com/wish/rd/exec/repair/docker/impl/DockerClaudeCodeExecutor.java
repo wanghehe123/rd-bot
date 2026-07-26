@@ -70,11 +70,30 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
     private static final String API_KEY_ENV_ROUTER = "RD_CLAUDE_API_KEY_ENV";
     private static final String AGENT_RESULT_JSON_FIELD = "__agentResultJson";
     private static final String LAUNCHCTL_BINARY = "/bin/launchctl";
-    private static final long QA_EXECUTION_TIMEOUT_MILLIS = 1_200_000L;
+    private static final long QA_EXECUTION_TIMEOUT_MILLIS =
+            parseQaExecutionTimeoutMillis(System.getenv("RD_QA_EXECUTION_TIMEOUT_MILLIS"));
     private static final long MAX_TEXT_PREVIEW_BYTES = 64_000L;
     private static final long MAX_QA_MANIFEST_PREVIEW_BYTES = 1_000_000L;
     private static final String QA_STARTUP_TIMEOUT_SECONDS = "120";
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+
+    /**
+     * QA 容器硬超时：默认 20 分钟，可用 RD_QA_EXECUTION_TIMEOUT_MILLIS 覆盖（下限 1 分钟）。
+     *
+     * <p>大型回归套件（如 django runtests 多套件）叠加深度分析时 20 分钟不够，
+     * 超时会把已完成的真实验证成果一并作废（django-11019 attempt 3 实跑教训）。
+     */
+    public static long parseQaExecutionTimeoutMillis(String raw) {
+        long fallback = 1_200_000L;
+        if (raw == null || raw.isBlank()) {
+            return fallback;
+        }
+        try {
+            return Math.max(60_000L, Long.parseLong(raw.strip()));
+        } catch (NumberFormatException exception) {
+            return fallback;
+        }
+    }
     private static final ClaudeTokenUsageParser TOKEN_USAGE_PARSER = new ClaudeTokenUsageParser();
     private static final ClaudeExecutionTraceParser EXECUTION_TRACE_PARSER = new ClaudeExecutionTraceParser();
 

@@ -18,6 +18,7 @@ import java.util.List;
  * @param pullRequestRequired 是否请求阶段执行器创建 PR；需求交付链路必须为 false
  * @param upstreamResultJson  上游角色阶段结果 JSON
  * @param stageRunId          当前角色阶段运行 ID
+ * @param executionProfileSnapshotId 已冻结的执行 Profile 快照 ID，可为空表示兼容旧调用
  */
 public record RequirementExecutionRequest(
         String taskId,
@@ -28,7 +29,8 @@ public record RequirementExecutionRequest(
         String roleContextJson,
         boolean pullRequestRequired,
         String upstreamResultJson,
-        String stageRunId
+        String stageRunId,
+        String executionProfileSnapshotId
 ) {
 
     public RequirementExecutionRequest(
@@ -41,7 +43,10 @@ public record RequirementExecutionRequest(
             boolean pullRequestRequired,
             String upstreamResultJson
     ) {
-        this(taskId, task, materials, prompt, role, roleContextJson, pullRequestRequired, upstreamResultJson, "");
+        this(
+                taskId, task, materials, prompt, role, roleContextJson, pullRequestRequired,
+                upstreamResultJson, "", ""
+        );
     }
 
     public RequirementExecutionRequest(
@@ -50,7 +55,7 @@ public record RequirementExecutionRequest(
             List<TaskMaterial> materials,
             String prompt
     ) {
-        this(taskId, task, materials, prompt, AgentRole.CODING_AGENT, "{}", false, "[]", "");
+        this(taskId, task, materials, prompt, AgentRole.CODING_AGENT, "{}", false, "[]", "", "");
     }
 
     public RequirementExecutionRequest {
@@ -63,5 +68,8 @@ public record RequirementExecutionRequest(
                 ? "[]"
                 : upstreamResultJson.strip();
         stageRunId = stageRunId == null ? "" : stageRunId.strip();
+        executionProfileSnapshotId = executionProfileSnapshotId == null
+                ? ""
+                : executionProfileSnapshotId.strip();
     }
 }
