@@ -164,6 +164,32 @@ rd:
       send-message-timeout-millis: 2000
       max-retry-attempts: 3
   executor:
+    agent-runtime:
+      enabled: ${RD_EXECUTOR_AGENT_RUNTIME_ENABLED:false}
+      mutation-token: ${RD_AGENT_RUNTIME_MUTATION_TOKEN:}
+    pi:
+      image: ${RD_EXECUTOR_PI_IMAGE:rd-bot/pi-agent:local}
+      command:
+        - node
+        - /opt/rd-pi-bridge/src/rd-pi-bridge.mjs
+      network-mode: ${RD_EXECUTOR_PI_NETWORK_MODE:bridge}
+      remove-after-exit: ${RD_EXECUTOR_PI_REMOVE_AFTER_EXIT:true}
+      allow-privileged: ${RD_EXECUTOR_PI_ALLOW_PRIVILEGED:false}
+      execution-timeout-millis: ${RD_EXECUTOR_PI_EXECUTION_TIMEOUT_MILLIS:0}
+      resources:
+        enabled: ${RD_EXECUTOR_PI_RESOURCES_ENABLED:false}
+        approved-cache-root: ${RD_EXECUTOR_PI_APPROVED_CACHE_ROOT:}
+      artifact-archive:
+        # Raw/session persistence is opt-in until retention and restricted-access values are supplied.
+        enabled: ${RD_EXECUTOR_PI_ARTIFACT_ARCHIVE_ENABLED:false}
+        raw-bucket: ${RD_EXECUTOR_PI_RAW_ARTIFACT_BUCKET:}
+        session-bucket: ${RD_EXECUTOR_PI_SESSION_ARTIFACT_BUCKET:}
+        raw-retention-millis: ${RD_EXECUTOR_PI_RAW_RETENTION_MILLIS:0}
+        session-retention-millis: ${RD_EXECUTOR_PI_SESSION_RETENTION_MILLIS:0}
+        max-raw-bytes: ${RD_EXECUTOR_PI_MAX_RAW_ARTIFACT_BYTES:16777216}
+        max-session-file-bytes: ${RD_EXECUTOR_PI_MAX_SESSION_FILE_BYTES:16777216}
+        max-session-files: ${RD_EXECUTOR_PI_MAX_SESSION_FILES:128}
+        cleanup-interval-millis: ${RD_EXECUTOR_PI_PRIVATE_ARTIFACT_CLEANUP_INTERVAL_MILLIS:60000}
     mock:
       enabled: ${RD_EXECUTOR_MOCK_ENABLED:false}
     repository:
