@@ -9,11 +9,19 @@ import sys
 from pathlib import Path
 from typing import Any, Mapping
 
-from .iteration_state import ManifestError, ManifestStore, RunStatus, create_manifest
-from .rd_bot_client import ClientPolicyError, SafeRdBotClient
-from .workflow import AutopilotWorkflow, WorkflowError
-from .workspace_guard import WorkspaceError, assert_unchanged, capture
-from .run_artifacts import redact
+if __package__ in {None, ""}:  # Support the explicit fallback invocation from SKILL.md.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from scripts.iteration_state import ManifestError, ManifestStore, RunStatus, create_manifest
+    from scripts.rd_bot_client import ApiResponseError, ApiTransportError, ClientPolicyError, SafeRdBotClient
+    from scripts.workflow import AutopilotWorkflow, WorkflowError
+    from scripts.workspace_guard import WorkspaceError, assert_unchanged, capture
+    from scripts.run_artifacts import redact
+else:
+    from .iteration_state import ManifestError, ManifestStore, RunStatus, create_manifest
+    from .rd_bot_client import ApiResponseError, ApiTransportError, ClientPolicyError, SafeRdBotClient
+    from .workflow import AutopilotWorkflow, WorkflowError
+    from .workspace_guard import WorkspaceError, assert_unchanged, capture
+    from .run_artifacts import redact
 
 
 DEFAULT_BASE_URL = "http://127.0.0.1:18080"
@@ -28,6 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     init = sub.add_parser("init")
+    _add_subcommand_common(init)
     init.add_argument("--run-id", required=True)
     init.add_argument("--mode", choices=("dry-run", "live-test"), default="dry-run")
     init.add_argument("--project-id", required=True)
@@ -35,23 +44,36 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--success-criterion", action="append", required=True, dest="success_criteria")
 
     projects = sub.add_parser("projects")
+    _add_subcommand_common(projects)
     projects.add_argument("--keyword")
     project = sub.add_parser("project")
+    _add_subcommand_common(project)
     project.add_argument("--project-id", required=True)
 
     freeze = sub.add_parser("freeze-plan")
+    _add_subcommand_common(freeze)
     freeze.add_argument("--plan-file", required=True)
     for name in ("dispatch", "observe", "retry", "evaluate"):
         command = sub.add_parser(name)
+        _add_subcommand_common(command)
         command.add_argument("--iteration", type=int, required=True)
         if name in {"dispatch", "retry", "evaluate"}:
             command.add_argument("--live-test", action="store_true")
 
     decision = sub.add_parser("record-decision")
+    _add_subcommand_common(decision)
     decision.add_argument("--decision-file", required=True)
-    sub.add_parser("report")
-    sub.add_parser("verify-workspace")
+    report = sub.add_parser("report")
+    _add_subcommand_common(report)
+    verify = sub.add_parser("verify-workspace")
+    _add_subcommand_common(verify)
     return parser
+
+
+def _add_subcommand_common(command: argparse.ArgumentParser) -> None:
+    command.add_argument("--repo-root", default=argparse.SUPPRESS)
+    command.add_argument("--run-dir", default=argparse.SUPPRESS)
+    command.add_argument("--base-url", default=argparse.SUPPRESS)
 
 
 def main(argv: list[str] | None = None, environ: Mapping[str, str] | None = None) -> int:
@@ -84,7 +106,7 @@ def main(argv: list[str] | None = None, environ: Mapping[str, str] | None = None
         if args.command == "verify-workspace":
             return _verify_workspace(repo_root, run_dir)
         return _run_workflow(args, repo_root, run_dir, env)
-    except (ClientPolicyError, ManifestError, WorkflowError, WorkspaceError, ValueError, OSError) as exc:
+    except (ApiResponseError, ApiTransportError, ClientPolicyError, ManifestError, WorkflowError, WorkspaceError, ValueError, OSError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 

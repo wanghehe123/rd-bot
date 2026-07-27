@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
-from .iteration_state import ManifestStore
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from scripts.iteration_state import ManifestStore
+else:
+    from .iteration_state import ManifestStore
 
 
 def main(argv: list[str] | None = None) -> int:
