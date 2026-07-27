@@ -21,7 +21,8 @@ The workflow is project-level orchestration. It is separate from role Skills ins
 6. For live-test, require both `--live-test` and `RD_BOT_AUTOPILOT_LIVE_TEST=1` before any write.
 7. Use the guarded CLI for create, submit, observe, one retry, and task-run evaluation.
 8. Decide only from stored task, stage, Attempt, and evaluation evidence.
-9. Stop at approvals, unknown states, budget limits, or ambiguous writes.
-10. Verify the workspace fingerprint and render the final report.
+9. Enforce a maximum of two iterations, one active task, and one retry per task.
+10. Stop at approvals, unknown states, budget limits, `WAITING_HUMAN`, or ambiguous writes.
+11. Verify the workspace fingerprint and render the final report.
 
-Never call `/admin/rd-tasks/{taskId}/approve`, delete, cancel, merge, deploy, arbitrary URLs, arbitrary shell, or Git mutation commands. Never store credentials, full prompts, or private chain-of-thought in run artifacts.
+Never call `/admin/rd-tasks/{taskId}/approve`, delete, cancel, merge, deploy, arbitrary URLs, arbitrary shell, raw `curl`, or Git mutation commands. Never store credentials, full prompts, or private chain-of-thought in run artifacts; user-visible summaries and bounded evidence references are sufficient.
