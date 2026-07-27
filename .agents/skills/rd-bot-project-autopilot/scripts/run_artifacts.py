@@ -16,11 +16,19 @@ class ArtifactError(RuntimeError):
 
 MAX_TEXT_CHARS = 100_000
 _TRUNCATION_SUFFIX = "...[TRUNCATED]"
-_SECRET_KEY_RE = re.compile(
-    r"(?:authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|token|"
-    r"password|secret|credential|cookie|private[_-]?key)",
-    re.IGNORECASE,
-)
+SECRET_KEYS = {
+    "authorization",
+    "api_key",
+    "apikey",
+    "token",
+    "access_token",
+    "refresh_token",
+    "password",
+    "secret",
+    "credential",
+    "cookie",
+}
+_NORMALIZED_SECRET_KEYS = {re.sub(r"[-_]", "", secret) for secret in SECRET_KEYS}
 _BEARER_RE = re.compile(r"\bBearer\s+[^\s,;]+", re.IGNORECASE)
 _URL_USERINFO_RE = re.compile(r"(https?://)[^/\s:@]+(?::[^@/\s]*)?@", re.IGNORECASE)
 _API_KEY_RE = re.compile(r"\b(?:sk|key|token)[-_][A-Za-z0-9_-]{12,}\b", re.IGNORECASE)
@@ -47,7 +55,8 @@ def redact(value: Any, *, max_chars: int = MAX_TEXT_CHARS) -> Any:
     if isinstance(value, dict):
         result: dict[Any, Any] = {}
         for key, item in value.items():
-            if isinstance(key, str) and _SECRET_KEY_RE.search(key):
+            normalized_key = re.sub(r"[-_]", "", key.lower()) if isinstance(key, str) else ""
+            if normalized_key in _NORMALIZED_SECRET_KEYS:
                 result[key] = "[REDACTED]"
             else:
                 result[key] = redact(item, max_chars=max_chars)

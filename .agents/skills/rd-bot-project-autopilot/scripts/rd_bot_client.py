@@ -21,6 +21,7 @@ MAX_TITLE_CHARS = 120
 MAX_MATERIAL_CHARS = 10_000
 MAX_MATERIAL_TOTAL_CHARS = 50_000
 _NUMERIC_ID_RE = re.compile(r"^[0-9]{1,64}$")
+_RUN_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,120}$")
 
 
 class ClientPolicyError(RuntimeError):
@@ -76,7 +77,9 @@ class SafeRdBotClient:
         re.compile(r"^/admin/rd-tasks/[0-9]{1,64}/retry-preview$"),
         re.compile(r"^/admin/rd-tasks/[0-9]{1,64}/retry-history$"),
         re.compile(r"^/admin/evaluations/runs$"),
-        re.compile(r"^/admin/evaluations/runs/[0-9]{1,64}$"),
+        re.compile(r"^/admin/evaluations/runs/[A-Za-z0-9._-]{1,120}$"),
+        re.compile(r"^/admin/evaluations/runs/[A-Za-z0-9._-]{1,120}/timeline$"),
+        re.compile(r"^/admin/evaluations/runs/[A-Za-z0-9._-]{1,120}/artifacts$"),
     )
     _POST_ROUTES = (
         re.compile(r"^/admin/rd-tasks/requirements$"),
@@ -300,8 +303,19 @@ class SafeRdBotClient:
         return self.request("POST", f"/admin/rd-tasks/{task_id}/evaluations", payload)
 
     def get_evaluation(self, run_id: str) -> Any:
-        run_id = _require_id(run_id, "run_id")
+        if not isinstance(run_id, str) or not _RUN_ID_RE.fullmatch(run_id):
+            raise ClientPolicyError("run_id contains unsafe characters")
         return self.request("GET", f"/admin/evaluations/runs/{run_id}")
+
+    def get_evaluation_timeline(self, run_id: str) -> Any:
+        if not isinstance(run_id, str) or not _RUN_ID_RE.fullmatch(run_id):
+            raise ClientPolicyError("run_id contains unsafe characters")
+        return self.request("GET", f"/admin/evaluations/runs/{run_id}/timeline")
+
+    def get_evaluation_artifacts(self, run_id: str) -> Any:
+        if not isinstance(run_id, str) or not _RUN_ID_RE.fullmatch(run_id):
+            raise ClientPolicyError("run_id contains unsafe characters")
+        return self.request("GET", f"/admin/evaluations/runs/{run_id}/artifacts")
 
     @staticmethod
     def _bounded_text(value: Any, label: str, maximum: int) -> str:
