@@ -11,15 +11,23 @@ from typing import Any, Mapping
 
 if __package__ in {None, ""}:  # Support the explicit fallback invocation from SKILL.md.
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from scripts.iteration_state import ManifestError, ManifestStore, RunStatus, create_manifest
+    from scripts.github_client import GitHubClient, GitHubPolicyError, GitHubResponseError, GitHubTransportError
+    from scripts.iteration_state import (
+        ManifestError, ManifestStore, RunStatus, create_manifest, create_provision_manifest,
+    )
+    from scripts.provisioning import ProvisionPlanError, build_provision_plan, canonical_json
     from scripts.rd_bot_client import ApiResponseError, ApiTransportError, ClientPolicyError, SafeRdBotClient
-    from scripts.workflow import AutopilotWorkflow, WorkflowError
+    from scripts.workflow import AutopilotWorkflow, ProjectProvisioningWorkflow, WorkflowError
     from scripts.workspace_guard import WorkspaceError, assert_unchanged, capture
     from scripts.run_artifacts import redact
 else:
-    from .iteration_state import ManifestError, ManifestStore, RunStatus, create_manifest
+    from .github_client import GitHubClient, GitHubPolicyError, GitHubResponseError, GitHubTransportError
+    from .iteration_state import (
+        ManifestError, ManifestStore, RunStatus, create_manifest, create_provision_manifest,
+    )
+    from .provisioning import ProvisionPlanError, build_provision_plan, canonical_json
     from .rd_bot_client import ApiResponseError, ApiTransportError, ClientPolicyError, SafeRdBotClient
-    from .workflow import AutopilotWorkflow, WorkflowError
+    from .workflow import AutopilotWorkflow, ProjectProvisioningWorkflow, WorkflowError
     from .workspace_guard import WorkspaceError, assert_unchanged, capture
     from .run_artifacts import redact
 
@@ -67,6 +75,28 @@ def build_parser() -> argparse.ArgumentParser:
     _add_subcommand_common(report)
     verify = sub.add_parser("verify-workspace")
     _add_subcommand_common(verify)
+
+    provision_init = sub.add_parser("provision-init")
+    _add_subcommand_common(provision_init)
+    provision_init.add_argument("--run-id", required=True)
+    provision_init.add_argument("--mode", choices=("dry-run", "live-provision"), default="dry-run")
+    provision_init.add_argument("--idea", required=True)
+    provision_init.add_argument("--success-criterion", action="append", required=True, dest="success_criteria")
+
+    provision_plan = sub.add_parser("provision-plan")
+    _add_subcommand_common(provision_plan)
+    provision_plan.add_argument("--plan-file", required=True)
+    provision_plan.add_argument("--github-owner", default=None)
+
+    provision_confirm = sub.add_parser("provision-confirm")
+    _add_subcommand_common(provision_confirm)
+    provision_confirm.add_argument("--plan-sha256", required=True)
+
+    for name in ("provision-run", "provision-resume"):
+        command = sub.add_parser(name)
+        _add_subcommand_common(command)
+        command.add_argument("--live-provision", action="store_true")
+        command.add_argument("--confirm-plan-sha256", default=None)
     return parser
 
 
@@ -101,8 +131,19 @@ def main(argv: list[str] | None = None, environ: Mapping[str, str] | None = None
             return 0
         if args.command == "verify-workspace":
             return _verify_workspace(repo_root, run_dir)
+        if args.command == "provision-init":
+            return _provision_init(args, repo_root, run_dir)
+        if args.command == "provision-plan":
+            return _provision_plan(args, run_dir)
+        if args.command == "provision-confirm":
+            return _provision_confirm(args, run_dir)
+        if args.command in {"provision-run", "provision-resume"}:
+            return _provision_run(args, run_dir, env)
         return _run_workflow(args, repo_root, run_dir, env)
-    except (ApiResponseError, ApiTransportError, ClientPolicyError, ManifestError, WorkflowError, WorkspaceError, ValueError, OSError) as exc:
+    except (
+        ApiResponseError, ApiTransportError, ClientPolicyError, GitHubPolicyError, GitHubResponseError,
+        GitHubTransportError, ManifestError, ProvisionPlanError, WorkflowError, WorkspaceError, ValueError, OSError,
+    ) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 
@@ -126,6 +167,77 @@ def _init(args: argparse.Namespace, repo_root: Path, run_dir: Path) -> int:
     store.set_workspace_before(before)
     _print_json(store.load())
     return 0
+
+
+def _provision_init(args: argparse.Namespace, repo_root: Path, run_dir: Path) -> int:
+    if run_dir.name != args.run_id:
+        raise ValueError("run directory name must equal --run-id")
+    store = ManifestStore(run_dir)
+    manifest = create_provision_manifest(args.run_id, args.mode, args.idea, args.success_criteria)
+    before = capture(repo_root, exclude_paths=[run_dir])
+    store.initialize(manifest)
+    store.set_workspace_before(before)
+    _print_json(store.load())
+    return 0
+
+
+def _provision_plan(args: argparse.Namespace, run_dir: Path) -> int:
+    store = ManifestStore(run_dir)
+    manifest = store.load()
+    plan_path = Path(args.plan_file).expanduser()
+    if args.github_owner is not None:
+        plan = build_provision_plan(
+            run_id=manifest["runId"],
+            idea=manifest["idea"],
+            success_criteria=manifest["successCriteria"],
+            github_owner=args.github_owner,
+        )
+        plan_path.write_text(canonical_json(plan) + "\n", encoding="utf-8")
+    else:
+        plan = _read_json_file(str(plan_path))
+    digest = store.freeze_provision_plan(plan)
+    _print_json({"planSha256": digest, "status": store.load()["status"]})
+    return 0
+
+
+def _provision_confirm(args: argparse.Namespace, run_dir: Path) -> int:
+    store = ManifestStore(run_dir)
+    result = store.confirm_provision(args.plan_sha256)
+    _print_json({"planSha256": args.plan_sha256, "status": result["status"]})
+    return 0
+
+
+def _provision_run(args: argparse.Namespace, run_dir: Path, env: Mapping[str, str]) -> int:
+    store = ManifestStore(run_dir)
+    manifest = store.load()
+    if manifest.get("schemaVersion") != "rd-bot-autopilot/v2":
+        raise ValueError("provisioning commands require a provision-init run")
+    if manifest["mode"] == "dry-run":
+        workflow = ProjectProvisioningWorkflow(store, None, None, live_enabled=False)
+        result = workflow.provision() if args.command == "provision-run" else workflow.resume_provision()
+        _print_json(result)
+        return 0 if RunStatus(result["status"]) not in {RunStatus.WAITING_HUMAN, RunStatus.BOUNDED_STOP} else 1
+    if not args.live_provision:
+        raise ValueError(f"{args.command} requires --live-provision")
+    confirmation = manifest.get("provisioning", {}).get("confirmation")
+    if not isinstance(confirmation, dict):
+        raise ValueError(f"{args.command} requires a persisted provision-confirm receipt")
+    if args.confirm_plan_sha256 != confirmation.get("planSha256"):
+        raise ValueError(f"{args.command} requires --confirm-plan-sha256 equal to the confirmed plan digest")
+    if env.get("RD_BOT_AUTOPILOT_LIVE_PROVISION") != "1":
+        raise ValueError("RD_BOT_AUTOPILOT_LIVE_PROVISION=1 is required for live provisioning")
+    rd_client = SafeRdBotClient(
+        args.base_url,
+        mode="live-provision",
+        live_flag=True,
+        environ=env,
+        request_ledger=store.append_request_ledger,
+    )
+    github_client = GitHubClient()
+    workflow = ProjectProvisioningWorkflow(store, github_client, rd_client, live_enabled=True)
+    result = workflow.provision() if args.command == "provision-run" else workflow.resume_provision()
+    _print_json(result)
+    return 0 if RunStatus(result["status"]) not in {RunStatus.WAITING_HUMAN, RunStatus.BOUNDED_STOP} else 1
 
 
 def _run_workflow(args: argparse.Namespace, repo_root: Path, run_dir: Path, env: Mapping[str, str]) -> int:
