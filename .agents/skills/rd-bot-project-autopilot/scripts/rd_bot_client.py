@@ -24,7 +24,11 @@ MAX_MATERIAL_TOTAL_CHARS = 50_000
 MAX_REQUEST_BYTES = 256 * 1024
 _NUMERIC_ID_RE = re.compile(r"^[0-9]{1,64}$")
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,120}$")
+_RESOURCE_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,120}$")
 _REPO_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$")
+_GITHUB_OWNER_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")
+_GITHUB_REPOSITORY_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,99}$")
+_PROJECT_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,99}$")
 _CREDENTIAL_MARKER_RE = re.compile(r"(?:\bBearer\s+|\b(?:sk|key|token)[-_][A-Za-z0-9_-]{12,})", re.IGNORECASE)
 
 
@@ -62,6 +66,12 @@ def _require_id(value: str, label: str) -> str:
     return value
 
 
+def _require_resource_id(value: str, label: str) -> str:
+    if not isinstance(value, str) or not _RESOURCE_ID_RE.fullmatch(value):
+        raise ClientPolicyError(f"{label} contains unsafe characters")
+    return value
+
+
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *_args: Any, **_kwargs: Any) -> urllib.request.Request:
         raise ApiTransportError("redirect rejected", ambiguous=False)
@@ -71,6 +81,9 @@ class SafeRdBotClient:
     """Small typed client with an exact route allowlist and double live-write opt-in."""
 
     _GET_ROUTES = (
+        re.compile(r"^/knowledge-base$"),
+        re.compile(r"^/knowledge-base/[A-Za-z0-9._-]{1,120}$"),
+        re.compile(r"^/knowledge-base/[A-Za-z0-9._-]{1,120}/docs$"),
         re.compile(r"^/admin/projects$"),
         re.compile(r"^/admin/projects/[0-9]{1,64}$"),
         re.compile(r"^/admin/rd-tasks$"),
@@ -86,6 +99,9 @@ class SafeRdBotClient:
         re.compile(r"^/admin/evaluations/runs/[A-Za-z0-9._-]{1,120}/artifacts$"),
     )
     _POST_ROUTES = (
+        re.compile(r"^/knowledge-base$"),
+        re.compile(r"^/knowledge-base/[A-Za-z0-9._-]{1,120}/docs/write$"),
+        re.compile(r"^/admin/projects$"),
         re.compile(r"^/admin/rd-tasks/requirements$"),
         re.compile(r"^/admin/rd-tasks/[0-9]{1,64}/submit$"),
         re.compile(r"^/admin/rd-tasks/[0-9]{1,64}/retry$"),
@@ -115,8 +131,8 @@ class SafeRdBotClient:
             raise ClientPolicyError("base URL must not contain a path, query, or fragment")
         if not self._is_loopback(hostname):
             raise ClientPolicyError("base URL must point to a loopback host")
-        if mode not in {"dry-run", "live-test"}:
-            raise ClientPolicyError("mode must be dry-run or live-test")
+        if mode not in {"dry-run", "live-test", "live-provision"}:
+            raise ClientPolicyError("mode must be dry-run, live-test, or live-provision")
         if timeout_seconds <= 0:
             raise ClientPolicyError("timeout_seconds must be positive")
         self.base_url = base_url.rstrip("/")
@@ -144,14 +160,33 @@ class SafeRdBotClient:
             except ValueError:
                 return False
 
-    def _ensure_live_write(self) -> None:
-        if self.mode != "live-test" or not self.live_flag:
-            raise ClientPolicyError("POST requires live-test mode and --live-test")
-        if self.environ.get("RD_BOT_AUTOPILOT_LIVE_TEST") != "1":
-            raise ClientPolicyError("RD_BOT_AUTOPILOT_LIVE_TEST=1 is required")
+    def _ensure_live_write(self, *, provisioning: bool = False) -> None:
+        if self.mode == "live-test":
+            if provisioning:
+                raise ClientPolicyError("project provisioning requires live-provision mode and --live-provision")
+            if not self.live_flag:
+                raise ClientPolicyError("POST requires live-test mode and --live-test")
+            if self.environ.get("RD_BOT_AUTOPILOT_LIVE_TEST") != "1":
+                raise ClientPolicyError("RD_BOT_AUTOPILOT_LIVE_TEST=1 is required")
+            return
+        if self.mode == "live-provision":
+            if not self.live_flag:
+                raise ClientPolicyError("POST requires live-provision mode and --live-provision")
+            if self.environ.get("RD_BOT_AUTOPILOT_LIVE_PROVISION") != "1":
+                raise ClientPolicyError("RD_BOT_AUTOPILOT_LIVE_PROVISION=1 is required")
+            return
+        raise ClientPolicyError("POST requires live-test or live-provision mode")
 
     def preflight_write(self) -> None:
         self._ensure_live_write()
+
+    @staticmethod
+    def _is_provisioning_route(path: str) -> bool:
+        return (
+            path == "/knowledge-base"
+            or path == "/admin/projects"
+            or bool(re.fullmatch(r"/knowledge-base/[A-Za-z0-9._-]{1,120}/docs/write", path))
+        )
 
     @classmethod
     def _allowlisted(cls, method: str, path: str) -> bool:
@@ -172,7 +207,7 @@ class SafeRdBotClient:
         if not self._allowlisted(method, path):
             raise ClientPolicyError(f"path {path} is not allowlisted")
         if method == "POST":
-            self._ensure_live_write()
+            self._ensure_live_write(provisioning=self._is_provisioning_route(path))
             if payload is None or not isinstance(payload, Mapping):
                 raise ClientPolicyError("POST payload must be a JSON object")
             self._validate_route_payload(path, payload)
@@ -251,7 +286,13 @@ class SafeRdBotClient:
 
     @classmethod
     def _validate_route_payload(cls, path: str, payload: Mapping[str, Any]) -> None:
-        if path == "/admin/rd-tasks/requirements":
+        if path == "/knowledge-base":
+            cls._validate_knowledge_base(payload)
+        elif re.fullmatch(r"/knowledge-base/[A-Za-z0-9._-]{1,120}/docs/write", path):
+            cls._validate_knowledge_document(payload)
+        elif path == "/admin/projects":
+            cls._validate_project(payload)
+        elif path == "/admin/rd-tasks/requirements":
             cls._validate_requirement(payload)
         elif path.endswith("/submit"):
             if payload:
@@ -265,13 +306,68 @@ class SafeRdBotClient:
     def _validate_query(path: str, params: Mapping[str, Any] | None) -> None:
         if not params:
             return
-        allowed = {
-            "/admin/projects": {"keyword", "page", "pageSize"},
-            "/admin/rd-tasks": {"projectId", "taskType", "keyword", "page", "pageSize"},
-            "/admin/evaluations/runs": {"keyword", "datasetKind", "status", "page", "pageSize"},
-        }.get(path, set())
+        if re.fullmatch(r"/knowledge-base/[A-Za-z0-9._-]{1,120}/docs", path):
+            allowed = {"current", "size", "status", "keyword"}
+        else:
+            allowed = {
+                "/knowledge-base": {"name", "current", "size"},
+                "/admin/projects": {"keyword", "page", "pageSize"},
+                "/admin/rd-tasks": {"projectId", "taskType", "keyword", "page", "pageSize"},
+                "/admin/evaluations/runs": {"keyword", "datasetKind", "status", "page", "pageSize"},
+            }.get(path, set())
         if set(params) - allowed:
             raise ClientPolicyError(f"query parameters for {path} are not allowlisted")
+
+    def get_knowledge_base(self, knowledge_base_id: str) -> Any:
+        knowledge_base_id = _require_resource_id(knowledge_base_id, "knowledge_base_id")
+        return self.request("GET", f"/knowledge-base/{knowledge_base_id}")
+
+    def list_knowledge_bases(self, name: str | None = None, page: int = 1, page_size: int = 100) -> Any:
+        self._validate_page(page, page_size)
+        params: dict[str, Any] = {"current": page, "size": page_size}
+        if name:
+            params["name"] = self._bounded_text(name, "knowledge base name", 120)
+        return self.request("GET", "/knowledge-base", params=params)
+
+    def list_knowledge_documents(
+        self,
+        knowledge_base_id: str,
+        keyword: str | None = None,
+        page: int = 1,
+        page_size: int = 100,
+    ) -> Any:
+        knowledge_base_id = _require_resource_id(knowledge_base_id, "knowledge_base_id")
+        self._validate_page(page, page_size)
+        params: dict[str, Any] = {"current": page, "size": page_size}
+        if keyword:
+            params["keyword"] = self._bounded_text(keyword, "knowledge document keyword", 200)
+        return self.request("GET", f"/knowledge-base/{knowledge_base_id}/docs", params=params)
+
+    def create_knowledge_base(self, payload: Mapping[str, Any]) -> Any:
+        self._validate_knowledge_base(payload)
+        return self.request("POST", "/knowledge-base", payload)
+
+    def preflight_knowledge_base(self, payload: Mapping[str, Any]) -> None:
+        self._ensure_live_write(provisioning=True)
+        self._validate_knowledge_base(payload)
+
+    def write_knowledge_document(self, knowledge_base_id: str, payload: Mapping[str, Any]) -> Any:
+        knowledge_base_id = _require_resource_id(knowledge_base_id, "knowledge_base_id")
+        self._validate_knowledge_document(payload)
+        return self.request("POST", f"/knowledge-base/{knowledge_base_id}/docs/write", payload)
+
+    def preflight_knowledge_document(self, knowledge_base_id: str, payload: Mapping[str, Any]) -> None:
+        self._ensure_live_write(provisioning=True)
+        _require_resource_id(knowledge_base_id, "knowledge_base_id")
+        self._validate_knowledge_document(payload)
+
+    def create_project(self, payload: Mapping[str, Any]) -> Any:
+        self._validate_project(payload)
+        return self.request("POST", "/admin/projects", payload)
+
+    def preflight_project(self, payload: Mapping[str, Any]) -> None:
+        self._ensure_live_write(provisioning=True)
+        self._validate_project(payload)
 
     def get_project(self, project_id: str) -> Any:
         project_id = _require_id(project_id, "project_id")
@@ -402,6 +498,108 @@ class SafeRdBotClient:
             raise ClientPolicyError("page must be a positive integer")
         if isinstance(page_size, bool) or not isinstance(page_size, int) or not 1 <= page_size <= 100:
             raise ClientPolicyError("page_size must be between 1 and 100")
+
+    @staticmethod
+    def _reject_credentials(value: str, label: str) -> None:
+        if _CREDENTIAL_MARKER_RE.search(value):
+            raise ClientPolicyError(f"{label} must not contain credentials")
+
+    @staticmethod
+    def _require_autopilot_marker(value: str, kind: str, label: str) -> None:
+        pattern = re.compile(
+            rf"\[autopilot:[a-z0-9][a-z0-9-]{{1,80}}:{re.escape(kind)}:[0-9a-f]{{12}}\]"
+        )
+        if not pattern.search(value):
+            raise ClientPolicyError(f"{label} must contain the expected autopilot marker")
+
+    @classmethod
+    def _validate_knowledge_base(cls, payload: Mapping[str, Any]) -> None:
+        expected = {"name", "description"}
+        unknown = set(payload) - expected
+        if unknown:
+            raise ClientPolicyError("knowledge base payload contains unknown fields")
+        if set(payload) != expected:
+            raise ClientPolicyError("knowledge base payload schema is incomplete")
+        name = cls._bounded_text(payload.get("name"), "knowledge base name", 120)
+        description = cls._bounded_text(payload.get("description"), "knowledge base description", 500)
+        cls._reject_credentials(name, "knowledge base name")
+        cls._reject_credentials(description, "knowledge base description")
+        cls._require_autopilot_marker(description, "knowledge", "knowledge base description")
+
+    @classmethod
+    def _validate_knowledge_document(cls, payload: Mapping[str, Any]) -> None:
+        if "sourceUri" in payload:
+            raise ClientPolicyError("knowledge document sourceUri is not allowed")
+        expected = {
+            "sourceName", "knowledgeType", "mimeType", "content", "chunkingMode", "chunkSize", "overlapSize",
+        }
+        unknown = set(payload) - expected
+        if unknown:
+            raise ClientPolicyError("knowledge document payload contains unknown fields")
+        if set(payload) != expected:
+            raise ClientPolicyError("knowledge document payload schema is incomplete")
+        expected_type = {
+            "project-charter.md": ("PROJECT_CHARTER", "source-1"),
+            "delivery-brief.md": ("DELIVERY_BRIEF", "source-2"),
+        }.get(payload.get("sourceName"))
+        if expected_type is None:
+            raise ClientPolicyError("knowledge document sourceName is not allowed")
+        if payload.get("knowledgeType") != expected_type[0]:
+            raise ClientPolicyError("knowledge document knowledgeType does not match sourceName")
+        if payload.get("mimeType") != "text/markdown":
+            raise ClientPolicyError("knowledge document mimeType must be text/markdown")
+        if payload.get("chunkingMode") != "STRUCTURE_AWARE":
+            raise ClientPolicyError("knowledge document chunkingMode must be STRUCTURE_AWARE")
+        if payload.get("chunkSize") != 512 or payload.get("overlapSize") != 64:
+            raise ClientPolicyError("knowledge document chunk settings must be 512 and 64")
+        content = cls._bounded_text(payload.get("content"), "knowledge document content", 20_000)
+        cls._reject_credentials(content, "knowledge document content")
+        cls._require_autopilot_marker(content, expected_type[1], "knowledge document content")
+
+    @classmethod
+    def _validate_project(cls, payload: Mapping[str, Any]) -> None:
+        expected = {
+            "projectKey", "name", "description", "repositoryUrl", "repoOwner", "repoName",
+            "defaultBranch", "enabled", "knowledgeBaseId",
+        }
+        unknown = set(payload) - expected
+        if unknown:
+            raise ClientPolicyError("project payload contains unknown fields")
+        if set(payload) != expected:
+            raise ClientPolicyError("project payload schema is incomplete")
+        project_key = cls._bounded_text(payload.get("projectKey"), "projectKey", 100)
+        if not _PROJECT_KEY_RE.fullmatch(project_key) or not project_key.startswith("autopilot-"):
+            raise ClientPolicyError("projectKey must be an autopilot-safe key")
+        name = cls._bounded_text(payload.get("name"), "project name", 120)
+        description = cls._bounded_text(payload.get("description"), "project description", 2_000)
+        cls._reject_credentials(name, "project name")
+        cls._reject_credentials(description, "project description")
+        cls._require_autopilot_marker(description, "project", "project description")
+        owner = cls._bounded_text(payload.get("repoOwner"), "repoOwner", 39)
+        repository = cls._bounded_text(payload.get("repoName"), "repoName", 100)
+        if not _GITHUB_OWNER_RE.fullmatch(owner) or not _GITHUB_REPOSITORY_RE.fullmatch(repository):
+            raise ClientPolicyError("project repository identity contains unsafe characters")
+        repository_url = cls._bounded_text(payload.get("repositoryUrl"), "repositoryUrl", 2_000)
+        cls._validate_safe_uri(repository_url, "repositoryUrl")
+        parsed = urllib.parse.urlsplit(repository_url)
+        try:
+            has_explicit_port = parsed.port is not None
+        except ValueError as exc:
+            raise ClientPolicyError("repositoryUrl is invalid") from exc
+        if (
+            parsed.scheme != "https"
+            or parsed.hostname != "github.com"
+            or has_explicit_port
+            or parsed.query
+            or parsed.fragment
+            or parsed.path != f"/{owner}/{repository}.git"
+        ):
+            raise ClientPolicyError("repositoryUrl must be the exact GitHub repository URL")
+        if payload.get("defaultBranch") != "main":
+            raise ClientPolicyError("defaultBranch must be main")
+        if payload.get("enabled") is not True:
+            raise ClientPolicyError("project enabled must be true")
+        _require_resource_id(payload.get("knowledgeBaseId"), "knowledgeBaseId")
 
     @classmethod
     def _validate_requirement(cls, payload: Mapping[str, Any]) -> None:

@@ -116,6 +116,97 @@ class SafeRdBotClientTest(unittest.TestCase):
             self.client.create_requirement(payload)
         self.assertEqual(self.server.requests, [])
 
+    def test_live_provision_allows_only_exact_project_and_knowledge_payloads(self) -> None:
+        client = SafeRdBotClient(
+            self.server.base_url,
+            mode="live-provision",
+            live_flag=True,
+            environ={"RD_BOT_AUTOPILOT_LIVE_PROVISION": "1"},
+        )
+        knowledge_base = {
+            "name": "Habit tracker project knowledge",
+            "description": "[autopilot:autopilot-web-123:knowledge:123456abcdef] generated knowledge",
+        }
+        document = {
+            "sourceName": "project-charter.md",
+            "knowledgeType": "PROJECT_CHARTER",
+            "mimeType": "text/markdown",
+            "content": "# Charter\n\n[autopilot:autopilot-web-123:source-1:123456abcdef]",
+            "chunkingMode": "STRUCTURE_AWARE",
+            "chunkSize": 512,
+            "overlapSize": 64,
+        }
+        project = {
+            "projectKey": "autopilot-web-123",
+            "name": "Habit Tracker",
+            "description": "[autopilot:autopilot-web-123:project:123456abcdef] Build a habit tracker",
+            "repositoryUrl": "https://github.com/alice/habit-tracker-web-123.git",
+            "repoOwner": "alice",
+            "repoName": "habit-tracker-web-123",
+            "defaultBranch": "main",
+            "enabled": True,
+            "knowledgeBaseId": "kb-1",
+        }
+        self.server.queue_json({"id": "kb-1", "name": knowledge_base["name"]})
+        self.server.queue_json({"id": "doc-1", "sourceName": document["sourceName"]})
+        self.server.queue_json({"projectId": "7480000000000000000", **project})
+
+        client.create_knowledge_base(knowledge_base)
+        client.write_knowledge_document("kb-1", document)
+        client.create_project(project)
+
+        self.assertEqual(
+            ["/knowledge-base", "/knowledge-base/kb-1/docs/write", "/admin/projects"],
+            [request["path"] for request in self.server.requests],
+        )
+
+    def test_knowledge_list_uses_the_real_controller_query_contract(self) -> None:
+        self.server.queue_json({"records": []})
+        self.server.queue_json({"records": []})
+
+        self.client.list_knowledge_bases("habit", page=2, page_size=50)
+        self.client.list_knowledge_documents("kb-1", "brief", page=3, page_size=20)
+
+        self.assertEqual("current=2&size=50&name=habit", self.server.requests[0]["query"])
+        self.assertEqual("current=3&size=20&keyword=brief", self.server.requests[1]["query"])
+
+    def test_provision_rejects_external_document_unknown_project_field_and_old_env_opt_in(self) -> None:
+        with self.assertRaisesRegex(ClientPolicyError, "live-provision"):
+            self.client.create_knowledge_base({
+                "name": "Knowledge",
+                "description": "[autopilot:autopilot-web-123:knowledge:123456abcdef]",
+            })
+
+        old_env = SafeRdBotClient(
+            self.server.base_url,
+            mode="live-provision",
+            live_flag=True,
+            environ={"RD_BOT_AUTOPILOT_LIVE_TEST": "1"},
+        )
+        with self.assertRaisesRegex(ClientPolicyError, "LIVE_PROVISION"):
+            old_env.create_knowledge_base({"name": "Knowledge", "description": "[autopilot:autopilot-web-123:knowledge:123456abcdef]"})
+
+        client = SafeRdBotClient(
+            self.server.base_url,
+            mode="live-provision",
+            live_flag=True,
+            environ={"RD_BOT_AUTOPILOT_LIVE_PROVISION": "1"},
+        )
+        with self.assertRaisesRegex(ClientPolicyError, "unknown"):
+            client.create_project({"unexpected": True})
+        with self.assertRaisesRegex(ClientPolicyError, "source"):
+            client.write_knowledge_document("kb-1", {
+                "sourceName": "project-charter.md",
+                "knowledgeType": "PROJECT_CHARTER",
+                "mimeType": "text/markdown",
+                "content": "# Charter",
+                "sourceUri": "https://example.com/secret.md",
+                "chunkingMode": "STRUCTURE_AWARE",
+                "chunkSize": 512,
+                "overlapSize": 64,
+            })
+        self.assertEqual([], self.server.requests)
+
 
 if __name__ == "__main__":
     unittest.main()
