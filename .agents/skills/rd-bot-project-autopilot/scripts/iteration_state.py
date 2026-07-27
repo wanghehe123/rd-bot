@@ -12,9 +12,10 @@ from datetime import UTC, datetime
 from enum import Enum
 from functools import wraps
 from pathlib import Path
-from typing import Any, Callable, Iterator, TypeVar
+from typing import Any, Callable, Iterator, Mapping, TypeVar
 
 from .run_artifacts import redact
+from .provisioning import ProvisionPlanError, plan_digest, validate_provision_plan
 
 
 MAX_ITERATIONS = 2
@@ -30,6 +31,7 @@ _TOP_LEVEL_KEYS = {
     "workspaceBefore", "workspaceAfter", "workspaceVerified", "requestLedger", "createdAt", "updatedAt",
 }
 _LEGACY_V1_TOP_LEVEL_KEYS = _TOP_LEVEL_KEYS - {"workspaceVerified"}
+_V2_TOP_LEVEL_KEYS = _TOP_LEVEL_KEYS | {"provisioning"}
 _PLAN_KEYS = {
     "title", "goal", "nonGoals", "expectedResult", "acceptanceCriteria", "materials", "whyNow",
     "priority", "repositoryUrl", "repoOwner", "repoName", "baseBranch", "tokenBudgetOverride",
@@ -56,10 +58,20 @@ class RunStatus(str, Enum):
     WAITING_HUMAN = "WAITING_HUMAN"
     COMPLETED = "COMPLETED"
     BOUNDED_STOP = "BOUNDED_STOP"
+    PLAN_READY = "PLAN_READY"
+    LIVE_CONFIRMED = "LIVE_CONFIRMED"
+    GH_INTENT = "GH_INTENT"
+    GH_BOUND = "GH_BOUND"
+    KB_INTENT = "KB_INTENT"
+    KB_BOUND = "KB_BOUND"
+    SOURCES_INTENT = "SOURCES_INTENT"
+    SOURCES_BOUND = "SOURCES_BOUND"
+    RD_PROJECT_INTENT = "RD_PROJECT_INTENT"
+    RD_PROJECT_BOUND = "RD_PROJECT_BOUND"
 
 
 ALLOWED_TRANSITIONS: dict[RunStatus, set[RunStatus]] = {
-    RunStatus.DRAFT: {RunStatus.PLANNING, RunStatus.BOUNDED_STOP},
+    RunStatus.DRAFT: {RunStatus.PLANNING, RunStatus.PLAN_READY, RunStatus.BOUNDED_STOP},
     RunStatus.PLANNING: {RunStatus.READY, RunStatus.BOUNDED_STOP, RunStatus.WAITING_HUMAN},
     RunStatus.READY: {RunStatus.DRY_RUN_COMPLETED, RunStatus.DISPATCH_INTENT, RunStatus.BOUNDED_STOP, RunStatus.WAITING_HUMAN},
     RunStatus.DISPATCH_INTENT: {RunStatus.TASK_BOUND, RunStatus.WAITING_HUMAN},
@@ -79,6 +91,16 @@ ALLOWED_TRANSITIONS: dict[RunStatus, set[RunStatus]] = {
         RunStatus.BOUNDED_STOP,
         RunStatus.WAITING_HUMAN,
     },
+    RunStatus.PLAN_READY: {RunStatus.DRY_RUN_COMPLETED, RunStatus.LIVE_CONFIRMED, RunStatus.WAITING_HUMAN, RunStatus.BOUNDED_STOP},
+    RunStatus.LIVE_CONFIRMED: {RunStatus.GH_INTENT, RunStatus.WAITING_HUMAN, RunStatus.BOUNDED_STOP},
+    RunStatus.GH_INTENT: {RunStatus.GH_BOUND, RunStatus.WAITING_HUMAN, RunStatus.BOUNDED_STOP},
+    RunStatus.GH_BOUND: {RunStatus.KB_INTENT, RunStatus.WAITING_HUMAN, RunStatus.BOUNDED_STOP},
+    RunStatus.KB_INTENT: {RunStatus.KB_BOUND, RunStatus.WAITING_HUMAN, RunStatus.BOUNDED_STOP},
+    RunStatus.KB_BOUND: {RunStatus.SOURCES_INTENT, RunStatus.WAITING_HUMAN, RunStatus.BOUNDED_STOP},
+    RunStatus.SOURCES_INTENT: {RunStatus.SOURCES_BOUND, RunStatus.WAITING_HUMAN, RunStatus.BOUNDED_STOP},
+    RunStatus.SOURCES_BOUND: {RunStatus.RD_PROJECT_INTENT, RunStatus.WAITING_HUMAN, RunStatus.BOUNDED_STOP},
+    RunStatus.RD_PROJECT_INTENT: {RunStatus.RD_PROJECT_BOUND, RunStatus.WAITING_HUMAN, RunStatus.BOUNDED_STOP},
+    RunStatus.RD_PROJECT_BOUND: {RunStatus.READY, RunStatus.WAITING_HUMAN, RunStatus.BOUNDED_STOP},
     RunStatus.WAITING_HUMAN: {
         RunStatus.PLANNING,
         RunStatus.READY,
@@ -90,8 +112,43 @@ ALLOWED_TRANSITIONS: dict[RunStatus, set[RunStatus]] = {
         RunStatus.EVALUATION_INTENT,
         RunStatus.EVALUATING,
         RunStatus.LEARNING,
+        RunStatus.PLAN_READY,
+        RunStatus.LIVE_CONFIRMED,
+        RunStatus.GH_INTENT,
+        RunStatus.GH_BOUND,
+        RunStatus.KB_INTENT,
+        RunStatus.KB_BOUND,
+        RunStatus.SOURCES_INTENT,
+        RunStatus.SOURCES_BOUND,
+        RunStatus.RD_PROJECT_INTENT,
+        RunStatus.RD_PROJECT_BOUND,
         RunStatus.BOUNDED_STOP,
     },
+}
+
+_PROVISION_STATUS_SET = {
+    RunStatus.PLAN_READY,
+    RunStatus.LIVE_CONFIRMED,
+    RunStatus.GH_INTENT,
+    RunStatus.GH_BOUND,
+    RunStatus.KB_INTENT,
+    RunStatus.KB_BOUND,
+    RunStatus.SOURCES_INTENT,
+    RunStatus.SOURCES_BOUND,
+    RunStatus.RD_PROJECT_INTENT,
+    RunStatus.RD_PROJECT_BOUND,
+}
+_PROVISION_INTENT_STATES = {
+    "github": (RunStatus.LIVE_CONFIRMED, RunStatus.GH_INTENT),
+    "knowledgeBase": (RunStatus.GH_BOUND, RunStatus.KB_INTENT),
+    "sources": (RunStatus.KB_BOUND, RunStatus.SOURCES_INTENT),
+    "project": (RunStatus.SOURCES_BOUND, RunStatus.RD_PROJECT_INTENT),
+}
+_PROVISION_BOUND_STATES = {
+    "github": (RunStatus.GH_INTENT, RunStatus.GH_BOUND),
+    "knowledgeBase": (RunStatus.KB_INTENT, RunStatus.KB_BOUND),
+    "sources": (RunStatus.SOURCES_INTENT, RunStatus.SOURCES_BOUND),
+    "project": (RunStatus.RD_PROJECT_INTENT, RunStatus.RD_PROJECT_BOUND),
 }
 
 TERMINAL_TASK_STATES = {
@@ -310,6 +367,72 @@ def create_manifest(
     }
 
 
+def create_provision_manifest(
+    run_id: str,
+    mode: str,
+    idea: str,
+    success_criteria: list[str],
+) -> dict[str, Any]:
+    """Create a v2 run before any GitHub or RD-Bot project exists."""
+
+    if not RUN_ID_PATTERN.fullmatch(run_id):
+        raise ManifestError("run_id must match autopilot-<lowercase-slug>")
+    if mode not in {"dry-run", "live-provision"}:
+        raise ManifestError("provision mode must be dry-run or live-provision")
+    clean_idea = _safe_text(idea, 4_000)
+    clean_criteria = [_safe_text(item, 1_000) for item in success_criteria if str(item).strip()]
+    if not clean_idea:
+        raise ManifestError("idea must not be empty")
+    if not clean_criteria:
+        raise ManifestError("success_criteria must contain one item")
+    now = utc_now()
+    return {
+        "schemaVersion": "rd-bot-autopilot/v2",
+        "runId": run_id,
+        "mode": mode,
+        "projectId": "",
+        "idea": clean_idea,
+        "successCriteria": clean_criteria[:6],
+        "status": RunStatus.DRAFT.value,
+        "limits": {
+            "maxIterations": MAX_ITERATIONS,
+            "maxActiveTasks": MAX_ACTIVE_TASKS,
+            "maxRetriesPerTask": MAX_RETRIES_PER_TASK,
+            "maxElapsedMinutes": MAX_ELAPSED_MINUTES,
+            "maxTokenBudget": MAX_TOKEN_BUDGET,
+        },
+        "usage": {
+            "iterations": 0,
+            "tasksCreated": 0,
+            "retries": 0,
+            "elapsedMinutes": 0,
+            "observedTokens": 0,
+        },
+        "iterations": [],
+        "pendingApproval": None,
+        "stopReason": "",
+        "lastTransitionReason": "created",
+        "workspaceBefore": None,
+        "workspaceAfter": None,
+        "workspaceVerified": False,
+        "requestLedger": [],
+        "provisioning": {
+            "plan": None,
+            "planSha256": "",
+            "confirmation": None,
+            "intents": {},
+            "resources": {
+                "github": None,
+                "knowledgeBase": None,
+                "sources": [],
+                "project": None,
+            },
+        },
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+
 def _active_task_count(manifest: dict[str, Any]) -> int:
     count = 0
     for iteration in manifest.get("iterations", []):
@@ -326,6 +449,16 @@ def _iteration(manifest: dict[str, Any], iteration_no: int) -> dict[str, Any]:
 
 
 def _validate_manifest(manifest: dict[str, Any]) -> None:
+    if not isinstance(manifest, dict):
+        raise ManifestError("manifest root must be an object")
+    schema_version = manifest.get("schemaVersion")
+    if schema_version == "rd-bot-autopilot/v2":
+        _validate_v2_manifest(manifest)
+        return
+    _validate_v1_manifest(manifest)
+
+
+def _validate_v1_manifest(manifest: dict[str, Any]) -> None:
     if set(manifest) != _TOP_LEVEL_KEYS:
         raise ManifestError("manifest top-level fields are incomplete or unknown")
     if manifest.get("schemaVersion") != "rd-bot-autopilot/v1":
@@ -469,6 +602,285 @@ def _validate_manifest(manifest: dict[str, Any]) -> None:
             raise ManifestError("completed run is missing evaluation or workspace verification")
     if _active_task_count(manifest) > MAX_ACTIVE_TASKS:
         raise ManifestError("more than one active task")
+
+
+def _validate_v2_manifest(manifest: dict[str, Any]) -> None:
+    if set(manifest) != _V2_TOP_LEVEL_KEYS:
+        raise ManifestError("v2 manifest top-level fields are incomplete or unknown")
+    if not RUN_ID_PATTERN.fullmatch(str(manifest.get("runId", ""))):
+        raise ManifestError("invalid runId")
+    if manifest.get("mode") not in {"dry-run", "live-provision"}:
+        raise ManifestError("invalid provision mode")
+    project_id = manifest.get("projectId")
+    if not isinstance(project_id, str) or (project_id and not PROJECT_ID_PATTERN.fullmatch(project_id)):
+        raise ManifestError("invalid provision projectId")
+    if not isinstance(manifest.get("idea"), str) or not 1 <= len(manifest["idea"]) <= 4_000:
+        raise ManifestError("idea is invalid")
+    criteria = manifest.get("successCriteria")
+    if not isinstance(criteria, list) or not 1 <= len(criteria) <= 6 or any(
+        not isinstance(item, str) or not item.strip() or len(item) > 1_000 for item in criteria
+    ):
+        raise ManifestError("successCriteria is invalid")
+    for key in ("createdAt", "updatedAt"):
+        value = manifest.get(key)
+        if not isinstance(value, str) or not 1 <= len(value) <= 64:
+            raise ManifestError(f"{key} is invalid")
+        try:
+            datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ManifestError(f"{key} is not an ISO timestamp") from exc
+    try:
+        status = RunStatus(str(manifest["status"]))
+    except (KeyError, ValueError) as exc:
+        raise ManifestError("unknown manifest status") from exc
+    _validate_limits_and_usage(manifest)
+    _validate_common_artifacts(manifest)
+
+    provisioning = manifest.get("provisioning")
+    if not isinstance(provisioning, dict) or set(provisioning) != {
+        "plan", "planSha256", "confirmation", "intents", "resources",
+    }:
+        raise ManifestError("provisioning fields are incomplete or unknown")
+    plan = provisioning.get("plan")
+    plan_sha256 = provisioning.get("planSha256")
+    if plan is None:
+        if plan_sha256 != "":
+            raise ManifestError("unfrozen provision plan cannot have a digest")
+    else:
+        try:
+            clean_plan = validate_provision_plan(plan)
+        except ProvisionPlanError as exc:
+            raise ManifestError(f"invalid provision plan: {exc}") from exc
+        if clean_plan != plan:
+            raise ManifestError("provision plan is not canonical")
+        if clean_plan.get("runId") != manifest["runId"] or clean_plan.get("idea") != manifest["idea"]:
+            raise ManifestError("provision plan identity does not match manifest")
+        if clean_plan.get("successCriteria") != criteria:
+            raise ManifestError("provision plan criteria do not match manifest")
+        if plan_sha256 != plan_digest(clean_plan) or not isinstance(plan_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", plan_sha256):
+            raise ManifestError("provision plan digest is invalid")
+    confirmation = provisioning.get("confirmation")
+    if confirmation is not None:
+        if not isinstance(confirmation, dict) or set(confirmation) != {"planSha256", "confirmedAt"}:
+            raise ManifestError("provision confirmation is invalid")
+        if confirmation.get("planSha256") != plan_sha256:
+            raise ManifestError("provision confirmation digest does not match plan")
+        if not isinstance(confirmation.get("confirmedAt"), str):
+            raise ManifestError("provision confirmation timestamp is invalid")
+    intents = provisioning.get("intents")
+    if not isinstance(intents, dict) or set(intents) - set(_PROVISION_INTENT_STATES):
+        raise ManifestError("provision intents are invalid")
+    for resource, intent in intents.items():
+        if not isinstance(intent, dict) or set(intent) != {"request", "requestSha256", "createdAt"}:
+            raise ManifestError("provision intent is invalid")
+        request = intent.get("request")
+        if not isinstance(request, (dict, list)) or len(json.dumps(request, ensure_ascii=False)) > 100_000:
+            raise ManifestError("provision intent request is invalid")
+        if intent.get("requestSha256") != request_fingerprint(request):
+            raise ManifestError("provision intent fingerprint does not match request")
+        if not isinstance(intent.get("createdAt"), str) or len(intent["createdAt"]) > 64:
+            raise ManifestError("provision intent timestamp is invalid")
+        if resource == "github" and isinstance(request, dict) and plan is not None and request != plan["repository"]:
+            raise ManifestError("GitHub intent does not match the frozen plan")
+        if resource == "knowledgeBase" and isinstance(request, dict) and plan is not None and request != plan["knowledgeBase"]:
+            raise ManifestError("knowledge base intent does not match the frozen plan")
+        if resource == "sources" and isinstance(request, list) and plan is not None and request != plan["documents"]:
+            raise ManifestError("source intent does not match the frozen plan")
+    resources = provisioning.get("resources")
+    if not isinstance(resources, dict) or set(resources) != {"github", "knowledgeBase", "sources", "project"}:
+        raise ManifestError("provision resources are invalid")
+    _validate_v2_resources(resources, manifest["runId"])
+
+    if status == RunStatus.DRAFT and plan is not None:
+        raise ManifestError("DRAFT provision run cannot have a frozen plan")
+    if status in _PROVISION_STATUS_SET | {RunStatus.READY, RunStatus.DRY_RUN_COMPLETED} and plan is None:
+        raise ManifestError("provisioning state requires a frozen plan")
+    if status in {
+        RunStatus.LIVE_CONFIRMED, RunStatus.GH_INTENT, RunStatus.GH_BOUND, RunStatus.KB_INTENT,
+        RunStatus.KB_BOUND, RunStatus.SOURCES_INTENT, RunStatus.SOURCES_BOUND,
+        RunStatus.RD_PROJECT_INTENT, RunStatus.RD_PROJECT_BOUND,
+    } and confirmation is None:
+        raise ManifestError("live provisioning state requires exact plan confirmation")
+    _validate_provision_status_resources(status, resources, project_id)
+    _validate_v2_iterations(manifest, status)
+    if status == RunStatus.DRY_RUN_COMPLETED and manifest.get("mode") != "dry-run":
+        raise ManifestError("live provisioning cannot be dry-run completed")
+
+
+def _validate_limits_and_usage(manifest: Mapping[str, Any]) -> None:
+    limits = manifest.get("limits")
+    if not isinstance(limits, dict):
+        raise ManifestError("limits must be an object")
+    if isinstance(limits.get("maxIterations"), bool) or not isinstance(limits.get("maxIterations"), int) or not 1 <= limits["maxIterations"] <= MAX_ITERATIONS or limits.get("maxActiveTasks") != 1:
+        raise ManifestError("hard iteration limits exceeded")
+    if isinstance(limits.get("maxRetriesPerTask"), bool) or not isinstance(limits.get("maxRetriesPerTask"), int) or not 0 <= limits["maxRetriesPerTask"] <= MAX_RETRIES_PER_TASK:
+        raise ManifestError("hard retry limit exceeded")
+    if isinstance(limits.get("maxElapsedMinutes"), bool) or not isinstance(limits.get("maxElapsedMinutes"), int) or not 1 <= limits["maxElapsedMinutes"] <= MAX_ELAPSED_MINUTES:
+        raise ManifestError("hard elapsed limit exceeded")
+    if isinstance(limits.get("maxTokenBudget"), bool) or not isinstance(limits.get("maxTokenBudget"), int) or not 1 <= limits["maxTokenBudget"] <= MAX_TOKEN_BUDGET:
+        raise ManifestError("hard token limit exceeded")
+    usage = manifest.get("usage")
+    if not isinstance(usage, dict):
+        raise ManifestError("usage must be an object")
+    for key in ("iterations", "tasksCreated", "retries", "elapsedMinutes", "observedTokens"):
+        value = usage.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ManifestError(f"usage.{key} must be a non-negative integer")
+    if usage["iterations"] > limits["maxIterations"] or usage["tasksCreated"] > limits["maxIterations"] or usage["retries"] > limits["maxRetriesPerTask"] * limits["maxIterations"]:
+        raise ManifestError("usage exceeds hard iteration limits")
+    if usage["elapsedMinutes"] > limits["maxElapsedMinutes"] or usage["observedTokens"] > limits["maxTokenBudget"]:
+        raise ManifestError("usage exceeds hard budget")
+    if "budgetExceeded" in usage and not isinstance(usage["budgetExceeded"], bool):
+        raise ManifestError("usage.budgetExceeded must be boolean")
+
+
+def _validate_common_artifacts(manifest: Mapping[str, Any]) -> None:
+    for key in ("stopReason", "lastTransitionReason"):
+        if not isinstance(manifest.get(key), str) or len(manifest[key]) > 1_000:
+            raise ManifestError(f"{key} is invalid")
+    ledger = manifest.get("requestLedger")
+    if not isinstance(ledger, list) or len(ledger) > 500:
+        raise ManifestError("requestLedger is unbounded")
+    for entry in ledger:
+        if not isinstance(entry, dict) or set(entry) != {"method", "path", "requestSha256", "status", "timestamp"}:
+            raise ManifestError("requestLedger entry is invalid")
+        if any(not isinstance(entry[key], str) or len(entry[key]) > 2_000 for key in ("method", "path", "requestSha256", "timestamp")):
+            raise ManifestError("requestLedger entry is unbounded")
+        if not isinstance(entry["status"], int) or isinstance(entry["status"], bool) or not 0 <= entry["status"] <= 599:
+            raise ManifestError("requestLedger status is invalid")
+    if not isinstance(manifest.get("workspaceVerified"), bool):
+        raise ManifestError("workspaceVerified must be boolean")
+    for key in ("workspaceBefore", "workspaceAfter"):
+        if manifest.get(key) is not None:
+            _validate_fingerprint(manifest[key], key)
+    if manifest.get("workspaceVerified") is True and manifest.get("workspaceBefore") != manifest.get("workspaceAfter"):
+        raise ManifestError("workspaceVerified requires equal before and after fingerprints")
+    pending = manifest.get("pendingApproval")
+    if pending is not None and (not isinstance(pending, dict) or len(json.dumps(pending, ensure_ascii=False)) > 20_000):
+        raise ManifestError("pendingApproval is unbounded")
+    if isinstance(pending, dict) and "resumeStatus" in pending:
+        try:
+            target = RunStatus(str(pending["resumeStatus"]))
+        except ValueError as exc:
+            raise ManifestError("pendingApproval resumeStatus is invalid") from exc
+        if target in {RunStatus.COMPLETED, RunStatus.BOUNDED_STOP, RunStatus.DRY_RUN_COMPLETED, RunStatus.WAITING_HUMAN} or target not in ALLOWED_TRANSITIONS[RunStatus.WAITING_HUMAN]:
+            raise ManifestError("pendingApproval resumeStatus is not resumable")
+
+
+def _validate_v2_resources(resources: Mapping[str, Any], run_id: str) -> None:
+    github = resources.get("github")
+    if github is not None:
+        _validate_resource_mapping(github, {"owner", "name", "url", "defaultBranch", "marker"}, "github")
+        _require_resource_text(github, "owner", 39)
+        _require_resource_text(github, "name", 100)
+        _require_resource_text(github, "url", 2_000)
+        _require_resource_text(github, "defaultBranch", 120)
+        _require_resource_marker(github, run_id, "github")
+    knowledge = resources.get("knowledgeBase")
+    if knowledge is not None:
+        _validate_resource_mapping(knowledge, {"id", "name", "marker"}, "knowledge base")
+        _require_resource_text(knowledge, "id", 120)
+        _require_resource_text(knowledge, "name", 120)
+        _require_resource_marker(knowledge, run_id, "knowledge")
+    sources = resources.get("sources")
+    if not isinstance(sources, list) or len(sources) > 2:
+        raise ManifestError("source resources are invalid")
+    for index, source in enumerate(sources, start=1):
+        _validate_resource_mapping(source, {"id", "sourceName", "sha256", "marker"}, "source")
+        _require_resource_text(source, "id", 120)
+        _require_resource_text(source, "sourceName", 200)
+        if not isinstance(source.get("sha256"), str) or not re.fullmatch(r"[0-9a-f]{64}", source["sha256"]):
+            raise ManifestError("source hash is invalid")
+        _require_resource_marker(source, run_id, f"source-{index}")
+    project = resources.get("project")
+    if project is not None:
+        _validate_resource_mapping(project, {"projectId", "projectKey", "name", "repositoryUrl", "repoOwner", "repoName", "defaultBranch", "knowledgeBaseId", "marker"}, "project")
+        if not isinstance(project.get("projectId"), str) or not PROJECT_ID_PATTERN.fullmatch(project["projectId"]):
+            raise ManifestError("project resource ID is invalid")
+        for key, maximum in (("projectKey", 100), ("name", 120), ("repositoryUrl", 2_000), ("repoOwner", 39), ("repoName", 100), ("defaultBranch", 120), ("knowledgeBaseId", 120)):
+            _require_resource_text(project, key, maximum)
+        _require_resource_marker(project, run_id, "project")
+
+
+def _validate_resource_mapping(value: Any, expected: set[str], label: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping) or set(value) != expected:
+        raise ManifestError(f"{label} resource fields are invalid")
+    return value
+
+
+def _require_resource_text(value: Mapping[str, Any], key: str, maximum: int) -> str:
+    candidate = value.get(key)
+    if not isinstance(candidate, str) or not candidate.strip() or len(candidate) > maximum:
+        raise ManifestError(f"resource {key} is invalid")
+    return candidate
+
+
+def _require_resource_marker(value: Mapping[str, Any], run_id: str, kind: str) -> None:
+    marker = value.get("marker")
+    if not isinstance(marker, str) or not re.fullmatch(rf"\[autopilot:{re.escape(run_id)}:{re.escape(kind)}:[0-9a-f]{{12}}\]", marker):
+        raise ManifestError("resource marker is invalid")
+
+
+def _validate_provision_status_resources(status: RunStatus, resources: Mapping[str, Any], project_id: str) -> None:
+    required = {
+        RunStatus.GH_BOUND: ("github",),
+        RunStatus.KB_INTENT: ("github",),
+        RunStatus.KB_BOUND: ("github", "knowledgeBase"),
+        RunStatus.SOURCES_INTENT: ("github", "knowledgeBase"),
+        RunStatus.SOURCES_BOUND: ("github", "knowledgeBase", "sources"),
+        RunStatus.RD_PROJECT_INTENT: ("github", "knowledgeBase", "sources"),
+        RunStatus.RD_PROJECT_BOUND: ("github", "knowledgeBase", "sources", "project"),
+        RunStatus.READY: ("github", "knowledgeBase", "sources", "project"),
+    }
+    for key in required.get(status, ()):
+        value = resources.get(key)
+        if value in (None, []):
+            raise ManifestError(f"provision status {status.value} requires {key}")
+    if status in {RunStatus.RD_PROJECT_BOUND, RunStatus.READY}:
+        project = resources.get("project")
+        if not isinstance(project, Mapping) or project_id != project.get("projectId"):
+            raise ManifestError("bound project must match manifest projectId")
+
+
+def _validate_v2_iterations(manifest: Mapping[str, Any], status: RunStatus) -> None:
+    iterations = manifest.get("iterations")
+    if not isinstance(iterations, list) or len(iterations) > MAX_ITERATIONS:
+        raise ManifestError("iterations exceed hard limit")
+    if not iterations:
+        return
+    if not manifest.get("projectId"):
+        raise ManifestError("iterations require a bound project")
+    for item in iterations:
+        if not isinstance(item, dict):
+            raise ManifestError("iteration must be an object")
+        request = item.get("request")
+        if request is not None:
+            if item.get("requestFingerprint") != request_fingerprint(request):
+                raise ManifestError("request fingerprint does not match request")
+            _validate_persisted_request(request, str(manifest["projectId"]))
+    if _active_task_count(dict(manifest)) > MAX_ACTIVE_TASKS:
+        raise ManifestError("more than one active task")
+
+
+def _project_intent_matches_plan(
+    request: Mapping[str, Any],
+    plan: Mapping[str, Any],
+    resources: Mapping[str, Any],
+) -> bool:
+    expected_keys = {
+        "projectKey", "name", "description", "repositoryUrl", "repoOwner", "repoName",
+        "defaultBranch", "enabled", "knowledgeBaseId",
+    }
+    if set(request) != expected_keys:
+        return False
+    project = plan.get("project")
+    knowledge_base = resources.get("knowledgeBase")
+    if not isinstance(project, Mapping) or not isinstance(knowledge_base, Mapping):
+        return False
+    for key in ("projectKey", "name", "description", "repositoryUrl", "repoOwner", "repoName", "defaultBranch", "enabled"):
+        if request.get(key) != project.get(key):
+            return False
+    return request.get("knowledgeBaseId") == knowledge_base.get("id")
 
 
 def _validate_persisted_request(request: Any, project_id: str) -> None:
@@ -622,6 +1034,10 @@ class ManifestStore:
     def transition(self, target: RunStatus, reason: str) -> dict[str, Any]:
         manifest = self.load()
         current = RunStatus(manifest["status"])
+        if manifest.get("schemaVersion") == "rd-bot-autopilot/v2" and (
+            target in _PROVISION_STATUS_SET or (current in _PROVISION_STATUS_SET and target != RunStatus.BOUNDED_STOP)
+        ):
+            raise ManifestError("provisioning transitions require the dedicated provisioning methods")
         if target == RunStatus.COMPLETED:
             raise ManifestError("COMPLETED requires record_decision with evaluation and workspace guards")
         if target not in ALLOWED_TRANSITIONS.get(current, set()):
@@ -631,6 +1047,144 @@ class ManifestStore:
         manifest["lastTransitionReason"] = clean_reason
         if target in {RunStatus.WAITING_HUMAN, RunStatus.BOUNDED_STOP, RunStatus.COMPLETED}:
             manifest["stopReason"] = clean_reason
+        self._write(manifest)
+        return manifest
+
+    @_locked_mutation
+    def freeze_provision_plan(self, plan: Mapping[str, Any]) -> str:
+        manifest = self.load()
+        if manifest.get("schemaVersion") != "rd-bot-autopilot/v2":
+            raise ManifestError("provision plan requires a v2 manifest")
+        if RunStatus(manifest["status"]) != RunStatus.DRAFT:
+            raise ManifestError("provision plan can only be frozen from DRAFT")
+        try:
+            clean_plan = validate_provision_plan(plan)
+        except ProvisionPlanError as exc:
+            raise ManifestError(f"invalid provision plan: {exc}") from exc
+        if clean_plan["runId"] != manifest["runId"] or clean_plan["idea"] != manifest["idea"]:
+            raise ManifestError("provision plan identity does not match manifest")
+        if clean_plan["successCriteria"] != manifest["successCriteria"]:
+            raise ManifestError("provision plan criteria do not match manifest")
+        digest = plan_digest(clean_plan)
+        manifest["provisioning"]["plan"] = clean_plan
+        manifest["provisioning"]["planSha256"] = digest
+        manifest["status"] = RunStatus.PLAN_READY.value
+        manifest["lastTransitionReason"] = "canonical provision plan frozen"
+        self._write(manifest)
+        return digest
+
+    @_locked_mutation
+    def confirm_provision(self, digest: str) -> dict[str, Any]:
+        manifest = self.load()
+        if manifest.get("schemaVersion") != "rd-bot-autopilot/v2":
+            raise ManifestError("provision confirmation requires a v2 manifest")
+        if manifest.get("mode") != "live-provision":
+            raise ManifestError("only live-provision runs may be confirmed")
+        if RunStatus(manifest["status"]) != RunStatus.PLAN_READY:
+            raise ManifestError("provision confirmation requires PLAN_READY")
+        expected = manifest["provisioning"].get("planSha256")
+        if not isinstance(digest, str) or digest != expected:
+            raise ManifestError("provision confirmation digest does not match the frozen plan")
+        manifest["provisioning"]["confirmation"] = {"planSha256": digest, "confirmedAt": utc_now()}
+        manifest["status"] = RunStatus.LIVE_CONFIRMED.value
+        manifest["lastTransitionReason"] = "exact provision plan digest confirmed"
+        self._write(manifest)
+        return manifest
+
+    @_locked_mutation
+    def record_provision_intent(self, resource: str, request: Mapping[str, Any] | list[dict[str, Any]]) -> dict[str, Any]:
+        manifest = self.load()
+        if manifest.get("schemaVersion") != "rd-bot-autopilot/v2":
+            raise ManifestError("provision intent requires a v2 manifest")
+        if resource not in _PROVISION_INTENT_STATES:
+            raise ManifestError("unknown provision resource")
+        required_status, target_status = _PROVISION_INTENT_STATES[resource]
+        if RunStatus(manifest["status"]) != required_status:
+            raise ManifestError(f"{RunStatus(manifest['status']).value} cannot record {resource} provision intent")
+        if resource in manifest["provisioning"]["intents"]:
+            raise ManifestError("provision intent already exists; resume or request human review")
+        plan = manifest["provisioning"].get("plan")
+        if not isinstance(plan, dict):
+            raise ManifestError("provision intent requires a frozen plan")
+        if resource == "github" and request != plan["repository"]:
+            raise ManifestError("GitHub intent must exactly match the frozen plan")
+        if resource == "knowledgeBase" and request != plan["knowledgeBase"]:
+            raise ManifestError("knowledge base intent must exactly match the frozen plan")
+        if resource == "sources" and request != plan["documents"]:
+            raise ManifestError("source intent must exactly match the frozen plan")
+        if resource == "project":
+            if not isinstance(request, Mapping) or not _project_intent_matches_plan(request, plan, manifest["provisioning"]["resources"]):
+                raise ManifestError("project intent must bind the frozen repository and knowledge base")
+        safe_request = redact(copy.deepcopy(request), max_chars=20_000)
+        if safe_request != request:
+            raise ManifestError("provision intent contains redactable secret material")
+        try:
+            json.dumps(safe_request, ensure_ascii=False)
+        except (TypeError, ValueError) as exc:
+            raise ManifestError("provision intent is not JSON serializable") from exc
+        manifest["provisioning"]["intents"][resource] = {
+            "request": safe_request,
+            "requestSha256": request_fingerprint(safe_request),
+            "createdAt": utc_now(),
+        }
+        manifest["status"] = target_status.value
+        manifest["lastTransitionReason"] = f"{resource} provision intent persisted before remote write"
+        self._write(manifest)
+        return copy.deepcopy(manifest["provisioning"]["intents"][resource])
+
+    @_locked_mutation
+    def bind_provision_resource(self, resource: str, resource_view: Mapping[str, Any] | list[dict[str, Any]]) -> dict[str, Any]:
+        manifest = self.load()
+        if manifest.get("schemaVersion") != "rd-bot-autopilot/v2":
+            raise ManifestError("provision resource binding requires a v2 manifest")
+        if resource not in _PROVISION_BOUND_STATES:
+            raise ManifestError("unknown provision resource")
+        required_status, target_status = _PROVISION_BOUND_STATES[resource]
+        if RunStatus(manifest["status"]) != required_status:
+            raise ManifestError(f"{RunStatus(manifest['status']).value} cannot bind {resource}")
+        if resource not in manifest["provisioning"]["intents"]:
+            raise ManifestError("provision resource cannot bind before its intent")
+        safe_view = redact(copy.deepcopy(resource_view), max_chars=2_000)
+        if safe_view != resource_view:
+            raise ManifestError("provision resource contains redactable secret material")
+        manifest["provisioning"]["resources"][resource] = safe_view
+        if resource == "project":
+            if not isinstance(safe_view, Mapping):
+                raise ManifestError("project binding must be an object")
+            manifest["projectId"] = str(safe_view.get("projectId", ""))
+        manifest["status"] = target_status.value
+        manifest["lastTransitionReason"] = f"{resource} provision resource bound after verification"
+        self._write(manifest)
+        return copy.deepcopy(manifest)
+
+    @_locked_mutation
+    def mark_provision_ready(self) -> dict[str, Any]:
+        manifest = self.load()
+        if manifest.get("schemaVersion") != "rd-bot-autopilot/v2" or RunStatus(manifest["status"]) != RunStatus.RD_PROJECT_BOUND:
+            raise ManifestError("provision readiness requires RD_PROJECT_BOUND")
+        manifest["status"] = RunStatus.READY.value
+        manifest["lastTransitionReason"] = "repository, sources, and RD-Bot project are bound"
+        self._write(manifest)
+        return manifest
+
+    @_locked_mutation
+    def resume_provisioning(self) -> dict[str, Any]:
+        manifest = self.load()
+        if manifest.get("schemaVersion") != "rd-bot-autopilot/v2" or RunStatus(manifest["status"]) != RunStatus.WAITING_HUMAN:
+            raise ManifestError("provision resume requires a v2 WAITING_HUMAN run")
+        pending = manifest.get("pendingApproval")
+        if not isinstance(pending, dict):
+            raise ManifestError("WAITING_HUMAN has no safe provisioning resume target")
+        try:
+            target = RunStatus(str(pending.get("resumeStatus", "")))
+        except ValueError as exc:
+            raise ManifestError("WAITING_HUMAN has no safe provisioning resume target") from exc
+        if target not in _PROVISION_STATUS_SET:
+            raise ManifestError("WAITING_HUMAN resume target is not a provisioning state")
+        manifest["status"] = target.value
+        manifest["pendingApproval"] = None
+        manifest["stopReason"] = ""
+        manifest["lastTransitionReason"] = "human authorized reconciliation-only provisioning resume"
         self._write(manifest)
         return manifest
 

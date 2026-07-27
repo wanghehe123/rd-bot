@@ -10,8 +10,10 @@ from scripts.iteration_state import (
     ManifestStore,
     RunStatus,
     create_manifest,
+    create_provision_manifest,
     request_fingerprint,
 )
+from scripts.provisioning import build_provision_plan
 
 
 class ManifestStateTest(unittest.TestCase):
@@ -96,6 +98,49 @@ class ManifestStateTest(unittest.TestCase):
         payload.pop("workspaceVerified")
         path.write_text(json.dumps(payload))
         self.assertFalse(self.store.load()["workspaceVerified"])
+
+    def test_v2_requires_exact_digest_before_live_provision_intent(self) -> None:
+        plan = build_provision_plan(
+            run_id="autopilot-web-123",
+            idea="Build a habit tracker web page",
+            success_criteria=["A focused automated test passes"],
+            github_owner="alice",
+        )
+        manifest = create_provision_manifest(
+            run_id="autopilot-web-123",
+            mode="live-provision",
+            idea="Build a habit tracker web page",
+            success_criteria=["A focused automated test passes"],
+        )
+        self.store.initialize(manifest)
+        digest = self.store.freeze_provision_plan(plan)
+        self.assertEqual(RunStatus.PLAN_READY.value, self.store.load()["status"])
+        with self.assertRaisesRegex(ManifestError, "digest"):
+            self.store.confirm_provision("0" * 64)
+        self.store.confirm_provision(digest)
+        self.store.record_provision_intent("github", dict(plan["repository"]))
+        self.assertEqual(RunStatus.GH_INTENT.value, self.store.load()["status"])
+
+    def test_v2_ambiguous_write_cannot_be_resent_or_generic_transitioned(self) -> None:
+        plan = build_provision_plan(
+            run_id="autopilot-web-124",
+            idea="Build a habit tracker web page",
+            success_criteria=["A focused automated test passes"],
+            github_owner="alice",
+        )
+        self.store.initialize(create_provision_manifest(
+            run_id="autopilot-web-124",
+            mode="live-provision",
+            idea="Build a habit tracker web page",
+            success_criteria=["A focused automated test passes"],
+        ))
+        self.store.confirm_provision(self.store.freeze_provision_plan(plan))
+        self.store.record_provision_intent("github", dict(plan["repository"]))
+        self.store.set_waiting_human("AMBIGUOUS_GITHUB_CREATE", {"type": "AMBIGUOUS_GITHUB_CREATE"})
+        with self.assertRaisesRegex(ManifestError, "WAITING_HUMAN"):
+            self.store.record_provision_intent("github", dict(plan["repository"]))
+        with self.assertRaisesRegex(ManifestError, "provisioning"):
+            self.store.transition(RunStatus.GH_INTENT, "unsafe resend")
 
 
 if __name__ == "__main__":
