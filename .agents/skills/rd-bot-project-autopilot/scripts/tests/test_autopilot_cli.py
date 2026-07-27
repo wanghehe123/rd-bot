@@ -110,10 +110,11 @@ class AutopilotCliTest(unittest.TestCase):
         self.assertEqual(main(self.args("freeze-plan", "--plan-file", str(plan_file)), environ=self.env), 0)
         result = main(self.args("dispatch", "--iteration", "1", "--live-test"), environ=self.env)
         self.assertNotEqual(result, 0)
-        self.assertEqual(ManifestStore(self.run_dir).load()["status"], RunStatus.DISPATCH_INTENT.value)
+        self.assertEqual(ManifestStore(self.run_dir).load()["status"], RunStatus.READY.value)
 
     def test_projects_and_project_use_typed_client(self) -> None:
         with patch("scripts.autopilot.SafeRdBotClient", FakeCliClient):
+            self.assertEqual(main(["projects"], environ=self.env), 0)
             self.assertEqual(main(self.args("projects"), environ=self.env), 0)
             self.assertEqual(main(self.args("project", "--project-id", PROJECT_ID), environ=self.env), 0)
 
@@ -121,6 +122,10 @@ class AutopilotCliTest(unittest.TestCase):
         self.assertEqual(self.init_run(), 0)
         (self.root / "tracked.txt").write_text("changed\n", encoding="utf-8")
         self.assertNotEqual(main(self.args("verify-workspace"), environ=self.env), 0)
+
+    def test_verify_workspace_ignores_run_artifacts_even_when_unignored(self) -> None:
+        self.assertEqual(self.init_run(), 0)
+        self.assertEqual(main(self.args("verify-workspace"), environ=self.env), 0)
 
     def test_record_decision_complete_requires_successful_evaluation(self) -> None:
         self.assertEqual(self.init_run(), 0)

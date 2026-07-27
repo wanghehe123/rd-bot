@@ -7,6 +7,7 @@ import ipaddress
 import json
 import os
 import re
+import socket
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -20,8 +21,11 @@ MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 MAX_TITLE_CHARS = 120
 MAX_MATERIAL_CHARS = 10_000
 MAX_MATERIAL_TOTAL_CHARS = 50_000
+MAX_REQUEST_BYTES = 256 * 1024
 _NUMERIC_ID_RE = re.compile(r"^[0-9]{1,64}$")
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,120}$")
+_REPO_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$")
+_CREDENTIAL_MARKER_RE = re.compile(r"(?:\bBearer\s+|\b(?:sk|key|token)[-_][A-Za-z0-9_-]{12,})", re.IGNORECASE)
 
 
 class ClientPolicyError(RuntimeError):
@@ -73,7 +77,7 @@ class SafeRdBotClient:
         re.compile(r"^/admin/rd-tasks/[0-9]{1,64}$"),
         re.compile(r"^/admin/rd-tasks/[0-9]{1,64}/timeline$"),
         re.compile(r"^/admin/rd-tasks/[0-9]{1,64}/execution-overview$"),
-        re.compile(r"^/admin/rd-tasks/[0-9]{1,64}/stage-runs/[0-9]{1,64}/execution-trace$"),
+        re.compile(r"^/admin/rd-tasks/[0-9]{1,64}/stage-runs/[A-Za-z0-9._-]{1,120}/execution-trace$"),
         re.compile(r"^/admin/rd-tasks/[0-9]{1,64}/retry-preview$"),
         re.compile(r"^/admin/rd-tasks/[0-9]{1,64}/retry-history$"),
         re.compile(r"^/admin/evaluations/runs$"),
@@ -125,18 +129,29 @@ class SafeRdBotClient:
 
     @staticmethod
     def _is_loopback(hostname: str) -> bool:
-        if hostname.lower() == "localhost":
-            return True
         try:
             return ipaddress.ip_address(hostname).is_loopback
         except ValueError:
-            return False
+            try:
+                infos = socket.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
+            except OSError:
+                return False
+            addresses = {str(info[4][0]) for info in infos if info and info[4]}
+            if not addresses:
+                return False
+            try:
+                return all(ipaddress.ip_address(address).is_loopback for address in addresses)
+            except ValueError:
+                return False
 
     def _ensure_live_write(self) -> None:
         if self.mode != "live-test" or not self.live_flag:
             raise ClientPolicyError("POST requires live-test mode and --live-test")
         if self.environ.get("RD_BOT_AUTOPILOT_LIVE_TEST") != "1":
             raise ClientPolicyError("RD_BOT_AUTOPILOT_LIVE_TEST=1 is required")
+
+    def preflight_write(self) -> None:
+        self._ensure_live_write()
 
     @classmethod
     def _allowlisted(cls, method: str, path: str) -> bool:
@@ -160,11 +175,15 @@ class SafeRdBotClient:
             self._ensure_live_write()
             if payload is None or not isinstance(payload, Mapping):
                 raise ClientPolicyError("POST payload must be a JSON object")
+            self._validate_route_payload(path, payload)
             body = _canonical_json(payload)
+            if len(body) > MAX_REQUEST_BYTES:
+                raise ClientPolicyError("request body is too large")
             query_payload: Any = payload
         else:
             if payload is not None:
                 raise ClientPolicyError("GET requests cannot contain a body")
+            self._validate_query(path, params)
             body = None
             query_payload = dict(params or {})
         query = urllib.parse.urlencode(query_payload, doseq=True) if method == "GET" and params else ""
@@ -230,6 +249,30 @@ class SafeRdBotClient:
                 pass
         return response.read(MAX_RESPONSE_BYTES + 1)
 
+    @classmethod
+    def _validate_route_payload(cls, path: str, payload: Mapping[str, Any]) -> None:
+        if path == "/admin/rd-tasks/requirements":
+            cls._validate_requirement(payload)
+        elif path.endswith("/submit"):
+            if payload:
+                raise ClientPolicyError("submit payload must be empty")
+        elif path.endswith("/retry"):
+            cls._validate_retry(payload)
+        elif path.endswith("/evaluations"):
+            cls._validate_evaluation(payload)
+
+    @staticmethod
+    def _validate_query(path: str, params: Mapping[str, Any] | None) -> None:
+        if not params:
+            return
+        allowed = {
+            "/admin/projects": {"keyword", "page", "pageSize"},
+            "/admin/rd-tasks": {"projectId", "taskType", "keyword", "page", "pageSize"},
+            "/admin/evaluations/runs": {"keyword", "datasetKind", "status", "page", "pageSize"},
+        }.get(path, set())
+        if set(params) - allowed:
+            raise ClientPolicyError(f"query parameters for {path} are not allowlisted")
+
     def get_project(self, project_id: str) -> Any:
         project_id = _require_id(project_id, "project_id")
         return self.request("GET", f"/admin/projects/{project_id}")
@@ -263,7 +306,8 @@ class SafeRdBotClient:
 
     def get_execution_trace(self, task_id: str, stage_run_id: str) -> Any:
         task_id = _require_id(task_id, "task_id")
-        stage_run_id = _require_id(stage_run_id, "stage_run_id")
+        if not isinstance(stage_run_id, str) or not _RUN_ID_RE.fullmatch(stage_run_id):
+            raise ClientPolicyError("stage_run_id contains unsafe characters")
         return self.request("GET", f"/admin/rd-tasks/{task_id}/stage-runs/{stage_run_id}/execution-trace")
 
     def get_retry_preview(self, task_id: str) -> Any:
@@ -278,15 +322,37 @@ class SafeRdBotClient:
         self._validate_requirement(payload)
         return self.request("POST", "/admin/rd-tasks/requirements", payload)
 
+    def validate_requirement(self, payload: Mapping[str, Any]) -> None:
+        """Validate a requirement locally without checking live-write permission."""
+
+        self._validate_requirement(payload)
+
+    def preflight_requirement(self, payload: Mapping[str, Any]) -> None:
+        """Validate live-write permission and payload before an intent is persisted."""
+
+        self._ensure_live_write()
+        self._validate_requirement(payload)
+
     def submit_task(self, task_id: str) -> Any:
         task_id = _require_id(task_id, "task_id")
         return self.request("POST", f"/admin/rd-tasks/{task_id}/submit", {})
+
+    def preflight_submit(self, task_id: str) -> None:
+        self._ensure_live_write()
+        _require_id(task_id, "task_id")
 
     def retry_task(self, task_id: str, payload: Mapping[str, Any]) -> Any:
         task_id = _require_id(task_id, "task_id")
         if not isinstance(payload, Mapping) or len(payload) > 20:
             raise ClientPolicyError("retry payload must be a bounded JSON object")
         return self.request("POST", f"/admin/rd-tasks/{task_id}/retry", payload)
+
+    def preflight_retry(self, task_id: str, payload: Mapping[str, Any]) -> None:
+        self._ensure_live_write()
+        task_id = _require_id(task_id, "task_id")
+        if not isinstance(payload, Mapping) or len(payload) > 20:
+            raise ClientPolicyError("retry payload must be a bounded JSON object")
+        self._validate_retry(payload)
 
     def list_evaluations(self, keyword: str | None = None, page: int = 1, page_size: int = 100) -> Any:
         self._validate_page(page, page_size)
@@ -301,6 +367,13 @@ class SafeRdBotClient:
             raise ClientPolicyError("evaluation payload must be a JSON object")
         self._validate_evaluation(payload)
         return self.request("POST", f"/admin/rd-tasks/{task_id}/evaluations", payload)
+
+    def preflight_evaluation(self, task_id: str, payload: Mapping[str, Any]) -> None:
+        self._ensure_live_write()
+        _require_id(task_id, "task_id")
+        if not isinstance(payload, Mapping):
+            raise ClientPolicyError("evaluation payload must be a JSON object")
+        self._validate_evaluation(payload)
 
     def get_evaluation(self, run_id: str) -> Any:
         if not isinstance(run_id, str) or not _RUN_ID_RE.fullmatch(run_id):
@@ -332,9 +405,25 @@ class SafeRdBotClient:
 
     @classmethod
     def _validate_requirement(cls, payload: Mapping[str, Any]) -> None:
+        allowed = {
+            "title", "priority", "projectId", "repositoryUrl", "repoOwner", "repoName", "baseBranch",
+            "expectedResult", "acceptanceCriteria", "materials", "autoExecute", "tokenBudgetOverride",
+        }
+        if set(payload) - allowed:
+            raise ClientPolicyError("requirement payload contains unknown fields")
         title = cls._bounded_text(payload.get("title"), "title", MAX_TITLE_CHARS)
+        priority = payload.get("priority", "P2")
+        if priority not in {"P0", "P1", "P2", "P3"}:
+            raise ClientPolicyError("priority must be P0, P1, P2, or P3")
         if not _NUMERIC_ID_RE.fullmatch(str(payload.get("projectId", ""))):
             raise ClientPolicyError("projectId must be a numeric ID")
+        for key, maximum in (("repositoryUrl", 2_000), ("repoOwner", 200), ("repoName", 200), ("baseBranch", 200)):
+            if key in payload and (not isinstance(payload[key], str) or len(payload[key]) > maximum):
+                raise ClientPolicyError(f"{key} must be a bounded string")
+            if key == "repositoryUrl" and key in payload and payload[key]:
+                cls._validate_safe_uri(payload[key], key)
+            if key != "repositoryUrl" and key in payload and payload[key] and not _REPO_NAME_RE.fullmatch(payload[key]):
+                raise ClientPolicyError(f"{key} contains unsafe characters")
         cls._bounded_text(payload.get("expectedResult"), "expectedResult", 20_000)
         criteria = payload.get("acceptanceCriteria")
         if not isinstance(criteria, list) or not 2 <= len(criteria) <= 6:
@@ -343,27 +432,96 @@ class SafeRdBotClient:
             cls._bounded_text(criterion, "acceptanceCriteria item", 1_000)
         if payload.get("autoExecute") is not False:
             raise ClientPolicyError("autoExecute must be false")
-        budget = payload.get("tokenBudgetOverride")
-        if budget is not None and (isinstance(budget, bool) or not isinstance(budget, int) or budget < 0):
-            raise ClientPolicyError("tokenBudgetOverride must be a non-negative integer")
+        if "tokenBudgetOverride" in payload:
+            budget = payload["tokenBudgetOverride"]
+            if isinstance(budget, bool) or not isinstance(budget, int) or not 0 <= budget <= 200_000:
+                raise ClientPolicyError("tokenBudgetOverride must be an integer between 0 and 200000")
         materials = payload.get("materials", [])
-        if not isinstance(materials, list) or len(materials) > 20:
-            raise ClientPolicyError("materials must be a list of at most 20 items")
+        if not isinstance(materials, list) or not materials or len(materials) > 20:
+            raise ClientPolicyError("materials must be a non-empty list of at most 20 items")
         total = 0
+        usable = False
         for material in materials:
             if not isinstance(material, Mapping):
                 raise ClientPolicyError("each material must be an object")
+            allowed_material_keys = {
+                "materialType", "sourceType", "type", "title", "name", "sourceUri", "content",
+                "mimeType", "revisionId", "recoveryStageRunId",
+            }
+            if set(material) - allowed_material_keys:
+                raise ClientPolicyError("material contains unknown fields")
+            for key, maximum in (("materialType", 80), ("sourceType", 80), ("title", 500), ("sourceUri", 2_000), ("mimeType", 200), ("revisionId", 200), ("recoveryStageRunId", 120)):
+                if key in material and (not isinstance(material[key], str) or len(material[key]) > maximum):
+                    raise ClientPolicyError(f"material {key} is unbounded")
+            for key in ("type", "name"):
+                if key in material and (not isinstance(material[key], str) or len(material[key]) > 500):
+                    raise ClientPolicyError(f"material {key} is unbounded")
             content = material.get("content", "")
             if not isinstance(content, str) or len(content) > MAX_MATERIAL_CHARS:
                 raise ClientPolicyError("material content is too large")
+            source_uri = material.get("sourceUri", "")
+            if isinstance(source_uri, str) and source_uri:
+                cls._validate_safe_uri(source_uri, "material sourceUri")
+                raise ClientPolicyError("autopilot material sourceUri is not allowed")
+            source_type = material.get("sourceType")
+            if source_type is not None and source_type != "MANUAL_TEXT":
+                raise ClientPolicyError("autopilot material sourceType must be MANUAL_TEXT")
+            if (content.strip() or (isinstance(source_uri, str) and source_uri.strip())):
+                usable = True
             total += len(content)
         if total > MAX_MATERIAL_TOTAL_CHARS:
             raise ClientPolicyError("material content is too large")
+        if not usable:
+            raise ClientPolicyError("at least one material content or sourceUri is required")
+        try:
+            if len(_canonical_json(payload)) > MAX_REQUEST_BYTES:
+                raise ClientPolicyError("request body is too large")
+        except (TypeError, ValueError) as exc:
+            raise ClientPolicyError("requirement payload is not JSON serializable") from exc
         # Keep the local variable intentional: validation above must run even for a blank title.
         _ = title
 
     @staticmethod
+    def _validate_safe_uri(value: str, label: str) -> None:
+        try:
+            parsed = urllib.parse.urlsplit(value)
+        except ValueError as exc:
+            raise ClientPolicyError(f"{label} is invalid") from exc
+        if parsed.username is not None or parsed.password is not None or _CREDENTIAL_MARKER_RE.search(value):
+            raise ClientPolicyError(f"{label} must not contain credentials")
+
+    @classmethod
+    def _validate_retry(cls, payload: Mapping[str, Any]) -> None:
+        required = {
+            "expectedFailedStageRunId",
+            "expectedFailedRetrievalRunId",
+            "expectedFailedAiReviewRunId",
+            "expectedSourceTaskVersion",
+            "operatorNote",
+            "evidenceMaterialIds",
+        }
+        if set(payload) != required:
+            raise ClientPolicyError("retry payload schema is incomplete")
+        for key in ("expectedFailedStageRunId", "expectedFailedRetrievalRunId", "expectedFailedAiReviewRunId"):
+            value = payload.get(key)
+            if not isinstance(value, str) or len(value) > 120 or not re.fullmatch(r"[A-Za-z0-9._-]*", value):
+                raise ClientPolicyError(f"{key} contains unsafe characters")
+        version = payload.get("expectedSourceTaskVersion")
+        if isinstance(version, bool) or not isinstance(version, int) or version <= 0:
+            raise ClientPolicyError("expectedSourceTaskVersion must be positive")
+        cls._bounded_text(payload.get("operatorNote"), "operatorNote", 500)
+        evidence = payload.get("evidenceMaterialIds")
+        if not isinstance(evidence, list) or len(evidence) > 50 or any(
+            not isinstance(item, str) or len(item) > 120 or not re.fullmatch(r"[A-Za-z0-9._-]{1,120}", item)
+            for item in evidence
+        ):
+            raise ClientPolicyError("evidenceMaterialIds must be a bounded list")
+
+    @staticmethod
     def _validate_evaluation(payload: Mapping[str, Any]) -> None:
+        allowed = {"judgeProvider", "judgeLimit", "timeoutSeconds", "baselineRunId"}
+        if set(payload) != allowed:
+            raise ClientPolicyError("evaluation payload schema is incomplete")
         if payload.get("judgeProvider") != "NONE":
             raise ClientPolicyError("judgeProvider must be NONE")
         if payload.get("judgeLimit") != 0:

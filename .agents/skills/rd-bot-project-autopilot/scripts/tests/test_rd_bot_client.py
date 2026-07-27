@@ -77,6 +77,13 @@ class SafeRdBotClientTest(unittest.TestCase):
             self.client.request("POST", "/admin/rd-tasks/1/approve", {})
         self.assertEqual(self.server.requests, [])
 
+    def test_allowlisted_route_still_rejects_untyped_write_payload(self) -> None:
+        with self.assertRaisesRegex(ClientPolicyError, "submit payload"):
+            self.client.request("POST", "/admin/rd-tasks/7480000000000000001/submit", {"approve": True})
+        with self.assertRaisesRegex(ClientPolicyError, "query parameters"):
+            self.client.request("GET", "/admin/projects", params={"unsafe": "value"})
+        self.assertEqual(self.server.requests, [])
+
     def test_create_uses_exact_payload_and_returns_json(self) -> None:
         self.server.queue_json({"taskId": "7480000000000000001", "status": "CREATED"})
         result = self.client.create_requirement(valid_request())
@@ -88,6 +95,24 @@ class SafeRdBotClientTest(unittest.TestCase):
         payload = valid_request()
         payload["acceptanceCriteria"] = ["only one"]
         with self.assertRaisesRegex(ClientPolicyError, "acceptanceCriteria"):
+            self.client.create_requirement(payload)
+        self.assertEqual(self.server.requests, [])
+
+    def test_requirement_rejects_non_manual_material_or_credential_source(self) -> None:
+        local = valid_request()
+        local["materials"] = [{"sourceType": "LOCAL_UPLOAD", "content": "bounded"}]
+        with self.assertRaisesRegex(ClientPolicyError, "sourceType"):
+            self.client.create_requirement(local)
+        credential_uri = valid_request()
+        credential_uri["materials"] = [{"sourceType": "MANUAL_TEXT", "sourceUri": "https://user:secret@example.invalid/doc", "content": "bounded"}]
+        with self.assertRaisesRegex(ClientPolicyError, "sourceUri"):
+            self.client.create_requirement(credential_uri)
+        self.assertEqual(self.server.requests, [])
+
+    def test_requirement_rejects_null_token_budget_before_network(self) -> None:
+        payload = valid_request()
+        payload["tokenBudgetOverride"] = None
+        with self.assertRaisesRegex(ClientPolicyError, "tokenBudgetOverride"):
             self.client.create_requirement(payload)
         self.assertEqual(self.server.requests, [])
 

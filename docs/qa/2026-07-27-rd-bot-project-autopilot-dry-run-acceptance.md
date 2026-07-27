@@ -33,7 +33,7 @@ was present and no mutating endpoint was called.
 | Skill discovery | Explicit repo-local path verified; no global installation performed |
 | Secret/full-prompt scan | No secret-like sample values; artifacts contain bounded plan metadata only |
 
-The complete Skill suite ran with 44 tests passing. The local Skill creator
+The complete Skill suite ran with 58 tests passing. The local Skill creator
 validator and metadata generator could not run because this Python environment
 does not provide the optional `yaml` module; frontmatter, metadata, references,
 and contract tests were validated without that dependency.

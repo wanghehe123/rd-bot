@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
 
 from scripts.iteration_state import ManifestStore, RunStatus, create_manifest
 from scripts.rd_bot_client import ApiTransportError
-from scripts.workflow import AutopilotWorkflow
+from scripts.workflow import AutopilotWorkflow, WorkflowError
 
 
 PROJECT_ID = "7480000000000000000"
@@ -35,8 +36,13 @@ def detail(
     return {
         "taskId": task_id,
         "taskType": "REQUIREMENT",
+        "priority": "P2",
         "title": title or "[autopilot:autopilot-test:1] Add a bounded status summary",
         "projectId": project_id,
+        "repositoryUrl": "https://github.com/example/project",
+        "repoOwner": "example",
+        "repoName": "project",
+        "baseBranch": "main",
         "expectedResult": "The admin status summary is visible and tested.",
         "acceptanceCriteria": ["The endpoint returns 200", "The focused test passes"],
         "tokenBudgetOverride": 0,
@@ -78,6 +84,16 @@ class SpyClient:
              "passedSampleCount": 1, "failedSampleCount": 0, "metricsJson": "{}"}
         ]
         self.evaluation_list: object = []
+        self.project: object = {
+            "data": {
+                "projectId": PROJECT_ID,
+                "repositoryUrl": "https://github.com/example/project",
+                "repoOwner": "example",
+                "repoName": "project",
+                "defaultBranch": "main",
+                "enabled": True,
+            }
+        }
 
     def create_requirement(self, payload: dict[str, object]) -> dict[str, object]:
         if self.workflow:
@@ -88,11 +104,29 @@ class SpyClient:
             raise self.create_error
         return {"taskId": TASK_ID, "status": "CREATED"}
 
+    def preflight_write(self) -> None:
+        return None
+
+    def preflight_requirement(self, _payload: dict[str, object]) -> None:
+        return None
+
+    def preflight_submit(self, _task_id: str) -> None:
+        return None
+
+    def preflight_retry(self, _task_id: str, _payload: dict[str, object]) -> None:
+        return None
+
+    def preflight_evaluation(self, _task_id: str, _payload: dict[str, object]) -> None:
+        return None
+
     def list_tasks(self, project_id: str, keyword: str | None, page: int = 1, page_size: int = 100) -> dict[str, object]:
         return {"data": self.tasks}
 
     def get_task(self, task_id: str) -> dict[str, object]:
         return self.detail
+
+    def get_project(self, project_id: str) -> dict[str, object]:
+        return self.project  # type: ignore[return-value]
 
     def submit_task(self, task_id: str) -> dict[str, object]:
         if self.workflow:
@@ -176,6 +210,35 @@ class WorkflowDispatchTest(unittest.TestCase):
         self.assertEqual(result["status"], RunStatus.WAITING_HUMAN.value)
         self.assertEqual(self.client.submit_calls, [])
         self.assertEqual(result["pendingApproval"]["type"], "AMBIGUOUS_TASK_CREATION")
+
+    def test_real_detail_acceptance_criteria_json_string_is_verified(self) -> None:
+        self.client.detail = detail()
+        self.client.detail["acceptanceCriteriaJson"] = json.dumps(self.client.detail.pop("acceptanceCriteria"), ensure_ascii=False)
+        result = self.workflow.dispatch(1)
+        self.assertEqual(result["status"], RunStatus.OBSERVING.value)
+        self.assertEqual(self.client.submit_calls, [TASK_ID])
+
+    def test_project_url_only_snapshot_is_valid_backend_identity(self) -> None:
+        self.client.project = {"data": {
+            "projectId": PROJECT_ID,
+            "repositoryUrl": "https://github.com/example/project",
+            "defaultBranch": "main",
+            "enabled": True,
+        }}
+        result = self.workflow.dispatch(1)
+        self.assertEqual(result["status"], RunStatus.OBSERVING.value)
+
+    def test_project_snapshot_identity_mismatch_blocks_before_create(self) -> None:
+        self.client.project = {"data": {
+            "projectId": "7480000000000000002",
+            "repositoryUrl": "https://github.com/example/project",
+            "defaultBranch": "main",
+            "enabled": True,
+        }}
+        with self.assertRaisesRegex(WorkflowError, "snapshot identity"):
+            self.workflow.dispatch(1)
+        self.assertEqual(self.client.create_calls, [])
+        self.assertEqual(self.store.load()["status"], RunStatus.READY.value)
 
     def test_zero_or_multiple_reconciliation_matches_wait_for_human(self) -> None:
         self.client.create_error = ApiTransportError("connection reset", ambiguous=True)

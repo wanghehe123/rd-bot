@@ -43,7 +43,7 @@ class ManifestStateTest(unittest.TestCase):
     def test_dispatch_intent_is_persisted_before_task_binding(self) -> None:
         self.store.initialize(self.manifest)
         self.store.transition(RunStatus.PLANNING, "charter ready")
-        self.store.freeze_plan(1, {"title": "Small change", "acceptanceCriteria": ["test passes"]})
+        self.store.freeze_plan(1, {"title": "Small change", "acceptanceCriteria": ["test passes", "lint passes"]})
         intent = self.store.record_dispatch_intent(1)
         on_disk = json.loads((self.run_dir / "manifest.json").read_text())
         self.assertEqual(on_disk["status"], "DISPATCH_INTENT")
@@ -53,21 +53,34 @@ class ManifestStateTest(unittest.TestCase):
     def test_second_active_task_is_rejected(self) -> None:
         self.store.initialize(self.manifest)
         self.store.transition(RunStatus.PLANNING, "charter ready")
-        self.store.freeze_plan(1, {"title": "First", "acceptanceCriteria": ["one"]})
+        self.store.freeze_plan(1, {"title": "First", "acceptanceCriteria": ["one", "two"]})
         self.store.record_dispatch_intent(1)
         self.store.bind_task(1, "7480000000000000001")
         with self.assertRaisesRegex(ManifestError, "active task"):
-            self.store.freeze_plan(2, {"title": "Second", "acceptanceCriteria": ["two"]})
+            self.store.freeze_plan(2, {"title": "Second", "acceptanceCriteria": ["two", "three"]})
 
     def test_request_fingerprint_is_canonical(self) -> None:
         left = request_fingerprint({"b": 2, "a": 1})
         right = request_fingerprint({"a": 1, "b": 2})
         self.assertEqual(left, right)
 
+    def test_request_ledger_keeps_only_safe_fields(self) -> None:
+        self.store.initialize(self.manifest)
+        self.store.append_request_ledger({
+            "method": "GET",
+            "path": "/admin/projects",
+            "requestSha256": "a" * 64,
+            "status": 200,
+            "timestamp": "2026-07-27T00:00:00Z",
+            "authorization": "should not persist",
+        })
+        entry = self.store.load()["requestLedger"][0]
+        self.assertEqual(set(entry), {"method", "path", "requestSha256", "status", "timestamp"})
+
     def test_load_rejects_modified_request_fingerprint(self) -> None:
         self.store.initialize(self.manifest)
         self.store.transition(RunStatus.PLANNING, "charter ready")
-        self.store.freeze_plan(1, {"title": "Small change", "acceptanceCriteria": ["test passes"]})
+        self.store.freeze_plan(1, {"title": "Small change", "acceptanceCriteria": ["test passes", "lint passes"]})
         self.store.record_dispatch_intent(1)
         path = self.run_dir / "manifest.json"
         payload = json.loads(path.read_text())
@@ -75,6 +88,14 @@ class ManifestStateTest(unittest.TestCase):
         path.write_text(json.dumps(payload))
         with self.assertRaisesRegex(ManifestError, "fingerprint"):
             self.store.load()
+
+    def test_legacy_v1_manifest_without_workspace_flag_loads_as_unverified(self) -> None:
+        self.store.initialize(self.manifest)
+        path = self.run_dir / "manifest.json"
+        payload = json.loads(path.read_text())
+        payload.pop("workspaceVerified")
+        path.write_text(json.dumps(payload))
+        self.assertFalse(self.store.load()["workspaceVerified"])
 
 
 if __name__ == "__main__":

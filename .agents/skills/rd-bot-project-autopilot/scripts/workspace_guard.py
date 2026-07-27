@@ -36,10 +36,11 @@ def _repo_root(path: Path) -> Path:
     return Path(raw).resolve()
 
 
-def capture(repo_root: str | Path) -> dict[str, Any]:
+def capture(repo_root: str | Path, *, exclude_paths: list[str | Path] | None = None) -> dict[str, Any]:
     """Capture tracked diff and non-ignored untracked file content without mutating git."""
 
     root = _repo_root(Path(repo_root))
+    excluded = [Path(item).expanduser().resolve() for item in (exclude_paths or [])]
     tracked_diff = _git(root, "diff", "--binary", "--no-ext-diff", "HEAD")
     untracked_raw = _git(root, "ls-files", "--others", "--exclude-standard", "-z")
     untracked_paths = [item for item in untracked_raw.decode("utf-8", "surrogateescape").split("\0") if item]
@@ -47,8 +48,12 @@ def capture(repo_root: str | Path) -> dict[str, Any]:
     digest = hashlib.sha256()
     digest.update(b"tracked-diff\0")
     digest.update(tracked_diff)
+    included_untracked_count = 0
     for relative in sorted(untracked_paths):
         file_path = root / relative
+        if any(file_path == path or path in file_path.parents for path in excluded):
+            continue
+        included_untracked_count += 1
         try:
             payload = file_path.read_bytes()
         except OSError as exc:
@@ -60,10 +65,14 @@ def capture(repo_root: str | Path) -> dict[str, Any]:
     return {
         "repoRoot": str(root),
         "sha256": digest.hexdigest(),
-        "untrackedCount": len(untracked_paths),
+        "untrackedCount": included_untracked_count,
     }
 
 
 def assert_unchanged(before: dict[str, Any], after: dict[str, Any]) -> None:
-    if before.get("repoRoot") != after.get("repoRoot") or before.get("sha256") != after.get("sha256"):
+    if (
+        before.get("repoRoot") != after.get("repoRoot")
+        or before.get("sha256") != after.get("sha256")
+        or before.get("untrackedCount") != after.get("untrackedCount")
+    ):
         raise WorkspaceError("workspace fingerprint changed")

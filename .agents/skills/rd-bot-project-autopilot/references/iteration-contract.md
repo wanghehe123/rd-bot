@@ -4,6 +4,9 @@ This Skill owns one versioned manifest at `qa-runs/autopilot/{runId}/manifest.js
 The run directory is the only writable artifact root. `rd-bot-autopilot/v1` is
 the current schema identifier; unknown schema versions, fields needed for a
 decision, or states not in this contract fail closed.
+The known early-v1 layout without `workspaceVerified` is read as
+`workspaceVerified=false`; no other missing or unknown top-level fields are
+accepted.
 
 ## Bounds
 
@@ -24,7 +27,7 @@ enter `EVALUATING`; a terminal evaluation enters `LEARNING`.
 
 `DRY_RUN_COMPLETED`, `COMPLETED`, and `BOUNDED_STOP` are terminal run states.
 `WAITING_HUMAN` is terminal for automation but resumable after an operator
-decision. Approval-required, unknown, or ambiguous external states always enter
+`RESUME` decision. Approval-required, unknown, or ambiguous external states always enter
 `WAITING_HUMAN`; the Skill never guesses or retries a write.
 
 ## Identity and resume
@@ -39,12 +42,16 @@ operator note, or evaluation config. It never resends an ambiguous POST.
 An iteration retains all stage Attempts and observations. The latest Attempt per
 role is selected for display; prior Attempts remain in the manifest as evidence.
 Only IDs, statuses, hashes, timestamps, bounded summaries, and evidence
-references are persisted. Private reasoning and full prompts are not part of
-the contract.
+references are persisted. Plan/material text is capped and redacted before
+persistence; private reasoning and full prompts are not part of the contract.
+The first version accepts only inline `MANUAL_TEXT` materials. It does not let
+the model invent local paths, remote document URLs, or other source URIs.
 
 ## Workspace
 
-Capture the repository fingerprint before initialization and after the run.
+Capture the repository fingerprint before initialization and after the run; the
+allocated `qa-runs/autopilot/{runId}` directory is excluded from the fingerprint
+so the manifest cannot make its own verification fail.
 The fingerprint is derived from the tracked diff plus sorted non-ignored
 untracked path/content hashes. A changed fingerprint is a failed verification;
 the report must not claim goal completion. The runner never runs Git mutation

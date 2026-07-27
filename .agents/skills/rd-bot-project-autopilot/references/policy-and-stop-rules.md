@@ -5,13 +5,17 @@
 `dry-run` is the default and performs no POST. A write requires both the CLI
 `--live-test` flag and the independent environment opt-in
 `RD_BOT_AUTOPILOT_LIVE_TEST=1`. A live manifest alone is not permission.
-Missing opt-ins fail before the network request and leave the persisted intent
-for safe resume.
+Missing opt-ins or a client-schema preflight failure happen before the intent is
+written, so the run remains `READY`/`OBSERVING` and can be retried after the
+operator fixes the invocation. A transport failure after an intent is written
+is ambiguous: resume performs read-only reconciliation and never resends it.
 
 The fixed origin is a loopback HTTP(S) origin with no path, query, fragment, or
 user-info. Redirects, oversized responses, non-JSON responses, malformed JSON,
 unknown methods, and unknown paths fail closed. Request bodies are schema
-validated before transport.
+validated before transport. The selected project's repository identity and
+base branch are authoritative; a plan cannot redirect work to another repo.
+Autonomous materials are inline `MANUAL_TEXT` only, with no `sourceUri`.
 
 The only POST routes are:
 
@@ -24,6 +28,10 @@ There is no automatic approval, pause, cancel, delete, merge, deploy, branch
 mutation, shell, raw `curl`, or Git command path. The Skill stops for a human
 at approval, merge, deployment, deletion, an unknown state, or an ambiguous
 write outcome.
+
+An operator may record a bounded `RESUME` decision from `WAITING_HUMAN`; it
+restores only the exact pre-gate state recorded in `pendingApproval`. It never
+creates a new task or repeats a write by itself.
 
 ## Status mapping
 

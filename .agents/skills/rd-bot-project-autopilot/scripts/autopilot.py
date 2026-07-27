@@ -82,20 +82,16 @@ def main(argv: list[str] | None = None, environ: Mapping[str, str] | None = None
     env = dict(os.environ if environ is None else environ)
     try:
         repo_root = Path(args.repo_root).expanduser().resolve()
+        if args.command in {"projects", "project"}:
+            return _run_discovery(args, env)
         run_dir = _resolve_run_dir(repo_root, args.run_dir)
         if args.command == "init":
             return _init(args, repo_root, run_dir)
-        if args.command == "projects":
-            client = SafeRdBotClient(args.base_url, mode="dry-run", live_flag=False, environ=env)
-            _print_json(client.list_projects(keyword=args.keyword))
-            return 0
-        if args.command == "project":
-            client = SafeRdBotClient(args.base_url, mode="dry-run", live_flag=False, environ=env)
-            _print_json(client.get_project(args.project_id))
-            return 0
         if args.command == "freeze-plan":
             store = ManifestStore(run_dir)
             plan = _read_json_file(args.plan_file)
+            if RunStatus(store.load()["status"]) == RunStatus.DRAFT:
+                store.transition(RunStatus.PLANNING, "plan input received")
             _print_json(AutopilotWorkflow(store, None).freeze_plan(plan))
             return 0
         if args.command == "record-decision":
@@ -111,14 +107,23 @@ def main(argv: list[str] | None = None, environ: Mapping[str, str] | None = None
         return 2
 
 
+def _run_discovery(args: argparse.Namespace, env: Mapping[str, str]) -> int:
+    client = SafeRdBotClient(args.base_url, mode="dry-run", live_flag=False, environ=env)
+    if args.command == "projects":
+        _print_json(client.list_projects(keyword=args.keyword))
+    else:
+        _print_json(client.get_project(args.project_id))
+    return 0
+
+
 def _init(args: argparse.Namespace, repo_root: Path, run_dir: Path) -> int:
     if run_dir.name != args.run_id:
         raise ValueError("run directory name must equal --run-id")
     store = ManifestStore(run_dir)
     manifest = create_manifest(args.run_id, args.mode, args.project_id, args.idea, args.success_criteria)
+    before = capture(repo_root, exclude_paths=[run_dir])
     store.initialize(manifest)
-    store.transition(RunStatus.PLANNING, "run initialized; planning may begin")
-    store.set_workspace_before(capture(repo_root))
+    store.set_workspace_before(before)
     _print_json(store.load())
     return 0
 
@@ -127,7 +132,13 @@ def _run_workflow(args: argparse.Namespace, repo_root: Path, run_dir: Path, env:
     del repo_root
     store = ManifestStore(run_dir)
     manifest = store.load()
-    client = SafeRdBotClient(args.base_url, mode=manifest["mode"], live_flag=bool(getattr(args, "live_test", False)), environ=env)
+    client = SafeRdBotClient(
+        args.base_url,
+        mode=manifest["mode"],
+        live_flag=bool(getattr(args, "live_test", False)),
+        environ=env,
+        request_ledger=store.append_request_ledger,
+    )
     workflow = AutopilotWorkflow(store, client)
     iteration_no = args.iteration
     status = RunStatus(manifest["status"])
@@ -153,8 +164,8 @@ def _record_decision(run_dir: Path, decision_file: str) -> int:
     if set(value) - {"decision", "reason", "evidenceIds", "nextGoal"}:
         raise ValueError("decision contains unknown fields")
     decision = value.get("decision")
-    if decision not in {"COMPLETE", "NEXT_ITERATION", "STOP", "WAITING_HUMAN"}:
-        raise ValueError("decision must be COMPLETE, NEXT_ITERATION, STOP, or WAITING_HUMAN")
+    if decision not in {"COMPLETE", "NEXT_ITERATION", "STOP", "WAITING_HUMAN", "RESUME"}:
+        raise ValueError("decision must be COMPLETE, NEXT_ITERATION, STOP, WAITING_HUMAN, or RESUME")
     store = ManifestStore(run_dir)
     result = store.record_decision(
         decision,
@@ -172,7 +183,7 @@ def _verify_workspace(repo_root: Path, run_dir: Path) -> int:
     before = manifest.get("workspaceBefore")
     if not isinstance(before, dict):
         raise WorkspaceError("workspaceBefore is missing")
-    after = capture(repo_root)
+    after = capture(repo_root, exclude_paths=[run_dir])
     store.set_workspace_after(after)
     assert_unchanged(before, after)
     print("WORKSPACE_UNCHANGED")
@@ -184,6 +195,7 @@ def _report(run_dir: Path) -> None:
     status = RunStatus(manifest["status"])
     label = {
         RunStatus.COMPLETED: "GOAL_ACHIEVED",
+        RunStatus.DRY_RUN_COMPLETED: "DRY_RUN_OK",
         RunStatus.BOUNDED_STOP: "BOUNDED_STOP",
         RunStatus.WAITING_HUMAN: "HUMAN_REQUIRED",
     }.get(status, "IN_PROGRESS")
