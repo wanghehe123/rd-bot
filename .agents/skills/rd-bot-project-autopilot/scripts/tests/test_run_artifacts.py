@@ -21,10 +21,10 @@ class RunArtifactsTest(unittest.TestCase):
             self.artifacts.write_text("../escape.txt", "bad")
 
     def test_redacts_secret_keys_and_bearer_values(self) -> None:
-        value = redact({"authorization": "Bearer abcdefghijklmnop", "safe": "ok"})
+        value = redact({"authorization": "Bearer abc", "safe": "ok"})
         self.assertEqual(value["authorization"], "[REDACTED]")
         self.assertEqual(value["safe"], "ok")
-        self.assertNotIn("abcdefghijklmnop", str(value))
+        self.assertNotIn("abc", str(value))
 
     def test_truncates_large_text(self) -> None:
         value = redact({"message": "x" * 120_000})
