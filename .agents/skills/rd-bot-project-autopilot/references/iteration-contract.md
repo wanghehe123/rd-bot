@@ -2,8 +2,9 @@
 
 This Skill owns one versioned manifest at `qa-runs/autopilot/{runId}/manifest.json`.
 The run directory is the only writable artifact root. `rd-bot-autopilot/v1` is
-the current schema identifier; unknown schema versions, fields needed for a
-decision, or states not in this contract fail closed.
+the iteration-only schema identifier and `rd-bot-autopilot/v2` adds the nested
+provisioning plan, intents, resources, and confirmation receipt; unknown schema
+versions, fields needed for a decision, or states not in this contract fail closed.
 The known early-v1 layout without `workspaceVerified` is read as
 `workspaceVerified=false`; no other missing or unknown top-level fields are
 accepted.
@@ -24,6 +25,15 @@ accepted.
 `FAILED_RETRYABLE` may enter `RETRY_INTENT` once and return to observation.
 `COMPLETED` tasks enter `EVALUATION_INTENT`, bind one task-run evaluation, and
 enter `EVALUATING`; a terminal evaluation enters `LEARNING`.
+
+A v2 provisioning run first walks `DRAFT -> PLAN_READY -> LIVE_CONFIRMED`
+(exact digest confirmation), then alternates intent and bound states for each
+resource: `GH_INTENT -> GH_BOUND -> KB_INTENT -> KB_BOUND -> SOURCES_INTENT ->
+SOURCES_BOUND -> RD_PROJECT_INTENT -> RD_PROJECT_BOUND -> READY`. Every intent
+is persisted before its remote write; every bind requires an exact,
+marker-verified read-back. From `READY`, the run continues with the normal
+iteration lifecycle above. A v2 dry-run finishes at `DRY_RUN_COMPLETED`
+directly from `PLAN_READY` without touching GitHub or RD-Bot.
 
 `DRY_RUN_COMPLETED`, `COMPLETED`, and `BOUNDED_STOP` are terminal run states.
 `WAITING_HUMAN` is terminal for automation but resumable after an operator

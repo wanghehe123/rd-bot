@@ -1,4 +1,4 @@
 interface:
   display_name: "RD-Bot Project Autopilot"
-  short_description: "Run bounded evidence-driven RD-Bot iterations"
-  default_prompt: "Use $rd-bot-project-autopilot to turn this idea into a bounded RD-Bot project iteration."
+  short_description: "Provision and run bounded evidence-driven RD-Bot iterations"
+  default_prompt: "Use $rd-bot-project-autopilot to turn this idea into a provisioned project and one bounded RD-Bot iteration."

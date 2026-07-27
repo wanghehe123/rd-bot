@@ -37,6 +37,21 @@ class SkillContractTest(unittest.TestCase):
         self.assertNotRegex(skill, re.compile(r"sk-[A-Za-z0-9]{16,}"))
         self.assertNotRegex(skill, re.compile(r"Bearer [A-Za-z0-9._-]{16,}"))
 
+    def test_skill_requires_digest_confirmation_for_actual_project_provisioning(self) -> None:
+        skill = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
+        for text in (
+            "--live-provision",
+            "--confirm-plan-sha256",
+            "RD_BOT_AUTOPILOT_LIVE_PROVISION=1",
+            "private personal GitHub repository",
+            "provision-init",
+            "provision-plan",
+            "provision-confirm",
+            "provision-run",
+            "provision-resume",
+        ):
+            self.assertIn(text, skill)
+
     def test_openai_metadata_contains_skill_prompt(self) -> None:
         metadata = (SKILL_ROOT / "agents" / "openai.yaml").read_text(encoding="utf-8")
         self.assertIn("$rd-bot-project-autopilot", metadata)

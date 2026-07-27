@@ -24,6 +24,26 @@ The only POST routes are:
 - `/admin/rd-tasks/{numericTaskId}/retry`;
 - `/admin/rd-tasks/{numericTaskId}/evaluations`.
 
+## Provisioning writes
+
+`live-provision` adds exactly four more writes, all gated by `--live-provision`,
+`RD_BOT_AUTOPILOT_LIVE_PROVISION=1`, and a persisted `provision-confirm`
+receipt whose digest must be repeated via `--confirm-plan-sha256`:
+
+- one `gh api --method POST /user/repos` with fixed private/auto-init args;
+- `POST /knowledge-base`;
+- `POST /knowledge-base/{id}/docs/write` for the two generated documents;
+- `POST /admin/projects`.
+
+Each write records a Manifest intent first and binds only an exact, marker-
+verified read-back. An ambiguous outcome reconciles at most one exact
+candidate; zero, multiple, or mismatched candidates become a resumable
+`WAITING_HUMAN`. `provision-resume` is reconciliation-only and never resends.
+The repository owner must equal the authenticated `gh` user; organization,
+public, or internal repositories, clone, push, collaborators, secrets, external
+source ingestion, and automatic cleanup are refused. On failure, only the
+created IDs and URLs are reported as a manual cleanup list.
+
 There is no automatic approval, pause, cancel, delete, merge, deploy, branch
 mutation, shell, raw `curl`, or Git command path. The Skill stops for a human
 at approval, merge, deployment, deletion, an unknown state, or an ambiguous

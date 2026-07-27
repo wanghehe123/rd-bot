@@ -40,6 +40,22 @@ states as unknown until reviewed.
   references for the final evidence record. Logs and arbitrary artifact
   content are intentionally not exposed by this Skill.
 
+## Project provisioning
+
+- `POST /knowledge-base` creates the run's knowledge base; `GET /knowledge-base`
+  (name filter) and `GET /knowledge-base/{id}` reconcile and verify it.
+- `POST /knowledge-base/{id}/docs/write` writes only the two generated Markdown
+  documents (`project-charter.md`, `delivery-brief.md`) with
+  `STRUCTURE_AWARE` chunking; `GET /knowledge-base/{id}/docs` verifies their
+  checksums against the frozen plan hashes.
+- `POST /admin/projects` creates the enabled project bound to the private
+  repository and knowledge base; `GET /admin/projects` (keyword) and
+  `GET /admin/projects/{projectId}` reconcile and verify it.
+- GitHub access is limited to `gh auth status`, `gh api user`,
+  `gh api --method POST /user/repos` with fixed private/auto-init arguments,
+  and `gh api /repos/{owner}/{name}`. There is no clone, push, token, or
+  generic `gh` passthrough.
+
 The frontend may display richer objects, but it must not be used to infer a
 write contract. If a response omits an exact identity field or introduces an
 unknown lifecycle status, stop and request human review.
