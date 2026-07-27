@@ -11,6 +11,7 @@ from datetime import datetime
 from functools import wraps
 from typing import Any
 
+from .github_client import GitHubPolicyError, GitHubTransportError
 from .iteration_state import ManifestError, ManifestStore, RunStatus
 from .rd_bot_client import ApiTransportError, ClientPolicyError
 from .run_artifacts import redact
@@ -531,6 +532,319 @@ class AutopilotWorkflow:
         hook(*args)
 
 
+class ProjectProvisioningWorkflow:
+    """Provision one private repository, knowledge base, sources, and RD-Bot project.
+
+    Every remote create records its intent first, verifies the created resource
+    by reading it back, and binds only exact matches. An ambiguous outcome is
+    reconciled once without any resend; zero or multiple candidates become a
+    resumable WAITING_HUMAN stop.
+    """
+
+    _MAX_ADVANCE_STEPS = 12
+
+    def __init__(
+        self,
+        store: ManifestStore,
+        github_client: Any,
+        rd_client: Any,
+        *,
+        live_enabled: bool = False,
+    ) -> None:
+        self.store = store
+        self.github_client = github_client
+        self.rd_client = rd_client
+        self.live_enabled = bool(live_enabled)
+
+    def provision(self) -> dict[str, Any]:
+        with self.store.lock():
+            return self._advance(allow_creates=True)
+
+    def resume_provision(self) -> dict[str, Any]:
+        """Continue a persisted provisioning intent by reconciliation only."""
+
+        with self.store.lock():
+            manifest = self.store.load()
+            if RunStatus(manifest["status"]) == RunStatus.WAITING_HUMAN:
+                self.store.resume_provisioning()
+            return self._advance(allow_creates=False)
+
+    def _advance(self, *, allow_creates: bool) -> dict[str, Any]:
+        manifest = self.store.enforce_limits()
+        if manifest.get("schemaVersion") != "rd-bot-autopilot/v2":
+            raise WorkflowError("project provisioning requires a v2 manifest")
+        status = RunStatus(manifest["status"])
+        if status == RunStatus.BOUNDED_STOP:
+            return manifest
+        if manifest["mode"] == "dry-run":
+            if status != RunStatus.PLAN_READY:
+                raise WorkflowError("dry-run provisioning requires PLAN_READY")
+            return self.store.finish(
+                RunStatus.DRY_RUN_COMPLETED,
+                "dry-run validated the frozen provision plan without remote writes",
+            )
+        if not self.live_enabled:
+            raise WorkflowError("live provisioning requires --live-provision and the environment opt-in")
+        creates: dict[RunStatus, Callable[[dict[str, Any]], dict[str, Any]]] = {
+            RunStatus.LIVE_CONFIRMED: self._create_github,
+            RunStatus.GH_BOUND: self._create_knowledge_base,
+            RunStatus.KB_BOUND: self._write_sources,
+            RunStatus.SOURCES_BOUND: self._create_project,
+        }
+        reconciles: dict[RunStatus, Callable[[dict[str, Any]], dict[str, Any]]] = {
+            RunStatus.GH_INTENT: self._reconcile_github,
+            RunStatus.KB_INTENT: self._reconcile_knowledge_base,
+            RunStatus.SOURCES_INTENT: self._reconcile_sources,
+            RunStatus.RD_PROJECT_INTENT: self._reconcile_project,
+        }
+        for _ in range(self._MAX_ADVANCE_STEPS):
+            manifest = self.store.load()
+            status = RunStatus(manifest["status"])
+            if status == RunStatus.PLAN_READY:
+                raise WorkflowError("live provisioning requires provision-confirm with the exact plan digest")
+            if status == RunStatus.RD_PROJECT_BOUND:
+                manifest = self.store.mark_provision_ready()
+            elif status in reconciles:
+                manifest = reconciles[status](manifest)
+            elif status in creates:
+                if not allow_creates:
+                    return manifest
+                manifest = creates[status](manifest)
+            else:
+                return manifest
+            if RunStatus(manifest["status"]) in {RunStatus.WAITING_HUMAN, RunStatus.BOUNDED_STOP}:
+                return manifest
+        raise WorkflowError("provisioning did not converge; manual review required")
+
+    def _plan(self, manifest: Mapping[str, Any]) -> dict[str, Any]:
+        plan = manifest.get("provisioning", {}).get("plan")
+        if not isinstance(plan, dict):
+            raise WorkflowError("provisioning requires a frozen plan")
+        return plan
+
+    def _create_github(self, manifest: dict[str, Any]) -> dict[str, Any]:
+        repository = self._plan(manifest)["repository"]
+        self.store.record_provision_intent("github", repository)
+        try:
+            response = self.github_client.create_private_repository(
+                owner=repository["owner"],
+                name=repository["name"],
+                description=repository["description"],
+            )
+        except GitHubTransportError as exc:
+            if not exc.ambiguous:
+                return self._wait("GITHUB_TRANSPORT_FAILED", str(exc))
+            return self._reconcile_github(self.store.load())
+        except GitHubPolicyError:
+            raise
+        except Exception as exc:  # Fail closed for unknown GitHub failures.
+            return self._wait("GITHUB_CREATE_FAILED", type(exc).__name__)
+        view = _github_view(response, repository)
+        if view is None:
+            return self._wait("AMBIGUOUS_GITHUB_CREATE", "created repository did not match the frozen plan")
+        return self.store.bind_provision_resource("github", view)
+
+    def _reconcile_github(self, manifest: dict[str, Any]) -> dict[str, Any]:
+        repository = self._plan(manifest)["repository"]
+        try:
+            response = self.github_client.get_repository(repository["owner"], repository["name"])
+        except Exception as exc:
+            return self._wait("AMBIGUOUS_GITHUB_CREATE", f"repository reconciliation read failed: {type(exc).__name__}")
+        view = _github_view(response, repository)
+        if view is None:
+            return self._wait("AMBIGUOUS_GITHUB_CREATE", "reconciled repository did not match the frozen plan")
+        return self.store.bind_provision_resource("github", view)
+
+    def _create_knowledge_base(self, manifest: dict[str, Any]) -> dict[str, Any]:
+        knowledge = self._plan(manifest)["knowledgeBase"]
+        payload = {"name": knowledge["name"], "description": knowledge["description"]}
+        self._require_preflight("preflight_knowledge_base", payload)
+        self.store.record_provision_intent("knowledgeBase", knowledge)
+        try:
+            response = self.rd_client.create_knowledge_base(payload)
+        except ApiTransportError as exc:
+            if not exc.ambiguous:
+                return self._wait("KNOWLEDGE_BASE_TRANSPORT_FAILED", str(exc))
+            return self._reconcile_knowledge_base(self.store.load())
+        except ClientPolicyError:
+            raise
+        except Exception as exc:
+            return self._wait("KNOWLEDGE_BASE_CREATE_FAILED", type(exc).__name__)
+        knowledge_base_id = _resource_id(response)
+        if knowledge_base_id is None:
+            return self._wait(
+                "AMBIGUOUS_KNOWLEDGE_BASE_CREATE",
+                "create response did not contain one safe knowledge base ID",
+            )
+        return self._verify_and_bind_knowledge_base(knowledge, knowledge_base_id)
+
+    def _reconcile_knowledge_base(self, manifest: dict[str, Any]) -> dict[str, Any]:
+        knowledge = self._plan(manifest)["knowledgeBase"]
+        try:
+            listing = self.rd_client.list_knowledge_bases(name=knowledge["name"])
+        except Exception as exc:
+            return self._wait("AMBIGUOUS_KNOWLEDGE_BASE_CREATE", f"reconciliation read failed: {type(exc).__name__}")
+        matches: dict[str, Mapping[str, Any]] = {}
+        for record in _records(listing):
+            record_id = _resource_id(record)
+            if record_id is not None and _knowledge_base_matches(record, knowledge):
+                matches[record_id] = record
+        if len(matches) != 1:
+            return self._wait(
+                "AMBIGUOUS_KNOWLEDGE_BASE_CREATE",
+                "reconciliation found zero or multiple exact knowledge base matches",
+                candidates=sorted(matches),
+            )
+        return self._verify_and_bind_knowledge_base(knowledge, next(iter(matches)))
+
+    def _verify_and_bind_knowledge_base(self, knowledge: Mapping[str, Any], knowledge_base_id: str) -> dict[str, Any]:
+        try:
+            detail = _as_mapping(self.rd_client.get_knowledge_base(knowledge_base_id))
+        except Exception as exc:
+            return self._wait("AMBIGUOUS_KNOWLEDGE_BASE_CREATE", f"knowledge base read-back failed: {type(exc).__name__}")
+        if not _knowledge_base_matches(detail, knowledge):
+            return self._wait("AMBIGUOUS_KNOWLEDGE_BASE_CREATE", "knowledge base read-back did not match the frozen plan")
+        view = {"id": knowledge_base_id, "name": knowledge["name"], "marker": knowledge["marker"]}
+        return self.store.bind_provision_resource("knowledgeBase", view)
+
+    def _write_sources(self, manifest: dict[str, Any]) -> dict[str, Any]:
+        documents = self._plan(manifest)["documents"]
+        knowledge_base_id = _bound_knowledge_base_id(manifest)
+        payloads = [_document_payload(document) for document in documents]
+        for payload in payloads:
+            self._require_preflight("preflight_knowledge_document", knowledge_base_id, payload)
+        self.store.record_provision_intent("sources", documents)
+        for document, payload in zip(documents, payloads):
+            try:
+                self.rd_client.write_knowledge_document(knowledge_base_id, payload)
+            except ApiTransportError as exc:
+                if not exc.ambiguous:
+                    return self._wait("SOURCE_WRITE_TRANSPORT_FAILED", str(exc), sourceName=document["sourceName"])
+                # An ambiguous write reconciles below without any resend.
+                break
+            except ClientPolicyError:
+                raise
+            except Exception as exc:
+                return self._wait("SOURCE_WRITE_FAILED", type(exc).__name__, sourceName=document["sourceName"])
+        return self._reconcile_sources(self.store.load())
+
+    def _reconcile_sources(self, manifest: dict[str, Any]) -> dict[str, Any]:
+        documents = self._plan(manifest)["documents"]
+        knowledge_base_id = _bound_knowledge_base_id(manifest)
+        try:
+            listing = self.rd_client.list_knowledge_documents(knowledge_base_id)
+        except Exception as exc:
+            return self._wait("AMBIGUOUS_SOURCE_WRITE", f"source reconciliation read failed: {type(exc).__name__}")
+        records = _records(listing)
+        views: list[dict[str, Any]] = []
+        for document in documents:
+            matches: dict[str, Mapping[str, Any]] = {}
+            for record in records:
+                record_id = _resource_id(record)
+                if record_id is not None and _document_matches(record, document):
+                    matches[record_id] = record
+            if len(matches) != 1:
+                return self._wait(
+                    "AMBIGUOUS_SOURCE_WRITE",
+                    "reconciliation found zero or multiple exact source matches",
+                    sourceName=document["sourceName"],
+                    candidates=sorted(matches),
+                )
+            views.append({
+                "id": next(iter(matches)),
+                "sourceName": document["sourceName"],
+                "sha256": document["sha256"],
+                "marker": document["marker"],
+            })
+        return self.store.bind_provision_resource("sources", views)
+
+    def _create_project(self, manifest: dict[str, Any]) -> dict[str, Any]:
+        plan = self._plan(manifest)
+        request = _project_request(plan, manifest)
+        self._require_preflight("preflight_project", request)
+        self.store.record_provision_intent("project", request)
+        try:
+            response = self.rd_client.create_project(request)
+        except ApiTransportError as exc:
+            if not exc.ambiguous:
+                return self._wait("PROJECT_TRANSPORT_FAILED", str(exc))
+            return self._reconcile_project(self.store.load())
+        except ClientPolicyError:
+            raise
+        except Exception as exc:
+            return self._wait("PROJECT_CREATE_FAILED", type(exc).__name__)
+        project_id = _project_id(response)
+        if project_id is None:
+            return self._wait("AMBIGUOUS_PROJECT_CREATE", "create response did not contain one numeric projectId")
+        return self._verify_and_bind_project(plan, request, project_id)
+
+    def _reconcile_project(self, manifest: dict[str, Any]) -> dict[str, Any]:
+        plan = self._plan(manifest)
+        intent = manifest.get("provisioning", {}).get("intents", {}).get("project")
+        if not isinstance(intent, dict) or not isinstance(intent.get("request"), dict):
+            raise WorkflowError("project reconciliation requires a persisted project intent")
+        request = intent["request"]
+        try:
+            listing = self.rd_client.list_projects(keyword=request["projectKey"])
+        except Exception as exc:
+            return self._wait("AMBIGUOUS_PROJECT_CREATE", f"reconciliation read failed: {type(exc).__name__}")
+        marker = plan["project"]["marker"]
+        matches: dict[str, Mapping[str, Any]] = {}
+        for record in _records(listing):
+            record_id = _project_id(record)
+            if (
+                record_id is not None
+                and record.get("projectKey") == request["projectKey"]
+                and marker in str(record.get("description", ""))
+            ):
+                matches[record_id] = record
+        if len(matches) != 1:
+            return self._wait(
+                "AMBIGUOUS_PROJECT_CREATE",
+                "reconciliation found zero or multiple exact project matches",
+                candidates=sorted(matches),
+            )
+        return self._verify_and_bind_project(plan, request, next(iter(matches)))
+
+    def _verify_and_bind_project(
+        self,
+        plan: Mapping[str, Any],
+        request: Mapping[str, Any],
+        project_id: str,
+    ) -> dict[str, Any]:
+        try:
+            detail = _as_mapping(self.rd_client.get_project(project_id))
+        except Exception as exc:
+            return self._wait("AMBIGUOUS_PROJECT_CREATE", f"project read-back failed: {type(exc).__name__}", projectId=project_id)
+        if any(detail.get(key) != request[key] for key in request):
+            return self._wait("AMBIGUOUS_PROJECT_CREATE", "project read-back did not match the recorded intent", projectId=project_id)
+        view = {
+            "projectId": project_id,
+            "projectKey": request["projectKey"],
+            "name": request["name"],
+            "repositoryUrl": request["repositoryUrl"],
+            "repoOwner": request["repoOwner"],
+            "repoName": request["repoName"],
+            "defaultBranch": request["defaultBranch"],
+            "knowledgeBaseId": request["knowledgeBaseId"],
+            "marker": plan["project"]["marker"],
+        }
+        return self.store.bind_provision_resource("project", view)
+
+    def _wait(self, approval_type: str, reason: str, **details: Any) -> dict[str, Any]:
+        approval = {"type": approval_type, **{key: value for key, value in details.items() if value is not None}}
+        try:
+            return self.store.set_waiting_human(reason[:1000], approval)
+        except ManifestError as exc:
+            raise WorkflowError(f"cannot transition to WAITING_HUMAN: {exc}") from exc
+
+    def _require_preflight(self, method_name: str, *args: Any) -> None:
+        hook = getattr(self.rd_client, method_name, None)
+        if not callable(hook):
+            raise ClientPolicyError(f"live client is missing required preflight: {method_name}")
+        hook(*args)
+
+
 def _iteration(manifest: Mapping[str, Any], iteration_no: int) -> Mapping[str, Any]:
     for item in manifest.get("iterations", []):
         if item.get("iterationNo") == iteration_no:
@@ -953,3 +1267,106 @@ def _artifact_refs(artifacts: Any) -> list[str]:
             if isinstance(ref, str) and re.fullmatch(r"[A-Za-z0-9._-]{1,200}", ref):
                 refs.append(ref)
     return refs
+
+
+_SAFE_RESOURCE_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,120}$")
+
+
+def _resource_id(value: Any) -> str | None:
+    if not isinstance(value, Mapping):
+        return None
+    record = _as_mapping(value)
+    candidate = record.get("id")
+    if isinstance(candidate, int) and not isinstance(candidate, bool):
+        candidate = str(candidate)
+    if isinstance(candidate, str) and _SAFE_RESOURCE_ID_RE.fullmatch(candidate):
+        return candidate
+    return None
+
+
+def _project_id(value: Any) -> str | None:
+    if not isinstance(value, Mapping):
+        return None
+    record = _as_mapping(value)
+    candidate = record.get("projectId", record.get("id"))
+    if isinstance(candidate, (str, int)) and not isinstance(candidate, bool) and str(candidate).isdigit():
+        return str(candidate)
+    return None
+
+
+def _github_view(response: Any, repository: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Map one verified GitHub repository response onto the bound resource shape."""
+
+    if not isinstance(response, Mapping):
+        return None
+    owner = response.get("owner")
+    login = owner.get("login") if isinstance(owner, Mapping) else None
+    if not isinstance(login, str) or login.casefold() != str(repository["owner"]).casefold():
+        return None
+    if response.get("private") is not True:
+        return None
+    if response.get("name") not in {None, repository["name"]}:
+        return None
+    if repository["marker"] not in str(response.get("description", "")):
+        return None
+    branch = response.get("default_branch")
+    if not isinstance(branch, str) or not branch.strip() or len(branch) > 120:
+        return None
+    url = response.get("html_url")
+    if not isinstance(url, str) or url != f"https://github.com/{repository['owner']}/{repository['name']}":
+        return None
+    return {
+        "owner": repository["owner"],
+        "name": repository["name"],
+        "url": url,
+        "defaultBranch": branch,
+        "marker": repository["marker"],
+    }
+
+
+def _knowledge_base_matches(record: Mapping[str, Any], knowledge: Mapping[str, Any]) -> bool:
+    if record.get("name") != knowledge["name"]:
+        return False
+    return str(knowledge["marker"]) in str(record.get("description", ""))
+
+
+def _document_payload(document: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "sourceName": document["sourceName"],
+        "knowledgeType": document["knowledgeType"],
+        "mimeType": document["mimeType"],
+        "content": document["content"],
+        "chunkingMode": document["chunkingMode"],
+        "chunkSize": document["chunkSize"],
+        "overlapSize": document["overlapSize"],
+    }
+
+
+def _document_matches(record: Mapping[str, Any], document: Mapping[str, Any]) -> bool:
+    if record.get("sourceName") != document["sourceName"]:
+        return False
+    checksum = record.get("checksum", record.get("sha256"))
+    return isinstance(checksum, str) and checksum == document["sha256"]
+
+
+def _bound_knowledge_base_id(manifest: Mapping[str, Any]) -> str:
+    resources = manifest.get("provisioning", {}).get("resources", {})
+    knowledge = resources.get("knowledgeBase")
+    if not isinstance(knowledge, Mapping) or not isinstance(knowledge.get("id"), str):
+        raise WorkflowError("source writes require a bound knowledge base")
+    return knowledge["id"]
+
+
+def _project_request(plan: Mapping[str, Any], manifest: Mapping[str, Any]) -> dict[str, Any]:
+    project = plan["project"]
+    return {
+        "projectKey": project["projectKey"],
+        "name": project["name"],
+        "description": project["description"],
+        "repositoryUrl": project["repositoryUrl"],
+        "repoOwner": project["repoOwner"],
+        "repoName": project["repoName"],
+        "defaultBranch": project["defaultBranch"],
+        "enabled": project["enabled"],
+        "knowledgeBaseId": _bound_knowledge_base_id(manifest),
+    }
