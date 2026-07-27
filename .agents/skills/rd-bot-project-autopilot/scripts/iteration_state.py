@@ -451,6 +451,79 @@ class ManifestStore:
         self._write(manifest)
         return manifest
 
+    def record_decision(
+        self,
+        decision: str,
+        reason: str,
+        evidence_ids: list[str],
+        *,
+        next_goal: str | None = None,
+    ) -> dict[str, Any]:
+        """Persist a bounded manager decision after validating local evidence references."""
+
+        manifest = self.load()
+        if decision not in {"COMPLETE", "NEXT_ITERATION", "STOP", "WAITING_HUMAN"}:
+            raise ManifestError("unknown decision")
+        if not isinstance(evidence_ids, list) or any(not isinstance(item, str) for item in evidence_ids):
+            raise ManifestError("evidenceIds must be a list of strings")
+        known: set[str] = set()
+        for item in manifest.get("iterations", []):
+            for key in ("taskId", "evaluationRunId", "marker", "exactTitle"):
+                if item.get(key):
+                    known.add(str(item[key]))
+            for stage in item.get("stageRuns", []):
+                if isinstance(stage, dict) and stage.get("stageRunId"):
+                    known.add(str(stage["stageRunId"]))
+        unknown = sorted(set(evidence_ids) - known)
+        if unknown:
+            raise ManifestError(f"evidence id is not present in manifest: {unknown[0]}")
+        clean_reason = str(reason).strip()[:1000]
+        if not clean_reason:
+            raise ManifestError("decision reason must not be empty")
+        if not manifest.get("iterations"):
+            raise ManifestError("decision requires at least one iteration")
+        latest = manifest["iterations"][-1]
+        latest["decision"] = {
+            "decision": decision,
+            "reason": clean_reason,
+            "evidenceIds": list(evidence_ids),
+            "nextGoal": next_goal.strip() if isinstance(next_goal, str) else "",
+        }
+        current = RunStatus(manifest["status"])
+        if decision == "COMPLETE":
+            evaluation = latest.get("evaluation") or {}
+            if current != RunStatus.LEARNING or latest.get("evaluationRunId") is None:
+                raise ManifestError("COMPLETE requires a terminal evaluation")
+            if evaluation.get("status") != "SUCCEEDED" or evaluation.get("overallPassed") is not True:
+                raise ManifestError("COMPLETE requires a successful evaluation")
+            if not evidence_ids:
+                raise ManifestError("COMPLETE requires evidenceIds")
+            manifest["status"] = RunStatus.COMPLETED.value
+            manifest["stopReason"] = clean_reason
+        elif decision == "NEXT_ITERATION":
+            if current != RunStatus.LEARNING:
+                raise ManifestError("NEXT_ITERATION requires LEARNING status")
+            if len(manifest["iterations"]) >= MAX_ITERATIONS:
+                raise ManifestError("NEXT_ITERATION is unavailable after the final iteration")
+            if not isinstance(next_goal, str) or not next_goal.strip():
+                raise ManifestError("NEXT_ITERATION requires nextGoal")
+            manifest["idea"] = next_goal.strip()[:4000]
+            manifest["status"] = RunStatus.PLANNING.value
+        elif decision == "STOP":
+            if RunStatus.BOUNDED_STOP not in ALLOWED_TRANSITIONS.get(current, set()):
+                raise ManifestError(f"{current.value} -> BOUNDED_STOP is not allowed")
+            manifest["status"] = RunStatus.BOUNDED_STOP.value
+            manifest["stopReason"] = clean_reason
+        else:
+            if RunStatus.WAITING_HUMAN not in ALLOWED_TRANSITIONS.get(current, set()):
+                raise ManifestError(f"{current.value} -> WAITING_HUMAN is not allowed")
+            manifest["status"] = RunStatus.WAITING_HUMAN.value
+            manifest["pendingApproval"] = {"type": "MANAGER_DECISION", "reason": clean_reason}
+            manifest["stopReason"] = clean_reason
+        manifest["lastTransitionReason"] = clean_reason
+        self._write(manifest)
+        return manifest
+
     def finish(self, status: RunStatus, reason: str) -> dict[str, Any]:
         manifest = self.load()
         if status not in {RunStatus.COMPLETED, RunStatus.BOUNDED_STOP, RunStatus.DRY_RUN_COMPLETED}:

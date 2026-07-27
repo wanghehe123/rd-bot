@@ -10,7 +10,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from .iteration_state import ManifestError, ManifestStore, RunStatus
-from .rd_bot_client import ApiTransportError
+from .rd_bot_client import ApiTransportError, ClientPolicyError
 from .run_artifacts import redact
 
 
@@ -97,6 +97,8 @@ class AutopilotWorkflow:
             if not exc.ambiguous:
                 return self._wait("TASK_CREATION_TRANSPORT_FAILED", str(exc))
             return self._reconcile_create(iteration_no)
+        except ClientPolicyError:
+            raise
         except Exception as exc:  # Fail closed for unknown provider/client failures.
             return self._wait("TASK_CREATION_FAILED", type(exc).__name__)
 
@@ -111,6 +113,37 @@ class AutopilotWorkflow:
             )
         self.store.bind_task(iteration_no, task_id)
         return self._submit_bound(iteration_no)
+
+    def resume(self, iteration_no: int) -> dict[str, Any]:
+        """Continue a persisted intent or observation without creating another task."""
+
+        manifest = self.store.load()
+        status = RunStatus(manifest["status"])
+        item = _iteration(manifest, iteration_no)
+        if status == RunStatus.DISPATCH_INTENT:
+            return self._reconcile_create(iteration_no)
+        if status == RunStatus.TASK_BOUND:
+            return self._submit_bound(iteration_no)
+        if status == RunStatus.SUBMIT_INTENT:
+            task_id = str(item.get("taskId") or "")
+            return self._reconcile_submit(iteration_no, task_id)
+        if status == RunStatus.OBSERVING:
+            return self.observe(iteration_no)
+        if status == RunStatus.RETRY_INTENT:
+            return self._reconcile_retry(
+                iteration_no,
+                str(item.get("taskId") or ""),
+                _as_int((item.get("retryPreview") or {}).get("sourceTaskVersion")),
+                str(item.get("retryOperatorNote") or ""),
+            )
+        if status == RunStatus.EVALUATION_INTENT:
+            return self._reconcile_evaluation(iteration_no, str(item.get("taskId") or ""), item, None)
+        if status == RunStatus.EVALUATING:
+            run_id = str(item.get("evaluationRunId") or "")
+            if not run_id:
+                return self._wait("UNKNOWN_EVALUATION_STATE", "evaluation intent has no runId")
+            return self._poll_evaluation(iteration_no, run_id, None)
+        return manifest
 
     def _reconcile_create(self, iteration_no: int) -> dict[str, Any]:
         manifest = self.store.load()
@@ -177,6 +210,8 @@ class AutopilotWorkflow:
             if not exc.ambiguous:
                 return self._wait("TASK_SUBMIT_TRANSPORT_FAILED", str(exc), task_id=task_id)
             return self._reconcile_submit(iteration_no, task_id)
+        except ClientPolicyError:
+            raise
         except Exception as exc:
             return self._wait("TASK_SUBMIT_FAILED", type(exc).__name__, task_id=task_id)
         self.store.mark_observing(iteration_no, "task submit accepted; observation may begin")
@@ -273,6 +308,8 @@ class AutopilotWorkflow:
             if not exc.ambiguous:
                 return self._wait("TASK_RETRY_TRANSPORT_FAILED", str(exc), task_id=task_id)
             return self._reconcile_retry(iteration_no, task_id, source_version, intent["retryOperatorNote"])
+        except ClientPolicyError:
+            raise
         except Exception as exc:
             return self._wait("TASK_RETRY_FAILED", type(exc).__name__, task_id=task_id)
         self.store.mark_observing(iteration_no, "retry accepted; observation may resume")
@@ -312,6 +349,8 @@ class AutopilotWorkflow:
             if not exc.ambiguous:
                 return self._wait("EVALUATION_CREATION_TRANSPORT_FAILED", str(exc), task_id=task_id)
             return self._reconcile_evaluation(iteration_no, task_id, intent, deadline_epoch)
+        except ClientPolicyError:
+            raise
         except Exception as exc:
             return self._wait("EVALUATION_CREATION_FAILED", type(exc).__name__, task_id=task_id)
         run_id = _extract_run_id(response)
