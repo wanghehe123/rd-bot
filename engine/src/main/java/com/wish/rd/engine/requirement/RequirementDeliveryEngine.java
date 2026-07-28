@@ -2969,7 +2969,7 @@ public class RequirementDeliveryEngine {
                     - 不创建新 PR，也不得修改 /work/repo 中的跟踪文件；临时脚本只能写入 /work/output/qa-work。
                     - 退出状态契约：验证过程中允许用 git stash/checkout 做原始态对照，但写 result.json 前必须恢复原状——/work/repo 退出时必须保持候选补丁在位的状态（git diff HEAD 非空且与进入时一致），丢弃补丁即判基础设施失败。
                     - 当前需求验收（CURRENT）和受影响的既有关键路径回归（REGRESSION）都必须真实执行；任一必需检查缺少证据或被跳过都阻断交付。
-                    - 必须记录每条命令的退出码、耗时和日志；每个 qa-evidence/ 日志文件必须非空，至少包含命令文本、退出码和时间戳；如果命令成功且无输出（如 git diff --check），在日志中写入命令和 exit code 0 及说明。浏览器验证必须补充截图、trace、console 和 network 证据。
+                    - 必须记录每条命令的退出码、耗时和日志；每个 qa-evidence/ 日志文件必须非空，至少包含命令文本、退出码和时间戳；如果命令成功且无输出（如 git diff --check），在日志中写入命令和 exit code 0 及说明。浏览器验证必须补充截图、trace、console 和 network 证据，且这些证据必须被 acceptanceResults 的 logArtifactId 或 evidenceArtifactIds 显式引用：至少各引用一次 qa-evidence/console/、qa-evidence/network/、qa-evidence/traces/ 下的文件，以及 qa-evidence/screenshots/ 下文件名含 desktop 和含 mobile 的截图各一张；只采集或只写入 manifest 而不引用会导致整个结果被宿主拒绝。
                     - 如用包装脚本记录命令，必须以 bash -c '完整命令行' 方式执行；直接把带环境变量前缀的命令（如 PYTHONPATH=x cmd）当参数逐词执行会报 127；时间预算优先保障真实命令执行与 result.json 落盘，深度分析写进 summary 即可，不要因分析耗尽容器超时。
                     - evidenceArtifactIds 和 logArtifactId 只能引用 /work/output/qa-evidence/ 下实际存在的证据文件，不要引用 /work/output/qa-work/ 下的临时文件。
                     - manifest.json 必须包含 "version": 1（整数）和 "artifacts" 数组；不要使用 "schema" 替代 "version"。

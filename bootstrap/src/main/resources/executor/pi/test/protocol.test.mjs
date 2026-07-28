@@ -209,7 +209,7 @@ test("accepts a complete QA report and enforces cross-field consistency", () => 
       decisionSource: "AUTO_DETECTION",
       baseUrl: "http://127.0.0.1:3000",
       browser: "chromium",
-      viewports: ["desktop-1440x900"],
+      viewports: ["desktop-1440x900", "mobile-390x844"],
     },
     acceptanceResults: [
       {
@@ -220,7 +220,13 @@ test("accepts a complete QA report and enforces cross-field consistency", () => 
         exitCode: 1,
         durationMillis: 1200,
         logArtifactId: "qa-evidence/commands/test.log",
-        evidenceArtifactIds: ["qa-evidence/screenshots/search.png"],
+        evidenceArtifactIds: [
+          "qa-evidence/screenshots/current-desktop.png",
+          "qa-evidence/screenshots/current-mobile.png",
+          "qa-evidence/console/current.log",
+          "qa-evidence/network/current.log",
+          "qa-evidence/traces/current.zip",
+        ],
       },
       {
         criteria: "existing pages render",
@@ -238,6 +244,109 @@ test("accepts a complete QA report and enforces cross-field consistency", () => 
   const inconsistent = { ...report, status: "PASSED" };
   assert.ok(validateRoleResult("QA_AGENT", inconsistent)
       .some((error) => error.includes("requires all acceptanceResults")));
+});
+
+test("rejects browser QA that collects but does not reference console and network evidence", () => {
+  const report = {
+    status: "PASSED",
+    summary: "all acceptance criteria pass under browser validation",
+    failureCategory: "NONE",
+    retryRecommendation: "NONE",
+    evidenceManifestArtifactId: "qa-evidence/manifest.json",
+    browserValidation: {
+      required: true,
+      performed: true,
+      decisionSource: "AUTO_DETECTION",
+      baseUrl: "http://127.0.0.1:3000",
+      browser: "chromium",
+      viewports: ["desktop-1440x900", "mobile-390x844"],
+    },
+    acceptanceResults: [
+      {
+        criteria: "feature renders",
+        scope: "CURRENT",
+        command: "bash current-browser.sh",
+        status: "PASSED",
+        exitCode: 0,
+        durationMillis: 30000,
+        logArtifactId: "qa-evidence/commands/browser.log",
+        evidenceArtifactIds: [
+          "qa-evidence/screenshots/current-desktop.png",
+          "qa-evidence/screenshots/current-mobile.png",
+          "qa-evidence/traces/current.zip",
+        ],
+      },
+      {
+        criteria: "existing pages render",
+        scope: "REGRESSION",
+        command: "npm run build",
+        status: "PASSED",
+        exitCode: 0,
+        durationMillis: 4000,
+        logArtifactId: "qa-evidence/commands/build.log",
+        evidenceArtifactIds: ["qa-evidence/commands/build.log"],
+      },
+    ],
+  };
+  const errors = validateRoleResult("QA_AGENT", report);
+  assert.ok(errors.some((error) => error.includes("reference a qa-evidence/console/ log")));
+  assert.ok(errors.some((error) => error.includes("reference a qa-evidence/network/ log")));
+  const referenced = {
+    ...report,
+    acceptanceResults: report.acceptanceResults.map((item, index) => (index === 0
+        ? {
+          ...item,
+          evidenceArtifactIds: [
+            ...item.evidenceArtifactIds,
+            "qa-evidence/console/current.log",
+            "qa-evidence/network/current.log",
+          ],
+        }
+        : item)),
+  };
+  assert.deepEqual(validateRoleResult("QA_AGENT", referenced), []);
+});
+
+test("does not require browser evidence references when browser validation was not performed", () => {
+  const report = {
+    status: "FAILED",
+    summary: "startup timed out before any browser flow",
+    failureCategory: "ENVIRONMENT",
+    retryRecommendation: "HUMAN",
+    evidenceManifestArtifactId: "qa-evidence/manifest.json",
+    browserValidation: {
+      required: true,
+      performed: false,
+      decisionSource: "AUTO_DETECTION",
+      baseUrl: "http://127.0.0.1:3000",
+      browser: "chromium",
+      viewports: [],
+    },
+    acceptanceResults: [
+      {
+        criteria: "feature renders",
+        scope: "CURRENT",
+        command: "bash start.sh",
+        status: "FAILED",
+        exitCode: 1,
+        durationMillis: 60000,
+        logArtifactId: "qa-evidence/commands/startup.log",
+        evidenceArtifactIds: ["qa-evidence/commands/startup.log"],
+      },
+      {
+        criteria: "existing pages render",
+        scope: "REGRESSION",
+        command: "npm run build",
+        status: "PASSED",
+        exitCode: 0,
+        durationMillis: 4000,
+        logArtifactId: "qa-evidence/commands/build.log",
+        evidenceArtifactIds: ["qa-evidence/commands/build.log"],
+      },
+    ],
+  };
+  const errors = validateRoleResult("QA_AGENT", report);
+  assert.ok(!errors.some((error) => error.includes("browser validation requires acceptanceResults")));
 });
 
 test("requires LOW budget confidence without historical samples for the reviewer", () => {

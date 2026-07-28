@@ -197,6 +197,9 @@ function validateQaReport(result) {
   });
   if (!currentPresent) errors.push("acceptanceResults must include CURRENT scope evidence");
   if (!regressionPresent) errors.push("acceptanceResults must include REGRESSION scope evidence");
+  if (browser && browser.required === true && browser.performed === true) {
+    checkBrowserEvidenceReferences(acceptance, errors);
+  }
   if (result.status === "PASSED" && nonPassedCount > 0) {
     errors.push("status PASSED requires all acceptanceResults to be PASSED");
   }
@@ -216,6 +219,49 @@ function validateQaReport(result) {
     errors.push("status FAILED requires a retryRecommendation");
   }
   return errors;
+}
+
+// Mirrors the host QaEvidenceBundleValidator: browser validation is only accepted
+// when acceptanceResults actually REFERENCE console/network/trace evidence and both
+// desktop and mobile screenshots. Collecting files or listing them in the manifest
+// is not enough; unreferenced evidence is rejected after the container is gone.
+function checkBrowserEvidenceReferences(acceptance, errors) {
+  const referenced = new Set();
+  for (const item of acceptance) {
+    if (!item || typeof item !== "object") continue;
+    if (typeof item.logArtifactId === "string") referenced.add(normalizeEvidencePath(item.logArtifactId));
+    if (Array.isArray(item.evidenceArtifactIds)) {
+      for (const id of item.evidenceArtifactIds) {
+        if (typeof id === "string") referenced.add(normalizeEvidencePath(id));
+      }
+    }
+  }
+  const paths = [...referenced].filter((path) => path !== "");
+  const isScreenshot = (path) => path.startsWith("qa-evidence/screenshots/")
+      && /\.(png|jpg|jpeg)$/.test(path);
+  if (!paths.some((path) => path.startsWith("qa-evidence/console/"))) {
+    errors.push("browser validation requires acceptanceResults to reference a qa-evidence/console/ log");
+  }
+  if (!paths.some((path) => path.startsWith("qa-evidence/network/"))) {
+    errors.push("browser validation requires acceptanceResults to reference a qa-evidence/network/ log");
+  }
+  if (!paths.some((path) => path.startsWith("qa-evidence/traces/") && path.endsWith(".zip"))) {
+    errors.push("browser validation requires acceptanceResults to reference a qa-evidence/traces/ .zip trace");
+  }
+  if (!paths.some((path) => isScreenshot(path) && path.includes("desktop"))) {
+    errors.push("browser validation requires acceptanceResults to reference a desktop screenshot under qa-evidence/screenshots/");
+  }
+  if (!paths.some((path) => isScreenshot(path) && path.includes("mobile"))) {
+    errors.push("browser validation requires acceptanceResults to reference a mobile screenshot under qa-evidence/screenshots/");
+  }
+}
+
+function normalizeEvidencePath(reference) {
+  let normalized = String(reference ?? "").trim().replace(/\\/g, "/").toLowerCase();
+  while (normalized.startsWith("./")) {
+    normalized = normalized.slice(2);
+  }
+  return normalized;
 }
 
 function checkEnum(node, field, allowed, errors, label = field) {
