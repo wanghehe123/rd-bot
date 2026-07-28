@@ -62,6 +62,21 @@ class ExecutionAllowlistPolicyTest {
         assertFalse(policy.evaluate(command("example", "order", "main", "repair/FS-1001")).allowed());
     }
 
+    @Test
+    void shouldSplitCommaSeparatedPatternsInsideOneEntry() {
+        ExecutionAllowlistPolicy policy = new ExecutionAllowlistPolicy(
+                true,
+                List.of("https://github.com/example/order.git, https://github.com/example/billing.git"),
+                List.of("example/order,example/billing"),
+                List.of("main, swebench/*"),
+                List.of("repair/*,requirement/*")
+        );
+
+        assertTrue(policy.evaluate(command("example", "order", "main", "requirement/task-1001")).allowed());
+        assertTrue(policy.evaluate(command("example", "billing", "swebench/django-10924", "repair/FS-1")).allowed());
+        assertFalse(policy.evaluate(command("example", "payment", "main", "requirement/task-1001")).allowed());
+    }
+
     private static RepairJobCommand command(String owner, String name, String baseBranch, String workBranch) {
         return command(owner, name, "https://github.com/" + owner + "/" + name + ".git", baseBranch, workBranch);
     }

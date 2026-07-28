@@ -2,12 +2,17 @@ package com.wish.rd.exec.repair.security.model;
 
 import com.wish.rd.exec.repair.execution.model.RepairJobCommand;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.regex.Pattern;
 
 /**
  * Execution target allowlist used before starting a repair container.
+ *
+ * <p>Each configured entry may itself contain multiple comma-separated
+ * patterns, so a single environment variable can allowlist several
+ * repositories or branches at once.</p>
  *
  * @param enabled        whether enforcement is enabled
  * @param repositoryUrls allowed repository URL patterns
@@ -146,6 +151,7 @@ public record ExecutionAllowlistPolicy(
             return List.of();
         }
         return values.stream()
+                .flatMap(value -> Arrays.stream(normalize(value).split(",")))
                 .map(ExecutionAllowlistPolicy::normalize)
                 .filter(value -> !value.isBlank())
                 .distinct()
