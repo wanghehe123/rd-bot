@@ -49,13 +49,7 @@ public class RepairWorkspaceFactory {
      * @throws IOException 工作区目录或输入文件写入失败
      */
     public RepairWorkspace create(RepairJobCommand command) throws IOException {
-        if (command == null) {
-            throw new IllegalArgumentException("command must not be null");
-        }
-        String taskDirectoryName = requireSafeTaskDirectoryName(command.taskId());
-        Path taskRoot = workspaceRoot.resolve(taskDirectoryName).toAbsolutePath().normalize();
-        ensureInsideWorkspaceRoot(taskRoot);
-        rejectSymlink(taskRoot);
+        Path taskRoot = prepareWorkspaceRoot(command);
 
         Path inputDirectory = taskRoot.resolve("input");
         Path repoDirectory = taskRoot.resolve("repo");
@@ -91,6 +85,30 @@ public class RepairWorkspaceFactory {
         Files.writeString(files.resultSchema(), resultSchemaJson(command), StandardCharsets.UTF_8);
 
         return new RepairWorkspace(taskRoot, inputDirectory, repoDirectory, outputDirectory, cacheDirectory, files);
+    }
+
+    /**
+     * 创建并校验任务根目录，但不写入任意输入、输出或仓库内容。
+     *
+     * <p>运行器可以先用此目录取得任务级执行锁，避免并发 attempt 在
+     * {@link #create(RepairJobCommand)} 写入 {@code input/} 时互相覆盖。</p>
+     *
+     * @param command 修复执行命令
+     * @return 已创建且位于配置工作区根目录内的任务目录
+     * @throws IOException 创建或校验根目录失败
+     */
+    public Path prepareWorkspaceRoot(RepairJobCommand command) throws IOException {
+        if (command == null) {
+            throw new IllegalArgumentException("command must not be null");
+        }
+        String taskDirectoryName = requireSafeTaskDirectoryName(command.taskId());
+        Path taskRoot = workspaceRoot.resolve(taskDirectoryName).toAbsolutePath().normalize();
+        ensureInsideWorkspaceRoot(taskRoot);
+        rejectSymlink(taskRoot);
+        Files.createDirectories(taskRoot);
+        rejectSymlink(taskRoot);
+        ensureRealPathInsideWorkspaceRoot(taskRoot);
+        return taskRoot;
     }
 
     private static void writeAttachments(Path inputDirectory, RepairJobCommand command) throws IOException {

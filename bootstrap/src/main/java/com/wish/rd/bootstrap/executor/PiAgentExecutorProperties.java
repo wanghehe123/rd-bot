@@ -13,9 +13,11 @@ import java.util.List;
 public class PiAgentExecutorProperties {
 
     public static final String DEFAULT_IMAGE = "rd-bot/pi-agent:local";
+    public static final String DEFAULT_QA_IMAGE = "rd-bot/pi-agent-qa:local";
     public static final String DEFAULT_NETWORK_MODE = "bridge";
 
     private String image = DEFAULT_IMAGE;
+    private String qaImage = DEFAULT_QA_IMAGE;
     private List<String> command = new ArrayList<>(List.of(
             "node",
             "/opt/rd-pi-bridge/src/rd-pi-bridge.mjs"
@@ -24,6 +26,7 @@ public class PiAgentExecutorProperties {
     private boolean removeAfterExit = true;
     private boolean allowPrivileged = false;
     private long executionTimeoutMillis = 0L;
+    private long rawEventMaxBytes = 16L * 1024L * 1024L;
 
     public String getImage() {
         return image;
@@ -31,6 +34,14 @@ public class PiAgentExecutorProperties {
 
     public void setImage(String image) {
         this.image = textOrDefault(image, DEFAULT_IMAGE);
+    }
+
+    public String getQaImage() {
+        return qaImage;
+    }
+
+    public void setQaImage(String qaImage) {
+        this.qaImage = textOrDefault(qaImage, DEFAULT_QA_IMAGE);
     }
 
     public List<String> getCommand() {
@@ -73,14 +84,24 @@ public class PiAgentExecutorProperties {
         this.executionTimeoutMillis = Math.max(0L, executionTimeoutMillis);
     }
 
+    public long getRawEventMaxBytes() {
+        return rawEventMaxBytes;
+    }
+
+    public void setRawEventMaxBytes(long rawEventMaxBytes) {
+        this.rawEventMaxBytes = Math.max(1L, rawEventMaxBytes);
+    }
+
     public DockerPiAgentExecutor.Configuration toExecutorConfiguration() {
         return new DockerPiAgentExecutor.Configuration(
                 image,
+                qaImage,
                 command,
                 networkMode,
                 removeAfterExit,
                 allowPrivileged,
-                executionTimeoutMillis
+                executionTimeoutMillis,
+                rawEventMaxBytes
         );
     }
 

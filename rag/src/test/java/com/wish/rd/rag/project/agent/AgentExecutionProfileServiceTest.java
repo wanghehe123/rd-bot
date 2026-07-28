@@ -13,7 +13,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 class AgentExecutionProfileServiceTest {
 
     @Test
-    void rejectsPiProfileForNonCodingRole() {
+    void acceptsPiProfileForEveryDeliveryRole() {
         AgentExecutionProfileService service = new AgentExecutionProfileService(
                 new InMemoryAgentExecutionProfileStore()
         );
@@ -32,7 +32,8 @@ class AgentExecutionProfileServiceTest {
                 1L
         );
 
-        assertThrows(IllegalArgumentException.class, () -> service.register(profile));
+        // Pi is now the default runtime for all four delivery roles, not only CODING_AGENT.
+        assertEquals(profile, service.register(profile));
     }
 
     @Test

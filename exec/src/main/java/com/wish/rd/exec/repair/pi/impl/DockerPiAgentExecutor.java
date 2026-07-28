@@ -18,7 +18,11 @@ import com.wish.rd.exec.repair.execution.model.RepairArtifactType;
 import com.wish.rd.exec.repair.execution.model.RepairExecutionResult;
 import com.wish.rd.exec.repair.execution.model.RepairExecutionStatus;
 import com.wish.rd.exec.repair.execution.model.RepairJobCommand;
+import com.wish.rd.exec.repair.qa.QaRepositoryProfileDetector;
+import com.wish.rd.exec.repair.qa.model.QaExecutionProfile;
+import com.wish.rd.exec.repair.result.AgentRoleResultValidator;
 import com.wish.rd.exec.repair.result.StructuredResultValidator;
+import com.wish.rd.exec.repair.result.model.AgentRoleResultValidation;
 import com.wish.rd.exec.repair.result.model.StructuredRepairResult;
 import com.wish.rd.exec.repair.result.model.StructuredResultValidation;
 import com.wish.rd.exec.repair.runtime.AgentEventLineDecoder;
@@ -32,10 +36,14 @@ import com.wish.rd.rag.project.agent.model.AgentRuntimeType;
 import com.wish.rd.rag.project.agent.model.ModelProviderProtocol;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Comparator;
@@ -45,6 +53,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
@@ -63,6 +72,19 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
     private static final String RESULT_TOOL = "rd_submit_result";
     private static final String AGENT_RESULT_JSON = "__agentResultJson";
     private static final int SAFE_EVENT_PREVIEW_CHARS = 64 * 1024;
+    private static final Set<String> SUPPORTED_ROLES = Set.of(
+            "REQUIREMENT_REVIEWER", "SOLUTION_ARCHITECT", "CODING_AGENT", "QA_AGENT"
+    );
+    private static final AgentRoleResultValidator ROLE_RESULT_VALIDATOR = new AgentRoleResultValidator();
+    private static final QaRepositoryProfileDetector QA_PROFILE_DETECTOR = new QaRepositoryProfileDetector();
+    // QA parity with the Claude executor: the same skill document ships in the
+    // skill module and is materialized into the read-only input mount for Pi.
+    private static final String QA_SKILL_RESOURCE = "skills/qa-playwright-cli/SKILL.md";
+    private static final String QA_STARTUP_TIMEOUT_SECONDS = "120";
+    private static final long QA_COMMAND_TIMEOUT_MILLIS =
+            parseQaCommandTimeoutMillis(System.getenv("RD_QA_EXECUTION_TIMEOUT_MILLIS"));
+    private static final int WORKSPACE_LOCK_STRIPES = 128;
+    private static final ReentrantLock[] WORKSPACE_LOCKS = workspaceLocks();
 
     private final RepairWorkspaceFactory workspaceFactory;
     private final ContainerRunnerPort containerRunner;
@@ -171,13 +193,13 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
             );
         }
         if (snapshot.runtimeType() != AgentRuntimeType.PI
-                || !"CODING_AGENT".equals(snapshot.role())
-                || !"CODING_AGENT".equals(agentRole(command))) {
+                || !SUPPORTED_ROLES.contains(snapshot.role())
+                || !snapshot.role().equals(agentRole(command))) {
             return failed(
                     RepairExecutionStatus.FAILED_VALIDATION,
-                    "Pi runtime is restricted to CODING_AGENT.",
+                    "Pi runtime role validation failed.",
                     "PI_ROLE_NOT_ALLOWED",
-                    "Pi runtime is supported only for CODING_AGENT",
+                    "Pi runtime supports REQUIREMENT_REVIEWER, SOLUTION_ARCHITECT, CODING_AGENT, QA_AGENT; snapshot role must match command role",
                     Map.of("executionProfileSnapshotId", snapshot.snapshotId())
             );
         }
@@ -213,16 +235,20 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
             JsonNode snapshotJson = parseSnapshot(snapshot);
             ProviderSpec provider = provider(snapshotJson);
             ToolPolicySpec toolPolicy = toolPolicy(snapshotJson);
-            workspace = workspaceFactory.create(command);
-            repositoryMetadata.putAll(workspaceRepository.prepare(command, workspace).metadataJson());
-            materializeResources(snapshot, workspace.inputDirectory());
-            Path requestPath = workspace.inputDirectory().resolve("request.json").normalize();
-            writeRequest(requestPath, snapshot, command, snapshotJson, provider, toolPolicy);
+            Path workspaceRoot = workspaceFactory.prepareWorkspaceRoot(command);
+            try (WorkspaceExecutionLease ignored = acquireWorkspaceExecutionLease(workspaceRoot)) {
+                workspace = workspaceFactory.create(command);
+                cleanOutputDirectory(workspace.outputDirectory());
+                repositoryMetadata.putAll(workspaceRepository.prepare(command, workspace).metadataJson());
+                materializeResources(snapshot, workspace.inputDirectory());
+                QaProvision qaProvision = provisionQaInputs(command, snapshot, workspace);
+                Path requestPath = workspace.inputDirectory().resolve("request.json").normalize();
+                writeRequest(requestPath, snapshot, command, snapshotJson, provider, toolPolicy);
 
-            Map<String, String> environment = runtimeEnvironment(snapshot, provider);
-            ContainerRunRequest containerRequest = containerRequest(command, snapshot, workspace, environment);
-            eventCapture = new EventCapture(snapshot, containerRequest.containerName(), eventSink);
-            ContainerRunResult runResult = streamingRunner.run(containerRequest, eventCapture.listener());
+                Map<String, String> environment = runtimeEnvironment(snapshot, provider, qaProvision);
+                ContainerRunRequest containerRequest = containerRequest(command, snapshot, workspace, environment);
+                eventCapture = new EventCapture(snapshot, containerRequest.containerName(), eventSink);
+                ContainerRunResult runResult = streamingRunner.run(containerRequest, eventCapture.listener());
             if (runResult == null) {
                 return failed(
                         RepairExecutionStatus.FAILED,
@@ -296,7 +322,8 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                     );
                 }
             }
-            return result;
+                return result;
+            }
         } catch (PiConfigurationException exception) {
             return failed(
                     RepairExecutionStatus.FAILED_VALIDATION,
@@ -457,6 +484,9 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         request.put("repoPath", CONTAINER_REPO);
         request.put("inputPath", "/work/input");
         request.put("outputPath", "/work/output");
+        request.put("applyCandidatePatch", Boolean.parseBoolean(
+                command.policyJson().getOrDefault("applyCandidatePatch", "false")
+        ));
         request.put("resourceManifestPath", "/work/input/resource-manifest.json");
         request.put("toolPolicy", Map.of(
                 "hostAllow", toolPolicy.hostAllow(),
@@ -475,7 +505,64 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         Files.writeString(requestPath, OBJECT_MAPPER.writeValueAsString(request) + "\n", StandardCharsets.UTF_8);
     }
 
-    private Map<String, String> runtimeEnvironment(AgentExecutionProfileSnapshot snapshot, ProviderSpec provider) {
+    /**
+     * Mirrors the Claude executor's QA provisioning: qa-profile.json plus the
+     * qa-playwright-cli skill document land in the read-only input mount so the
+     * QA agent follows the shared evidence directory contract.
+     */
+    private QaProvision provisionQaInputs(
+            RepairJobCommand command,
+            AgentExecutionProfileSnapshot snapshot,
+            RepairWorkspace workspace
+    ) throws IOException {
+        if (!"QA_AGENT".equals(snapshot.role())) {
+            return QaProvision.none();
+        }
+        QaExecutionProfile profile = QA_PROFILE_DETECTOR.detect(command, workspace.repoDirectory());
+        Files.writeString(
+                workspace.inputDirectory().resolve("qa-profile.json"),
+                QA_PROFILE_DETECTOR.toJson(profile),
+                StandardCharsets.UTF_8
+        );
+        return new QaProvision(profile, writeQaSkillDocument(workspace.inputDirectory()));
+    }
+
+    private static boolean writeQaSkillDocument(Path inputDirectory) {
+        try (InputStream stream = Thread.currentThread().getContextClassLoader()
+                .getResourceAsStream(QA_SKILL_RESOURCE)) {
+            if (stream == null) {
+                return false;
+            }
+            Path target = inputDirectory.resolve("qa-skill").resolve("SKILL.md").normalize();
+            Files.createDirectories(target.getParent());
+            Files.write(target, stream.readAllBytes());
+            return true;
+        } catch (IOException exception) {
+            // Best effort: the QA prompt still carries the evidence directory contract.
+            return false;
+        }
+    }
+
+    private static long parseQaCommandTimeoutMillis(String rawValue) {
+        try {
+            long parsed = Long.parseLong(rawValue == null ? "" : rawValue.strip());
+            return Math.max(60_000L, parsed);
+        } catch (NumberFormatException exception) {
+            return 1_200_000L;
+        }
+    }
+
+    private record QaProvision(QaExecutionProfile profile, boolean skillDocumentWritten) {
+        private static QaProvision none() {
+            return new QaProvision(null, false);
+        }
+    }
+
+    private Map<String, String> runtimeEnvironment(
+            AgentExecutionProfileSnapshot snapshot,
+            ProviderSpec provider,
+            QaProvision qaProvision
+    ) {
         String credential = authEnvironmentResolver.resolve(provider.credentialEnvironmentVariable());
         if (credential == null || credential.isBlank()) {
             throw new PiConfigurationException(
@@ -489,7 +576,38 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         environment.put("RD_AGENT_RUNTIME", "PI");
         environment.put("RD_AGENT_SNAPSHOT_ID", snapshot.snapshotId());
         environment.put("RD_AGENT_STAGE_RUN_ID", snapshot.stageRunId());
+        // The cache mount is persistent across retries. Without these variables
+        // package managers silently use container-local caches and redownload.
+        environment.put("npm_config_cache", CONTAINER_CACHE + "/npm");
+        environment.put("PIP_CACHE_DIR", CONTAINER_CACHE + "/pip");
+        environment.put("YARN_CACHE_FOLDER", CONTAINER_CACHE + "/yarn");
+        environment.put("RD_PI_MAX_RAW_EVENT_BYTES", String.valueOf(configuration.rawEventMaxBytes()));
+        QaExecutionProfile qaProfile = qaProvision == null ? null : qaProvision.profile();
+        if (qaProfile != null) {
+            environment.put("RD_QA_PROFILE_FILE", "/work/input/qa-profile.json");
+            environment.put("RD_QA_BASE_URL", qaProfile.baseUrl());
+            environment.put("RD_QA_START_COMMAND", qaProfile.startCommand());
+            environment.put("RD_QA_HEALTH_PATH", qaProfile.healthPath());
+            environment.put("RD_QA_ALLOWED_HOSTS", String.join(",", qaProfile.allowedHosts()));
+            environment.put("RD_QA_REGRESSION_COMMANDS_JSON", jsonArrayText(qaProfile.regressionCommands()));
+            environment.put("RD_QA_DECISION_SOURCE", qaProfile.decisionSource());
+            environment.put("RD_QA_PROFILE_AMBIGUOUS", Boolean.toString(qaProfile.ambiguous()));
+            environment.put("RD_QA_STARTUP_TIMEOUT_SECONDS", QA_STARTUP_TIMEOUT_SECONDS);
+            environment.put("RD_QA_COMMAND_TIMEOUT_MILLIS", String.valueOf(QA_COMMAND_TIMEOUT_MILLIS));
+            environment.put("PLAYWRIGHT_MCP_OUTPUT_DIR", "/work/output/qa-work/playwright");
+            if (qaProvision.skillDocumentWritten()) {
+                environment.put("RD_QA_SKILL_FILE", "/work/input/qa-skill/SKILL.md");
+            }
+        }
         return Map.copyOf(environment);
+    }
+
+    private static String jsonArrayText(List<String> values) {
+        try {
+            return OBJECT_MAPPER.writeValueAsString(values == null ? List.of() : values);
+        } catch (JsonProcessingException exception) {
+            return "[]";
+        }
     }
 
     private ContainerRunRequest containerRequest(
@@ -503,9 +621,12 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         mounts.put(workspace.inputDirectory().toString(), CONTAINER_INPUT);
         mounts.put(workspace.outputDirectory().toString(), CONTAINER_OUTPUT);
         mounts.put(workspace.cacheDirectory().toString(), CONTAINER_CACHE);
+        String image = "QA_AGENT".equals(snapshot.role()) && !configuration.qaImage().isBlank()
+                ? configuration.qaImage()
+                : configuration.image();
         return new ContainerRunRequest(
                 safeContainerName(command.taskId()),
-                configuration.image(),
+                image,
                 configuration.command(),
                 environment,
                 mounts,
@@ -562,6 +683,12 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
             );
         }
         String rawJson = Files.readString(resultPath, StandardCharsets.UTF_8);
+        String role = snapshot.role();
+        // Non-coding roles submit a role protocol JSON, not the coding structured result;
+        // validate it with the role-specific validator and skip the coding contract.
+        if (usesAgentRoleProtocol(role)) {
+            return validateRoleProtocolResult(role, rawJson, artifacts, dockerMetadata);
+        }
         StructuredResultValidation validation = resultValidator.validate(rawJson);
         if (!validation.valid()) {
             return failed(
@@ -576,7 +703,7 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         StructuredRepairResult structured = validation.result();
         RepairExecutionStatus status = toStatus(structured.status());
         if (status == RepairExecutionStatus.SUCCESS) {
-            List<String> missing = missingSuccessArtifacts(artifacts);
+            List<String> missing = missingSuccessArtifacts(role, artifacts);
             if (!missing.isEmpty()) {
                 return failed(
                         RepairExecutionStatus.FAILED_VALIDATION,
@@ -606,6 +733,76 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         );
     }
 
+    private RepairExecutionResult validateRoleProtocolResult(
+            String role,
+            String rawJson,
+            List<RepairArtifact> artifacts,
+            Map<String, String> dockerMetadata
+    ) {
+        AgentRoleResultValidation roleValidation = ROLE_RESULT_VALIDATOR.validate(role, rawJson);
+        if (!roleValidation.valid()) {
+            return failed(
+                    RepairExecutionStatus.FAILED_VALIDATION,
+                    "Pi role protocol validation failed.",
+                    "PI_RESULT_PROTOCOL",
+                    String.join("; ", roleValidation.errors()),
+                    dockerMetadata,
+                    artifacts
+            );
+        }
+        List<String> missing = missingSuccessArtifacts(role, artifacts);
+        if (!missing.isEmpty()) {
+            return failed(
+                    RepairExecutionStatus.FAILED_VALIDATION,
+                    "Pi result artifacts are incomplete.",
+                    "PI_RESULT_PROTOCOL",
+                    String.join("; ", missing),
+                    dockerMetadata,
+                    artifacts
+            );
+        }
+        String status = text(parseRawJson(rawJson).path("status"));
+        RepairExecutionStatus executionStatus = toStatus(status);
+        String summary = text(parseRawJson(rawJson).path("summary"));
+        String errorMessage = executionStatus == RepairExecutionStatus.FAILED && "QA_AGENT".equals(role)
+                ? "QA_AGENT failed acceptance: " + summary
+                : "";
+        Map<String, String> raw = new LinkedHashMap<>();
+        raw.put("status", status);
+        raw.put("summary", summary);
+        raw.put(AGENT_RESULT_JSON, rawJson);
+        return new RepairExecutionResult(
+                executionStatus,
+                summary.isBlank() ? "Pi " + role + " completed." : summary,
+                "",
+                artifacts,
+                raw,
+                dockerMetadata,
+                Map.of(),
+                Map.of(),
+                Map.of(
+                        "riskLevel", "LOW",
+                        "needHumanAction", String.valueOf(executionStatus != RepairExecutionStatus.SUCCESS)
+                ),
+                errorMessage
+        );
+    }
+
+    private JsonNode parseRawJson(String rawJson) {
+        try {
+            JsonNode root = OBJECT_MAPPER.readTree(rawJson);
+            return root == null ? OBJECT_MAPPER.createObjectNode() : root;
+        } catch (JsonProcessingException exception) {
+            return OBJECT_MAPPER.createObjectNode();
+        }
+    }
+
+    private static boolean usesAgentRoleProtocol(String role) {
+        return "REQUIREMENT_REVIEWER".equals(role)
+                || "SOLUTION_ARCHITECT".equals(role)
+                || "QA_AGENT".equals(role);
+    }
+
     private static Map<String, String> rawResultJson(StructuredRepairResult result, String rawJson) {
         Map<String, String> raw = new LinkedHashMap<>();
         raw.put("status", result.status());
@@ -631,9 +828,15 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         );
     }
 
-    private static List<String> missingSuccessArtifacts(List<RepairArtifact> artifacts) {
+    private static List<String> missingSuccessArtifacts(String role, List<RepairArtifact> artifacts) {
         Set<String> names = artifacts.stream().map(RepairArtifact::name).collect(java.util.stream.Collectors.toSet());
-        return Stream.of("patch.diff", "test.log", "agent-events.jsonl")
+        List<String> required = switch (role == null ? "" : role) {
+            case "CODING_AGENT" -> List.of("patch.diff", "test.log", "agent-events.jsonl");
+            case "REQUIREMENT_REVIEWER", "SOLUTION_ARCHITECT" -> List.of("handoff/next.md", "agent-events.jsonl");
+            case "QA_AGENT" -> List.of("agent-events.jsonl");
+            default -> List.of("agent-events.jsonl");
+        };
+        return required.stream()
                 .filter(name -> !names.contains(name))
                 .map(name -> name + " is missing")
                 .toList();
@@ -641,12 +844,64 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
 
     private static RepairExecutionStatus toStatus(String value) {
         return switch (value == null ? "" : value.strip().toUpperCase(Locale.ROOT)) {
-            case "SUCCESS" -> RepairExecutionStatus.SUCCESS;
+            // PASSED/SKIPPED are QA role-protocol report statuses; a QA run that
+            // produced either completed its work, so map both to a successful execution.
+            case "SUCCESS", "PASSED", "SKIPPED" -> RepairExecutionStatus.SUCCESS;
             case "FAILED" -> RepairExecutionStatus.FAILED;
             case "NEED_INFO" -> RepairExecutionStatus.NEED_INFO;
             case "UNSAFE" -> RepairExecutionStatus.UNSAFE;
             default -> RepairExecutionStatus.FAILED_VALIDATION;
         };
+    }
+
+    private static ReentrantLock[] workspaceLocks() {
+        ReentrantLock[] locks = new ReentrantLock[WORKSPACE_LOCK_STRIPES];
+        for (int index = 0; index < locks.length; index++) {
+            locks[index] = new ReentrantLock();
+        }
+        return locks;
+    }
+
+    private static WorkspaceExecutionLease acquireWorkspaceExecutionLease(Path workspaceRoot) throws IOException {
+        if (workspaceRoot == null) {
+            throw new IOException("Pi workspace root is missing");
+        }
+        Path root = workspaceRoot.toAbsolutePath().normalize();
+        if (Files.isSymbolicLink(root) || !Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("Pi workspace root must be a real directory");
+        }
+        Path lockPath = root.resolve(".pi-execution.lock").normalize();
+        if (!lockPath.startsWith(root)) {
+            throw new IOException("Pi workspace lock escapes its root");
+        }
+        ReentrantLock localLock = WORKSPACE_LOCKS[Math.floorMod(root.toString().hashCode(), WORKSPACE_LOCK_STRIPES)];
+        localLock.lock();
+        try {
+            FileChannel channel = FileChannel.open(lockPath, StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+            try {
+                return new WorkspaceExecutionLease(localLock, channel, channel.lock());
+            } catch (IOException | RuntimeException exception) {
+                channel.close();
+                throw exception;
+            }
+        } catch (IOException | RuntimeException exception) {
+            localLock.unlock();
+            throw exception;
+        }
+    }
+
+    private static void cleanOutputDirectory(Path outputDirectory) throws IOException {
+        if (outputDirectory == null || !Files.isDirectory(outputDirectory)) {
+            return;
+        }
+        try (Stream<Path> paths = Files.walk(outputDirectory)) {
+            for (Path path : paths
+                    .filter(candidate -> !candidate.equals(outputDirectory))
+                    .sorted(Comparator.reverseOrder())
+                    .toList()) {
+                Files.deleteIfExists(path);
+            }
+        }
     }
 
     private static List<RepairArtifact> collectArtifacts(Path outputDirectory) throws IOException {
@@ -679,22 +934,61 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
     }
 
     private static RepairArtifactType artifactType(String name) {
-        return switch (name) {
+        String normalized = name == null ? "" : name.replace('\\', '/');
+        return switch (normalized) {
             case "result.json" -> RepairArtifactType.RESULT_JSON;
             case "patch.diff" -> RepairArtifactType.PATCH_DIFF;
             case "test.log" -> RepairArtifactType.TEST_LOG;
             case "agent-events.jsonl" -> RepairArtifactType.AGENT_EVENTS;
             case "runtime-meta.json" -> RepairArtifactType.AGENT_RUNTIME_META;
             case "docker-meta.json" -> RepairArtifactType.DOCKER_METADATA;
-            default -> RepairArtifactType.OTHER;
+            case "handoff/next.md" -> RepairArtifactType.HANDOFF_MARKDOWN;
+            case "qa-evidence/manifest.json" -> RepairArtifactType.QA_EVIDENCE_MANIFEST;
+            default -> qaArtifactType(normalized);
         };
     }
 
+    // QA evidence artifact taxonomy mirrors DockerClaudeCodeExecutor so the QA
+    // evidence bundle validator can resolve evidenceManifestArtifactId and the
+    // per-criterion evidenceArtifactIds regardless of the runtime.
+    private static RepairArtifactType qaArtifactType(String name) {
+        if (!name.startsWith("qa-evidence/")) {
+            return RepairArtifactType.OTHER;
+        }
+        if ((name.startsWith("qa-evidence/commands/")
+                || name.startsWith("qa-evidence/browser/"))
+                && name.endsWith(".log")) {
+            return RepairArtifactType.QA_COMMAND_LOG;
+        }
+        if (name.startsWith("qa-evidence/screenshots/")
+                && (name.endsWith(".png") || name.endsWith(".jpg") || name.endsWith(".jpeg"))) {
+            return RepairArtifactType.QA_SCREENSHOT;
+        }
+        if (name.startsWith("qa-evidence/traces/") && name.endsWith(".zip")) {
+            return RepairArtifactType.QA_TRACE;
+        }
+        if (name.startsWith("qa-evidence/console/")) {
+            return RepairArtifactType.QA_CONSOLE_LOG;
+        }
+        if (name.startsWith("qa-evidence/network/")) {
+            return RepairArtifactType.QA_NETWORK_LOG;
+        }
+        if (name.startsWith("qa-evidence/http/")) {
+            return RepairArtifactType.QA_HTTP_TRANSCRIPT;
+        }
+        if (name.startsWith("qa-evidence/video/")) {
+            return RepairArtifactType.QA_VIDEO;
+        }
+        return RepairArtifactType.OTHER;
+    }
+
     private static Map<String, String> artifactMetadata(Path path) {
+        Map<String, String> metadata = new LinkedHashMap<>();
         try {
-            Map<String, String> metadata = new LinkedHashMap<>();
-            metadata.put("bytes", String.valueOf(Files.size(path)));
+            long size = Files.size(path);
+            metadata.put("bytes", String.valueOf(size));
             metadata.put("sha256", sha256(path));
+            metadata.put("contentType", contentType(path));
             if ("agent-events.jsonl".equals(path.getFileName().toString())) {
                 String content = Files.readString(path, StandardCharsets.UTF_8);
                 boolean truncated = content.length() > SAFE_EVENT_PREVIEW_CHARS;
@@ -705,11 +999,56 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                                 : content
                 );
                 metadata.put("contentPreviewTruncated", String.valueOf(truncated));
+            } else if (isTextArtifact(path) && size <= MAX_TEXT_PREVIEW_BYTES) {
+                // QA evidence bundle validation reads the manifest (and command logs)
+                // back through contentPreview for integrity checks; mirror Claude parity.
+                metadata.put("contentPreview", SecretRedactor.redactFreeform(
+                        Files.readString(path, StandardCharsets.UTF_8)
+                ));
             }
             return Map.copyOf(metadata);
         } catch (IOException exception) {
-            return Map.of();
+            // Preview failures (for example a binary read) must never erase the
+            // integrity metadata; QA bundle validation depends on bytes/sha256.
+            return Map.copyOf(metadata);
         }
+    }
+
+    private static final long MAX_TEXT_PREVIEW_BYTES = 256 * 1024L;
+
+    private static String contentType(Path path) {
+        String name = path.getFileName().toString().toLowerCase(Locale.ROOT);
+        if (name.endsWith(".png")) {
+            return "image/png";
+        }
+        if (name.endsWith(".jpg") || name.endsWith(".jpeg")) {
+            return "image/jpeg";
+        }
+        if (name.endsWith(".zip")) {
+            return "application/zip";
+        }
+        if (name.endsWith(".json")) {
+            return "application/json";
+        }
+        if (name.endsWith(".jsonl")) {
+            return "application/x-ndjson";
+        }
+        if (name.endsWith(".log") || name.endsWith(".txt") || name.endsWith(".md") || name.endsWith(".diff")) {
+            return "text/plain";
+        }
+        if (name.endsWith(".webm")) {
+            return "video/webm";
+        }
+        return "application/octet-stream";
+    }
+
+    // Content-type driven so binary evidence (screenshots, traces, video) is
+    // never read as UTF-8 text; the old qa-evidence path match broke on PNGs.
+    private static boolean isTextArtifact(Path path) {
+        String contentType = contentType(path);
+        return contentType.startsWith("text/")
+                || "application/json".equals(contentType)
+                || "application/x-ndjson".equals(contentType);
     }
 
     private static String sha256(Path path) throws IOException {
@@ -933,6 +1272,47 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
     ) {
     }
 
+    /**
+     * Holds both a JVM-local striped lock and an OS file lock for the complete
+     * execution. The former avoids OverlappingFileLockException; the latter
+     * serializes retry workers in separate JVMs sharing the workspace root.
+     */
+    private static final class WorkspaceExecutionLease implements AutoCloseable {
+        private final ReentrantLock localLock;
+        private final FileChannel channel;
+        private final FileLock fileLock;
+
+        private WorkspaceExecutionLease(ReentrantLock localLock, FileChannel channel, FileLock fileLock) {
+            this.localLock = localLock;
+            this.channel = channel;
+            this.fileLock = fileLock;
+        }
+
+        @Override
+        public void close() throws IOException {
+            IOException failure = null;
+            try {
+                fileLock.release();
+            } catch (IOException exception) {
+                failure = exception;
+            }
+            try {
+                channel.close();
+            } catch (IOException exception) {
+                if (failure == null) {
+                    failure = exception;
+                } else {
+                    failure.addSuppressed(exception);
+                }
+            } finally {
+                localLock.unlock();
+            }
+            if (failure != null) {
+                throw failure;
+            }
+        }
+    }
+
     private static final class EventCapture {
         private final AgentEventLineDecoder decoder;
         private final StringBuilder stderr = new StringBuilder();
@@ -1024,31 +1404,62 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
     /** Immutable image/bridge configuration for one Pi container invocation. */
     public record Configuration(
             String image,
+            String qaImage,
             List<String> command,
             String networkMode,
             boolean removeAfterExit,
             boolean allowPrivileged,
-            long executionTimeoutMillis
+            long executionTimeoutMillis,
+            long rawEventMaxBytes
     ) {
 
         public Configuration {
             image = requireText(image, "image");
+            qaImage = imageText(qaImage);
             command = requireCommand(command);
             networkMode = imageText(networkMode);
             executionTimeoutMillis = Math.max(0L, executionTimeoutMillis);
+            rawEventMaxBytes = Math.max(1L, rawEventMaxBytes);
             if (allowPrivileged) {
                 throw new IllegalArgumentException("Pi executor never permits privileged containers");
             }
         }
 
+        public Configuration(
+                String image,
+                List<String> command,
+                String networkMode,
+                boolean removeAfterExit,
+                boolean allowPrivileged,
+                long executionTimeoutMillis
+        ) {
+            this(image, "", command, networkMode, removeAfterExit, allowPrivileged, executionTimeoutMillis,
+                    16L * 1024L * 1024L);
+        }
+
+        public Configuration(
+                String image,
+                String qaImage,
+                List<String> command,
+                String networkMode,
+                boolean removeAfterExit,
+                boolean allowPrivileged,
+                long executionTimeoutMillis
+        ) {
+            this(image, qaImage, command, networkMode, removeAfterExit, allowPrivileged, executionTimeoutMillis,
+                    16L * 1024L * 1024L);
+        }
+
         public static Configuration defaultConfiguration() {
             return new Configuration(
                     "rd-bot/pi-agent:local",
+                    "rd-bot/pi-agent-qa:local",
                     List.of("node", "/opt/rd-pi-bridge/src/rd-pi-bridge.mjs"),
                     "bridge",
                     true,
                     false,
-                    0L
+                    0L,
+                    16L * 1024L * 1024L
             );
         }
 

@@ -90,9 +90,6 @@ public final class EngineRequirementExecutionProfileResolver
         AgentRuntimeType runtimeType = profile == null
                 ? compatibilityRuntime(role)
                 : profile.runtimeType();
-        if (runtimeType == AgentRuntimeType.PI && role != AgentRole.CODING_AGENT) {
-            throw new IllegalStateException("AGENT_RUNTIME_PROFILE_INVALID: PI runtime is coding-only");
-        }
         String snapshotJson = snapshotJson(task, role, safeStageRunId, attemptNo, runtimeType, profile);
         AgentExecutionProfileSnapshot requested = new AgentExecutionProfileSnapshot(
                 snapshotId(safeStageRunId),

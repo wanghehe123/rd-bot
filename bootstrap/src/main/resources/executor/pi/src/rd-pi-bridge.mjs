@@ -28,10 +28,11 @@ import {
   createApprovedResourceLoader,
   loadResourceManifest,
 } from "./resource-loader.mjs";
-import { validateResult, writeResultAtomically } from "./result-tool.mjs";
+import { validateResult, validateRoleResult, writeResultAtomically } from "./result-tool.mjs";
 
 const RESULT_TOOL_NAME = "rd_submit_result";
 const DEFAULT_OUTPUT_PATH = "/work/output";
+const DEFAULT_MAX_RAW_EVENT_BYTES = 16 * 1024 * 1024;
 const FAILURE_RESULT = {
   status: "FAILED",
   summary: "Pi bridge failed before a structured agent result was accepted",
@@ -61,7 +62,7 @@ export async function run(options = {}) {
     provider: request.provider,
     model: request.model,
   };
-  const sink = new EventSink(paths, context);
+  const sink = new EventSink(paths, context, maxRawEventBytes());
   const startedAt = new Date().toISOString();
   let session;
   let unsubscribe;
@@ -91,8 +92,9 @@ export async function run(options = {}) {
       settingsManager,
       extensionFactories: [observability],
     });
-    // H1: resource discovery happens once, before session creation. There is
-    // intentionally no reload/steer/follow-up path in this one-shot bridge.
+    // H1: resource discovery happens once, before session creation. The bridge
+    // is one-shot except for a single bounded result-recovery prompt issued when
+    // the session settles without submitting the structured result.
     await resourceLoader.reload();
     const extensionsResult = resourceLoader.getExtensions();
     if (extensionsResult.errors.length > 0) {
@@ -155,6 +157,20 @@ export async function run(options = {}) {
     await session.prompt(prompt);
     await session.waitForIdle();
     await sink.flush();
+    if (settled && !resultAccepted) {
+      // Sessions can settle without the result tool (for example a length-stopped
+      // turn with no tool call). Issue exactly one recovery prompt before failing.
+      await safeLifecycle(sink, "PROTOCOL_ERROR", {
+        category: "PI_RESULT_RECOVERY",
+        error: "session settled without rd_submit_result; issuing one recovery prompt",
+      });
+      settled = false;
+      await session.prompt(
+        `Your session ended without submitting the structured result. Call ${RESULT_TOOL_NAME} now, exactly once, with the COMPLETE role protocol JSON object required by your instructions (all required fields, not just status and summary). Do not run any other tool, do not repeat prior work, and do not print file contents.`,
+      );
+      await session.waitForIdle();
+      await sink.flush();
+    }
     if (!settled) throw new Error("Pi session became idle without agent_settled");
     if (!resultAccepted) throw new Error("Pi session settled without rd_submit_result");
     const result = validateResult(JSON.parse(await readFile(paths.result, "utf8")));
@@ -218,6 +234,7 @@ export async function run(options = {}) {
       settled,
       resultAccepted,
       status: protocolSucceeded ? "COMPLETED" : "FAILED",
+      rawEvents: sink.rawEventStats(),
       failure: failure ? boundedText(safeError(failure), 4096) : "",
     });
     try {
@@ -231,13 +248,38 @@ export async function run(options = {}) {
 }
 
 export function executionPrompt(request) {
-  return `${request.prompt}\n\n` + [
+  const role = request.role;
+  const common = [
     "This is a one-shot RD-Bot execution.",
-    `You must finish by calling ${RESULT_TOOL_NAME} exactly once with a JSON object containing at least status and summary.`,
+    `You must finish by calling ${RESULT_TOOL_NAME} exactly once with the complete role protocol JSON object required by your instructions; submissions missing required fields are rejected and must be resubmitted.`,
     "Do not write result.json yourself; the bridge accepts results only through the tool.",
-    "Before submitting a SUCCESS result for coding work, write the unified git diff to /work/output/patch.diff and a concise test log to /work/output/test.log.",
     "Use SUCCESS only when the requested work and acceptance checks are complete. Use FAILED, NEED_INFO, or UNSAFE when they are not.",
-  ].join("\n");
+  ];
+  const roleInstructions = roleArtifactInstructions(role);
+  return `${request.prompt}\n\n` + [...common, ...roleInstructions].join("\n");
+}
+
+function roleArtifactInstructions(role) {
+  switch (role) {
+    case "CODING_AGENT":
+      return [
+        "Before submitting a SUCCESS result, write the unified git diff to /work/output/patch.diff and a concise test log to /work/output/test.log.",
+      ];
+    case "REQUIREMENT_REVIEWER":
+    case "SOLUTION_ARCHITECT":
+      return [
+        "Before submitting a SUCCESS result, write the downstream handoff markdown to /work/output/handoff/next.md.",
+        `Your submitted result JSON must also satisfy the ${role} role protocol; include every protocol field at the top level of the result object alongside status and summary.`,
+      ];
+    case "QA_AGENT":
+      return [
+        "Run the acceptance and regression checks yourself and record real evidence; do not fabricate test output.",
+        "Your submitted result JSON must satisfy the QA_AGENT role protocol: include the QA report fields and one evidence entry per acceptance criterion at the top level of the result object alongside status and summary.",
+        "For QA the result status MUST be one of PASSED, FAILED, or SKIPPED (not SUCCESS): use PASSED when every acceptance criterion is verified, FAILED otherwise, SKIPPED only when validation cannot run.",
+      ];
+    default:
+      return [];
+  }
 }
 
 const execFileAsync = promisify(execFile);
@@ -251,9 +293,27 @@ async function fileExists(path) {
   }
 }
 
-/** Deterministic fallback so a SUCCESS result always ships patch.diff and test.log. */
+/** Deterministic, role-aware fallback so a SUCCESS result always ships its required artifacts. */
 async function ensureDeliveryArtifacts(request, paths, result, sink) {
   if (result.status !== "SUCCESS") return;
+  switch (request.role) {
+    case "CODING_AGENT":
+      await ensureCodingArtifacts(request, paths, result, sink);
+      return;
+    case "REQUIREMENT_REVIEWER":
+    case "SOLUTION_ARCHITECT":
+      await ensureHandoffArtifact(request, paths, result, sink);
+      return;
+    case "QA_AGENT":
+      // QA evidence must be real; the bridge never fabricates it. The Java-side
+      // QaEvidenceBundleValidator fails closed when evidence is missing.
+      return;
+    default:
+      return;
+  }
+}
+
+async function ensureCodingArtifacts(request, paths, result, sink) {
   const patchPath = join(paths.output, "patch.diff");
   if (!(await fileExists(patchPath))) {
     try {
@@ -280,6 +340,30 @@ async function ensureDeliveryArtifacts(request, paths, result, sink) {
     } catch (error) {
       console.error(`[rd-pi-bridge] failed to materialize test.log: ${safeError(error)}`);
     }
+  }
+}
+
+async function ensureHandoffArtifact(request, paths, result, sink) {
+  const handoffPath = join(paths.output, "handoff", "next.md");
+  if (await fileExists(handoffPath)) return;
+  const lines = [
+    `# ${request.role} handoff`,
+    "",
+    `stageRunId: ${request.stageRunId}`,
+    `taskId: ${request.taskId}`,
+    "",
+    "## Summary",
+    "",
+    String(result.summary ?? "").trim() || "(no summary provided)",
+    "",
+    "note: generated by rd-pi-bridge from the structured result; the agent did not write handoff/next.md directly.",
+  ];
+  try {
+    await mkdir(dirname(handoffPath), { recursive: true });
+    await writeFile(handoffPath, lines.join("\n") + "\n", "utf8");
+    await sink.lifecycle("ARTIFACT_WRITTEN", { artifact: "handoff/next.md", path: handoffPath, source: "bridge-result-metadata" });
+  } catch (error) {
+    console.error(`[rd-pi-bridge] failed to materialize handoff/next.md: ${safeError(error)}`);
   }
 }
 
@@ -384,6 +468,12 @@ function createResultTool({ resultPath, sink, context, onAccepted }) {
     async execute(_toolCallId, params) {
       try {
         const result = validateResult(params?.result);
+        // Reject protocol violations while the agent can still fix them in-session;
+        // the host-side validator runs after the container exits and offers no retry.
+        const roleErrors = validateRoleResult(context.role, result);
+        if (roleErrors.length > 0) {
+          throw new Error(`role protocol violations: ${roleErrors.join("; ")}. Fix every listed field and call ${RESULT_TOOL_NAME} again with the complete result.`);
+        }
         await writeResultAtomically(resultPath, result);
         onAccepted();
         await sink.lifecycle("RESULT_SUBMITTED", {
@@ -421,15 +511,19 @@ function createObservabilityExtension(sink, context) {
   };
 }
 
-class EventSink {
+export class EventSink {
   #paths;
   #context;
   #normalizer = new EventNormalizer();
   #writeChain = Promise.resolve();
+  #rawEventMaxBytes;
+  #rawEventBytes = 0;
+  #rawEventTruncated = false;
 
-  constructor(paths, context) {
+  constructor(paths, context, rawEventMaxBytes = maxRawEventBytes()) {
     this.#paths = paths;
     this.#context = context;
+    this.#rawEventMaxBytes = positiveSafeInteger(rawEventMaxBytes, DEFAULT_MAX_RAW_EVENT_BYTES);
   }
 
   lifecycle(eventType, payload = {}) {
@@ -449,6 +543,14 @@ class EventSink {
     await this.#writeChain;
   }
 
+  rawEventStats() {
+    return {
+      maxBytes: this.#rawEventMaxBytes,
+      writtenBytes: this.#rawEventBytes,
+      truncated: this.#rawEventTruncated,
+    };
+  }
+
   #enqueue(event) {
     const line = boundedJson(event);
     this.#writeChain = this.#writeChain.then(async () => {
@@ -459,7 +561,14 @@ class EventSink {
   }
 
   #enqueueRaw(line) {
-    this.#writeChain = this.#writeChain.then(() => appendFile(this.#paths.rawEvents, `${line}\n`, "utf8"));
+    const payload = `${line}\n`;
+    const bytes = Buffer.byteLength(payload, "utf8");
+    if (this.#rawEventTruncated || this.#rawEventBytes + bytes > this.#rawEventMaxBytes) {
+      this.#rawEventTruncated = true;
+      return;
+    }
+    this.#rawEventBytes += bytes;
+    this.#writeChain = this.#writeChain.then(() => appendFile(this.#paths.rawEvents, payload, "utf8"));
   }
 }
 
@@ -508,6 +617,19 @@ function safeError(error) {
 
 function positiveNumber(value, fallback) {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function maxRawEventBytes() {
+  return positiveSafeInteger(process.env.RD_PI_MAX_RAW_EVENT_BYTES, DEFAULT_MAX_RAW_EVENT_BYTES);
+}
+
+function positiveSafeInteger(value, fallback) {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+  }
+  if (typeof value !== "string" || !/^\d+$/.test(value)) return fallback;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

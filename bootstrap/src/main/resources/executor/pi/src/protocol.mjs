@@ -76,6 +76,9 @@ export function validateRequest(request) {
   if (request.authHeader !== undefined && typeof request.authHeader !== "boolean") {
     throw new Error("authHeader must be a boolean");
   }
+  if (request.applyCandidatePatch !== undefined && typeof request.applyCandidatePatch !== "boolean") {
+    throw new Error("applyCandidatePatch must be a boolean");
+  }
   if (request.baseUrl !== undefined) {
     requireString(request.baseUrl, "baseUrl");
     let url;
@@ -152,15 +155,17 @@ export function normalizePiEvent(rawEvent, context, sourceSequence) {
     payload = {
       toolName: boundedText(rawEvent.toolName, 256),
       toolCallId: boundedText(rawEvent.toolCallId ?? rawEvent.id, 256),
+      displaySummary: toolDisplaySummary(rawEvent),
     };
   } else if (type === "tool_execution_update") {
     payload = {
       toolName: boundedText(rawEvent.toolName, 256),
-      delta: boundedText(rawEvent.assistantMessageEvent?.delta ?? rawEvent.delta),
+      toolCallId: boundedText(rawEvent.toolCallId ?? rawEvent.id, 256),
     };
   } else if (type === "tool_execution_end") {
     payload = {
       toolName: boundedText(rawEvent.toolName, 256),
+      toolCallId: boundedText(rawEvent.toolCallId ?? rawEvent.id, 256),
       isError: Boolean(rawEvent.isError),
     };
   } else if (type === "agent_end") {
@@ -197,8 +202,30 @@ export function boundedText(value, maxChars = MAX_TEXT_BYTES) {
   return `${text.slice(0, maxChars)}...[truncated]`;
 }
 
+function toolDisplaySummary(rawEvent) {
+  const command = rawEvent?.args?.command;
+  if (typeof command === "string" && command.trim()) {
+    return redactDisplayText(command);
+  }
+  const path = rawEvent?.args?.path;
+  if (typeof path === "string" && path.trim()) {
+    return redactDisplayText(path);
+  }
+  return boundedText(rawEvent?.toolName, 256);
+}
+
+function redactDisplayText(value) {
+  return boundedText(value, 2 * 1024)
+    .replace(/\b([A-Z][A-Z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD|COOKIE|CREDENTIAL)[A-Z0-9_]*)\s*=\s*(?:"[^"]*"|'[^']*'|\S+)/gi, "$1=[REDACTED]")
+    .replace(/((?:authorization|api[_-]?key|token|secret|password|cookie|credential)\s*[:=]\s*(?:bearer\s+)?)(?:"[^"]*"|'[^']*'|[^\s'"]+)/gi, "$1[REDACTED]")
+    .replace(/([?&](?:api[_-]?key|token|secret|password|cookie|credential)=)[^&#\s]+/gi, "$1[REDACTED]")
+    .replace(/(--(?:api[_-]?key|token|secret|password|cookie|credential)(?:=|\s+))(?:"[^"]*"|'[^']*'|\S+)/gi, "$1[REDACTED]");
+}
+
 export function redact(value) {
   if (Array.isArray(value)) return value.map(redact);
+  if (typeof value === "string") return boundedText(value);
+  if (typeof value === "number" || typeof value === "boolean" || value === null) return value;
   if (!isObject(value)) return boundedText(value);
   const output = {};
   for (const [key, raw] of Object.entries(value)) {

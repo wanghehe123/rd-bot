@@ -1,7 +1,6 @@
 package com.wish.rd.rag.project.agent;
 
 import com.wish.rd.rag.project.agent.model.AgentExecutionProfile;
-import com.wish.rd.rag.project.agent.model.AgentRuntimeType;
 
 import java.util.Locale;
 import java.util.List;
@@ -100,10 +99,7 @@ public final class AgentExecutionProfileService {
         }
         requireText(profile.profileId(), "profileId");
         requireText(profile.projectId(), "projectId");
-        String role = requireRole(profile.role());
-        if (profile.runtimeType() == AgentRuntimeType.PI && !"CODING_AGENT".equals(role)) {
-            throw new IllegalArgumentException("PI runtime is supported only for CODING_AGENT");
-        }
+        requireRole(profile.role());
         requireText(profile.name(), "name");
         requireText(profile.providerProfileId(), "providerProfileId");
         requireText(profile.toolPolicyId(), "toolPolicyId");

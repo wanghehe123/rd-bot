@@ -28,6 +28,9 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -71,12 +74,113 @@ class DockerPiAgentExecutorTest {
         assertEquals("gpt-test", OBJECT_MAPPER.readTree(
                 Files.readString(temporaryDirectory.resolve("workspaces/task-1/input/request.json"))
         ).path("model").asText());
+        assertEquals("/work/cache/npm", runner.request.env().get("npm_config_cache"));
+        assertEquals("/work/cache/pip", runner.request.env().get("PIP_CACHE_DIR"));
+        assertEquals("/work/cache/yarn", runner.request.env().get("YARN_CACHE_FOLDER"));
+        assertEquals("16777216", runner.request.env().get("RD_PI_MAX_RAW_EVENT_BYTES"));
         assertFalse(result.dockerMetadataJson().containsValue("test-provider-secret"));
         assertEquals("snapshot-1", result.dockerMetadataJson().get("executionProfileSnapshotId"));
     }
 
     @Test
-    void shouldRejectQaSnapshotBeforeStartingPiContainer() throws Exception {
+    void shouldClearStalePiOutputBeforeStartingANewAttempt() throws Exception {
+        Path staleRawEvents = temporaryDirectory.resolve(
+                "workspaces/task-1/output/private/pi-raw-events.jsonl"
+        );
+        Files.createDirectories(staleRawEvents.getParent());
+        Files.writeString(staleRawEvents, "old private runtime event\n", StandardCharsets.UTF_8);
+        CapturingRunner runner = new CapturingRunner() {
+            @Override
+            public ContainerRunResult run(ContainerRunRequest request, ContainerOutputListener listener) throws IOException {
+                assertFalse(Files.exists(request.outputDirectory().resolve("private/pi-raw-events.jsonl")));
+                return super.run(request, listener);
+            }
+        };
+        DockerPiAgentExecutor executor = executor(runner, AgentExecutionEventSink.noop(), ignored -> "secret");
+
+        RepairExecutionResult result = executor.execute(new AgentRuntimeExecutionRequest(
+                snapshot("snapshot-stale", "stage-1", "task-1", AgentRuntimeType.PI, ""),
+                command("task-1", "CODING_AGENT")
+        ));
+
+        assertEquals(RepairExecutionStatus.SUCCESS, result.status());
+        assertFalse(Files.exists(staleRawEvents));
+    }
+
+    @Test
+    void shouldSerializePiExecutionsThatShareOneWorkspace() throws Exception {
+        CountDownLatch firstContainerFinishedWriting = new CountDownLatch(1);
+        CountDownLatch releaseFirstExecution = new CountDownLatch(1);
+        CountDownLatch secondWorkspaceMaterializationStarted = new CountDownLatch(1);
+        CountDownLatch secondContainerStarted = new CountDownLatch(1);
+        AtomicInteger calls = new AtomicInteger();
+        AtomicInteger workspaceCreates = new AtomicInteger();
+        RepairWorkspaceFactory workspaceFactory = new RepairWorkspaceFactory(
+                temporaryDirectory.resolve("workspaces"),
+                RESULT_SCHEMA
+        ) {
+            @Override
+            public RepairWorkspace create(RepairJobCommand command) throws IOException {
+                if (workspaceCreates.incrementAndGet() == 2) {
+                    secondWorkspaceMaterializationStarted.countDown();
+                }
+                return super.create(command);
+            }
+        };
+        CapturingRunner runner = new CapturingRunner() {
+            @Override
+            public ContainerRunResult run(ContainerRunRequest request, ContainerOutputListener listener) throws IOException {
+                if (calls.incrementAndGet() == 1) {
+                    ContainerRunResult result = super.run(request, listener);
+                    firstContainerFinishedWriting.countDown();
+                    try {
+                        if (!releaseFirstExecution.await(2, TimeUnit.SECONDS)) {
+                            throw new IOException("test timed out waiting to release the first Pi execution");
+                        }
+                    } catch (InterruptedException exception) {
+                        Thread.currentThread().interrupt();
+                        throw new IOException("test interrupted while waiting to release the first Pi execution", exception);
+                    }
+                    return result;
+                }
+                secondContainerStarted.countDown();
+                return super.run(request, listener);
+            }
+        };
+        DockerPiAgentExecutor executor = executor(
+                workspaceFactory,
+                runner,
+                AgentExecutionEventSink.noop(),
+                ignored -> "secret"
+        );
+
+        CompletableFuture<RepairExecutionResult> first = CompletableFuture.supplyAsync(() -> executor.execute(
+                new AgentRuntimeExecutionRequest(
+                        snapshotUnchecked("snapshot-first", "stage-1", "task-1"),
+                        command("task-1", "CODING_AGENT", "first prompt")
+                )
+        ));
+        try {
+            assertTrue(firstContainerFinishedWriting.await(1, TimeUnit.SECONDS));
+            CompletableFuture<RepairExecutionResult> second = CompletableFuture.supplyAsync(() -> executor.execute(
+                    new AgentRuntimeExecutionRequest(
+                            snapshotUnchecked("snapshot-second", "stage-1", "task-1"),
+                            command("task-1", "CODING_AGENT", "second prompt")
+                    )
+            ));
+
+            assertFalse(secondWorkspaceMaterializationStarted.await(200, TimeUnit.MILLISECONDS));
+            assertFalse(secondContainerStarted.await(200, TimeUnit.MILLISECONDS));
+            releaseFirstExecution.countDown();
+            assertEquals(RepairExecutionStatus.SUCCESS, first.get(2, TimeUnit.SECONDS).status());
+            assertEquals(RepairExecutionStatus.SUCCESS, second.get(2, TimeUnit.SECONDS).status());
+        } finally {
+            releaseFirstExecution.countDown();
+        }
+    }
+
+    @Test
+    void shouldRejectSnapshotRoleMismatchBeforeStartingPiContainer() throws Exception {
         AtomicInteger calls = new AtomicInteger();
         CapturingRunner runner = new CapturingRunner() {
             @Override
@@ -87,6 +191,7 @@ class DockerPiAgentExecutorTest {
         };
         DockerPiAgentExecutor executor = executor(runner, AgentExecutionEventSink.noop(), ignored -> "secret");
 
+        // Snapshot frozen for CODING_AGENT but the command carries QA_AGENT: identity must match.
         RepairExecutionResult result = executor.execute(new com.wish.rd.exec.repair.runtime.model.AgentRuntimeExecutionRequest(
                 snapshot("snapshot-qa", "stage-qa", "task-qa", AgentRuntimeType.PI, ""),
                 command("task-qa", "QA_AGENT")
@@ -95,6 +200,70 @@ class DockerPiAgentExecutorTest {
         assertEquals(RepairExecutionStatus.FAILED_VALIDATION, result.status());
         assertEquals("PI_ROLE_NOT_ALLOWED", result.rawResultJson().get("failureCategory"));
         assertEquals(0, calls.get());
+    }
+
+    @Test
+    void shouldRouteQaAgentSnapshotToTheQaImage() throws Exception {
+        CapturingRunner runner = new CapturingRunner();
+        DockerPiAgentExecutor executor = executor(runner, AgentExecutionEventSink.noop(), ignored -> "secret");
+
+        executor.execute(new com.wish.rd.exec.repair.runtime.model.AgentRuntimeExecutionRequest(
+                snapshot("snapshot-qa2", "stage-qa2", "task-qa2", AgentRuntimeType.PI, "", "QA_AGENT"),
+                command("task-qa2", "QA_AGENT")
+        ));
+
+        // The QA role must select the dedicated QA image, not the base Pi image.
+        assertEquals("rd-bot/pi-agent-qa:local", runner.request.image());
+    }
+
+    @Test
+    void shouldProvisionQaProfileInputAndEnvironmentForQaExecutions() throws Exception {
+        CapturingRunner runner = new CapturingRunner();
+        DockerPiAgentExecutor executor = executor(runner, AgentExecutionEventSink.noop(), ignored -> "secret");
+
+        executor.execute(new com.wish.rd.exec.repair.runtime.model.AgentRuntimeExecutionRequest(
+                snapshot("snapshot-qa3", "stage-qa3", "task-qa3", AgentRuntimeType.PI, "", "QA_AGENT"),
+                command("task-qa3", "QA_AGENT")
+        ));
+
+        // QA parity with the Claude executor: profile lands in the read-only input
+        // mount and the container receives the QA environment contract.
+        assertTrue(Files.isRegularFile(temporaryDirectory.resolve("workspaces/task-qa3/input/qa-profile.json")));
+        assertEquals("/work/input/qa-profile.json", runner.request.env().get("RD_QA_PROFILE_FILE"));
+        assertTrue(runner.request.env().containsKey("RD_QA_ALLOWED_HOSTS"));
+        assertEquals("/work/output/qa-work/playwright", runner.request.env().get("PLAYWRIGHT_MCP_OUTPUT_DIR"));
+    }
+
+    @Test
+    void shouldKeepIntegrityMetadataForBinaryQaEvidenceArtifacts() throws Exception {
+        byte[] fakePng = new byte[]{(byte) 0x89, 'P', 'N', 'G', (byte) 0xFF, (byte) 0xFE, 0x00, 0x01};
+        CapturingRunner runner = new CapturingRunner() {
+            @Override
+            public ContainerRunResult run(ContainerRunRequest request, ContainerOutputListener listener) throws IOException {
+                ContainerRunResult result = super.run(request, listener);
+                Path screenshots = request.outputDirectory().resolve("qa-evidence/screenshots");
+                Files.createDirectories(screenshots);
+                Files.write(screenshots.resolve("current-desktop.png"), fakePng);
+                return result;
+            }
+        };
+        DockerPiAgentExecutor executor = executor(runner, AgentExecutionEventSink.noop(), ignored -> "secret");
+
+        RepairExecutionResult result = executor.execute(new com.wish.rd.exec.repair.runtime.model.AgentRuntimeExecutionRequest(
+                snapshot("snapshot-bin", "stage-1", "task-1", AgentRuntimeType.PI, ""),
+                command("task-1", "CODING_AGENT")
+        ));
+
+        // Binary evidence must keep bytes/sha256: reading a PNG as UTF-8 used to
+        // throw and erase the whole metadata map, failing QA bundle validation.
+        var screenshot = result.artifacts().stream()
+                .filter(artifact -> artifact.name().equals("qa-evidence/screenshots/current-desktop.png"))
+                .findFirst()
+                .orElseThrow();
+        assertEquals(String.valueOf(fakePng.length), screenshot.metadataJson().get("bytes"));
+        assertEquals(64, screenshot.metadataJson().get("sha256").length());
+        assertEquals("image/png", screenshot.metadataJson().get("contentType"));
+        assertFalse(screenshot.metadataJson().containsKey("contentPreview"));
     }
 
     @Test
@@ -159,12 +328,27 @@ class DockerPiAgentExecutorTest {
             AgentExecutionEventSink eventSink,
             com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor.AuthEnvironmentResolver authResolver
     ) {
-        return new DockerPiAgentExecutor(
+        return executor(
                 new RepairWorkspaceFactory(temporaryDirectory.resolve("workspaces"), RESULT_SCHEMA),
+                runner,
+                eventSink,
+                authResolver
+        );
+    }
+
+    private DockerPiAgentExecutor executor(
+            RepairWorkspaceFactory workspaceFactory,
+            StreamingContainerRunnerPort runner,
+            AgentExecutionEventSink eventSink,
+            com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor.AuthEnvironmentResolver authResolver
+    ) {
+        return new DockerPiAgentExecutor(
+                workspaceFactory,
                 runner,
                 new StructuredResultValidator(),
                 new DockerPiAgentExecutor.Configuration(
                         "rd-bot/pi-agent:test",
+                        "rd-bot/pi-agent-qa:local",
                         List.of("node", "/opt/rd-pi-bridge/src/rd-pi-bridge.mjs"),
                         "bridge",
                         true,
@@ -180,12 +364,16 @@ class DockerPiAgentExecutorTest {
     }
 
     private static RepairJobCommand command(String taskId, String role) {
+        return command(taskId, role, "Implement the requested change");
+    }
+
+    private static RepairJobCommand command(String taskId, String role, String prompt) {
         return new RepairJobCommand(
                 "repair-" + taskId,
                 taskId,
                 "ticket-1",
                 "Implement Pi runtime",
-                "Implement the requested change",
+                prompt,
                 "https://github.com/acme/repo.git",
                 "acme",
                 "repo",
@@ -204,11 +392,22 @@ class DockerPiAgentExecutorTest {
             AgentRuntimeType runtimeType,
             String extensionSetId
     ) throws IOException {
+        return snapshot(snapshotId, stageRunId, taskId, runtimeType, extensionSetId, "CODING_AGENT");
+    }
+
+    private static AgentExecutionProfileSnapshot snapshot(
+            String snapshotId,
+            String stageRunId,
+            String taskId,
+            AgentRuntimeType runtimeType,
+            String extensionSetId,
+            String role
+    ) throws IOException {
         String json = OBJECT_MAPPER.writeValueAsString(Map.ofEntries(
                 Map.entry("snapshotVersion", 1),
                 Map.entry("stageRunId", stageRunId),
                 Map.entry("taskId", taskId),
-                Map.entry("role", "CODING_AGENT"),
+                Map.entry("role", role),
                 Map.entry("attemptNo", 1),
                 Map.entry("runtimeType", runtimeType.name()),
                 Map.entry("profileId", "profile-1"),
@@ -234,13 +433,25 @@ class DockerPiAgentExecutorTest {
                 snapshotId,
                 stageRunId,
                 taskId,
-                "CODING_AGENT",
+                role,
                 1,
                 runtimeType,
                 json,
                 AgentExecutionProfileSnapshot.sha256(json),
                 1L
         );
+    }
+
+    private static AgentExecutionProfileSnapshot snapshotUnchecked(
+            String snapshotId,
+            String stageRunId,
+            String taskId
+    ) {
+        try {
+            return snapshot(snapshotId, stageRunId, taskId, AgentRuntimeType.PI, "");
+        } catch (IOException exception) {
+            throw new AssertionError("failed to build Pi test snapshot", exception);
+        }
     }
 
     private static class CapturingRunner implements StreamingContainerRunnerPort {

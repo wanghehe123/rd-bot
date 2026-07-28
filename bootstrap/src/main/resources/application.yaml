@@ -169,6 +169,7 @@ rd:
       mutation-token: ${RD_AGENT_RUNTIME_MUTATION_TOKEN:}
     pi:
       image: ${RD_EXECUTOR_PI_IMAGE:rd-bot/pi-agent:local}
+      qa-image: ${RD_EXECUTOR_PI_QA_IMAGE:rd-bot/pi-agent-qa:local}
       command:
         - node
         - /opt/rd-pi-bridge/src/rd-pi-bridge.mjs
@@ -176,6 +177,7 @@ rd:
       remove-after-exit: ${RD_EXECUTOR_PI_REMOVE_AFTER_EXIT:true}
       allow-privileged: ${RD_EXECUTOR_PI_ALLOW_PRIVILEGED:false}
       execution-timeout-millis: ${RD_EXECUTOR_PI_EXECUTION_TIMEOUT_MILLIS:0}
+      raw-event-max-bytes: ${RD_EXECUTOR_PI_MAX_RAW_EVENT_BYTES:16777216}
       resources:
         enabled: ${RD_EXECUTOR_PI_RESOURCES_ENABLED:false}
         approved-cache-root: ${RD_EXECUTOR_PI_APPROVED_CACHE_ROOT:}

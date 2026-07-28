@@ -1,0 +1,39 @@
+ARG PI_BASE_IMAGE=rd-bot/pi-agent:local
+FROM ${PI_BASE_IMAGE}
+
+USER root
+
+# Mirror override for restricted-network builds; versions stay pinned by the base image lockfile.
+ARG NPM_REGISTRY=https://registry.npmjs.org
+ARG PLAYWRIGHT_CLI_VERSION=0.1.17
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+    PLAYWRIGHT_MCP_CONFIG=/etc/rd-bot/playwright-cli.config.json
+
+# QA toolchain parity with the Claude QA image: browser validation via Playwright
+# Chromium plus curl/zip for service health checks and evidence bundling.
+RUN npm install -g "@playwright/cli@${PLAYWRIGHT_CLI_VERSION}" --registry=${NPM_REGISTRY} \
+    && node /usr/local/lib/node_modules/@playwright/cli/node_modules/playwright/cli.js install-deps chromium \
+    && for attempt in 1 2 3; do \
+        PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT=120000 \
+          node /usr/local/lib/node_modules/@playwright/cli/node_modules/playwright/cli.js install chromium && break; \
+        if [ "$attempt" -eq 3 ]; then \
+          echo "Playwright Chromium download failed after ${attempt} attempts" >&2; \
+          exit 1; \
+        fi; \
+        echo "Playwright Chromium download attempt ${attempt} failed; retrying" >&2; \
+        sleep "$attempt"; \
+      done \
+    && npm cache clean --force \
+    && chown -R node:node /ms-playwright /home/node
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl zip \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY rd-qa-evidence.mjs /usr/local/bin/rd-qa-evidence.mjs
+COPY playwright-cli.config.json /etc/rd-bot/playwright-cli.config.json
+RUN chmod 0755 /usr/local/bin/rd-qa-evidence.mjs \
+    && chmod 0644 /etc/rd-bot/playwright-cli.config.json
+
+USER node
+ENTRYPOINT ["node", "/opt/rd-pi-bridge/src/rd-pi-bridge.mjs"]

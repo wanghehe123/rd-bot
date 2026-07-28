@@ -38,6 +38,7 @@
     "api": { "type": "string", "minLength": 1 },
     "baseUrl": { "type": "string", "format": "uri" },
     "authHeader": { "type": "boolean" },
+    "applyCandidatePatch": { "type": "boolean" },
     "credentialEnvironmentVariable": { "type": "string", "pattern": "^[A-Z_][A-Z0-9_]*$" },
     "toolPolicy": { "type": "object" },
     "extensionSet": { "type": "object" },
