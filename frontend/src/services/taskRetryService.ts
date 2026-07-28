@@ -65,6 +65,7 @@ export type TaskRetryCommand = {
   expectedSourceTaskVersion?: number;
   operatorNote?: string;
   evidenceMaterialIds?: string[];
+  retryFromRole?: string;
 };
 
 export const getTaskRetryPreview = (taskId: string): Promise<TaskRetryPoint> =>

@@ -9,7 +9,8 @@ public record TaskRetryCommand(
         String expectedFailedAiReviewRunId,
         long expectedSourceTaskVersion,
         String operatorNote,
-        List<String> evidenceMaterialIds
+        List<String> evidenceMaterialIds,
+        String retryFromRoleOverride
 ) {
 
     private static final int MAX_NOTE_LENGTH = 8_000;
@@ -35,6 +36,20 @@ public record TaskRetryCommand(
         if (evidenceMaterialIds.stream().anyMatch(String::isBlank)) {
             throw new IllegalArgumentException("evidenceMaterialIds must not contain blank values");
         }
+        retryFromRoleOverride = safe(retryFromRoleOverride);
+    }
+
+    /** Keeps callers without a retry-from-role override source-compatible. */
+    public TaskRetryCommand(
+            String expectedFailedStageRunId,
+            String expectedFailedRetrievalRunId,
+            String expectedFailedAiReviewRunId,
+            long expectedSourceTaskVersion,
+            String operatorNote,
+            List<String> evidenceMaterialIds
+    ) {
+        this(expectedFailedStageRunId, expectedFailedRetrievalRunId, expectedFailedAiReviewRunId,
+                expectedSourceTaskVersion, operatorNote, evidenceMaterialIds, "");
     }
 
     /** Keeps callers that only guard a role-stage failure source-compatible. */
@@ -60,7 +75,7 @@ public record TaskRetryCommand(
 
     /** Returns the legacy no-evidence retry command. */
     public static TaskRetryCommand empty() {
-        return new TaskRetryCommand("", "", "", 0L, "", List.of());
+        return new TaskRetryCommand("", "", "", 0L, "", List.of(), "");
     }
 
     private static String safe(String value) {

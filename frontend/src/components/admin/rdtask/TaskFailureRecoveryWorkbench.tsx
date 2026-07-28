@@ -7,6 +7,13 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import {
@@ -28,6 +35,14 @@ const ROLE_LABEL: Record<string, string> = {
   CODING_AGENT: "编码执行",
   QA_AGENT: "质量验证"
 };
+
+// 与后端 AgentRole.requirementDeliveryOrder() 保持一致，用于计算可打回的上游角色。
+const DELIVERY_ROLE_ORDER = [
+  "REQUIREMENT_REVIEWER",
+  "SOLUTION_ARCHITECT",
+  "CODING_AGENT",
+  "QA_AGENT"
+];
 
 const ISSUE_TONE: Record<string, string> = {
   issue: "border-amber-200 bg-amber-50/50",
@@ -70,6 +85,7 @@ export function TaskFailureRecoveryWorkbench({
   const [savingText, setSavingText] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [retrying, setRetrying] = useState(false);
+  const [retryFromRole, setRetryFromRole] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const retryPointIdentity = snapshot ? [
     snapshot.retryPoint.failedStageRunId,
@@ -86,6 +102,7 @@ export function TaskFailureRecoveryWorkbench({
     setSavingText(false);
     setUploading(false);
     setRetrying(false);
+    setRetryFromRole("");
   }, [retryPointIdentity, task.taskId]);
 
   useEffect(() => {
@@ -97,6 +114,17 @@ export function TaskFailureRecoveryWorkbench({
   const selectedEvidence = useMemo(() => (
     materials.filter((material) => selectedEvidenceIds.includes(material.materialId))
   ), [materials, selectedEvidenceIds]);
+  // 只有角色阶段失败才允许选择重试起点；可选范围 = 失败角色及其上游（打回）。
+  const retryRoleOptions = useMemo(() => {
+    if (snapshot?.retryPoint.failurePhase !== "AGENT_ROLE") return [];
+    const failedIndex = DELIVERY_ROLE_ORDER.indexOf(snapshot.retryPoint.retryFromRole);
+    if (failedIndex < 0) return [];
+    return DELIVERY_ROLE_ORDER.slice(0, failedIndex + 1);
+  }, [snapshot]);
+  const effectiveRetryRole = retryFromRole || snapshot?.retryPoint.retryFromRole || "";
+  const isBounceBack = Boolean(
+    retryFromRole && snapshot && retryFromRole !== snapshot.retryPoint.retryFromRole
+  );
   const requiresSupplement = Boolean(snapshot?.diagnostic.requiresSupplement);
   const hasSupplement = Boolean(operatorNote.trim() || selectedEvidenceIds.length > 0);
   const retryDisabled = retrying || savingText || uploading || (requiresSupplement && !hasSupplement);
@@ -182,7 +210,8 @@ export function TaskFailureRecoveryWorkbench({
         expectedFailedAiReviewRunId: snapshot.retryPoint.failedAiReviewRunId,
         expectedSourceTaskVersion: snapshot.retryPoint.sourceTaskVersion,
         operatorNote: operatorNote.trim(),
-        evidenceMaterialIds: selectedEvidenceIds
+        evidenceMaterialIds: selectedEvidenceIds,
+        retryFromRole: isBounceBack ? retryFromRole : ""
       });
       if (!actionGuard.isCurrent()) return;
       toast.success(
@@ -380,9 +409,37 @@ export function TaskFailureRecoveryWorkbench({
               </div>
             ) : null}
 
+            {retryRoleOptions.length > 1 ? (
+              <div className="space-y-2">
+                <Label htmlFor="recovery-retry-role">重试起点</Label>
+                <Select value={effectiveRetryRole} onValueChange={setRetryFromRole}>
+                  <SelectTrigger id="recovery-retry-role" className="rounded-md">
+                    <SelectValue placeholder="选择重试起点角色" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {retryRoleOptions.map((role) => (
+                      <SelectItem key={role} value={role}>
+                        {roleLabel(role)}
+                        {role === snapshot.retryPoint.retryFromRole ? "（失败阶段）" : "（打回重做）"}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {isBounceBack ? (
+                  <p className="text-xs text-amber-800">
+                    将从 {roleLabel(retryFromRole)} 重新执行，其后置阶段（含 {roleLabel(snapshot.retryPoint.retryFromRole)}）会重新跑；下游失败原因会自动注入该角色提示词。
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
+
             <Button type="button" onClick={() => void resumeFromFailure()} disabled={retryDisabled} className="w-full rounded-md">
               {retrying ? <RotateCcw className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
-              {retrying ? "正在创建恢复 attempt" : `从 ${roleLabel(retryPoint.retryFromRole || retryPoint.failurePhase)} 重试`}
+              {retrying
+                ? "正在创建恢复 attempt"
+                : isBounceBack
+                  ? `打回至 ${roleLabel(retryFromRole)} 重试`
+                  : `从 ${roleLabel(retryPoint.retryFromRole || retryPoint.failurePhase)} 重试`}
             </Button>
           </div>
         </div>

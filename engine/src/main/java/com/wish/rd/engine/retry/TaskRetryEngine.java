@@ -203,7 +203,7 @@ public final class TaskRetryEngine {
         }
         TaskFailureRecoverySnapshot snapshot = failureRecoveryService.snapshot(taskId);
         validateCommand(snapshot, safeCommand);
-        TaskRetryPoint point = snapshot.retryPoint();
+        TaskRetryPoint point = applyRetryFromRoleOverride(snapshot.retryPoint(), safeCommand);
         int attemptNo = checkpointStore.listByTask(taskId).stream()
                 .mapToInt(TaskRetryCheckpoint::attemptNo).max().orElse(0) + 1;
         String idempotencyKey = taskId + ":" + point.sourceTaskVersion() + ":"
@@ -276,6 +276,54 @@ public final class TaskRetryEngine {
                 && evidenceMaterialIds.isEmpty()) {
             throw new IllegalArgumentException("recovery evidence or operator note is required");
         }
+        validateRetryFromRoleOverride(retryPoint, command);
+    }
+
+    /**
+     * Validates the operator's bounce-back role: only an upstream (or same) requirement-delivery
+     * role of an AGENT_ROLE failure may be chosen, so completed downstream work is never skipped.
+     */
+    private void validateRetryFromRoleOverride(TaskRetryPoint retryPoint, TaskRetryCommand command) {
+        String override = command.retryFromRoleOverride();
+        if (override.isBlank()) {
+            return;
+        }
+        if (retryPoint.failurePhase() != TaskFailurePhase.AGENT_ROLE || retryPoint.retryFromRole() == null) {
+            throw new IllegalArgumentException(
+                    "retryFromRoleOverride is only supported for AGENT_ROLE failures");
+        }
+        AgentRole overrideRole;
+        try {
+            overrideRole = AgentRole.valueOf(override);
+        } catch (IllegalArgumentException exception) {
+            throw new IllegalArgumentException("retryFromRoleOverride is not a valid role: " + override);
+        }
+        List<AgentRole> roles = AgentRole.requirementDeliveryOrder();
+        int overrideIndex = roles.indexOf(overrideRole);
+        int failedIndex = roles.indexOf(retryPoint.retryFromRole());
+        if (overrideIndex < 0) {
+            throw new IllegalArgumentException(
+                    "retryFromRoleOverride is not a requirement-delivery role: " + override);
+        }
+        if (overrideIndex > failedIndex) {
+            throw new IllegalArgumentException("retryFromRoleOverride must not skip the failed role: "
+                    + override + " is downstream of " + retryPoint.retryFromRole());
+        }
+    }
+
+    /** Rewrites the resolved retry point when the operator bounces the task back to an upstream role. */
+    private TaskRetryPoint applyRetryFromRoleOverride(TaskRetryPoint point, TaskRetryCommand command) {
+        String override = command.retryFromRoleOverride();
+        if (override.isBlank() || point.failurePhase() != TaskFailurePhase.AGENT_ROLE) {
+            return point;
+        }
+        AgentRole overrideRole = AgentRole.valueOf(override);
+        if (overrideRole == point.retryFromRole()) {
+            return point;
+        }
+        return new TaskRetryPoint(point.taskId(), point.failurePhase(), overrideRole,
+                point.failedStageRunId(), point.failedRetrievalRunId(), point.failedAiReviewRunId(),
+                point.reason(), point.sourceTaskVersion());
     }
 
     private void validateExistingCheckpoint(TaskRetryCheckpoint checkpoint, TaskRetryCommand command) {
@@ -298,6 +346,13 @@ public final class TaskRetryEngine {
                 && command.expectedSourceTaskVersion() != checkpoint.sourceTaskVersion()) {
             throw new IllegalStateException("active retry checkpoint source version changed: expected "
                     + command.expectedSourceTaskVersion() + " but was " + checkpoint.sourceTaskVersion());
+        }
+        if (!command.retryFromRoleOverride().isBlank()
+                && (checkpoint.retryFromRole() == null
+                        || !command.retryFromRoleOverride().equals(checkpoint.retryFromRole().name()))) {
+            throw new IllegalStateException("active retry checkpoint was created for role "
+                    + (checkpoint.retryFromRole() == null ? "NONE" : checkpoint.retryFromRole().name())
+                    + " and cannot be redirected to " + command.retryFromRoleOverride());
         }
 
         Set<String> evidenceMaterialIds = new HashSet<>(command.evidenceMaterialIds());

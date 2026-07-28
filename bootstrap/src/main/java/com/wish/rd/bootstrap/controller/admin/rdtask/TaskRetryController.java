@@ -131,7 +131,8 @@ public class TaskRetryController {
             String expectedFailedAiReviewRunId,
             long expectedSourceTaskVersion,
             String operatorNote,
-            List<String> evidenceMaterialIds
+            List<String> evidenceMaterialIds,
+            String retryFromRole
     ) {
         public TaskRetryRequest {
             if (expectedSourceTaskVersion <= 0L) {
@@ -147,7 +148,8 @@ public class TaskRetryController {
                     expectedFailedAiReviewRunId,
                     expectedSourceTaskVersion,
                     operatorNote,
-                    evidenceMaterialIds
+                    evidenceMaterialIds,
+                    retryFromRole
             );
         }
     }
