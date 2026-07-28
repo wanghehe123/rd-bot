@@ -61,6 +61,11 @@ public class ProcessGitRepairWorkspaceRepository implements RepairWorkspaceRepos
         );
         boolean workBranchFetched;
         if (Files.isDirectory(repoDirectory.resolve(".git"))) {
+            // 复用的工作区可能残留上一次尝试未提交的改动（例如 agent 写完代码但未交卷），
+            // 不清理会让 checkout -B 因 "would be overwritten" 直接失败。工作区本身可抛弃，
+            // 候选补丁由附件重放，因此 reset + clean 不会丢失任何需要保留的数据。
+            runGit(List.of(GIT_BINARY, "-C", repoDirectory.toString(), "reset", "--hard"));
+            runGit(List.of(GIT_BINARY, "-C", repoDirectory.toString(), "clean", "-fd"));
             runGit(List.of(GIT_BINARY, "-C", repoDirectory.toString(), "fetch", "origin", command.baseBranch()));
             workBranchFetched = !localOnly && fetchRemoteWorkBranch(repoDirectory, command.workBranch());
         } else {

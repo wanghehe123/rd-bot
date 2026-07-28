@@ -52,6 +52,8 @@ import com.wish.rd.engine.requirement.model.RequirementExecutionResult;
 import com.wish.rd.engine.requirement.model.RequirementExecutionProfileResolution;
 import com.wish.rd.engine.requirement.model.RequirementPullRequestPublication;
 import com.wish.rd.engine.requirement.model.RequirementPullRequestPublishCommand;
+import com.wish.rd.engine.requirement.model.RequirementBranchPublication;
+import com.wish.rd.engine.requirement.model.RequirementBranchPublishCommand;
 
 class RequirementDeliveryEngineTest {
 
@@ -226,6 +228,108 @@ class RequirementDeliveryEngineTest {
                                 && entry.evidenceQuality() > 0.0d
                                 && !entry.applicableRoles().isEmpty()),
                 "new workflow experiences must carry repository scope, quality, and applicable roles");
+    }
+
+    @Test
+    void shouldPushReviewedBranchBeforeCreatingPullRequest() {
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(), new InMemoryRdTaskStatusEventStore(), generator());
+        InMemoryTaskMaterialStore materialStore = new InMemoryTaskMaterialStore();
+        RdRequirementTask task = createRequirementTask(
+                registry,
+                materialStore,
+                "branch-push-order-material",
+                "分支推送顺序测试",
+                "建 PR 前必须先推送工作分支",
+                "验证复核通过后先推送工作分支再创建 PR。"
+        );
+        List<String> publishOrder = new CopyOnWriteArrayList<>();
+        AgentStageRunStore stageRunStore = new InMemoryAgentStageRunStore();
+        OrderRecordingPullRequestPublisher pullRequestPublisher =
+                new OrderRecordingPullRequestPublisher(publishOrder);
+        RequirementDeliveryEngine engine =
+                happyPathEngine(registry, materialStore, stageRunStore, pullRequestPublisher);
+        RecordingRequirementBranchPublisher branchPublisher =
+                new RecordingRequirementBranchPublisher(publishOrder, false, "");
+        engine.setBranchPublisher(branchPublisher);
+
+        RequirementDeliveryResult result = engine.submit(task.taskId());
+
+        assertEquals(RdTaskStatus.COMPLETED, result.status());
+        assertEquals(List.of("branch", "pull-request"), publishOrder,
+                "工作分支必须在创建 PR 之前推送");
+        assertEquals(task.taskId(), branchPublisher.command().taskId());
+        assertEquals("requirement/" + task.taskId(), branchPublisher.command().workBranch());
+        assertEquals("example", branchPublisher.command().repoOwner());
+        assertEquals("waimai", branchPublisher.command().repoName());
+        assertTrue(branchPublisher.command().deliveryResultJson().contains("\"deliveryReview\""));
+        assertTrue(pullRequestPublisher.invoked());
+    }
+
+    @Test
+    void shouldRejectRequirementWhenReviewedBranchPushFails() {
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(), new InMemoryRdTaskStatusEventStore(), generator());
+        InMemoryTaskMaterialStore materialStore = new InMemoryTaskMaterialStore();
+        RdRequirementTask task = createRequirementTask(
+                registry,
+                materialStore,
+                "branch-push-failure-material",
+                "分支推送失败测试",
+                "分支推送失败必须拒绝交付",
+                "验证工作分支推送失败时拒绝交付且不创建 PR。"
+        );
+        List<String> publishOrder = new CopyOnWriteArrayList<>();
+        AgentStageRunStore stageRunStore = new InMemoryAgentStageRunStore();
+        OrderRecordingPullRequestPublisher pullRequestPublisher =
+                new OrderRecordingPullRequestPublisher(publishOrder);
+        RequirementDeliveryEngine engine =
+                happyPathEngine(registry, materialStore, stageRunStore, pullRequestPublisher);
+        engine.setBranchPublisher(new RecordingRequirementBranchPublisher(
+                publishOrder, true, "push rejected: head not found"));
+
+        RequirementDeliveryResult result = engine.submit(task.taskId());
+
+        assertEquals(RdTaskStatus.REJECTED, result.status());
+        assertTrue(result.errorMessage().contains("pull request publication failed"));
+        assertTrue(result.errorMessage().contains("push rejected: head not found"));
+        assertFalse(pullRequestPublisher.invoked(), "分支推送失败后不得创建 PR");
+        assertEquals(List.of("branch"), publishOrder);
+        assertEquals(RdTaskStatus.REJECTED, registry.getTask(task.taskId()).status());
+    }
+
+    private RequirementDeliveryEngine happyPathEngine(
+            RagStreamTaskRegistry registry,
+            InMemoryTaskMaterialStore materialStore,
+            AgentStageRunStore stageRunStore,
+            RequirementPullRequestPublisherPort pullRequestPublisher
+    ) {
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry,
+                materialStore,
+                request -> {
+                    if (request.role() == AgentRole.CODING_AGENT) {
+                        return RequirementExecutionResult.success(
+                                request.taskId(), "实现完成", "", codingResultJson(request.role()));
+                    }
+                    return RequirementExecutionResult.success(
+                            request.taskId(), request.role().name() + " 完成", "", roleResultJson(request.role()));
+                },
+                new RequirementContextBuilder(),
+                new RequirementPlanGenerator(),
+                new RuleBasedRequirementPolicyGate(),
+                new AgentStagePlanner(new AtomicStageIdSupplier()),
+                stageRunStore,
+                new RoleContextBuilder(),
+                new InMemoryRoleContextPackageStore(),
+                AgentWorkflowAlertSinkPort.noop(),
+                WorkflowExperienceStore.noop(),
+                new RequirementDeliveryReviewer(),
+                pullRequestPublisher
+        );
+        engine.setExecutionProfileResolver((resolvedTask, role, stageRunId, attemptNo) ->
+                new RequirementExecutionProfileResolution("snapshot-" + stageRunId));
+        return engine;
     }
 
     @Test
@@ -2894,6 +2998,65 @@ class RequirementDeliveryEngineTest {
         }
 
         private RequirementPullRequestPublishCommand command() {
+            return command;
+        }
+    }
+
+    private static final class OrderRecordingPullRequestPublisher implements RequirementPullRequestPublisherPort {
+
+        private final List<String> order;
+        private boolean invoked;
+
+        private OrderRecordingPullRequestPublisher(List<String> order) {
+            this.order = order;
+        }
+
+        @Override
+        public RequirementPullRequestPublication publish(RequirementPullRequestPublishCommand command) {
+            invoked = true;
+            if (order != null) {
+                order.add("pull-request");
+            }
+            return RequirementPullRequestPublication.success(
+                    command.taskId(),
+                    "https://github.com/example/waimai/pull/99",
+                    "99",
+                    "{\"provider\":\"recording\"}"
+            );
+        }
+
+        private boolean invoked() {
+            return invoked;
+        }
+    }
+
+    private static final class RecordingRequirementBranchPublisher implements RequirementBranchPublisherPort {
+
+        private final List<String> order;
+        private final boolean fail;
+        private final String failureMessage;
+        private RequirementBranchPublishCommand command;
+
+        private RecordingRequirementBranchPublisher(List<String> order, boolean fail, String failureMessage) {
+            this.order = order;
+            this.fail = fail;
+            this.failureMessage = failureMessage;
+        }
+
+        @Override
+        public RequirementBranchPublication publishBranch(RequirementBranchPublishCommand command) {
+            this.command = command;
+            if (order != null) {
+                order.add("branch");
+            }
+            if (fail) {
+                return RequirementBranchPublication.failure(command.taskId(), failureMessage);
+            }
+            return RequirementBranchPublication.success(
+                    command.taskId(), "abc123", "{\"provider\":\"recording-branch\"}");
+        }
+
+        private RequirementBranchPublishCommand command() {
             return command;
         }
     }

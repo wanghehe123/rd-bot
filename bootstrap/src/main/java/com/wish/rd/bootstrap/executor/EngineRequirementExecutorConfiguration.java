@@ -1,5 +1,6 @@
 package com.wish.rd.bootstrap.executor;
 
+import com.wish.rd.bootstrap.executor.impl.EngineRequirementBranchPublisherAdapter;
 import com.wish.rd.bootstrap.executor.impl.EngineRequirementExecutorAdapter;
 import com.wish.rd.bootstrap.executor.impl.EngineRequirementPullRequestPublisherAdapter;
 import com.wish.rd.bootstrap.executor.impl.ObjectStorageQaEvidencePublisher;
@@ -7,9 +8,12 @@ import com.wish.rd.bootstrap.executor.impl.ObjectStorageRoleHandoffPublisher;
 import com.wish.rd.bootstrap.executor.impl.RoleHandoffAttachmentResolver;
 
 import com.wish.rd.bootstrap.threading.RdBotThreadPoolConfiguration;
+import com.wish.rd.engine.requirement.RequirementBranchPublisherPort;
 import com.wish.rd.engine.requirement.RequirementExecutorPort;
 import com.wish.rd.engine.requirement.RequirementPullRequestPublisherPort;
 import com.wish.rd.exec.repair.code.CodePlatformPort;
+import com.wish.rd.exec.repair.docker.RepairWorkspaceFactory;
+import com.wish.rd.exec.repair.docker.RepairWorkspaceRepositoryPort;
 import com.wish.rd.exec.repair.execution.RepairExecutorPort;
 import com.wish.rd.exec.repair.runtime.AgentRuntimeRouter;
 import com.wish.rd.rag.qa.QaValidationProfileService;
@@ -127,5 +131,31 @@ public class EngineRequirementExecutorConfiguration {
             return RequirementPullRequestPublisherPort.unavailable();
         }
         return new EngineRequirementPullRequestPublisherAdapter(codePlatform);
+    }
+
+    /**
+     * 创建复核后、建 PR 前的工作分支推送端口。缺少任一依赖（非 Docker/Git 环境）时
+     * 回退到 {@link RequirementBranchPublisherPort#unavailable()}，保持旧交付行为不变。
+     *
+     * @param handoffAttachmentResolverProvider 角色交接附件解析器
+     * @param workspaceFactoryProvider          修复工作区工厂
+     * @param workspaceRepositoryProvider       工作区仓库端口
+     * @return 工作分支推送端口
+     */
+    @Bean
+    @ConditionalOnMissingBean(RequirementBranchPublisherPort.class)
+    public RequirementBranchPublisherPort requirementBranchPublisher(
+            ObjectProvider<RoleHandoffAttachmentResolver> handoffAttachmentResolverProvider,
+            ObjectProvider<RepairWorkspaceFactory> workspaceFactoryProvider,
+            ObjectProvider<RepairWorkspaceRepositoryPort> workspaceRepositoryProvider
+    ) {
+        RoleHandoffAttachmentResolver handoffAttachmentResolver = handoffAttachmentResolverProvider.getIfAvailable();
+        RepairWorkspaceFactory workspaceFactory = workspaceFactoryProvider.getIfAvailable();
+        RepairWorkspaceRepositoryPort workspaceRepository = workspaceRepositoryProvider.getIfAvailable();
+        if (handoffAttachmentResolver == null || workspaceFactory == null || workspaceRepository == null) {
+            return RequirementBranchPublisherPort.unavailable();
+        }
+        return new EngineRequirementBranchPublisherAdapter(
+                handoffAttachmentResolver, workspaceFactory, workspaceRepository);
     }
 }

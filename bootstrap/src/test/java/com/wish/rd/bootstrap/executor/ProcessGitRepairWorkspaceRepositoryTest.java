@@ -111,6 +111,50 @@ class ProcessGitRepairWorkspaceRepositoryTest {
     }
 
     @Test
+    void shouldReprepareCleanlyWhenWorkspaceHasUncommittedChangesFromAPreviousAttempt() throws Exception {
+        assumeTrue(gitAvailable(), "git CLI is required");
+        Path seedRepository = temporaryDirectory.resolve("seed");
+        Path remoteRepository = temporaryDirectory.resolve("remote.git");
+        createSeedRepository(seedRepository, remoteRepository);
+
+        RepairWorkspaceFactory factory = new RepairWorkspaceFactory(
+                temporaryDirectory.resolve("workspaces"),
+                "{\"type\":\"object\"}"
+        );
+        RepairJobCommand command = command(remoteRepository.toString());
+        RepairWorkspace workspace = factory.create(command);
+        DockerExecutorProperties properties = new DockerExecutorProperties();
+        properties.getGit().setUserName("RD-Bot Test");
+        properties.getGit().setUserEmail("rd-bot-test@example.local");
+        ProcessGitRepairWorkspaceRepository repository = new ProcessGitRepairWorkspaceRepository(properties);
+
+        // 第一次 prepare 后，模拟上一次尝试 agent 写完代码但未交卷：
+        // 既修改了已跟踪文件，又遗留了未跟踪文件。
+        repository.prepare(command, workspace);
+        Files.writeString(
+                workspace.repoDirectory().resolve("README.md"),
+                "# locally modified but never committed\n",
+                StandardCharsets.UTF_8
+        );
+        Files.createDirectories(workspace.repoDirectory().resolve("src/app/api/search"));
+        Files.writeString(
+                workspace.repoDirectory().resolve("src/app/api/search/route.ts"),
+                "export const GET = () => new Response('ok');\n",
+                StandardCharsets.UTF_8
+        );
+
+        // 第二次 prepare（阶段重试）必须先清理残留改动，否则 checkout -B 会报 would be overwritten。
+        RepairWorkspaceRepositoryPort.RepositoryOperationResult reprepared =
+                repository.prepare(command, workspace);
+
+        assertEquals("true", reprepared.metadataJson().get("prepared"));
+        assertEquals("# waimai\n", Files.readString(workspace.repoDirectory().resolve("README.md")),
+                "tracked file must be reset to the base branch content");
+        assertFalse(Files.exists(workspace.repoDirectory().resolve("src/app/api/search/route.ts")),
+                "untracked leftovers from a previous attempt must be cleaned");
+    }
+
+    @Test
     void shouldPrepareLocalOnlyQaFromBaseBranchInsteadOfAStaleRemoteWorkBranch() throws Exception {
         assumeTrue(gitAvailable(), "git CLI is required");
         Path seedRepository = temporaryDirectory.resolve("seed");

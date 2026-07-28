@@ -67,6 +67,8 @@ import com.wish.rd.engine.requirement.model.RequirementExecutionResult;
 import com.wish.rd.engine.requirement.model.RequirementPlan;
 import com.wish.rd.engine.requirement.model.RequirementPolicyDecision;
 import com.wish.rd.engine.requirement.model.RequirementPullRequestPublication;
+import com.wish.rd.engine.requirement.model.RequirementBranchPublication;
+import com.wish.rd.engine.requirement.model.RequirementBranchPublishCommand;
 import com.wish.rd.engine.requirement.model.RequirementPullRequestPublishCommand;
 import com.wish.rd.engine.requirement.review.AiDeliveryReviewEngine;
 import com.wish.rd.engine.requirement.review.model.AiReviewRun;
@@ -112,6 +114,11 @@ public class RequirementDeliveryEngine {
     private final WorkflowExperienceStore experienceStore;
     private final RequirementDeliveryReviewer deliveryReviewer;
     private final RequirementPullRequestPublisherPort pullRequestPublisher;
+    // Set-once via optional setter injection; defaults to a skipped no-op so the many
+    // existing constructors and tests keep their behavior unchanged when no branch
+    // publisher is wired. The bootstrap adapter pushes the reviewed work branch here
+    // before the PR is created, closing the "head branch not found" (GitHub 422) gap.
+    private RequirementBranchPublisherPort branchPublisher = RequirementBranchPublisherPort.unavailable();
     private final SnowflakeIdGenerator idGenerator;
     private RequirementContextRetrievalRecorder retrievalRecorder;
     private AiDeliveryReviewEngine aiDeliveryReviewEngine;
@@ -586,6 +593,24 @@ public class RequirementDeliveryEngine {
     }
 
     /**
+     * 可选注入工作分支推送端口。使用 setter 注入避免改动众多既有构造函数：未配置时
+     * 字段保持 {@link RequirementBranchPublisherPort#unavailable()} 跳过语义。
+     */
+    @Autowired(required = false)
+    public void setBranchPublisher(ObjectProvider<RequirementBranchPublisherPort> branchPublisherProvider) {
+        if (branchPublisherProvider != null) {
+            this.branchPublisher = branchPublisherProvider.getIfAvailable(RequirementBranchPublisherPort::unavailable);
+        }
+    }
+
+    /** 直接注入分支推送端口，供测试与非 Spring 组装场景使用。 */
+    public void setBranchPublisher(RequirementBranchPublisherPort branchPublisher) {
+        this.branchPublisher = branchPublisher == null
+                ? RequirementBranchPublisherPort.unavailable()
+                : branchPublisher;
+    }
+
+    /**
      * 提交需求任务并同步执行。
      *
      * @param taskId 任务 ID
@@ -842,6 +867,25 @@ public class RequirementDeliveryEngine {
         // 补丁即交付（SWE-bench 类）：验收标准明确禁止创建 PR，跳过发布器；
         // 空 PR URL 会让 RepairTaskMergeSyncEngine 静默跳过，不产生同步告警噪音。
         boolean patchOnlyDelivery = isPatchOnlyDelivery(requirementTask);
+        // 复核通过后、建 PR 前，先把已复核补丁提交并推送到工作分支；分支未推送直接建 PR 会 422。
+        if (!patchOnlyDelivery) {
+            String branchError = pushReviewedBranch(requirementTask, reviewedResultJson);
+            if (!branchError.isEmpty()) {
+                publishPullRequestPublicationAlert(requirementTask.taskId(), branchError);
+                RdRequirementTask rejected = taskRegistry.markRequirementRejected(
+                        requirementTask.taskId(),
+                        "pull request publication failed: " + branchError,
+                        reviewedResultJson
+                );
+                return new RequirementDeliveryResult(
+                        rejected.taskId(),
+                        rejected.status(),
+                        "",
+                        rejected.executionResultJson(),
+                        rejected.errorMessage()
+                );
+            }
+        }
         RequirementPullRequestPublication publication = patchOnlyDelivery
                 ? RequirementPullRequestPublication.success(requirementTask.taskId(), "", "", "{}")
                 : publishPullRequest(requirementTask, reviewedResultJson);
@@ -988,6 +1032,17 @@ public class RequirementDeliveryEngine {
         RdRequirementTask publishing = taskRegistry.markRequirementPrCreating(task.taskId(), reviewedResultJson);
         // 补丁即交付：与首次发布同样跳过 PR 发布器（历史 REJECTED 任务 retry 也要能走到完成）
         boolean patchOnlyDelivery = isPatchOnlyDelivery(publishing);
+        // 与首次发布一致：建 PR 前先推送已复核的工作分支（历史 REJECTED 任务 retry 也要能补推）。
+        if (!patchOnlyDelivery) {
+            String branchError = pushReviewedBranch(publishing, reviewedResultJson);
+            if (!branchError.isEmpty()) {
+                publishPullRequestPublicationAlert(task.taskId(), branchError);
+                RdRequirementTask rejected = taskRegistry.markRequirementRejected(
+                        task.taskId(), "pull request publication failed: " + branchError,
+                        reviewedResultJson);
+                return currentResult(rejected);
+            }
+        }
         RequirementPullRequestPublication publication = patchOnlyDelivery
                 ? RequirementPullRequestPublication.success(publishing.taskId(), "", "", "{}")
                 : publishPullRequest(publishing, reviewedResultJson);
@@ -1859,6 +1914,35 @@ public class RequirementDeliveryEngine {
                     task.taskId(),
                     "pull request publisher exception: " + safe(exception.getMessage())
             );
+        }
+    }
+
+    /**
+     * 交付复核通过后、创建 PR 前，把已复核的候选补丁提交并推送到工作分支。
+     * 返回空字符串表示成功或被跳过（未配置分支推送端口）；非空表示推送失败原因，
+     * 由调用方写入 REJECTED。分支未推送时直接建 PR 会被代码平台以 head 不存在拒绝（GitHub 422）。
+     */
+    private String pushReviewedBranch(RdRequirementTask task, String reviewedResultJson) {
+        try {
+            RequirementBranchPublication branch = branchPublisher.publishBranch(new RequirementBranchPublishCommand(
+                    task.taskId(),
+                    task.title(),
+                    task.repositoryUrl(),
+                    task.repoOwner(),
+                    task.repoName(),
+                    task.baseBranch(),
+                    workBranch(task),
+                    reviewedResultJson
+            ));
+            if (branch == null) {
+                return "work branch push returned no result";
+            }
+            if (!branch.success()) {
+                return branch.errorMessage().isBlank() ? "work branch push failed" : branch.errorMessage();
+            }
+            return "";
+        } catch (RuntimeException exception) {
+            return "work branch push exception: " + safe(exception.getMessage());
         }
     }
 
@@ -2758,7 +2842,8 @@ public class RequirementDeliveryEngine {
             return "";
         }
         String operatorNote = checkpoint.operatorNote();
-        if (operatorNote.isBlank() && recoveryMaterials.isEmpty()) {
+        String downstreamFailureSection = downstreamFailureFeedbackSection(checkpoint);
+        if (operatorNote.isBlank() && recoveryMaterials.isEmpty() && downstreamFailureSection.isBlank()) {
             return "";
         }
         String noteSection = operatorNote.isBlank()
@@ -2781,12 +2866,41 @@ public class RequirementDeliveryEngine {
                 %s
 
                 %s
+
+                %s
                 """.formatted(
                 checkpoint.failedStageRunId(),
                 checkpoint.retryFromRole().name(),
+                downstreamFailureSection,
                 noteSection,
                 evidenceSection
         ).strip();
+    }
+
+    /**
+     * 操作员把失败任务打回到上游角色时，上游看不到下游失败细节（previousFailureFeedbackSection
+     * 只覆盖同角色的历史失败），这里把被打回的下游阶段失败原因显式注入恢复提示词。
+     */
+    private String downstreamFailureFeedbackSection(TaskRetryCheckpoint checkpoint) {
+        if (checkpoint.failedStageRunId().isBlank() || checkpoint.retryFromRole() == null) {
+            return "";
+        }
+        AgentStageRun failedStage = stageRunStore.findById(checkpoint.failedStageRunId()).orElse(null);
+        if (failedStage == null || failedStage.role() == checkpoint.retryFromRole()) {
+            return "";
+        }
+        String detail = failedStage.errorMessage();
+        if (detail.isBlank()) {
+            return "";
+        }
+        if (detail.length() > MAX_FAILURE_FEEDBACK_CHARS) {
+            detail = detail.substring(0, MAX_FAILURE_FEEDBACK_CHARS) + "...(truncated)";
+        }
+        return """
+                ## 下游 %s 失败反馈（本次打回原因）
+                %s
+                请针对以上反馈修正本角色产出，不要原样重复上一轮工作。
+                """.formatted(failedStage.role().name(), detail).strip();
     }
 
     private boolean isRecoveryRoleOrDownstream(TaskRetryCheckpoint checkpoint, AgentRole role) {
@@ -2850,6 +2964,8 @@ public class RequirementDeliveryEngine {
                     - 基于代码交付候选包、验收标准和真实命令执行 QA 复核。
                     - 上游环境备忘（含 CODING_AGENT 已验证的测试执行方式）视为已验证事实直接沿用，不要从零重复探测环境。
                     - 先读取 /work/input/qa-profile.json，并遵循已安装的 qa-playwright-cli Skill；Web 项目且配置要求时必须执行真实 Chromium 浏览器验证。
+                    - 若存在 /work/input/qa-skill/SKILL.md，先完整阅读并严格遵循其中的流程与工具（rd-qa-evidence.mjs / playwright-cli）。
+                    - 证据目录约定：截图写入 qa-evidence/screenshots/、Playwright trace 写入 qa-evidence/traces/、浏览器 console 写入 qa-evidence/console/、network 写入 qa-evidence/network/、命令日志写入 qa-evidence/commands/；放错目录会导致证据类型无法识别而阻断交付。evidenceArtifactIds 引用的每个文件都必须非空。
                     - 不创建新 PR，也不得修改 /work/repo 中的跟踪文件；临时脚本只能写入 /work/output/qa-work。
                     - 退出状态契约：验证过程中允许用 git stash/checkout 做原始态对照，但写 result.json 前必须恢复原状——/work/repo 退出时必须保持候选补丁在位的状态（git diff HEAD 非空且与进入时一致），丢弃补丁即判基础设施失败。
                     - 当前需求验收（CURRENT）和受影响的既有关键路径回归（REGRESSION）都必须真实执行；任一必需检查缺少证据或被跳过都阻断交付。
@@ -2881,7 +2997,7 @@ public class RequirementDeliveryEngine {
                         "initialTokens": 0,
                         "retryReserveTokens": 0,
                         "estimatedTotalTokens": 0,
-                        "confidence": "LOW|MEDIUM|HIGH",
+                        "confidence": "LOW|MEDIUM|HIGH；预算章节未提供历史实际样本时必须填 LOW，否则整个结果会被拒绝",
                         "basis": "基于四角色首轮、一次重试预留和给定历史实际 token 样本的模型判断",
                         "historicalSamples": []
                       },
