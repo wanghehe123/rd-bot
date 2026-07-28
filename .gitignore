@@ -49,6 +49,7 @@ docs/superpowers/specs/*
 !docs/superpowers/specs/2026-07-10-rd-task-control-plane-enhancements-design.md
 !docs/superpowers/specs/2026-07-10-rd-task-control-plane-enhancements-lessons-spec.md
 !docs/superpowers/specs/2026-07-28-pi-qa-protocol-and-workspace-hygiene-spec.md
+!docs/superpowers/specs/2026-07-28-qa-evidence-reference-and-production-mode-spec.md
 
 # ===== 生成产物 / 本地输出 =====
 lark-output/

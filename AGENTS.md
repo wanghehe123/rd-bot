@@ -37,3 +37,27 @@ straightforward CRUD work or obvious test fixes.
   `bootstrap/src/main/resources/executor/pi`, then
   `./mvnw -pl exec -am -Dtest=DockerPiAgentExecutorTest -Dsurefire.failIfNoSpecifiedTests=false test`
   and the relevant Bootstrap configuration test.
+
+## QA evidence references and browser start mode
+
+- Browser QA results must REFERENCE evidence, not just collect it: the union of
+  `logArtifactId` and `evidenceArtifactIds` across `acceptanceResults` must
+  include `qa-evidence/console/`, `qa-evidence/network/`, a
+  `qa-evidence/traces/*.zip`, and screenshots whose names contain `desktop` and
+  `mobile`. The host `QaEvidenceBundleValidator` rejects the whole result
+  otherwise, after the container is gone.
+- Any new host-side result validation rule must be mirrored in the in-container
+  pre-validation (`bootstrap/src/main/resources/executor/pi/src/result-tool.mjs`)
+  and stated in the `RequirementDeliveryEngine` role contract prompt. Prompt,
+  bridge, and host disagreeing is a protocol crack: the agent passes locally and
+  fails terminally.
+- Auto-detected Next.js QA profiles must start the app in production mode
+  (`npm run build && npm run start`). Dev-mode hydration in the QA container is
+  slow enough that clicks silently no-op; that is not "Playwright cannot trigger
+  React synthetic events". Keep `RD_QA_STARTUP_TIMEOUT_SECONDS` large enough to
+  cover the build (300s in both executors).
+- After editing the bridge or QA skill resources, rebuild both Pi images
+  (`Dockerfile` and `Dockerfile.qa` under `bootstrap/src/main/resources/executor/pi`);
+  the running backend keeps serving stale in-container rules otherwise.
+- See `docs/superpowers/specs/2026-07-28-qa-evidence-reference-and-production-mode-spec.md`
+  for the verified chain, acceptance criteria, and failure handling.
