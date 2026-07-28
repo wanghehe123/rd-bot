@@ -51,3 +51,13 @@ test("shows immutable runtime snapshots and keeps observation one-way", () => {
   assert.match(workbench, /没有.*command|运行时事件/);
   assert.doesNotMatch(workbench, /stdin/);
 });
+
+test("projects runtime events into the readable trace instead of rendering every delta row", () => {
+  assert.match(workbench, /ReadableAgentTrace/);
+  assert.doesNotMatch(workbench, /trace\.events\.slice\(-120\)/);
+});
+
+test("loads the retained trace before attaching live updates so the newest record is the default view", () => {
+  assert.match(workbench, /while \(next\?\.hasMore/);
+  assert.match(workbench, /await poll\(\)/);
+});

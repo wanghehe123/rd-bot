@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   AlertTriangle,
@@ -19,6 +19,7 @@ import {
   TaskFailureRecoveryWorkbench,
   type CaptureTaskActionGuard
 } from "@/components/admin/rdtask/TaskFailureRecoveryWorkbench";
+import { ReadableAgentTrace } from "@/components/admin/rdtask/ReadableAgentTrace";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -52,7 +53,7 @@ import {
   type AgentRuntimeEvent,
   type AgentRuntimeEventSnapshot
 } from "@/services/executionTraceService";
-import { runtimeEventDetail, runtimeEventLabel, snapshotFields } from "@/pages/admin/project/agentRuntimePresentation";
+import { snapshotFields } from "@/pages/admin/project/agentRuntimePresentation";
 import {
   clearTaskAgentExecutionProfileOverride,
   getAgentExecutionProfiles,
@@ -996,6 +997,8 @@ function RuntimeExecutionEventsPanel({
 }) {
   const [trace, setTrace] = useState<AgentRuntimeEventSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadingHistory, setLoadingHistory] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
   const [transport, setTransport] = useState<"SSE" | "POLL" | "ARCHIVED" | "NONE">("NONE");
   const cursorRef = useRef(0);
@@ -1011,6 +1014,8 @@ function RuntimeExecutionEventsPanel({
     finalizedRef.current = false;
     setTrace(null);
     setLoading(true);
+    setLoadingHistory(true);
+    setLoadingMore(false);
     setError("");
     setTransport("NONE");
     onAvailabilityChange(false);
@@ -1027,7 +1032,7 @@ function RuntimeExecutionEventsPanel({
         available: true,
         finalized: finalizedRef.current,
         truncated: current?.truncated || false,
-        hasMore: false,
+        hasMore: current?.hasMore || false,
         nextSequence: cursorRef.current,
         events: [event]
       }));
@@ -1043,15 +1048,15 @@ function RuntimeExecutionEventsPanel({
       }, 1_500);
     };
 
-    const poll = async () => {
-      if (cancelled || polling || finalizedRef.current) return;
+    const poll = async (): Promise<AgentRuntimeEventSnapshot | null> => {
+      if (cancelled || polling) return null;
       polling = true;
       try {
         const next = await getAgentRuntimeEvents(taskId, stage.stageRunId, {
           after: cursorRef.current,
           limit: 100
         });
-        if (cancelled) return;
+        if (cancelled) return null;
         cursorRef.current = Math.max(cursorRef.current, next.nextSequence);
         finalizedRef.current = next.finalized;
         setTrace((current) => mergeRuntimeTrace(current, next));
@@ -1060,12 +1065,14 @@ function RuntimeExecutionEventsPanel({
         setError("");
         if (next.available) onAvailabilityChange(true);
         if (!next.finalized && stage.running && !source) schedulePoll();
+        return next;
       } catch (cause) {
         if (!cancelled) {
           setError(cause instanceof Error ? cause.message : "运行时事件暂不可用");
           setLoading(false);
           if (stage.running && !source) schedulePoll();
         }
+        return null;
       } finally {
         polling = false;
       }
@@ -1113,7 +1120,11 @@ function RuntimeExecutionEventsPanel({
     };
 
     void (async () => {
-      await poll();
+      let next = await poll();
+      while (next?.hasMore && !cancelled) {
+        next = await poll();
+      }
+      if (!cancelled) setLoadingHistory(false);
       if (!cancelled && stage.running && !finalizedRef.current) openSse();
     })();
 
@@ -1123,6 +1134,27 @@ function RuntimeExecutionEventsPanel({
       source?.close();
     };
   }, [onAvailabilityChange, stage.running, stage.stageRunId, taskId]);
+
+  const loadMore = useCallback(async () => {
+    if (!trace?.hasMore || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const next = await getAgentRuntimeEvents(taskId, stage.stageRunId, {
+        after: trace.nextSequence,
+        limit: 200
+      });
+      cursorRef.current = Math.max(cursorRef.current, next.nextSequence);
+      finalizedRef.current = finalizedRef.current || next.finalized;
+      setTrace((current) => mergeRuntimeTrace(current, next));
+      setTransport(next.source === "ARCHIVED" ? "ARCHIVED" : "POLL");
+      setError("");
+      if (next.available) onAvailabilityChange(true);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "加载更多运行时事件失败");
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [loadingMore, onAvailabilityChange, stage.stageRunId, taskId, trace?.hasMore, trace?.nextSequence]);
 
   if (!stage.running && !loading && !trace?.available) return null;
 
@@ -1138,30 +1170,19 @@ function RuntimeExecutionEventsPanel({
           {trace?.events[0]?.runtimeType ? <span>{trace.events[0].runtimeType}</span> : null}
         </div>
       </div>
-      {loading ? <LoadingLine label="正在连接运行时事件" /> : null}
-      {!loading && error && !trace?.available ? <PanelError message={error} /> : null}
-      {!loading && trace?.truncated ? <div className="border-l-2 border-amber-500 bg-amber-50 px-3 py-2 text-xs text-amber-900">事件窗口已截断，仅展示保留范围。</div> : null}
-      {!loading && trace?.available && trace.events.length > 0 ? (
-        <ol className="mt-3 divide-y divide-slate-200 border-y border-slate-200">
-          {trace.events.slice(-120).map((event, index) => {
-            const isError = event.eventType === "PROTOCOL_ERROR" || event.eventType === "EXTENSION_FAILED" || event.eventType === "RESULT_REJECTED";
-            return (
-              <li key={`${event.sequence || event.sourceSequence || index}-${event.eventType}`} className="flex min-w-0 gap-3 py-3">
-                {isError ? <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-rose-600" /> : event.eventType === "RESULT_SUBMITTED" ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" /> : <Radio className="mt-0.5 h-4 w-4 shrink-0 text-teal-600" />}
-                <div className="min-w-0 flex-1">
-                  <div className={cn("flex flex-wrap items-center justify-between gap-2 text-sm font-medium", isError ? "text-rose-800" : "text-slate-800")}>
-                    <span>{runtimeEventLabel(event)}</span>
-                    <span className="text-[11px] font-normal text-slate-400">{formatRuntimeEventTime(event.occurredAt)}</span>
-                  </div>
-                  {runtimeEventDetail(event) ? <p className="mt-1 break-words text-xs leading-5 text-slate-600">{runtimeEventDetail(event)}</p> : null}
-                  <p className="mt-1 break-all text-[11px] text-slate-400">{event.provider || "-"}{event.model ? ` · ${event.model}` : ""} · #{event.sequence || event.sourceSequence || "-"}</p>
-                </div>
-              </li>
-            );
-          })}
-        </ol>
+      {loading || loadingHistory ? <LoadingLine label={loadingHistory ? "正在定位最新记录" : "正在连接运行时事件"} /> : null}
+      {!loading && !loadingHistory && error && !trace?.available ? <PanelError message={error} /> : null}
+      {!loading && !loadingHistory && trace?.available && trace.events.length > 0 ? (
+        <ReadableAgentTrace
+          events={trace.events}
+          streaming={stage.running && !trace.finalized}
+          truncated={trace.truncated}
+          hasMore={trace.hasMore}
+          loadingMore={loadingMore}
+          onLoadMore={loadMore}
+        />
       ) : null}
-      {!loading && !error && !trace?.available && stage.running ? <EmptyLine label="等待容器产生可见运行时事件。" /> : null}
+      {!loading && !loadingHistory && !error && !trace?.available && stage.running ? <EmptyLine label="等待容器产生可见运行时事件。" /> : null}
     </section>
   );
 }
@@ -1178,20 +1199,15 @@ function mergeRuntimeTrace(
   });
   const events = [...existing, ...additions].sort((left, right) => (
     (left.sequence || left.sourceSequence || 0) - (right.sequence || right.sourceSequence || 0)
-  )).slice(-200);
+  ));
   return {
     ...next,
     available: current?.available || next.available || events.length > 0,
     finalized: current?.finalized || next.finalized || events.some((event) => event.eventType === "RUNTIME_STOPPED" || event.eventType === "AGENT_SETTLED"),
+    truncated: current?.truncated || next.truncated,
     nextSequence: Math.max(current?.nextSequence || 0, next.nextSequence || 0, ...events.map((event) => event.sequence || event.sourceSequence || 0)),
     events
   };
-}
-
-function formatRuntimeEventTime(value: string): string {
-  if (!value) return "";
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleTimeString();
 }
 
 function LegacyExecutionTracePanel({ taskId, stage }: { taskId: string; stage: RdTaskStageRun }) {
