@@ -80,7 +80,9 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
     // QA parity with the Claude executor: the same skill document ships in the
     // skill module and is materialized into the read-only input mount for Pi.
     private static final String QA_SKILL_RESOURCE = "skills/qa-playwright-cli/SKILL.md";
-    private static final String QA_STARTUP_TIMEOUT_SECONDS = "120";
+    // Auto-detected start commands may include a production build (npm run build && npm run start),
+    // so the startup budget must cover the build, not just the listen phase.
+    private static final String QA_STARTUP_TIMEOUT_SECONDS = "300";
     private static final long QA_COMMAND_TIMEOUT_MILLIS =
             parseQaCommandTimeoutMillis(System.getenv("RD_QA_EXECUTION_TIMEOUT_MILLIS"));
     private static final int WORKSPACE_LOCK_STRIPES = 128;

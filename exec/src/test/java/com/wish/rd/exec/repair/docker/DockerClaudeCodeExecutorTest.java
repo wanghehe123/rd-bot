@@ -360,7 +360,7 @@ class DockerClaudeCodeExecutorTest {
         );
         assertEquals("/work/output/qa-work/playwright",
                 runner.request().env().get("PLAYWRIGHT_MCP_OUTPUT_DIR"));
-        assertEquals("120", runner.request().env().get("RD_QA_STARTUP_TIMEOUT_SECONDS"));
+        assertEquals("300", runner.request().env().get("RD_QA_STARTUP_TIMEOUT_SECONDS"));
         assertEquals("1200000", runner.request().env().get("RD_QA_COMMAND_TIMEOUT_MILLIS"));
         assertEquals(1_200_000L, runner.request().executionTimeoutMillis());
         Path profile = temporaryDirectory.resolve("task-qa-vite/input/qa-profile.json");

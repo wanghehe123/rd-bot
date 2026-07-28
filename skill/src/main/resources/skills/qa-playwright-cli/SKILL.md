@@ -86,6 +86,16 @@ while its JSON response has `isError=true`; the wrapper converts that condition 
 treat `eval`, `snapshot`, or a screenshot alone as an assertion. Repeat the critical current flow at
 `390x844`.
 
+React/Next.js pages hydrate after the server HTML renders: a visible button whose click produces no DOM
+change usually means hydration has not finished, not a broken feature. Before the first interaction run
+`async page => { await page.waitForLoadState('networkidle'); }`, and when a click has no observable effect
+wait for network idle and retry that click once. If clicks still have no effect and the application was
+started in dev mode (`next dev`, `vite`, watch mode), rebuild and restart in production mode
+(for Next.js: `npm run build && npm run start`) and rerun the flow; only after a production-mode retry may
+you classify the failure as `QA_INFRASTRUCTURE`. Before reporting any browser `FAILED` result, capture
+`pw console error` and `pw requests` into `qa-evidence/console/` and `qa-evidence/network/` as the
+classification evidence.
+
 Write the browser sequence to `/work/output/qa-work/current-browser.sh` and run the complete sequence
 through `rd-qa-evidence.mjs` so its exit code, duration, stdout, and stderr are durable. Never allow
 `.playwright-cli` output in the repository. Run existing `@playwright/test` suites for durable regression
@@ -125,3 +135,9 @@ node /usr/local/bin/rd-qa-evidence.mjs manifest
 ```
 
 Every `logArtifactId`, every `evidenceArtifactIds` entry, and `evidenceManifestArtifactId` in `result.json` must be a relative path under `qa-evidence/` that exists and is non-empty.
+
+When browser validation was performed, the union of `logArtifactId` and `evidenceArtifactIds` across
+`acceptanceResults` must reference at least one file under each of `qa-evidence/console/`,
+`qa-evidence/network/`, and `qa-evidence/traces/`, plus one `qa-evidence/screenshots/` file whose name
+contains `desktop` and one whose name contains `mobile`. Evidence that is only collected or only listed
+in the manifest without being referenced causes the host to reject the whole result.

@@ -163,10 +163,12 @@ public final class QaRepositoryProfileDetector {
                     return autoWeb("http://127.0.0.1:5173", "npm run dev -- --host 0.0.0.0", "Vite project");
                 }
                 if (dependencies.contains("next") || scriptsText.contains("next dev")) {
+                    // Dev-mode Next.js hydrates too slowly inside the QA container and
+                    // silently swallows clicks, so browser QA must run the production build.
                     return autoWeb(
                             "http://127.0.0.1:3000",
-                            "npm run dev -- --hostname 0.0.0.0",
-                            "Next.js project"
+                            "npm run build && npm run start -- --hostname 0.0.0.0",
+                            "Next.js project (production mode)"
                     );
                 }
                 if (dependencies.contains("@angular/") || scriptsText.contains("ng serve")) {

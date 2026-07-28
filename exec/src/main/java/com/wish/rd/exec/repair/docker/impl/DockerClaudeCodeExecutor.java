@@ -74,7 +74,9 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
             parseQaExecutionTimeoutMillis(System.getenv("RD_QA_EXECUTION_TIMEOUT_MILLIS"));
     private static final long MAX_TEXT_PREVIEW_BYTES = 64_000L;
     private static final long MAX_QA_MANIFEST_PREVIEW_BYTES = 1_000_000L;
-    private static final String QA_STARTUP_TIMEOUT_SECONDS = "120";
+    // Auto-detected start commands may include a production build (npm run build && npm run start),
+    // so the startup budget must cover the build, not just the listen phase.
+    private static final String QA_STARTUP_TIMEOUT_SECONDS = "300";
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     /**

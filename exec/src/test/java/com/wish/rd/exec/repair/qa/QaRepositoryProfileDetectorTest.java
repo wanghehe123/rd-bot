@@ -90,6 +90,25 @@ class QaRepositoryProfileDetectorTest {
     }
 
     @Test
+    void shouldAutoDetectNextJsProjectWithProductionStartCommand() throws Exception {
+        Files.writeString(repository.resolve("package.json"), """
+                {
+                  "scripts": {"dev": "next dev", "build": "next build", "start": "next start"},
+                  "dependencies": {"next": "latest", "react": "latest"}
+                }
+                """);
+
+        QaExecutionProfile profile = detector.detect(command(Map.of()), repository);
+
+        assertTrue(profile.browserRequired());
+        assertFalse(profile.ambiguous());
+        assertEquals("AUTO_DETECTION", profile.decisionSource());
+        assertEquals("http://127.0.0.1:3000", profile.baseUrl());
+        assertEquals("npm run build && npm run start -- --hostname 0.0.0.0", profile.startCommand());
+        assertTrue(profile.reason().contains("production mode"));
+    }
+
+    @Test
     void shouldAutoDetectNestedViteProjectWithRepositoryStartScript() throws Exception {
         Files.writeString(repository.resolve("package.json"), """
                 {
