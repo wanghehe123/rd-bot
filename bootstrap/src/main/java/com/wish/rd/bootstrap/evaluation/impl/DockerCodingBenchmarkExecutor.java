@@ -55,6 +55,10 @@ public final class DockerCodingBenchmarkExecutor implements CodingBenchmarkExecu
             Files.createDirectories(request.outputDirectory());
             writeRelayTokenFile(relayTokenFile, request.relayToken());
             requireInputs(request);
+            if (Files.exists(request.candidatePatch())) {
+                return infrastructureFailure(-1, -1, "candidate patch output already exists before Agent", attestation,
+                        request.outputDirectory());
+            }
             String suffix = trialSuffix(request.trial());
             String network = "rd-eval-network-" + suffix;
             DockerCommandResult createNetwork = docker.run(networkCreateCommand(network, request), CONTROL_TIMEOUT_MILLIS);
@@ -69,6 +73,9 @@ public final class DockerCodingBenchmarkExecutor implements CodingBenchmarkExecu
                 if (!agent.succeeded()) {
                     phaseResult = new CodingBenchmarkExecutionResult(
                             agent.exitCode(), -1, false, "agent container failed", attestation);
+                } else if (!candidatePatchReady(request.candidatePatch())) {
+                    phaseResult = new CodingBenchmarkExecutionResult(
+                            agent.exitCode(), -1, false, "agent did not publish a candidate patch", attestation);
                 } else {
                     DockerCommandResult oracle = docker.run(oracleCommand(request, suffix), request.oracleTimeoutMillis());
                     phaseResult = oracle.succeeded()
@@ -110,10 +117,19 @@ public final class DockerCodingBenchmarkExecutor implements CodingBenchmarkExecu
 
     private static void requireInputs(CodingBenchmarkExecutionRequest request) {
         if (!Files.isDirectory(request.agentRepository()) || !Files.isDirectory(request.agentCache())
-                || !Files.isDirectory(request.verifierRepository()) || !Files.isDirectory(request.protectedTestBundle())
-                || !Files.isRegularFile(request.candidatePatch())) {
+                || !Files.isDirectory(request.agentOutputDirectory()) || !Files.isDirectory(request.verifierRepository())
+                || !Files.isDirectory(request.verifierCache())) {
             throw new IllegalArgumentException("coding benchmark execution inputs are not prepared");
         }
+        boolean protectedBundle = request.protectedTestBundle() != null && Files.isDirectory(request.protectedTestBundle());
+        boolean protectedPatch = request.protectedTestPatch() != null && Files.isRegularFile(request.protectedTestPatch());
+        if (protectedBundle == protectedPatch) {
+            throw new IllegalArgumentException("exactly one protected test bundle or protected test patch must be prepared");
+        }
+    }
+
+    private static boolean candidatePatchReady(Path candidatePatch) throws IOException {
+        return Files.isRegularFile(candidatePatch) && Files.size(candidatePatch) > 0L;
     }
 
     private static List<String> networkCreateCommand(String network, CodingBenchmarkExecutionRequest request) {
@@ -134,6 +150,7 @@ public final class DockerCodingBenchmarkExecutor implements CodingBenchmarkExecu
         List<String> command = secureRunPrefix("rd-eval-agent-" + suffix, request.agentImage(), network);
         addWritableMount(command, request.agentRepository(), "/work/repo");
         addWritableMount(command, request.agentCache(), "/work/cache");
+        addWritableMount(command, request.agentOutputDirectory(), "/work/output");
         command.add("--workdir");
         command.add("/work/repo");
         command.add("--env-file");
@@ -142,6 +159,9 @@ public final class DockerCodingBenchmarkExecutor implements CodingBenchmarkExecu
         command.add("PIP_NO_INDEX=1");
         command.add("--env");
         command.add("npm_config_offline=true");
+        addPreparedCacheEnvironment(command);
+        command.add("--env");
+        command.add("RD_EVAL_CANDIDATE_PATCH=/work/output/candidate.patch");
         command.add(request.agentImage());
         command.addAll(request.agentCommand());
         return List.copyOf(command);
@@ -154,13 +174,19 @@ public final class DockerCodingBenchmarkExecutor implements CodingBenchmarkExecu
         command.add("--entrypoint");
         command.add("");
         addWritableMount(command, request.verifierRepository(), "/work/verifier");
+        addWritableMount(command, request.verifierCache(), "/work/cache");
         addReadOnlyMount(command, request.candidatePatch(), "/input/candidate.patch");
-        addReadOnlyMount(command, request.protectedTestBundle(), "/input/protected-tests");
+        if (request.protectedTestBundle() != null) {
+            addReadOnlyMount(command, request.protectedTestBundle(), "/input/protected-tests");
+        } else {
+            addReadOnlyMount(command, request.protectedTestPatch(), "/input/runtime-withheld.patch");
+        }
         addWritableMount(command, request.outputDirectory(), "/work/output");
         command.add("--workdir");
         command.add("/work/verifier");
         command.add("--env");
         command.add("RD_EVAL_ORACLE_NETWORK=none");
+        addPreparedCacheEnvironment(command);
         command.add(request.oracleImage());
         command.addAll(request.oracleCommand());
         return List.copyOf(command);
@@ -184,6 +210,19 @@ public final class DockerCodingBenchmarkExecutor implements CodingBenchmarkExecu
     private static void addReadOnlyMount(List<String> command, Path source, String target) {
         command.add("--mount");
         command.add("type=bind,src=" + mountPath(source) + ",dst=" + target + ",readonly");
+    }
+
+    private static void addPreparedCacheEnvironment(List<String> command) {
+        for (String value : List.of(
+                "PIP_CACHE_DIR=/work/cache/pip",
+                "GRADLE_USER_HOME=/work/cache/gradle",
+                "MAVEN_OPTS=-Dmaven.repo.local=/work/cache/m2/repository",
+                "npm_config_cache=/work/cache/npm",
+                "YARN_CACHE_FOLDER=/work/cache/yarn"
+        )) {
+            command.add("--env");
+            command.add(value);
+        }
     }
 
     private static String mountPath(Path path) {

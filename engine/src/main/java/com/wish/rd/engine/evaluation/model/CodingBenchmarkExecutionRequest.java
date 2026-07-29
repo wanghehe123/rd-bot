@@ -18,9 +18,12 @@ public record CodingBenchmarkExecutionRequest(
         String oracleImage,
         Path agentRepository,
         Path agentCache,
+        Path agentOutputDirectory,
         Path verifierRepository,
+        Path verifierCache,
         Path candidatePatch,
         Path protectedTestBundle,
+        Path protectedTestPatch,
         String protectedTestTarget,
         Path outputDirectory,
         List<String> agentCommand,
@@ -38,11 +41,28 @@ public record CodingBenchmarkExecutionRequest(
         oracleImage = requireImage(oracleImage, "oracle image");
         agentRepository = requirePath(agentRepository, "agent repository");
         agentCache = requirePath(agentCache, "agent cache");
+        agentOutputDirectory = requirePath(agentOutputDirectory, "agent output directory");
         verifierRepository = requirePath(verifierRepository, "verifier repository");
+        verifierCache = requirePath(verifierCache, "verifier cache");
         candidatePatch = requirePath(candidatePatch, "candidate patch");
-        protectedTestBundle = requirePath(protectedTestBundle, "protected test bundle");
-        protectedTestTarget = requireRelativePath(protectedTestTarget, "protected test target");
+        protectedTestBundle = optionalPath(protectedTestBundle);
+        protectedTestPatch = optionalPath(protectedTestPatch);
+        if ((protectedTestBundle == null) == (protectedTestPatch == null)) {
+            throw new IllegalArgumentException("exactly one protected test bundle or protected test patch is required");
+        }
+        protectedTestTarget = protectedTestBundle == null
+                ? optionalRelativePath(protectedTestTarget, "protected test target")
+                : requireRelativePath(protectedTestTarget, "protected test target");
         outputDirectory = requirePath(outputDirectory, "output directory");
+        if (agentCache.equals(verifierCache)) {
+            throw new IllegalArgumentException("Agent and Oracle caches must be separate");
+        }
+        if (agentOutputDirectory.equals(outputDirectory)) {
+            throw new IllegalArgumentException("Agent and Oracle output directories must be separate");
+        }
+        if (!candidatePatch.startsWith(agentOutputDirectory) || candidatePatch.equals(agentOutputDirectory)) {
+            throw new IllegalArgumentException("candidate patch must stay inside the Agent output directory");
+        }
         agentCommand = requireCommand(agentCommand, "agent command");
         oracleCommand = requireCommand(oracleCommand, "oracle command");
         relayToken = requireText(relayToken, "relay token");
@@ -82,6 +102,10 @@ public record CodingBenchmarkExecutionRequest(
         return value.toAbsolutePath().normalize();
     }
 
+    private static Path optionalPath(Path value) {
+        return value == null ? null : value.toAbsolutePath().normalize();
+    }
+
     private static String requireRelativePath(String value, String field) {
         String normalized = requireText(value, field).replace('\\', '/');
         if (normalized.startsWith("/") || normalized.equals("..") || normalized.startsWith("../")
@@ -89,6 +113,11 @@ public record CodingBenchmarkExecutionRequest(
             throw new IllegalArgumentException(field + " must remain repository-relative");
         }
         return normalized;
+    }
+
+    private static String optionalRelativePath(String value, String field) {
+        String normalized = value == null ? "" : value.strip();
+        return normalized.isEmpty() ? "" : requireRelativePath(normalized, field);
     }
 
     private static List<String> requireCommand(List<String> command, String field) {
