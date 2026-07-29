@@ -68,3 +68,51 @@ CREATE TABLE IF NOT EXISTS rd_evaluation_artifacts (
 
 CREATE INDEX IF NOT EXISTS idx_evaluation_artifact_run
     ON rd_evaluation_artifacts (run_id, created_at, id);
+
+CREATE TABLE IF NOT EXISTS rd_evaluation_trials (
+    id VARCHAR(200) PRIMARY KEY,
+    campaign_id BIGINT NOT NULL REFERENCES rd_evaluation_runs(id) ON DELETE CASCADE,
+    case_id VARCHAR(200) NOT NULL,
+    arm VARCHAR(8) NOT NULL,
+    replicate_no INTEGER NOT NULL,
+    status VARCHAR(32) NOT NULL,
+    verdict VARCHAR(64) NOT NULL DEFAULT 'PENDING',
+    attempt_no INTEGER NOT NULL DEFAULT 1,
+    version BIGINT NOT NULL DEFAULT 0,
+    lease_owner VARCHAR(200) NOT NULL DEFAULT '',
+    lease_expires_at TIMESTAMPTZ,
+    error_category VARCHAR(128) NOT NULL DEFAULT '',
+    error_message TEXT NOT NULL DEFAULT '',
+    frozen_input_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    runtime_attestation_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    patch_summary_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    metrics_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uk_evaluation_trial_cell UNIQUE (campaign_id, case_id, arm, replicate_no),
+    CONSTRAINT ck_evaluation_trial_replicate CHECK (replicate_no IN (0, 1)),
+    CONSTRAINT ck_evaluation_trial_attempt CHECK (attempt_no >= 1),
+    CONSTRAINT ck_evaluation_trial_version CHECK (version >= 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_evaluation_trial_campaign_status
+    ON rd_evaluation_trials (campaign_id, status, created_at, id);
+CREATE INDEX IF NOT EXISTS idx_evaluation_trial_expired_lease
+    ON rd_evaluation_trials (campaign_id, lease_expires_at)
+    WHERE status = 'PREPARING';
+
+CREATE TABLE IF NOT EXISTS rd_evaluation_trial_events (
+    id BIGINT PRIMARY KEY,
+    campaign_id BIGINT NOT NULL REFERENCES rd_evaluation_runs(id) ON DELETE CASCADE,
+    trial_id VARCHAR(200) NOT NULL REFERENCES rd_evaluation_trials(id) ON DELETE CASCADE,
+    from_status VARCHAR(32) NOT NULL DEFAULT '',
+    to_status VARCHAR(32) NOT NULL,
+    version BIGINT NOT NULL,
+    message TEXT NOT NULL DEFAULT '',
+    error_category VARCHAR(128) NOT NULL DEFAULT '',
+    error_message TEXT NOT NULL DEFAULT '',
+    occurred_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_evaluation_trial_event_timeline
+    ON rd_evaluation_trial_events (trial_id, occurred_at, id);
