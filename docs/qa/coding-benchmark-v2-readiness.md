@@ -1,0 +1,55 @@
+# Coding Benchmark V2 Readiness Record
+
+Status: **NOT READY — no capability Trial may be queued.**
+
+This is deliberately a fail-closed record, not a partial benchmark result. It
+tracks the evidence needed before LongCat 2.0 receives any of the 88 planned
+Trial requests.
+
+## Implemented and verified locally
+
+- The campaign model creates the pre-registered `20 × 4` formal Trial matrix
+  plus four A/D sentinel repeats (88 logical Trials), with 45-minute Agent and
+  8-minute Oracle limits.
+- Agent/Oracle execution contracts use immutable image digests, `--pull=never`,
+  task-local `/work/cache`, offline package-manager flags, isolated network for
+  the Agent and `network=none` for the Oracle.
+- The Oracle sees only an extracted patch and protected test bundle. It cannot
+  see the Agent worktree, cache, build output or model credential.
+- RAG snapshot generation writes four per-case documents from the base
+  repository only, hashes every document/chunk, excludes Gold and
+  runtime-withheld paths, and aborts on protected-content leakage.
+- The scorer separates fresh/public/formal slices; it reports Wilson intervals,
+  paired score intervals, exact McNemar, Holm exploratory contrasts,
+  missing-pair bounds, D/A cost ratios and sentinel flip/reversal evidence.
+- The Python verifier suite passed with 76 tests on 2026-07-30.
+
+## Current external blockers
+
+1. The local machine currently has four checked-out **public** SWE-bench Django
+   snapshots (`django-10914`, `10924`, `11001`, `11019`); it does not contain a
+   verified 10-public-case manifest, nor the required 10 fresh cases.
+2. The fresh-primary slice cannot be substituted with cached public tasks. The
+   readiness validator now requires every fresh case to carry an auditable
+   `PRIVATE_TASK` or `POST_CUTOFF_ISSUE` reference.
+3. Docker Desktop's daemon is not running (`docker.sock` unavailable), so no
+   shared image or case-layer digest has been built or attested yet.
+4. The production requirement-stage integration files are currently modified
+   in the workspace by a separate change. They have intentionally not been
+   overwritten; campaign execution will remain disabled until that change is
+   settled and its regression tests pass.
+
+## Required gate before a real run
+
+1. Select and freeze 10 public anchors and 10 fresh-primary cases, each with a
+   base commit, Oracle bundle, expected test IDs and freshness evidence.
+2. Start Docker Desktop; build the shared bases and thin case layers; capture
+   platform-specific image digests and storage measurements with 20% headroom.
+3. Generate the four RAG documents for all 20 cases, freeze their manifests,
+   then run `BASE` / `TEST` / `FIX` three times with offline network policy.
+4. Run the two probe cases through all four arms before freezing the prompt and
+   retrieval configuration. Only then queue the 80 formal Trials and the eight
+   pre-registered sentinels.
+
+No output from the existing public snapshots is counted as an A/B/C/D result
+until all four gates above are recorded as passed.
