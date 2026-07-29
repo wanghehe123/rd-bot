@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wish.rd.bootstrap.evaluation.EvaluationProperties;
 import com.wish.rd.engine.evaluation.EvaluationExecutionPort;
 import com.wish.rd.engine.evaluation.EvaluationCatalogPort;
+import com.wish.rd.engine.evaluation.CodingBenchmarkCatalogPort;
 import com.wish.rd.engine.evaluation.EvaluationOutputReaderPort;
 import com.wish.rd.engine.evaluation.EvaluationProgressListener;
 import com.wish.rd.engine.evaluation.model.EvaluationArtifact;
@@ -17,6 +18,7 @@ import com.wish.rd.engine.evaluation.model.EvaluationRun;
 import com.wish.rd.engine.evaluation.model.EvaluationRunConfig;
 import com.wish.rd.engine.evaluation.model.EvaluationRunStatus;
 import com.wish.rd.engine.evaluation.model.EvaluationSource;
+import com.wish.rd.engine.evaluation.model.CodingBenchmarkSnapshot;
 import com.wish.rd.engine.evaluation.taskrun.TaskRunEvaluationSnapshotCollector;
 import org.springframework.stereotype.Component;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -55,20 +57,22 @@ public final class LocalPythonEvaluationExecutor implements EvaluationExecutionP
     private final EvaluationProperties properties;
     private final ObjectMapper objectMapper;
     private final TaskRunEvaluationSnapshotCollector taskRunCollector;
+    private final CodingBenchmarkCatalogPort codingBenchmarkCatalog;
     private final ConcurrentHashMap<String, Process> activeProcesses = new ConcurrentHashMap<>();
     private final Set<String> cancelledRunIds = ConcurrentHashMap.newKeySet();
 
     public LocalPythonEvaluationExecutor(EvaluationProperties properties, ObjectMapper objectMapper) {
-        this(properties, objectMapper, (TaskRunEvaluationSnapshotCollector) null);
+        this(properties, objectMapper, (TaskRunEvaluationSnapshotCollector) null, null);
     }
 
     @Autowired
     public LocalPythonEvaluationExecutor(
             EvaluationProperties properties,
             ObjectMapper objectMapper,
-            ObjectProvider<TaskRunEvaluationSnapshotCollector> taskRunCollectorProvider
+            ObjectProvider<TaskRunEvaluationSnapshotCollector> taskRunCollectorProvider,
+            ObjectProvider<CodingBenchmarkCatalogPort> codingBenchmarkCatalogProvider
     ) {
-        this(properties, objectMapper, taskRunCollectorProvider.getIfAvailable());
+        this(properties, objectMapper, taskRunCollectorProvider.getIfAvailable(), codingBenchmarkCatalogProvider.getIfAvailable());
     }
 
     public LocalPythonEvaluationExecutor(
@@ -76,9 +80,19 @@ public final class LocalPythonEvaluationExecutor implements EvaluationExecutionP
             ObjectMapper objectMapper,
             TaskRunEvaluationSnapshotCollector taskRunCollector
     ) {
+        this(properties, objectMapper, taskRunCollector, null);
+    }
+
+    public LocalPythonEvaluationExecutor(
+            EvaluationProperties properties,
+            ObjectMapper objectMapper,
+            TaskRunEvaluationSnapshotCollector taskRunCollector,
+            CodingBenchmarkCatalogPort codingBenchmarkCatalog
+    ) {
         this.properties = properties;
         this.objectMapper = objectMapper;
         this.taskRunCollector = taskRunCollector;
+        this.codingBenchmarkCatalog = codingBenchmarkCatalog;
     }
 
     /** Returns the safe server-owned choices used by the management form. */
@@ -104,6 +118,8 @@ public final class LocalPythonEvaluationExecutor implements EvaluationExecutionP
         }
         LOGGER.info("[EVALUATION] CATALOG repositoryRoot={} datasetRoot={} datasets={} enabled={}",
                 properties.getRepositoryRoot(), properties.resolvedDatasetRoot(), datasets.size(), properties.isEnabled());
+        List<CodingBenchmarkSnapshot> codingBenchmarkSnapshots = codingBenchmarkCatalog == null
+                ? List.of() : codingBenchmarkCatalog.readySnapshots();
         return new EvaluationCapabilities(
                 properties.isEnabled(),
                 List.of(EvaluationSource.FIXTURE, EvaluationSource.RAG_HTTP, EvaluationSource.TASK_RUN),
@@ -111,7 +127,8 @@ public final class LocalPythonEvaluationExecutor implements EvaluationExecutionP
                 datasets,
                 properties.getDefaultBaseUrl(),
                 10_000,
-                3_600
+                3_600,
+                codingBenchmarkSnapshots
         );
     }
 

@@ -14,6 +14,7 @@ public class EvaluationProperties {
     private Path outputRoot = Path.of("qa-runs/evaluation");
     private Path datasetRoot = Path.of("scripts/evaluation/datasets");
     private Path ragLogRoot = Path.of("logs");
+    private Path codingBenchmarkRoot = Path.of("scripts/evaluation/coding-benchmark-v2");
     private String pythonExecutable = "python3";
     private String ragasPythonExecutable = "";
     private String defaultBaseUrl = "http://127.0.0.1:18080";
@@ -58,6 +59,16 @@ public class EvaluationProperties {
 
     public void setRagLogRoot(Path ragLogRoot) {
         this.ragLogRoot = ragLogRoot == null ? Path.of("logs") : ragLogRoot.normalize();
+    }
+
+    public Path getCodingBenchmarkRoot() {
+        return codingBenchmarkRoot;
+    }
+
+    /** Configures the server-owned root containing immutable coding benchmark snapshots. */
+    public void setCodingBenchmarkRoot(Path codingBenchmarkRoot) {
+        this.codingBenchmarkRoot = codingBenchmarkRoot == null
+                ? Path.of("scripts/evaluation/coding-benchmark-v2") : codingBenchmarkRoot.normalize();
     }
 
     public String getPythonExecutable() {
@@ -113,6 +124,11 @@ public class EvaluationProperties {
     /** @return absolute normalized RAG log root */
     public Path resolvedRagLogRoot() {
         return resolveAgainstRepository(ragLogRoot);
+    }
+
+    /** @return absolute normalized root for trusted coding benchmark snapshot discovery */
+    public Path resolvedCodingBenchmarkRoot() {
+        return resolveAgainstRepository(codingBenchmarkRoot);
     }
 
     private Path resolveAgainstRepository(Path value) {
