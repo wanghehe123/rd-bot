@@ -62,7 +62,8 @@ def _language_from_source_path(path: Path) -> str:
     return ""
 
 
-def _read_dataset(path: Path) -> tuple[dict[str, dict[str, Any]], str]:
+def read_trusted_dataset(path: Path) -> tuple[dict[str, dict[str, Any]], str]:
+    """Read trusted JSONL data without copying any Gold or withheld patch into a public catalog."""
     source_root, files = _source_files(path)
     rows: dict[str, dict[str, Any]] = {}
     digest = hashlib.sha256()
@@ -193,7 +194,7 @@ def build_public_anchor_catalog(
         raise AnchorImportError("public dataset ID is required")
     if not _COMMIT.fullmatch(revision):
         raise AnchorImportError("public dataset revision must be a 40-character immutable commit")
-    rows, raw_dataset_sha256 = _read_dataset(Path(source_path))
+    rows, raw_dataset_sha256 = read_trusted_dataset(Path(source_path))
     missing = [instance_id for instance_id in selected if instance_id not in rows]
     if missing:
         raise AnchorImportError(f"selected instance is unavailable: {missing[0]}")
