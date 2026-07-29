@@ -2,23 +2,28 @@ from __future__ import annotations
 
 import unittest
 import sys
+import subprocess
+import tempfile
 from pathlib import Path
 
 from scripts.evaluation.rd_eval_prepare_coding_benchmark import (
     ReadinessError,
     validate_benchmark_config,
     validate_case_contract,
+    verify_base_history,
     verify_case,
 )
 
 
 class PrepareCodingBenchmarkTest(unittest.TestCase):
+    BASE_COMMIT = "a" * 40
+
     def test_config_requires_ten_fresh_and_ten_public_cases(self) -> None:
         cases = [
-            {"caseId": f"fresh-{index:02d}", "slice": "FRESH_PRIMARY"}
+            {"caseId": f"fresh-{index:02d}", "slice": "FRESH_PRIMARY", "baseCommit": self.BASE_COMMIT}
             for index in range(1, 10)
         ] + [
-            {"caseId": f"public-{index:02d}", "slice": "PUBLIC_ANCHOR"}
+            {"caseId": f"public-{index:02d}", "slice": "PUBLIC_ANCHOR", "baseCommit": self.BASE_COMMIT}
             for index in range(1, 12)
         ]
 
@@ -27,15 +32,48 @@ class PrepareCodingBenchmarkTest(unittest.TestCase):
 
     def test_fresh_case_requires_auditable_private_or_post_cutoff_evidence(self) -> None:
         cases = [
-            {"caseId": f"fresh-{index:02d}", "slice": "FRESH_PRIMARY"}
+            {"caseId": f"fresh-{index:02d}", "slice": "FRESH_PRIMARY", "baseCommit": self.BASE_COMMIT}
             for index in range(1, 11)
         ] + [
-            {"caseId": f"public-{index:02d}", "slice": "PUBLIC_ANCHOR"}
+            {"caseId": f"public-{index:02d}", "slice": "PUBLIC_ANCHOR", "baseCommit": self.BASE_COMMIT}
             for index in range(1, 11)
         ]
 
         with self.assertRaisesRegex(ReadinessError, "freshnessEvidence"):
             validate_benchmark_config({"cases": cases})
+
+    def test_formal_case_requires_an_immutable_base_commit(self) -> None:
+        cases = [
+            {
+                "caseId": f"fresh-{index:02d}",
+                "slice": "FRESH_PRIMARY",
+                "baseCommit": self.BASE_COMMIT,
+                "freshnessEvidence": {"kind": "PRIVATE_TASK", "reference": f"task-{index}"},
+            }
+            for index in range(1, 11)
+        ] + [
+            {"caseId": f"public-{index:02d}", "slice": "PUBLIC_ANCHOR", "baseCommit": self.BASE_COMMIT}
+            for index in range(1, 11)
+        ]
+        cases[-1].pop("baseCommit")
+
+        with self.assertRaisesRegex(ReadinessError, "baseCommit"):
+            validate_benchmark_config({"cases": cases})
+
+    def test_base_history_requires_the_declared_commit_and_ancestors(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository = Path(temp_dir)
+            subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repository, check=True)
+            subprocess.run(["git", "config", "user.name", "Test User"], cwd=repository, check=True)
+            (repository / "README.md").write_text("base\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=repository, check=True)
+            subprocess.run(["git", "commit", "-qm", "base"], cwd=repository, check=True)
+            base_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repository, text=True).strip()
+
+            verify_base_history({"baseCommit": base_commit}, repository)
+            with self.assertRaisesRegex(ReadinessError, "baseCommit object"):
+                verify_base_history({"baseCommit": "b" * 40}, repository)
 
     def test_readiness_contract_requires_all_three_fixed_commands(self) -> None:
         with self.assertRaisesRegex(ReadinessError, "fixCommand"):

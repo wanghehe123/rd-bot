@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 from dataclasses import asdict, dataclass
@@ -44,6 +45,9 @@ def validate_benchmark_config(config: dict[str, Any]) -> list[dict[str, Any]]:
     if slices.count("FRESH_PRIMARY") != 10 or slices.count("PUBLIC_ANCHOR") != 10:
         raise ReadinessError("coding benchmark config must contain exactly 10 FRESH_PRIMARY and 10 PUBLIC_ANCHOR cases")
     for case, benchmark_slice in zip(cases, slices, strict=True):
+        base_commit = str(case.get("baseCommit", "")).strip().lower()
+        if not re.fullmatch(r"[a-f0-9]{40}", base_commit):
+            raise ReadinessError("every formal coding benchmark case must declare a 40-character baseCommit")
         if benchmark_slice != "FRESH_PRIMARY":
             continue
         evidence = case.get("freshnessEvidence")
@@ -76,6 +80,40 @@ def validate_case_contract(case: dict[str, Any]) -> None:
     pure = PurePosixPath(workdir)
     if pure.is_absolute() or ".." in pure.parts:
         raise ReadinessError("workdir must stay beneath the prepared case repository")
+
+
+def verify_base_history(case: dict[str, Any], repository_root: Path) -> None:
+    """Require the declared base commit and its ancestry in the private prepared Git repository."""
+
+    base_commit = str(case.get("baseCommit", "")).strip().lower()
+    if not re.fullmatch(r"[a-f0-9]{40}", base_commit):
+        raise ReadinessError("case baseCommit must be a 40-character Git commit")
+    repository_path = str(case.get("repositoryPath", ".")).strip().replace("\\", "/")
+    pure_path = PurePosixPath(repository_path)
+    if pure_path.is_absolute() or ".." in pure_path.parts:
+        raise ReadinessError("repositoryPath must stay beneath the prepared repository root")
+    root = Path(repository_root).resolve()
+    candidate = (root / pure_path).resolve()
+    if not candidate.is_relative_to(root) or not candidate.is_dir():
+        raise ReadinessError("prepared repository path is unavailable")
+    object_check = subprocess.run(
+        ["git", "-C", str(candidate), "cat-file", "-e", base_commit + "^{commit}"],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    if object_check.returncode != 0:
+        raise ReadinessError("declared baseCommit object is unavailable in the prepared repository")
+    ancestry_check = subprocess.run(
+        ["git", "-C", str(candidate), "merge-base", "--is-ancestor", base_commit, "HEAD"],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    if ancestry_check.returncode != 0:
+        raise ReadinessError("declared baseCommit is not an ancestor of the prepared repository HEAD")
 
 
 def verify_case(case: dict[str, Any], repository_root: Path, timeout_seconds: int = 300) -> CaseReadinessResult:
@@ -123,6 +161,8 @@ def verify_config(config_path: Path, output_path: Path, timeout_seconds: int = 3
     config = json.loads(Path(config_path).read_text(encoding="utf-8"))
     cases = validate_benchmark_config(config)
     root = Path(config.get("repositoryRoot", Path(config_path).parent)).resolve()
+    for case in cases:
+        verify_base_history(case, root)
     results = [verify_case(case, root, timeout_seconds) for case in cases]
     report = {
         "ready": all(result.passed for result in results),
