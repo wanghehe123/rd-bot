@@ -1,0 +1,20 @@
+# Reference definition for the reusable Java benchmark toolchain. The local
+# builder uses Docker create/start/commit because BuildKit tries to pull the
+# private `rd-bot/pi-agent` base even with `--pull=false`.
+ARG BASE_IMAGE=rd-bot/pi-agent:local
+FROM ${BASE_IMAGE}
+
+USER root
+
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends openjdk-17-jdk maven \
+ && rm -rf /var/lib/apt/lists/*
+
+ENV RD_EVAL_OFFLINE=1 \
+    PIP_NO_INDEX=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    npm_config_offline=true \
+    YARN_ENABLE_NETWORK=0
+
+LABEL rd.evaluation.kind="coding-benchmark" \
+      rd.evaluation.toolchain="java17"

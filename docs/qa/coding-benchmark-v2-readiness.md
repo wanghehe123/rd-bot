@@ -47,6 +47,12 @@ Trial requests.
   The Oracle probe launched from its digest using non-root, read-only and
   `network=none` constraints. Its inherited Agent bridge is explicitly cleared
   by the runtime executor before the frozen verifier argv runs.
+- The reusable Java environment is now built as a third shared layer rather
+  than being repeated in every Java case image:
+  [`java17-arm64-20260730-v1.json`](../../scripts/evaluation/docker/java17-arm64-20260730-v1.json)
+  attests `rd-bot/coding-eval-java17@sha256:0aade4a49cf595396b75b667070dff8c2dd5a7d5679b25d67dcde841869251e4`.
+  Java 17 and Maven both started successfully as UID `10001` on a read-only
+  root filesystem. Repository-specific Gradle/Maven caches are not yet built.
 
 ## Current external blockers
 
@@ -63,9 +69,9 @@ Trial requests.
 2. The fresh-primary slice cannot be substituted with cached public tasks. The
    readiness validator now requires every fresh case to carry an auditable
    `PRIVATE_TASK` or `POST_CUTOFF_ISSUE` reference.
-3. Only the two shared layers exist. Each selected case still needs an
-   immutable thin dependency layer, an Oracle bundle and an offline three-pass
-   readiness result before it can enter the snapshot.
+3. The Node, Oracle and reusable Java layers exist, but each selected case
+   still needs an immutable thin dependency layer, an Oracle bundle and an
+   offline three-pass readiness result before it can enter the snapshot.
 4. The production requirement-stage integration files are currently modified
    in the workspace by a separate change. They have intentionally not been
    overwritten; campaign execution will remain disabled until that change is
