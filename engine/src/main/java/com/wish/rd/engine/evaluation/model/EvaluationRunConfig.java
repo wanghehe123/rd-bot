@@ -20,7 +20,8 @@ public record EvaluationRunConfig(
         int judgeLimit,
         boolean strictMissingRecords,
         String baselineRunId,
-        String taskId
+        String taskId,
+        EvaluationMode mode
 ) {
     private static final Pattern DATASET_PATTERN = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{0,199}\\.jsonl");
     private static final Pattern LABEL_PATTERN = Pattern.compile("[A-Za-z0-9._:-]{0,120}");
@@ -36,6 +37,29 @@ public record EvaluationRunConfig(
         judgeProvider = judgeProvider == null ? EvaluationJudgeProvider.NONE : judgeProvider;
         baselineRunId = safe(baselineRunId);
         taskId = safe(taskId);
+        mode = mode == null
+                ? (source == EvaluationSource.TASK_RUN ? EvaluationMode.TASK_AUDIT : EvaluationMode.LEGACY_QUALITY)
+                : mode;
+    }
+
+    /** Backward-compatible constructor for configurations that already include task-run fields. */
+    public EvaluationRunConfig(
+            String name,
+            String datasetId,
+            EvaluationSource source,
+            String environmentId,
+            int sampleLimit,
+            String baseUrl,
+            String ragLogPath,
+            int timeoutSeconds,
+            EvaluationJudgeProvider judgeProvider,
+            int judgeLimit,
+            boolean strictMissingRecords,
+            String baselineRunId,
+            String taskId
+    ) {
+        this(name, datasetId, source, environmentId, sampleLimit, baseUrl, ragLogPath, timeoutSeconds,
+                judgeProvider, judgeLimit, strictMissingRecords, baselineRunId, taskId, null);
     }
 
     /** Backward-compatible constructor for persisted and test configurations created before task-run evaluation. */
@@ -54,7 +78,7 @@ public record EvaluationRunConfig(
             String baselineRunId
     ) {
         this(name, datasetId, source, environmentId, sampleLimit, baseUrl, ragLogPath, timeoutSeconds,
-                judgeProvider, judgeLimit, strictMissingRecords, baselineRunId, "");
+                judgeProvider, judgeLimit, strictMissingRecords, baselineRunId, "", null);
     }
 
     /** Validates all Web-controlled values before a run or process is created. */

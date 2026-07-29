@@ -112,7 +112,7 @@ public class PostgresEvaluationRunStore implements EvaluationRunStore {
     ) {
         EvaluationRun current = require(runId);
         requireExpected(current, expected);
-        transitionPolicy.requireTransition(expected, target);
+        transitionPolicy.requireTransition(current.config().mode(), expected, target);
         EvaluationRun updated = current.withStatus(target, message, errorCategory, errorMessage, now);
         compareAndSet(current, updated);
         appendEvent(runId, expected, target, message, errorCategory, errorMessage, now);
@@ -129,7 +129,7 @@ public class PostgresEvaluationRunStore implements EvaluationRunStore {
     ) {
         EvaluationRun current = require(runId);
         requireExpected(current, expected);
-        transitionPolicy.requireTransition(expected, EvaluationRunStatus.SUCCEEDED);
+        transitionPolicy.requireTransition(current.config().mode(), expected, EvaluationRunStatus.SUCCEEDED);
         EvaluationRun completed = current.withResult(result, now);
         compareAndSet(current, completed);
         appendEvent(runId, expected, EvaluationRunStatus.SUCCEEDED,

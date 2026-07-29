@@ -68,6 +68,8 @@ public record EvaluationRun(
         return switch (status) {
             case CREATED -> 0;
             case QUEUED -> 5;
+            case PREPARING -> 12;
+            case RUNNING_TRIALS -> 45;
             case RECORDING -> 20;
             case SCORING -> 55;
             case REPORTING -> 78;

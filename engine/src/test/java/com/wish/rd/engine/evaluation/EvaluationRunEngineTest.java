@@ -7,6 +7,7 @@ import com.wish.rd.engine.evaluation.model.EvaluationJudgeProvider;
 import com.wish.rd.engine.evaluation.model.EvaluationRun;
 import com.wish.rd.engine.evaluation.model.EvaluationRunConfig;
 import com.wish.rd.engine.evaluation.model.EvaluationRunStatus;
+import com.wish.rd.engine.evaluation.model.EvaluationMode;
 import com.wish.rd.engine.evaluation.model.EvaluationSource;
 import com.wish.rd.engine.evaluation.model.EvaluationRunEvent;
 import org.junit.jupiter.api.Test;
@@ -203,6 +204,11 @@ class EvaluationRunEngineTest {
         assertThrows(IllegalArgumentException.class, () -> engine.start(new EvaluationRunConfig(
                 "bad task", "task-run.generated.jsonl", EvaluationSource.TASK_RUN, "local", 0,
                 "", "", 30, EvaluationJudgeProvider.NONE, 0, false, "", "../task")));
+    }
+
+    @Test
+    void shouldDefaultExistingFixtureConfigurationToLegacyQualityMode() {
+        assertEquals(EvaluationMode.LEGACY_QUALITY, config("legacy", "").mode());
     }
 
     private static EvaluationRunConfig config(String name, String baselineRunId) {

@@ -1,6 +1,7 @@
 package com.wish.rd.engine.evaluation;
 
 import com.wish.rd.engine.evaluation.model.EvaluationRunStatus;
+import com.wish.rd.engine.evaluation.model.EvaluationMode;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -37,5 +38,25 @@ class EvaluationTransitionPolicyTest {
         assertTrue(policy.canTransition(EvaluationRunStatus.REPORTING, EvaluationRunStatus.CANCEL_REQUESTED));
         assertTrue(policy.canTransition(EvaluationRunStatus.DIFFING, EvaluationRunStatus.CANCEL_REQUESTED));
         assertTrue(policy.canTransition(EvaluationRunStatus.CANCEL_REQUESTED, EvaluationRunStatus.CANCELLED));
+    }
+
+    @Test
+    void shouldAllowCodingBenchmarkLifecycleWithoutLegacyRecordingPhase() {
+        assertTrue(policy.canTransition(EvaluationMode.CODING_BENCHMARK,
+                EvaluationRunStatus.QUEUED, EvaluationRunStatus.PREPARING));
+        assertTrue(policy.canTransition(EvaluationMode.CODING_BENCHMARK,
+                EvaluationRunStatus.PREPARING, EvaluationRunStatus.RUNNING_TRIALS));
+        assertTrue(policy.canTransition(EvaluationMode.CODING_BENCHMARK,
+                EvaluationRunStatus.RUNNING_TRIALS, EvaluationRunStatus.SCORING));
+        assertFalse(policy.canTransition(EvaluationMode.CODING_BENCHMARK,
+                EvaluationRunStatus.QUEUED, EvaluationRunStatus.RECORDING));
+    }
+
+    @Test
+    void shouldKeepLegacyLifecycleWhenModeIsOmitted() {
+        assertTrue(policy.canTransition(EvaluationMode.LEGACY_QUALITY,
+                EvaluationRunStatus.QUEUED, EvaluationRunStatus.RECORDING));
+        assertFalse(policy.canTransition(EvaluationMode.LEGACY_QUALITY,
+                EvaluationRunStatus.QUEUED, EvaluationRunStatus.PREPARING));
     }
 }

@@ -51,7 +51,6 @@ public final class InMemoryEvaluationRunStore implements EvaluationRunStore {
     @Override
     public EvaluationRun transition(String runId, EvaluationRunStatus expected, EvaluationRunStatus target,
                                     String message, String errorCategory, String errorMessage, long now) {
-        policy.requireTransition(expected, target);
         EvaluationRun[] updated = new EvaluationRun[1];
         runs.compute(runId, (ignored, current) -> {
             if (current == null) {
@@ -60,6 +59,7 @@ public final class InMemoryEvaluationRunStore implements EvaluationRunStore {
             if (current.status() != expected) {
                 throw new IllegalStateException("evaluation status conflict: expected " + expected + " but was " + current.status());
             }
+            policy.requireTransition(current.config().mode(), expected, target);
             updated[0] = current.withStatus(target, message, errorCategory, errorMessage, now);
             return updated[0];
         });
@@ -71,7 +71,6 @@ public final class InMemoryEvaluationRunStore implements EvaluationRunStore {
 
     @Override
     public EvaluationRun complete(String runId, EvaluationRunStatus expected, EvaluationExecutionResult result, long now) {
-        policy.requireTransition(expected, EvaluationRunStatus.SUCCEEDED);
         EvaluationRun[] updated = new EvaluationRun[1];
         runs.compute(runId, (ignored, current) -> {
             if (current == null) {
@@ -80,6 +79,7 @@ public final class InMemoryEvaluationRunStore implements EvaluationRunStore {
             if (current.status() != expected) {
                 throw new IllegalStateException("evaluation status conflict: expected " + expected + " but was " + current.status());
             }
+            policy.requireTransition(current.config().mode(), expected, EvaluationRunStatus.SUCCEEDED);
             updated[0] = current.withResult(result, now);
             return updated[0];
         });

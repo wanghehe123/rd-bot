@@ -4,6 +4,8 @@ package com.wish.rd.engine.evaluation.model;
 public enum EvaluationRunStatus {
     CREATED,
     QUEUED,
+    PREPARING,
+    RUNNING_TRIALS,
     RECORDING,
     SCORING,
     REPORTING,
