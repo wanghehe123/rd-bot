@@ -77,6 +77,22 @@ Trial requests.
   artifact locally into separate short-lived Agent and Oracle caches, so the
   two phases never share a writable cache and no repair phase downloads a
   package.
+- Fresh cases are authored from real private fix commits by
+  `rd_eval_author_fresh_case.py`, which splits a single-parent commit along the
+  test boundary and emits the same host-only asset shape as the Multi-SWE
+  materializer. Expected fail-to-pass IDs are read back out of the withheld
+  patch instead of typed by hand. Merges, commits with no test change,
+  single-file changes and commits touching a build or dependency manifest are
+  refused. Against real `rd-bot` history, 40 of 44 size-eligible commits were
+  accepted and the four refusals were correct.
+- `rd_eval_audit_case_leakage.py` then rejects a case whose own base repository
+  already documents the fix. Of the 40 accepted candidates it flagged 10, five
+  of which had their new class names written verbatim into a committed
+  implementation plan; 30 remain clean, which is enough for a 10-case slice.
+  Only symbols the Gold patch *declares* are audited, so library calls that
+  appear in base docs and tests for unrelated reasons produce no findings. A
+  Gold patch with no distinctive declaration reports `UNAUDITABLE`, which must
+  not be recorded as a pass.
 - The executor now gives the Agent a separate output directory and accepts
   only its newly written `candidate.patch`; a stale patch quarantines the
   attempt, and a missing patch prevents Oracle execution. Oracle receives a
@@ -97,8 +113,15 @@ Trial requests.
    can become a verified 10-public-case manifest. The required 10 fresh cases
    are still absent.
 2. The fresh-primary slice cannot be substituted with cached public tasks. The
-   readiness validator now requires every fresh case to carry an auditable
-   `PRIVATE_TASK` or `POST_CUTOFF_ISSUE` reference.
+   readiness validator requires every fresh case to carry an auditable
+   `PRIVATE_TASK` or `POST_CUTOFF_ISSUE` reference. The approved first-round
+   source is `wanghehe123/rd-bot` itself, which is private, was created on
+   2026-07-22, and is Java with a TypeScript frontend, so its history cannot be
+   in any training corpus. All ten fresh cases therefore come from one
+   repository under the explicitly reported exception in design section 3.1.1;
+   the fresh cases are not mutually independent and the fresh D-A conclusion
+   only covers offline repair inside a single Java/TypeScript monolith.
+   Ten cases still have to be selected, frozen and preflighted.
 3. The Node, Oracle and reusable Java layers exist, but each selected case
    still needs an immutable cache artifact, its frozen parser/Oracle command,
    and an offline three-pass readiness result before it can enter the snapshot.
