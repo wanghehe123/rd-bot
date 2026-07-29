@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import io
 import json
 import re
 import subprocess
+import tarfile
 from pathlib import Path
 from typing import Any
 
@@ -33,12 +36,43 @@ def immutable_reference(repository: str, digest: str) -> str:
     return safe_repository + "@" + safe_digest
 
 
+def _oracle_verifier_script(path: Path | None) -> tuple[bytes, str]:
+    source = (Path(path) if path is not None else Path(__file__).with_name("rd_eval_oracle.py")).resolve()
+    if not source.is_file() or source.is_symlink():
+        raise BuildError("offline Oracle verifier script is unavailable")
+    payload = source.read_bytes()
+    return payload, "sha256:" + hashlib.sha256(payload).hexdigest()
+
+
+def _oracle_verifier_archive(payload: bytes) -> bytes:
+    """Pack the verifier as a root-owned, read-only member with no host-specific metadata.
+
+    ``docker cp <hostfile>`` keeps the builder's uid/gid, which both leaks the build host into an
+    attested image and leaves the frozen verifier owned by an account the Oracle contract never
+    audits. A hand-built archive keeps the layer identical on every build host.
+    """
+
+    entry = tarfile.TarInfo("rd_eval_oracle.py")
+    entry.size = len(payload)
+    entry.mode = 0o444
+    entry.mtime = 0
+    entry.uid = 0
+    entry.gid = 0
+    entry.uname = "root"
+    entry.gname = "root"
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:", format=tarfile.GNU_FORMAT) as archive:
+        archive.addfile(entry, io.BytesIO(payload))
+    return buffer.getvalue()
+
+
 def build_plan(
     platform: str,
     base_image: str,
     tag: str,
     repository_prefix: str = "rd-bot/coding-eval",
     local_base_tag: str = "rd-bot/pi-agent:local",
+    oracle_script_path: Path | None = None,
 ) -> list[dict[str, Any]]:
     """Produce local content-addressed plans without BuildKit or a registry pull.
 
@@ -62,6 +96,7 @@ def build_plan(
     safe_local_base_tag = str(local_base_tag or "").strip().lower()
     if not re.fullmatch(r"[a-z0-9][a-z0-9._/-]*:[a-z0-9][a-z0-9._-]*", safe_local_base_tag):
         raise BuildError("local base tag contains unsupported characters")
+    oracle_script_payload, oracle_script_sha256 = _oracle_verifier_script(oracle_script_path)
     images: list[dict[str, Any]] = []
     for role in ("agent", "oracle"):
         image_tag = f"{prefix}-{role}:{safe_tag}"
@@ -70,7 +105,7 @@ def build_plan(
             "--change", "ENV PIP_NO_INDEX=1 PIP_DISABLE_PIP_VERSION_CHECK=1 npm_config_offline=true YARN_ENABLE_NETWORK=0 RD_EVAL_OFFLINE=1",
             "--change", f"LABEL rd.evaluation.kind=coding-benchmark rd.evaluation.role={role}",
         ]
-        images.append({
+        image: dict[str, Any] = {
             "role": role,
             "tag": image_tag,
             "baseImage": safe_base,
@@ -84,15 +119,29 @@ def build_plan(
             ],
             "commitCommand": ["docker", "commit", *changes, container_name, image_tag],
             "cleanupCommand": ["docker", "rm", container_name],
-        })
+        }
+        if role == "oracle":
+            image["oracleScriptSha256"] = oracle_script_sha256
+            image["copyArchive"] = _oracle_verifier_archive(oracle_script_payload)
+            image["copyCommand"] = ["docker", "cp", "-", container_name + ":/opt/rd-pi-bridge"]
+            image["commitCommand"] = [
+                "docker", "commit", *changes,
+                "--change", "ENV RD_EVAL_ORACLE_SCRIPT=/opt/rd-pi-bridge/rd_eval_oracle.py",
+                "--change", "LABEL rd.evaluation.oracle-script-sha256=" + oracle_script_sha256,
+                container_name, image_tag,
+            ]
+        images.append(image)
     return images
 
 
-def _run(command: list[str]) -> str:
-    completed = subprocess.run(command, check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+def _run(command: list[str], stdin: bytes | None = None) -> str:
+    completed = subprocess.run(
+        command, check=False, input=stdin, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+    )
+    output = completed.stdout.decode("utf-8", errors="replace")
     if completed.returncode != 0:
-        raise BuildError(completed.stdout.strip() or "docker command failed")
-    return completed.stdout
+        raise BuildError(output.strip() or "docker command failed")
+    return output
 
 
 def _inspect_image(tag: str) -> dict[str, Any]:
@@ -145,6 +194,8 @@ def build_shared_images(
         try:
             _run(image["createCommand"])
             created = True
+            if image["role"] == "oracle":
+                _run(image["copyCommand"], stdin=image["copyArchive"])
             _run(image["commitCommand"])
         finally:
             if created:
@@ -153,14 +204,17 @@ def build_shared_images(
         image_id = str(inspection.get("Id", "")).lower()
         if not _DIGEST.fullmatch(image_id):
             raise BuildError("built image does not have a content digest")
-        results.append({
+        result = {
             "role": image["role"],
             "tag": image["tag"],
             "reference": _attested_reference(image["tag"], inspection),
             "imageId": image_id,
             "baseImage": image["baseImage"],
             "platform": platform,
-        })
+        }
+        if image["role"] == "oracle":
+            result["oracleScriptSha256"] = image["oracleScriptSha256"]
+        results.append(result)
     report = {"platform": platform, "images": results, "buildMode": "local-content-addressed", "buildPullPolicy": "never"}
     destination = Path(output_path).resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -172,7 +226,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Build RD-Bot shared coding benchmark images without Docker pulls.")
     parser.add_argument("--platform", default="linux/arm64")
     parser.add_argument("--base-image", default="rd-bot/pi-agent@sha256:07dcbd9d3f1603c4fd71e1e4802568edaf16a5f5a59c9ad111407a53e8616d9a")
-    parser.add_argument("--tag", default="20260730-v3")
+    parser.add_argument("--tag", default="20260730-v4")
     parser.add_argument("--repository-prefix", default="rd-bot/coding-eval")
     parser.add_argument("--local-base-tag", default="rd-bot/pi-agent:local")
     parser.add_argument("--output", required=True)

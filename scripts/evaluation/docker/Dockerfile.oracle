@@ -5,11 +5,20 @@
 ARG BASE_IMAGE=rd-bot/pi-agent:local
 FROM ${BASE_IMAGE}
 
+USER root
+
+# The frozen verifier stays root-owned and read-only so no runtime UID the Oracle may be given
+# can rewrite the scoring code it is about to execute.
+COPY --chown=root:root --chmod=0444 rd_eval_oracle.py /opt/rd-pi-bridge/rd_eval_oracle.py
+
+USER node
+
 LABEL org.opencontainers.image.title="rd-bot coding benchmark oracle runtime" \
-      org.opencontainers.image.description="Offline Oracle layer; no agent worktree or cache is ever mounted"
+      org.opencontainers.image.description="Offline Oracle layer; no Agent worktree or cache is ever mounted"
 
 ENV PIP_NO_INDEX=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     npm_config_offline=true \
     YARN_ENABLE_NETWORK=0 \
-    RD_EVAL_OFFLINE=1
+    RD_EVAL_OFFLINE=1 \
+    RD_EVAL_ORACLE_SCRIPT=/opt/rd-pi-bridge/rd_eval_oracle.py
