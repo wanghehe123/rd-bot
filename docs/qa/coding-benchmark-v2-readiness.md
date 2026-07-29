@@ -22,7 +22,22 @@ Trial requests.
 - The scorer separates fresh/public/formal slices; it reports Wilson intervals,
   paired score intervals, exact McNemar, Holm exploratory contrasts,
   missing-pair bounds, D/A cost ratios and sentinel flip/reversal evidence.
-- The Python verifier suite passed with 78 tests on 2026-07-30.
+- The Python verifier suite passed with 86 tests on 2026-07-30. It now also
+  rejects a case unless its declared 40-character `baseCommit` object and
+  ancestry are locally present before any RAG document, dependency layer or
+  Oracle bundle may be produced.
+- The Oracle can inject a runtime-withheld Git test patch only after the
+  candidate patch and rejects a candidate that touches any path protected by
+  that test patch. This is required by Multi-SWE-bench, whose withheld tests
+  often modify existing test files rather than adding a new directory.
+- Ten **candidate** public anchors were selected from the immutable
+  Multi-SWE-bench revision in
+  [`public-anchor-selection-20260730.json`](../../scripts/evaluation/public-anchor-selection-20260730.json).
+  Their complete upstream histories were mirrored only in the trusted temporary
+  preparation area and every candidate was reconstructed at its exact base
+  commit with no remote and no future commit objects. They are deliberately
+  still candidates: no RAG document, dependency layer, Oracle bundle or Trial
+  has been made from them.
 - Docker Desktop is now available on `linux/arm64`. The two shared thin layers
   were built from the locally attested Pi base without Docker pulls or package
   downloads; the immutable build record is
@@ -36,8 +51,15 @@ Trial requests.
 ## Current external blockers
 
 1. The local machine currently has four checked-out **public** SWE-bench Django
-   snapshots (`django-10914`, `10924`, `11001`, `11019`); it does not contain a
-   verified 10-public-case manifest, nor the required 10 fresh cases.
+   snapshots (`django-10914`, `10924`, `11001`, `11019`), but none contains the
+   declared upstream base-commit object or its ancestry. They are shallow
+   snapshots, not eligible case repositories; no RAG document, test bundle or
+   dependency image has been generated from them. Each public anchor must be
+   reconstructed from the exact upstream base commit into a private prepared
+   repository first. The separate Multi-SWE candidates now have valid private
+   base histories, but still need all offline and Oracle preflights before they
+   can become a verified 10-public-case manifest. The required 10 fresh cases
+   are still absent.
 2. The fresh-primary slice cannot be substituted with cached public tasks. The
    readiness validator now requires every fresh case to carry an auditable
    `PRIVATE_TASK` or `POST_CUTOFF_ISSUE` reference.
@@ -53,8 +75,9 @@ Trial requests.
 
 1. Select and freeze 10 public anchors and 10 fresh-primary cases, each with a
    base commit, Oracle bundle, expected test IDs and freshness evidence.
-2. Start Docker Desktop; build the shared bases and thin case layers; capture
-   platform-specific image digests and storage measurements with 20% headroom.
+2. Reconstruct each selected public repository at its exact base commit, then
+   build the shared bases and thin case layers; capture platform-specific image
+   digests and storage measurements with 20% headroom.
 3. Generate the four RAG documents for all 20 cases, freeze their manifests,
    then run `BASE` / `TEST` / `FIX` three times with offline network policy.
 4. Run the two probe cases through all four arms before freezing the prompt and

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import subprocess
+import sys
+import tempfile
 import unittest
+from pathlib import Path
 
-from scripts.evaluation.rd_eval_oracle import verify_result
+from scripts.evaluation.rd_eval_oracle import OracleContractError, run_oracle, verify_result
 
 
 class OracleContractTest(unittest.TestCase):
@@ -23,6 +27,73 @@ class OracleContractTest(unittest.TestCase):
 
         self.assertEqual("PASS", result.verdict)
         self.assertEqual((), result.missing_test_ids)
+
+    def test_oracle_can_apply_a_protected_runtime_test_patch_after_the_candidate_patch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository = Path(temp_dir) / "repository"
+            repository.mkdir()
+            self._git(repository, "init", "-q")
+            self._git(repository, "config", "user.email", "test@example.com")
+            self._git(repository, "config", "user.name", "Test User")
+            (repository / "src.txt").write_text("before\n", encoding="utf-8")
+            (repository / "test.txt").write_text("base assertion\n", encoding="utf-8")
+            self._git(repository, "add", "src.txt", "test.txt")
+            self._git(repository, "commit", "-qm", "base")
+            candidate = Path(temp_dir) / "candidate.patch"
+            candidate.write_text(
+                "diff --git a/src.txt b/src.txt\n--- a/src.txt\n+++ b/src.txt\n@@ -1 +1 @@\n-before\n+after\n",
+                encoding="utf-8",
+            )
+            protected_test_patch = Path(temp_dir) / "runtime-withheld.patch"
+            protected_test_patch.write_text(
+                "diff --git a/test.txt b/test.txt\n--- a/test.txt\n+++ b/test.txt\n@@ -1 +1 @@\n-base assertion\n+runtime withheld assertion\n",
+                encoding="utf-8",
+            )
+
+            result = run_oracle(
+                verifier_repository=repository,
+                patch_path=candidate,
+                protected_bundle=None,
+                protected_target=None,
+                protected_test_patch=protected_test_patch,
+                command=[sys.executable, "-c", 'print("RD_EVAL_COLLECTED_TEST_IDS=[\\"case::regression\\"]")'],
+                expected_test_ids=["case::regression"],
+                network_mode="none",
+            )
+
+            self.assertEqual("PASS", result.verdict)
+            self.assertEqual("after\n", (repository / "src.txt").read_text(encoding="utf-8"))
+            self.assertEqual("runtime withheld assertion\n", (repository / "test.txt").read_text(encoding="utf-8"))
+            candidate_touching_test = Path(temp_dir) / "invalid.patch"
+            candidate_touching_test.write_text(protected_test_patch.read_text(encoding="utf-8"), encoding="utf-8")
+            with self.assertRaisesRegex(OracleContractError, "protected test path"):
+                run_oracle(
+                    verifier_repository=repository,
+                    patch_path=candidate_touching_test,
+                    protected_bundle=None,
+                    protected_target=None,
+                    protected_test_patch=protected_test_patch,
+                    command=[sys.executable, "-c", "print('unused')"],
+                    expected_test_ids=["case::regression"],
+                    network_mode="none",
+                )
+            bundle = Path(temp_dir) / "bundle"
+            bundle.mkdir()
+            with self.assertRaisesRegex(OracleContractError, "exactly one"):
+                run_oracle(
+                    verifier_repository=repository,
+                    patch_path=candidate,
+                    protected_bundle=bundle,
+                    protected_target="withheld",
+                    protected_test_patch=protected_test_patch,
+                    command=[sys.executable, "-c", "print('unused')"],
+                    expected_test_ids=["case::regression"],
+                    network_mode="none",
+                )
+
+    @staticmethod
+    def _git(directory: Path, *arguments: str) -> None:
+        subprocess.run(["git", "-C", str(directory), *arguments], check=True)
 
 
 if __name__ == "__main__":

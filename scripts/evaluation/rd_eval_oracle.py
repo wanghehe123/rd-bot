@@ -58,28 +58,50 @@ def run_oracle(
     *,
     verifier_repository: Path,
     patch_path: Path,
-    protected_bundle: Path,
-    protected_target: str,
+    protected_bundle: Path | None,
+    protected_target: str | None,
+    protected_test_patch: Path | None = None,
     command: list[str],
     expected_test_ids: Iterable[str],
     network_mode: str,
     integrity_paths: Iterable[str] = (),
 ) -> OracleResult:
-    """Applies only the candidate patch, injects withheld tests, and runs an offline verifier command."""
+    """Applies only the candidate patch, then injects one protected test representation offline."""
 
     if network_mode != "none":
         raise OracleContractError("oracle network mode must be none")
     repository = Path(verifier_repository).resolve()
     if not repository.is_dir():
         raise OracleContractError("verifier repository does not exist")
-    bundle = Path(protected_bundle).resolve()
-    if not bundle.is_dir() or bundle.is_symlink():
-        raise OracleContractError("protected test bundle is unavailable")
-    target = _safe_relative_path(protected_target)
     patch = Path(patch_path).resolve()
-    _reject_protected_patch_paths(patch.read_text(encoding="utf-8"), target)
-    source_hashes = {"protectedBundle": _tree_sha256(bundle)}
+    candidate_patch = patch.read_text(encoding="utf-8")
+    bundle: Path | None = None
+    target = ""
+    source_hashes: dict[str, str] = {}
+    protected_paths: set[str]
+    runtime_patch: Path | None = None
+    if (protected_bundle is None) == (protected_test_patch is None):
+        raise OracleContractError("exactly one protected test bundle or protected runtime test patch is required")
+    if protected_bundle is not None:
+        bundle = Path(protected_bundle).resolve()
+        if not bundle.is_dir() or bundle.is_symlink():
+            raise OracleContractError("protected test bundle is unavailable")
+        target = _safe_relative_path(str(protected_target or ""))
+        source_hashes["protectedBundle"] = _tree_sha256(bundle)
+        protected_paths = {target}
+    elif protected_test_patch is not None:
+        runtime_patch = Path(protected_test_patch).resolve()
+        if not runtime_patch.is_file() or runtime_patch.is_symlink():
+            raise OracleContractError("protected runtime test patch is unavailable")
+        runtime_patch_text = runtime_patch.read_text(encoding="utf-8")
+        protected_paths = _patch_paths(runtime_patch_text)
+        if not protected_paths:
+            raise OracleContractError("protected runtime test patch declares no repository paths")
+        source_hashes["protectedTestPatch"] = _path_sha256(runtime_patch)
+    _reject_protected_patch_paths(candidate_patch, protected_paths)
     watched = [_safe_relative_path(path) for path in integrity_paths]
+    if any(_matches_protected(path, protected_paths) for path in watched):
+        raise OracleContractError("integrity paths must not overlap protected test paths")
     source_hashes.update({f"source:{path}": _path_sha256(repository / path) for path in watched})
     apply = subprocess.run(
         ["git", "apply", "--binary", str(patch)],
@@ -91,15 +113,29 @@ def run_oracle(
     )
     if apply.returncode != 0:
         raise OracleContractError(f"candidate patch cannot be applied: {apply.stderr.strip()}")
-    target_path = repository / target
-    if target_path.exists() or target_path.is_symlink():
-        raise OracleContractError("protected test target already exists after patch application")
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(bundle, target_path)
+    if bundle is not None:
+        target_path = repository / target
+        if target_path.exists() or target_path.is_symlink():
+            raise OracleContractError("protected test target already exists after patch application")
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(bundle, target_path)
+    elif runtime_patch is not None:
+        injected = subprocess.run(
+            ["git", "apply", "--binary", str(runtime_patch)],
+            cwd=repository,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if injected.returncode != 0:
+            raise OracleContractError(f"protected runtime test patch cannot be applied: {injected.stderr.strip()}")
     completed = subprocess.run(command, cwd=repository, check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     result = verify_result(test_output=completed.stdout, expected_test_ids=expected_test_ids, exit_code=completed.returncode)
-    if source_hashes["protectedBundle"] != _tree_sha256(bundle):
+    if bundle is not None and source_hashes["protectedBundle"] != _tree_sha256(bundle):
         raise OracleContractError("protected test bundle changed during oracle execution")
+    if runtime_patch is not None and source_hashes["protectedTestPatch"] != _path_sha256(runtime_patch):
+        raise OracleContractError("protected runtime test patch changed during oracle execution")
     for path in watched:
         if source_hashes[f"source:{path}"] != _path_sha256(repository / path):
             raise OracleContractError("protected oracle input changed during execution")
@@ -121,12 +157,24 @@ def _collected_test_ids(test_output: str) -> tuple[str, ...]:
     return tuple(collected)
 
 
-def _reject_protected_patch_paths(patch: str, protected_target: str) -> None:
+def _reject_protected_patch_paths(patch: str, protected_paths: Iterable[str]) -> None:
     for line in patch.splitlines():
         if line.startswith("+++ b/") or line.startswith("--- a/"):
             path = line[6:].strip()
-            if path == protected_target or path.startswith(protected_target + "/"):
+            if _matches_protected(path, protected_paths):
                 raise OracleContractError("candidate patch touches a protected test path")
+
+
+def _patch_paths(patch: str) -> set[str]:
+    paths: set[str] = set()
+    for line in patch.splitlines():
+        if line.startswith("+++ b/") or line.startswith("--- a/"):
+            paths.add(_safe_relative_path(line[6:].strip()))
+    return paths
+
+
+def _matches_protected(path: str, protected_paths: Iterable[str]) -> bool:
+    return any(path == protected or path.startswith(protected + "/") for protected in protected_paths)
 
 
 def _safe_relative_path(value: str) -> str:
@@ -160,8 +208,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Run an offline coding benchmark Oracle.")
     parser.add_argument("--verifier-repository", required=True)
     parser.add_argument("--patch", required=True)
-    parser.add_argument("--protected-bundle", required=True)
-    parser.add_argument("--protected-target", required=True)
+    parser.add_argument("--protected-bundle", default="")
+    parser.add_argument("--protected-target", default="")
+    parser.add_argument("--protected-test-patch", default="")
     parser.add_argument("--expected-test-id", action="append", required=True)
     parser.add_argument("--command-json", required=True, help="JSON argv list; shell strings are not accepted.")
     parser.add_argument("--network-mode", required=True)
@@ -177,8 +226,9 @@ def main() -> int:
     result = run_oracle(
         verifier_repository=Path(args.verifier_repository),
         patch_path=Path(args.patch),
-        protected_bundle=Path(args.protected_bundle),
-        protected_target=args.protected_target,
+        protected_bundle=Path(args.protected_bundle) if args.protected_bundle else None,
+        protected_target=args.protected_target or None,
+        protected_test_patch=Path(args.protected_test_patch) if args.protected_test_patch else None,
         command=command,
         expected_test_ids=args.expected_test_id,
         network_mode=args.network_mode,
