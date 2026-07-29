@@ -4,10 +4,39 @@ import unittest
 import sys
 from pathlib import Path
 
-from scripts.evaluation.rd_eval_prepare_coding_benchmark import ReadinessError, validate_case_contract, verify_case
+from scripts.evaluation.rd_eval_prepare_coding_benchmark import (
+    ReadinessError,
+    validate_benchmark_config,
+    validate_case_contract,
+    verify_case,
+)
 
 
 class PrepareCodingBenchmarkTest(unittest.TestCase):
+    def test_config_requires_ten_fresh_and_ten_public_cases(self) -> None:
+        cases = [
+            {"caseId": f"fresh-{index:02d}", "slice": "FRESH_PRIMARY"}
+            for index in range(1, 10)
+        ] + [
+            {"caseId": f"public-{index:02d}", "slice": "PUBLIC_ANCHOR"}
+            for index in range(1, 12)
+        ]
+
+        with self.assertRaisesRegex(ReadinessError, "10 FRESH_PRIMARY and 10 PUBLIC_ANCHOR"):
+            validate_benchmark_config({"cases": cases})
+
+    def test_fresh_case_requires_auditable_private_or_post_cutoff_evidence(self) -> None:
+        cases = [
+            {"caseId": f"fresh-{index:02d}", "slice": "FRESH_PRIMARY"}
+            for index in range(1, 11)
+        ] + [
+            {"caseId": f"public-{index:02d}", "slice": "PUBLIC_ANCHOR"}
+            for index in range(1, 11)
+        ]
+
+        with self.assertRaisesRegex(ReadinessError, "freshnessEvidence"):
+            validate_benchmark_config({"cases": cases})
+
     def test_readiness_contract_requires_all_three_fixed_commands(self) -> None:
         with self.assertRaisesRegex(ReadinessError, "fixCommand"):
             validate_case_contract({

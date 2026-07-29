@@ -25,6 +25,37 @@ class CaseReadinessResult:
     runs: tuple[dict[str, Any], ...]
 
 
+def validate_benchmark_config(config: dict[str, Any]) -> list[dict[str, Any]]:
+    """Validate the fixed 10 fresh + 10 public benchmark composition before execution.
+
+    Fresh and public rows must remain explicit at this boundary: a local cache of
+    public SWE-bench cases cannot silently become the fresh-primary slice.
+    """
+
+    cases = config.get("cases")
+    if not isinstance(cases, list) or len(cases) != 20 or not all(isinstance(case, dict) for case in cases):
+        raise ReadinessError("coding benchmark config must contain exactly 20 case objects")
+    ids = [str(case.get("caseId", "")).strip() for case in cases]
+    if any(not case_id for case_id in ids) or len(set(ids)) != 20:
+        raise ReadinessError("coding benchmark case IDs must be unique")
+    slices = [str(case.get("slice", "")).strip().upper() for case in cases]
+    if any(benchmark_slice not in {"FRESH_PRIMARY", "PUBLIC_ANCHOR"} for benchmark_slice in slices):
+        raise ReadinessError("every coding benchmark case must declare FRESH_PRIMARY or PUBLIC_ANCHOR")
+    if slices.count("FRESH_PRIMARY") != 10 or slices.count("PUBLIC_ANCHOR") != 10:
+        raise ReadinessError("coding benchmark config must contain exactly 10 FRESH_PRIMARY and 10 PUBLIC_ANCHOR cases")
+    for case, benchmark_slice in zip(cases, slices, strict=True):
+        if benchmark_slice != "FRESH_PRIMARY":
+            continue
+        evidence = case.get("freshnessEvidence")
+        if not isinstance(evidence, dict):
+            raise ReadinessError("every FRESH_PRIMARY case must declare freshnessEvidence")
+        kind = str(evidence.get("kind", "")).strip().upper()
+        reference = str(evidence.get("reference", "")).strip()
+        if kind not in {"PRIVATE_TASK", "POST_CUTOFF_ISSUE"} or not reference or len(reference) > 500:
+            raise ReadinessError("freshnessEvidence must identify a PRIVATE_TASK or POST_CUTOFF_ISSUE reference")
+    return cases
+
+
 def validate_case_contract(case: dict[str, Any]) -> None:
     """Rejects commands, image references, and paths that would make a case non-reproducible."""
 
@@ -90,12 +121,7 @@ def verify_config(config_path: Path, output_path: Path, timeout_seconds: int = 3
     """Verifies every declared case before writing a deterministic readiness report."""
 
     config = json.loads(Path(config_path).read_text(encoding="utf-8"))
-    cases = config.get("cases")
-    if not isinstance(cases, list) or len(cases) != 20:
-        raise ReadinessError("coding benchmark config must contain exactly 20 cases")
-    ids = [str(case.get("caseId", "")) for case in cases if isinstance(case, dict)]
-    if len(ids) != 20 or len(set(ids)) != 20:
-        raise ReadinessError("coding benchmark case IDs must be unique")
+    cases = validate_benchmark_config(config)
     root = Path(config.get("repositoryRoot", Path(config_path).parent)).resolve()
     results = [verify_case(case, root, timeout_seconds) for case in cases]
     report = {
