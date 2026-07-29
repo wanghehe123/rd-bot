@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -15,6 +16,8 @@ from typing import Iterable
 
 
 COLLECTED_TEST_IDS_PREFIX = "RD_EVAL_COLLECTED_TEST_IDS="
+_RESULT_PARSERS = frozenset({"DECLARED_IDS", "GRADLE_TASKS"})
+_GRADLE_SUCCESS_TASK = re.compile(r"^> Task :([^\s]+?)(?:\s+(?:UP-TO-DATE|FROM-CACHE))?$")
 
 
 @dataclass(frozen=True)
@@ -49,9 +52,31 @@ def verify_result(
     missing = tuple(test_id for test_id, count in counts.items() if count == 0)
     duplicate = tuple(test_id for test_id, count in counts.items() if count > 1)
     unexpected = tuple(sorted(set(collected).difference(expected)))
-    skipped = " skipped" in test_output.lower() or "skipped " in test_output.lower()
-    verdict = "PASS" if not (missing or duplicate or unexpected or skipped or exit_code != 0) else "TEST_FAIL"
+    # A full build can legitimately skip unrelated tasks (for example Gradle's
+    # retryTest). An expected task that is skipped is absent from collection and
+    # already fails through ``missing``; unrelated skips must not contaminate
+    # the case verdict.
+    skipped = False
+    verdict = "PASS" if not (missing or duplicate or unexpected or exit_code != 0) else "TEST_FAIL"
     return OracleResult(verdict, missing, duplicate, unexpected, skipped, exit_code)
+
+
+def collect_gradle_task_ids(test_output: str) -> tuple[str, ...]:
+    """Extract only successful Gradle task IDs from a frozen Oracle command's output."""
+
+    collected: list[str] = []
+    for line in test_output.splitlines():
+        matched = _GRADLE_SUCCESS_TASK.match(line.strip())
+        if matched:
+            collected.append(matched.group(1))
+    return tuple(collected)
+
+
+def _result_parser(value: str) -> str:
+    parser = str(value or "").strip().upper()
+    if parser not in _RESULT_PARSERS:
+        raise OracleContractError("Oracle result parser is unsupported")
+    return parser
 
 
 def run_oracle(
@@ -65,11 +90,13 @@ def run_oracle(
     expected_test_ids: Iterable[str],
     network_mode: str,
     integrity_paths: Iterable[str] = (),
+    result_parser: str = "DECLARED_IDS",
 ) -> OracleResult:
     """Applies only the candidate patch, then injects one protected test representation offline."""
 
     if network_mode != "none":
         raise OracleContractError("oracle network mode must be none")
+    parser = _result_parser(result_parser)
     repository = Path(verifier_repository).resolve()
     if not repository.is_dir():
         raise OracleContractError("verifier repository does not exist")
@@ -131,7 +158,15 @@ def run_oracle(
         if injected.returncode != 0:
             raise OracleContractError(f"protected runtime test patch cannot be applied: {injected.stderr.strip()}")
     completed = subprocess.run(command, cwd=repository, check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    result = verify_result(test_output=completed.stdout, expected_test_ids=expected_test_ids, exit_code=completed.returncode)
+    test_output = completed.stdout
+    if parser == "GRADLE_TASKS":
+        # Only the Oracle parser may emit collection evidence in this mode. A
+        # candidate-controlled test log cannot claim that a withheld task ran.
+        test_output = "\n".join(
+            line for line in test_output.splitlines() if not line.startswith(COLLECTED_TEST_IDS_PREFIX)
+        )
+        test_output += "\n" + COLLECTED_TEST_IDS_PREFIX + json.dumps(list(collect_gradle_task_ids(test_output)))
+    result = verify_result(test_output=test_output, expected_test_ids=expected_test_ids, exit_code=completed.returncode)
     if bundle is not None and source_hashes["protectedBundle"] != _tree_sha256(bundle):
         raise OracleContractError("protected test bundle changed during oracle execution")
     if runtime_patch is not None and source_hashes["protectedTestPatch"] != _path_sha256(runtime_patch):
@@ -214,6 +249,7 @@ def main() -> int:
     parser.add_argument("--expected-test-id", action="append", required=True)
     parser.add_argument("--command-json", required=True, help="JSON argv list; shell strings are not accepted.")
     parser.add_argument("--network-mode", required=True)
+    parser.add_argument("--result-parser", default="DECLARED_IDS")
     parser.add_argument("--integrity-path", action="append", default=[])
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
@@ -233,6 +269,7 @@ def main() -> int:
         expected_test_ids=args.expected_test_id,
         network_mode=args.network_mode,
         integrity_paths=args.integrity_path,
+        result_parser=args.result_parser,
     )
     output = Path(args.output).resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
