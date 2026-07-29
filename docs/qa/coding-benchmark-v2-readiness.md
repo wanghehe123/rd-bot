@@ -22,7 +22,16 @@ Trial requests.
 - The scorer separates fresh/public/formal slices; it reports Wilson intervals,
   paired score intervals, exact McNemar, Holm exploratory contrasts,
   missing-pair bounds, D/A cost ratios and sentinel flip/reversal evidence.
-- The Python verifier suite passed with 76 tests on 2026-07-30.
+- The Python verifier suite passed with 78 tests on 2026-07-30.
+- Docker Desktop is now available on `linux/arm64`. The two shared thin layers
+  were built from the locally attested Pi base without Docker pulls or package
+  downloads; the immutable build record is
+  [`shared-images-arm64-20260730-v3.json`](../../scripts/evaluation/docker/shared-images-arm64-20260730-v3.json):
+  - Agent: `rd-bot/coding-eval-agent@sha256:41ed60ec907225173b5a72ca6c45845e12d562ee9685d01fc8f7d9dd5868f037`
+  - Oracle: `rd-bot/coding-eval-oracle@sha256:356bf9ba42b5655a3b7858c435ef7ac46fe537e015156552394c0380add31595`
+  The Oracle probe launched from its digest using non-root, read-only and
+  `network=none` constraints. Its inherited Agent bridge is explicitly cleared
+  by the runtime executor before the frozen verifier argv runs.
 
 ## Current external blockers
 
@@ -32,8 +41,9 @@ Trial requests.
 2. The fresh-primary slice cannot be substituted with cached public tasks. The
    readiness validator now requires every fresh case to carry an auditable
    `PRIVATE_TASK` or `POST_CUTOFF_ISSUE` reference.
-3. Docker Desktop's daemon is not running (`docker.sock` unavailable), so no
-   shared image or case-layer digest has been built or attested yet.
+3. Only the two shared layers exist. Each selected case still needs an
+   immutable thin dependency layer, an Oracle bundle and an offline three-pass
+   readiness result before it can enter the snapshot.
 4. The production requirement-stage integration files are currently modified
    in the workspace by a separate change. They have intentionally not been
    overwritten; campaign execution will remain disabled until that change is

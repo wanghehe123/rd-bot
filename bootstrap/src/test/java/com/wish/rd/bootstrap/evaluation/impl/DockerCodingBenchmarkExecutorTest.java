@@ -38,6 +38,9 @@ class DockerCodingBenchmarkExecutorTest {
         assertFalse(oracleCommand.toString().contains(request.agentCache().toString()));
         assertTrue(oracleCommand.toString().contains(request.candidatePatch().toString()));
         assertTrue(oracleCommand.contains("none"));
+        int entrypoint = oracleCommand.indexOf("--entrypoint");
+        assertTrue(entrypoint >= 0);
+        assertEquals("", oracleCommand.get(entrypoint + 1));
     }
 
     @Test

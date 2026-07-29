@@ -149,6 +149,10 @@ public final class DockerCodingBenchmarkExecutor implements CodingBenchmarkExecu
 
     private static List<String> oracleCommand(CodingBenchmarkExecutionRequest request, String suffix) {
         List<String> command = secureRunPrefix("rd-eval-oracle-" + suffix, request.oracleImage(), "none");
+        // The shared lower layer intentionally carries the Agent bridge. Oracle commands are frozen argv values,
+        // so clear that image entrypoint and invoke the verifier executable directly.
+        command.add("--entrypoint");
+        command.add("");
         addWritableMount(command, request.verifierRepository(), "/work/verifier");
         addReadOnlyMount(command, request.candidatePatch(), "/input/candidate.patch");
         addReadOnlyMount(command, request.protectedTestBundle(), "/input/protected-tests");
