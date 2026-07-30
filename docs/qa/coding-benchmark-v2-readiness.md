@@ -153,10 +153,14 @@ ten candidate snapshots were generated from their private prepared base
 repositories only: 40 documents / 10 knowledge manifests, with aggregate
 digest `sha256:d7678f17284dd1b2280cf92c4aa3d90480ae92218cfd0f6891992106707d6ddc`.
 **Note (2026-07-30):** that snapshot set predates the jib replacement, so the
-two jib document bundles are stale. The RAG snapshot must be regenerated for
-the verified v2 selection (and for the ten fresh cases) before the manifest
-freezes; runtime-withheld tests and Gold fixes were never supplied to the
-generator.
+two jib document bundles are stale. A fresh snapshot has since been generated
+for the verified v2 public selection plus the ten fresh cases: 80 documents /
+20 knowledge manifests, aggregate digest
+`sha256:72b10647d9a57aa74818e8cb95e2d3dcec40ad2ab085f00249db2a65e75bf066`,
+zero protected-content leakage hits across all manifests. The documents were
+produced from each case's private prepared base repository only, with the
+Gold and runtime-withheld paths excluded and fingerprint-checked; the files
+are held in the trusted preparation area.
 
 ## Required gate before a real run
 
