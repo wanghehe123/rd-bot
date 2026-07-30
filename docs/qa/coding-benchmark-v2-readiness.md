@@ -30,14 +30,21 @@ Trial requests.
   candidate patch and rejects a candidate that touches any path protected by
   that test patch. This is required by Multi-SWE-bench, whose withheld tests
   often modify existing test files rather than adding a new directory.
-- Ten **candidate** public anchors were selected from the immutable
-  Multi-SWE-bench revision in
-  [`public-anchor-selection-20260730.json`](../../scripts/evaluation/public-anchor-selection-20260730.json).
-  Their complete upstream histories were mirrored only in the trusted temporary
-  preparation area and every candidate was reconstructed at its exact base
-  commit with no remote and no future commit objects. They are deliberately
-  still candidates: their base-only RAG documents and host-only Gold/runtime
-  test-patch assets exist, but no formal Trial has been made from them.
+- Ten public anchors are **verified, no longer candidates**, in
+  [`public-anchor-selection-20260730-v2.json`](../../scripts/evaluation/public-anchor-selection-20260730-v2.json)
+  (supersedes the earlier candidate file). The jib pair was replaced after its
+  Gradle 5.x/6.x wrappers proved incompatible with the frozen Java 17 platform;
+  the jackson-databind replacement candidates failed in turn (unresolvable
+  SNAPSHOT parent, then javac-source-6), so the final Java half is mockito x2 +
+  fastjson2 x2. Each case was reconstructed at its exact base commit with no
+  remote and no future commit objects, its Gold and runtime-withheld patches
+  materialized host-only, and every case then passed a three-round offline
+  (network=none) preflight: base + withheld test patch makes the expected f2p
+  command FAIL, adding the Gold patch makes it PASS, three of three rounds, in
+  the attested images. The environment contract discovered by that preflight
+  (NODE_ENV split install/test, ESM jest flag for grs-3442, UTF-8 locale for
+  Maven, root-scoped test task for mockito-3220, per-instance cache warming) is
+  recorded in the selection file's `preflight.environmentNotes`.
 - Docker Desktop is now available on `linux/arm64`. The two shared thin layers
   were built from the locally attested Pi base without Docker pulls or package
   downloads; the immutable build record is
@@ -102,31 +109,25 @@ Trial requests.
 
 ## Current external blockers
 
-1. The local machine currently has four checked-out **public** SWE-bench Django
-   snapshots (`django-10914`, `10924`, `11001`, `11019`), but none contains the
-   declared upstream base-commit object or its ancestry. They are shallow
-   snapshots, not eligible case repositories; no RAG document, test bundle or
-   dependency image has been generated from them. Each public anchor must be
-   reconstructed from the exact upstream base commit into a private prepared
-   repository first. The separate Multi-SWE candidates now have valid private
-   base histories, but still need all offline and Oracle preflights before they
-   can become a verified 10-public-case manifest. The required 10 fresh cases
-   are still absent.
+1. ~~Public anchors unverified~~ **Resolved on 2026-07-30**: the verified
+   10-case public slice is recorded in `public-anchor-selection-20260730-v2.json`
+   (see the implementation list above). The four stale Django snapshots remain
+   irrelevant to this benchmark.
 2. The fresh-primary slice cannot be substituted with cached public tasks. The
-   readiness validator requires every fresh case to carry an auditable
-   `PRIVATE_TASK` or `POST_CUTOFF_ISSUE` reference. The approved first-round
-   source is `wanghehe123/rd-bot` itself, which is private, was created on
-   2026-07-22, and is Java with a TypeScript frontend, so its history cannot be
-   in any training corpus. All ten fresh cases therefore come from one
-   repository under the explicitly reported exception in design section 3.1.1;
-   the fresh cases are not mutually independent and the fresh D-A conclusion
-   only covers offline repair inside a single Java/TypeScript monolith.
-   Ten cases still have to be selected, frozen and preflighted.
-3. The Node, Oracle and reusable Java layers exist, but each selected case
-   still needs an immutable cache artifact, its frozen parser/Oracle command,
-   and an offline three-pass readiness result before it can enter the snapshot.
-   The first Mockito cache is only a proof of the process, not a completed
-   public slice.
+   approved first-round source is `wanghehe123/rd-bot` itself (private, created
+   2026-07-22, Java + TypeScript frontend, so its history cannot be in any
+   training corpus); all ten fresh cases come from one repository under the
+   explicitly reported exception in design section 3.1.1. The ten-case fresh
+   selection is now **frozen** in
+   [`fresh-selection-20260730.json`](../../scripts/evaluation/fresh-selection-20260730.json)
+   (seed 20260730, Java 8 / TS-JS 2, EASY 2 / MEDIUM 5 / HARD 3, every case
+   CLEAN under the leakage audit with a `PRIVATE_TASK` freshness reference).
+   What remains for the fresh slice is its dependency-cache capture, the
+   offline three-round BASE/TEST/FIX preflight, and the base-only RAG
+   documents.
+3. ~~Case cache artifacts and offline preflights absent~~ **Resolved for the
+   public slice on 2026-07-30** (see above). The fresh slice still needs the
+   same treatment before it can enter the snapshot.
 4. The production requirement-stage integration files are currently modified
    in the workspace by a separate change. They have intentionally not been
    overwritten; campaign execution will remain disabled until that change is
@@ -145,9 +146,11 @@ preflight, its four base-only RAG documents are generated and frozen. The first
 ten candidate snapshots were generated from their private prepared base
 repositories only: 40 documents / 10 knowledge manifests, with aggregate
 digest `sha256:d7678f17284dd1b2280cf92c4aa3d90480ae92218cfd0f6891992106707d6ddc`.
-The files are held in the trusted preparation area (not in the agent worktree),
-and this is readiness evidence rather than a formal snapshot: runtime-withheld
-tests and Gold fixes were never supplied to the generator.
+**Note (2026-07-30):** that snapshot set predates the jib replacement, so the
+two jib document bundles are stale. The RAG snapshot must be regenerated for
+the verified v2 selection (and for the ten fresh cases) before the manifest
+freezes; runtime-withheld tests and Gold fixes were never supplied to the
+generator.
 
 ## Required gate before a real run
 
