@@ -30,6 +30,34 @@ class BuildJavaToolchainImageTest(unittest.TestCase):
         with self.assertRaisesRegex(BuildError, "linux/arm64 or linux/amd64"):
             build_plan("darwin/arm64", "rd-bot/pi-agent@sha256:" + "a" * 64, "v1")
 
+    def test_plan_builds_a_java21_layer_from_a_pinned_temurin_tarball(self) -> None:
+        plan = build_plan(
+            "linux/arm64",
+            "rd-bot/pi-agent@sha256:" + "a" * 64,
+            "20260730-java21-v1",
+            toolchain="java21",
+            image_repository="rd-bot/coding-eval-java21",
+        )
+
+        self.assertIn("OpenJDK21U-jdk_aarch64_linux_hotspot_21.0.12_8.tar.gz", plan["installCommandText"])
+        self.assertIn("eba38e871b02d407897bfe017ea35352dfc1420ef6d2112425b0c67325ca509d", plan["installCommandText"])
+        self.assertIn("sha256sum -c", plan["installCommandText"])
+        self.assertIn("maven", plan["installCommandText"])
+        self.assertNotIn("openjdk-17-jdk", plan["installCommandText"])
+        commit_env = " ".join(plan["commitCommand"])
+        self.assertIn("JAVA_HOME=/opt/jdk-21", commit_env)
+        self.assertIn("/opt/jdk-21/bin", commit_env)
+        self.assertIn("rd.evaluation.toolchain=java21", commit_env)
+
+    def test_plan_rejects_an_unknown_toolchain(self) -> None:
+        with self.assertRaisesRegex(BuildError, "toolchain must be one of"):
+            build_plan(
+                "linux/arm64",
+                "rd-bot/pi-agent@sha256:" + "a" * 64,
+                "v1",
+                toolchain="java25",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

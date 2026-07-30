@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build one reusable Java 17 benchmark layer before any offline Trial starts."""
+"""Build one reusable Java benchmark toolchain layer before any offline Trial starts."""
 
 from __future__ import annotations
 
@@ -19,11 +19,40 @@ _DIGEST = re.compile(r"sha256:[a-f0-9]{64}$")
 _BASE_IMAGE = re.compile(r"[a-z0-9][a-z0-9._/-]*@sha256:[a-f0-9]{64}$")
 _TAG = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}$")
 
-_INSTALL = (
+_INSTALL_JAVA17 = (
     "set -eu; export DEBIAN_FRONTEND=noninteractive; apt-get update; "
     "apt-get install -y --no-install-recommends openjdk-17-jdk maven; "
     "rm -rf /var/lib/apt/lists/*"
 )
+
+_TEMURIN21_URL = (
+    "https://github.com/adoptium/temurin21-binaries/releases/download/"
+    "jdk-21.0.12%2B8/OpenJDK21U-jdk_aarch64_linux_hotspot_21.0.12_8.tar.gz"
+)
+_TEMURIN21_SHA256 = "eba38e871b02d407897bfe017ea35352dfc1420ef6d2112425b0c67325ca509d"
+
+_INSTALL_JAVA21 = (
+    "set -eu; export DEBIAN_FRONTEND=noninteractive; apt-get update; "
+    "apt-get install -y --no-install-recommends maven curl ca-certificates; "
+    "rm -rf /var/lib/apt/lists/*; "
+    f"curl -fsSL '{_TEMURIN21_URL}' -o /tmp/jdk21.tar.gz; "
+    f"echo '{_TEMURIN21_SHA256}  /tmp/jdk21.tar.gz' | sha256sum -c -; "
+    "mkdir -p /opt/jdk-21; tar -xzf /tmp/jdk21.tar.gz -C /opt/jdk-21 --strip-components=1; "
+    "rm -f /tmp/jdk21.tar.gz; /opt/jdk-21/bin/java -version"
+)
+
+_TOOLCHAINS = {
+    "java17": {
+        "install": _INSTALL_JAVA17,
+        "env": "RD_EVAL_OFFLINE=1 PIP_NO_INDEX=1 PIP_DISABLE_PIP_VERSION_CHECK=1 npm_config_offline=true YARN_ENABLE_NETWORK=0",
+        "reportName": "JAVA_17_MAVEN",
+    },
+    "java21": {
+        "install": _INSTALL_JAVA21,
+        "env": "RD_EVAL_OFFLINE=1 PIP_NO_INDEX=1 PIP_DISABLE_PIP_VERSION_CHECK=1 npm_config_offline=true YARN_ENABLE_NETWORK=0 JAVA_HOME=/opt/jdk-21 PATH=/opt/jdk-21/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "reportName": "JAVA_21_MAVEN",
+    },
+}
 
 
 def build_plan(
@@ -33,6 +62,7 @@ def build_plan(
     *,
     local_base_tag: str = "rd-bot/pi-agent:local",
     image_repository: str = "rd-bot/coding-eval-java17",
+    toolchain: str = "java17",
 ) -> dict[str, Any]:
     """Return a fixed prebuild plan; no agent or Oracle invokes its install shell."""
 
@@ -51,25 +81,30 @@ def build_plan(
     safe_repository = str(image_repository or "").strip().lower().rstrip("/")
     if not re.fullmatch(r"[a-z0-9][a-z0-9._/-]*", safe_repository):
         raise BuildError("image repository contains unsupported characters")
-    container_name = "rd-eval-build-java17-" + safe_tag.lower()
+    safe_toolchain = str(toolchain or "").strip().lower()
+    if safe_toolchain not in _TOOLCHAINS:
+        raise BuildError("toolchain must be one of: " + ", ".join(sorted(_TOOLCHAINS)))
+    spec = _TOOLCHAINS[safe_toolchain]
+    container_name = "rd-eval-build-" + safe_toolchain + "-" + safe_tag.lower()
     image_tag = safe_repository + ":" + safe_tag
+    toolchain_label = "rd.evaluation.toolchain=" + safe_toolchain
     return {
         "platform": safe_platform,
         "baseImage": safe_base,
         "tag": image_tag,
         "buildMode": "local-content-addressed",
         "buildPullPolicy": "never",
-        "installCommandText": _INSTALL,
+        "installCommandText": spec["install"],
         "createCommand": [
             "docker", "create", "--name", container_name, "--user", "0:0", "--entrypoint", "/bin/sh",
-            "--label", "rd.evaluation.kind=coding-benchmark", "--label", "rd.evaluation.toolchain=java17",
-            safe_local_base, "-c", _INSTALL,
+            "--label", "rd.evaluation.kind=coding-benchmark", "--label", toolchain_label,
+            safe_local_base, "-c", spec["install"],
         ],
         "installCommand": ["docker", "start", "-a", container_name],
         "commitCommand": [
             "docker", "commit",
-            "--change", "ENV RD_EVAL_OFFLINE=1 PIP_NO_INDEX=1 PIP_DISABLE_PIP_VERSION_CHECK=1 npm_config_offline=true YARN_ENABLE_NETWORK=0",
-            "--change", "LABEL rd.evaluation.kind=coding-benchmark rd.evaluation.toolchain=java17",
+            "--change", "ENV " + spec["env"],
+            "--change", "LABEL rd.evaluation.kind=coding-benchmark " + toolchain_label,
             container_name, image_tag,
         ],
         "cleanupCommand": ["docker", "rm", container_name],
@@ -104,7 +139,7 @@ def _verify_local_base(local_base_tag: str, base_image: str, platform: str) -> N
         raise BuildError(f"local base platform {actual_platform} does not match frozen platform {platform}")
 
 
-def build_java17_image(
+def build_java_toolchain_image(
     platform: str,
     base_image: str,
     tag: str,
@@ -112,10 +147,12 @@ def build_java17_image(
     *,
     local_base_tag: str = "rd-bot/pi-agent:local",
     image_repository: str = "rd-bot/coding-eval-java17",
+    toolchain: str = "java17",
 ) -> dict[str, Any]:
     """Install Java only during preparation, then attest a reusable immutable local layer."""
 
-    plan = build_plan(platform, base_image, tag, local_base_tag=local_base_tag, image_repository=image_repository)
+    plan = build_plan(platform, base_image, tag, local_base_tag=local_base_tag,
+                      image_repository=image_repository, toolchain=toolchain)
     _verify_local_base(local_base_tag, plan["baseImage"], plan["platform"])
     created = False
     try:
@@ -136,7 +173,8 @@ def build_java17_image(
         "buildMode": plan["buildMode"],
         "buildPullPolicy": plan["buildPullPolicy"],
         "baseImage": plan["baseImage"],
-        "image": {"tag": plan["tag"], "imageId": image_id, "reference": reference, "toolchain": "JAVA_17_MAVEN"},
+        "image": {"tag": plan["tag"], "imageId": image_id, "reference": reference,
+                  "toolchain": _TOOLCHAINS[str(toolchain).strip().lower()]["reportName"]},
     }
     destination = Path(output_path).resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -145,17 +183,19 @@ def build_java17_image(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Build an immutable Java 17 coding benchmark toolchain image.")
+    parser = argparse.ArgumentParser(description="Build an immutable Java coding benchmark toolchain image.")
     parser.add_argument("--platform", default="linux/arm64")
     parser.add_argument("--base-image", default="rd-bot/pi-agent@sha256:07dcbd9d3f1603c4fd71e1e4802568edaf16a5f5a59c9ad111407a53e8616d9a")
     parser.add_argument("--tag", default="20260730-java17-v1")
     parser.add_argument("--local-base-tag", default="rd-bot/pi-agent:local")
     parser.add_argument("--image-repository", default="rd-bot/coding-eval-java17")
+    parser.add_argument("--toolchain", default="java17", choices=sorted(_TOOLCHAINS))
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
-    build_java17_image(
+    build_java_toolchain_image(
         args.platform, args.base_image, args.tag, Path(args.output),
         local_base_tag=args.local_base_tag, image_repository=args.image_repository,
+        toolchain=args.toolchain,
     )
     return 0
 
