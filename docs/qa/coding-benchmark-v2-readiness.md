@@ -162,6 +162,24 @@ produced from each case's private prepared base repository only, with the
 Gold and runtime-withheld paths excluded and fingerprint-checked; the files
 are held in the trusted preparation area.
 
+## Frozen formal snapshot (2026-07-30)
+
+The 20 verified cases, three attested images, the frozen knowledge snapshot and
+the pre-registered analysis plan are now frozen as one content-addressed
+snapshot directory by `scripts/evaluation/rd_eval_freeze_snapshot_manifest.py`:
+
+- snapshot id `20260730-coding-v2`, snapshot digest
+  `sha256:ad4b55a9cfdbab22915c867c164bd2dc9d3cdf1361d08937c601e6403b5fe5b4`
+- six manifests (dataset / environment / knowledge / analysis-plan /
+  readiness / provenance) sharing that digest, with per-manifest SHA-256
+  hashes recorded in `benchmark-provenance.json`
+- the analysis plan (`scripts/evaluation/analysis-plan-20260730.json`)
+  pre-registers the four arms, the confirmatory `D-A` contrast, four stratified
+  sentinel cases, balanced `ABCD/BCDA/CDAB/DABC` sequences, seed `20260730`,
+  missing-data rules, statistics and the expand decision thresholds
+- the real `FileSystemCodingBenchmarkCatalog` discovers the snapshot and
+  reports 20 cases; tampering with any manifest makes it disappear
+
 ## Required gate before a real run
 
 1. Select and freeze 10 public anchors and 10 fresh-primary cases, each with a

@@ -1,0 +1,75 @@
+{
+  "schemaVersion": "rd-eval-analysis-plan-v1",
+  "snapshotId": "20260730-coding-v2",
+  "preRegistered": true,
+  "frozenBeforeFirstTrial": true,
+  "arms": {
+    "A": {"description": "single coding role baseline; no decomposition review, no RAG, no QA loop"},
+    "B": {"description": "A + requirement review and architecture decomposition"},
+    "C": {"description": "B + role-level RAG over the frozen knowledge snapshot"},
+    "D": {"description": "C + QA stage with exactly one repair loop"}
+  },
+  "contrasts": [
+    {"id": "B-A", "measures": "review/architecture decomposition gain"},
+    {"id": "C-B", "measures": "role-level RAG gain"},
+    {"id": "D-C", "measures": "QA + single repair loop gain"},
+    {"id": "D-A", "measures": "total orchestration gain", "confirmatory": true}
+  ],
+  "confirmatoryContrast": {
+    "id": "D-A",
+    "primarySlice": "FRESH_PRIMARY",
+    "sensitivitySlice": "ALL_20",
+    "metric": "Resolved@1"
+  },
+  "scoring": {
+    "primary": "deterministic oracle test (withheld tests)",
+    "judgeMayOverrideOracle": false,
+    "firstAttemptOnly": true,
+    "bestOfSampling": false
+  },
+  "trials": {
+    "firstAttempt": {"count": 80, "replicateNo": 0, "scoring": "@1"},
+    "sentinelStability": {
+      "count": 8,
+      "replicateNo": 1,
+      "armsPerCase": ["A", "D"],
+      "reportOnly": ["flip rate per arm", "FAIL->PASS / PASS->FAIL direction", "whether D-A direction reverses"],
+      "freshWorkspacePerReplicate": true,
+      "neverReplacesFirstAttempt": true
+    }
+  },
+  "sentinelCaseIds": [
+    "rd-bot--f7cd4fcd5a",
+    "rd-bot--9289598be2",
+    "mockito__mockito-3133",
+    "iamkun__dayjs-857"
+  ],
+  "sentinelStratification": "2 fresh (JAVA MEDIUM + TSJS) + 2 public (Java HARD + JS EASY)",
+  "scheduling": {
+    "balancedSequences": ["ABCD", "BCDA", "CDAB", "DABC"],
+    "casesPerSequence": 5,
+    "maxParallelism": 4
+  },
+  "randomSeed": 20260730,
+  "missingData": {
+    "scorableAttempt": "count as FAIL for Resolved@1",
+    "infraFailure": "excluded from pairwise counts but reported separately",
+    "sensitivityBounds": "report best-case/worst-case paired bounds when a pair has a missing leg"
+  },
+  "statistics": {
+    "perArm": "Wilson 95% CI on Resolved@1, reported per slice and overall",
+    "paired": "paired bootstrap percentile interval on contrast differences",
+    "significance": "exact McNemar on discordant pairs",
+    "multiplicity": "Holm correction across the four contrasts"
+  },
+  "costAccounting": {
+    "report": ["tokens per arm", "wall time per arm", "container seconds"],
+    "contrast": "D/A cost ratio must accompany any D-A gain claim"
+  },
+  "decisionThresholds": {
+    "expand": "D-A fresh paired CI lower bound > 0 AND exact McNemar p < 0.05 AND missing-data sensitivity does not change the category AND sentinel re-runs do not reverse the D-A direction",
+    "strong": "expand threshold met with fresh paired CI lower bound > 0",
+    "weak": "direction positive but thresholds not met",
+    "noEvidence": "otherwise"
+  }
+}
