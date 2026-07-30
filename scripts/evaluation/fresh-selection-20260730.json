@@ -162,5 +162,21 @@
     "TSJS": 2
   },
   "schemaVersion": "rd-eval-fresh-selection-v1",
-  "seed": 20260730
+  "seed": 20260730,
+  "selectionStatus": "VERIFIED_THREE_ROUND_OFFLINE",
+  "preflight": {
+    "evidenceRef": "public-prep/preflight-results.jsonl",
+    "rounds": 3,
+    "network": "none",
+    "phases": [
+      "TEST(expect-fail)",
+      "FIX(expect-pass)"
+    ],
+    "completedAt": "2026-07-30T06:12Z",
+    "environmentNotes": [
+      "JAVA cases run on the attested java21 layer rd-bot/coding-eval-java21@sha256:024fe12a2a66241d5ee8971da22c3c2dd4c658ef8ec84bcb1761bd5a5a3dc372 (project targets release 21).",
+      "Maven runs use -pl <module> -am so sibling module sources are rebuilt from the case base inside the reactor (installed SNAPSHOT jars from a different commit would drift); -Dsurefire.failIfNoSpecifiedTests=false lets non-target modules skip, and every FIX round is accepted only when the log proves at least one test ran.",
+      "TSJS cases run with node --experimental-strip-types --test (node:test runner, no extra framework); frontend deps installed offline from the warmed npm cache via npm ci."
+    ]
+  }
 }

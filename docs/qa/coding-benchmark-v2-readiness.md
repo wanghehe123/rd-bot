@@ -122,12 +122,18 @@ Trial requests.
    [`fresh-selection-20260730.json`](../../scripts/evaluation/fresh-selection-20260730.json)
    (seed 20260730, Java 8 / TS-JS 2, EASY 2 / MEDIUM 5 / HARD 3, every case
    CLEAN under the leakage audit with a `PRIVATE_TASK` freshness reference).
-   What remains for the fresh slice is its dependency-cache capture, the
-   offline three-round BASE/TEST/FIX preflight, and the base-only RAG
-   documents.
-3. ~~Case cache artifacts and offline preflights absent~~ **Resolved for the
-   public slice on 2026-07-30** (see above). The fresh slice still needs the
-   same treatment before it can enter the snapshot.
+   The fresh slice is now **verified too (2026-07-30)**: every case passed
+   the same three-round network=none TEST(expect-fail) / FIX(expect-pass)
+   preflight as the public slice, recorded in the selection file. The JAVA
+   cases run on the new attested java21 layer
+   ([`java21-arm64-20260730-v1.json`](../../scripts/evaluation/docker/java21-arm64-20260730-v1.json),
+   `rd-bot/coding-eval-java21@sha256:024fe12a2a...`) because the project
+   targets release 21; Maven runs rebuild sibling modules from the case base
+   inside the reactor to avoid SNAPSHOT jar drift across commits, and each FIX
+   round is accepted only when its log proves at least one test executed.
+   What remains for the fresh slice is only its base-only RAG documents.
+3. ~~Case cache artifacts and offline preflights absent~~ **Resolved on
+   2026-07-30** for both slices (see above).
 4. The production requirement-stage integration files are currently modified
    in the workspace by a separate change. They have intentionally not been
    overwritten; campaign execution will remain disabled until that change is
