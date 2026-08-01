@@ -139,6 +139,36 @@ public class PostgresEvaluationRunStore implements EvaluationRunStore {
 
     @Override
     @Transactional
+    public EvaluationRun updateSampleProgress(
+            String runId,
+            int sampleCount,
+            int passedSampleCount,
+            int failedSampleCount,
+            long now
+    ) {
+        EvaluationRun current = require(runId);
+        EvaluationRun updated = current.withTrialSampleProgress(sampleCount, passedSampleCount, failedSampleCount, now);
+        compareAndSet(current, updated);
+        return updated;
+    }
+
+    @Override
+    @Transactional
+    public EvaluationRun setDispatchPaused(String runId, boolean paused, long expectedVersion, long now) {
+        EvaluationRun current = require(runId);
+        if (current.version() != expectedVersion) {
+            throw new IllegalStateException("evaluation version conflict: " + runId);
+        }
+        if (current.status().isTerminal()) {
+            throw new IllegalStateException("terminal evaluation run is immutable: " + runId);
+        }
+        EvaluationRun updated = current.withDispatchPaused(paused, now);
+        compareAndSet(current, updated);
+        return updated;
+    }
+
+    @Override
+    @Transactional
     public void appendArtifacts(String runId, List<EvaluationArtifact> artifacts) {
         require(runId);
         for (EvaluationArtifact artifact : artifacts == null ? List.<EvaluationArtifact>of() : artifacts) {
@@ -230,6 +260,7 @@ public class PostgresEvaluationRunStore implements EvaluationRunStore {
         row.metricsJson = validJson(run.metricsJson(), "[]");
         row.errorCategory = run.errorCategory();
         row.errorMessage = run.errorMessage();
+        row.dispatchPaused = run.dispatchPaused();
         row.version = run.version();
         row.createdAt = PostgresPersistenceSupport.toDateTime(run.createdAtEpochMillis());
         row.startedAt = PostgresPersistenceSupport.nullableDateTime(run.startedAtEpochMillis());
@@ -248,7 +279,8 @@ public class PostgresEvaluationRunStore implements EvaluationRunStore {
                 value(row.progressPercent, 0), readConfig(row.configJson),
                 value(row.sampleCount, 0), value(row.passedSampleCount, 0), value(row.failedSampleCount, 0),
                 Boolean.TRUE.equals(row.overallPassed), validJson(row.metricsJson, "[]"),
-                safe(row.errorCategory), safe(row.errorMessage), row.version == null ? 0L : row.version,
+                safe(row.errorCategory), safe(row.errorMessage), Boolean.TRUE.equals(row.dispatchPaused),
+                row.version == null ? 0L : row.version,
                 PostgresPersistenceSupport.toEpochMillis(row.createdAt),
                 PostgresPersistenceSupport.toEpochMillis(row.startedAt),
                 PostgresPersistenceSupport.toEpochMillis(row.finishedAt),

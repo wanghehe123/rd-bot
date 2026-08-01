@@ -21,12 +21,12 @@ public interface EvaluationRunMapper extends BaseMapper<EvaluationRunRow> {
             INSERT INTO rd_evaluation_runs (
                 id, name, attempt_no, parent_run_id, status, phase_message, progress_percent,
                 config_json, sample_count, passed_sample_count, failed_sample_count, overall_passed,
-                metrics_json, error_category, error_message, version,
+                metrics_json, error_category, error_message, dispatch_paused, version,
                 created_at, started_at, finished_at, updated_at
             ) VALUES (
                 #{id}, #{name}, #{attemptNo}, #{parentRunId}, #{status}, #{phaseMessage}, #{progressPercent},
                 #{configJson}::jsonb, #{sampleCount}, #{passedSampleCount}, #{failedSampleCount}, #{overallPassed},
-                #{metricsJson}::jsonb, #{errorCategory}, #{errorMessage}, #{version},
+                #{metricsJson}::jsonb, #{errorCategory}, #{errorMessage}, #{dispatchPaused}, #{version},
                 #{createdAt}, #{startedAt}, #{finishedAt}, #{updatedAt}
             )
             """)
@@ -39,7 +39,8 @@ public interface EvaluationRunMapper extends BaseMapper<EvaluationRunRow> {
                    sample_count = #{sampleCount}, passed_sample_count = #{passedSampleCount},
                    failed_sample_count = #{failedSampleCount}, overall_passed = #{overallPassed},
                    metrics_json = #{metricsJson}::jsonb,
-                   error_category = #{errorCategory}, error_message = #{errorMessage}, version = #{version},
+                   error_category = #{errorCategory}, error_message = #{errorMessage},
+                   dispatch_paused = #{dispatchPaused}, version = #{version},
                    started_at = #{startedAt}, finished_at = #{finishedAt}, updated_at = #{updatedAt}
              WHERE id = #{id} AND status = #{expectedStatus} AND version = #{expectedVersion}
             """)

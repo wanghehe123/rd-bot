@@ -26,12 +26,22 @@ public interface CodingBenchmarkTrialMapper extends BaseMapper<CodingBenchmarkTr
     void insertTrial(CodingBenchmarkTrialRow row);
 
     @Select("""
-            WITH candidate AS (
+            WITH active_cases AS (
+                SELECT DISTINCT case_id
+                  FROM rd_evaluation_trials
+                 WHERE campaign_id = #{campaignId}
+                   AND (
+                        status IN ('RUNNING_AGENTS', 'RUNNING_ORACLE')
+                        OR (status = 'PREPARING' AND lease_expires_at > #{now})
+                   )
+            ),
+            candidate AS (
                 SELECT id, status AS previous_status
                   FROM rd_evaluation_trials
                  WHERE campaign_id = #{campaignId}
                    AND (status = 'QUEUED'
                         OR (status = 'PREPARING' AND lease_expires_at <= #{now}))
+                   AND case_id NOT IN (SELECT case_id FROM active_cases)
                  ORDER BY created_at, id
                  FOR UPDATE SKIP LOCKED
                  LIMIT 1

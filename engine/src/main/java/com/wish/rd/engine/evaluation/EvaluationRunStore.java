@@ -41,6 +41,35 @@ public interface EvaluationRunStore {
 
     EvaluationRun complete(String runId, EvaluationRunStatus expected, EvaluationExecutionResult result, long now);
 
+    /**
+     * Persists refreshed trial sample counters without changing run status.
+     *
+     * @param runId parent evaluation run identifier
+     * @param sampleCount total terminal trials counted toward progress
+     * @param passedSampleCount trials that reached {@code SUCCEEDED}
+     * @param failedSampleCount trials that reached {@code FAILED} or {@code CANCELLED}
+     * @param now update timestamp (epoch millis)
+     * @return the updated run snapshot
+     */
+    EvaluationRun updateSampleProgress(
+            String runId,
+            int sampleCount,
+            int passedSampleCount,
+            int failedSampleCount,
+            long now
+    );
+
+    /**
+     * Persists the dispatch-pause flag without changing run status.
+     *
+     * @param runId parent evaluation run identifier
+     * @param paused true to block new trial claims, false to resume dispatch
+     * @param expectedVersion optimistic-lock version that must match the loaded snapshot
+     * @param now update timestamp (epoch millis)
+     * @return the updated run snapshot
+     */
+    EvaluationRun setDispatchPaused(String runId, boolean paused, long expectedVersion, long now);
+
     void appendArtifacts(String runId, List<EvaluationArtifact> artifacts);
 
     List<EvaluationRunEvent> listEvents(String runId);

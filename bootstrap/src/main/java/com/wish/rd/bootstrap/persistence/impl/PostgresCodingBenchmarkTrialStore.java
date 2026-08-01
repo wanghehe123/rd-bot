@@ -29,7 +29,7 @@ import java.util.Optional;
  */
 @Component
 @ConditionalOnProperty(name = "rd.knowledge.store", havingValue = "postgres")
-public final class PostgresCodingBenchmarkTrialStore implements CodingBenchmarkTrialStore {
+public class PostgresCodingBenchmarkTrialStore implements CodingBenchmarkTrialStore {
     private final CodingBenchmarkTrialMapper trialMapper;
     private final CodingBenchmarkTrialEventMapper eventMapper;
     private final SnowflakeIdGenerator idGenerator;

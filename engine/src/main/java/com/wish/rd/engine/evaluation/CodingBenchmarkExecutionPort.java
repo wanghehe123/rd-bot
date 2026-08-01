@@ -7,6 +7,25 @@ import com.wish.rd.engine.evaluation.model.CodingBenchmarkExecutionResult;
 @FunctionalInterface
 public interface CodingBenchmarkExecutionPort {
 
-    /** @return container exit state and runtime attestation without exposing secret relay credentials. */
-    CodingBenchmarkExecutionResult execute(CodingBenchmarkExecutionRequest request);
+    /**
+     * Runs the trial without observing the oracle phase boundary.
+     *
+     * @param request prepared trial workspace and image contract
+     * @return container exit state and runtime attestation without exposing secret relay credentials.
+     */
+    default CodingBenchmarkExecutionResult execute(CodingBenchmarkExecutionRequest request) {
+        return execute(request, CodingBenchmarkExecutionHooks.noop());
+    }
+
+    /**
+     * Runs the trial and reports the agent-to-oracle boundary so the caller can throttle oracle work.
+     *
+     * @param request prepared trial workspace and image contract
+     * @param hooks phase callbacks; {@link CodingBenchmarkExecutionHooks#beforeOracle()} is invoked only
+     *              when agent work succeeded and oracle work is about to start
+     * @return container exit state and runtime attestation without exposing secret relay credentials.
+     */
+    CodingBenchmarkExecutionResult execute(
+            CodingBenchmarkExecutionRequest request,
+            CodingBenchmarkExecutionHooks hooks);
 }

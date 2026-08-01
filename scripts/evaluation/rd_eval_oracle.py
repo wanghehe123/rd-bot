@@ -16,7 +16,7 @@ from typing import Iterable
 
 
 COLLECTED_TEST_IDS_PREFIX = "RD_EVAL_COLLECTED_TEST_IDS="
-_RESULT_PARSERS = frozenset({"DECLARED_IDS", "GRADLE_TASKS"})
+_RESULT_PARSERS = frozenset({"DECLARED_IDS", "GRADLE_TASKS", "EXPECTED_IDS"})
 _GRADLE_SUCCESS_TASK = re.compile(r"^> Task :([^\s]+?)(?:\s+(?:UP-TO-DATE|FROM-CACHE))?$")
 
 
@@ -166,6 +166,15 @@ def run_oracle(
             line for line in test_output.splitlines() if not line.startswith(COLLECTED_TEST_IDS_PREFIX)
         )
         test_output += "\n" + COLLECTED_TEST_IDS_PREFIX + json.dumps(list(collect_gradle_task_ids(test_output)))
+    elif parser == "EXPECTED_IDS":
+        # Maven/npm harnesses do not emit RD_EVAL_COLLECTED_TEST_IDS. When the
+        # host rewrote -Dtest= (or equivalent) to the contract's failToPass IDs,
+        # treat those IDs as the collection evidence and score on exit code.
+        expected = [str(value).strip() for value in expected_test_ids if str(value).strip()]
+        test_output = "\n".join(
+            line for line in test_output.splitlines() if not line.startswith(COLLECTED_TEST_IDS_PREFIX)
+        )
+        test_output += "\n" + COLLECTED_TEST_IDS_PREFIX + json.dumps(expected)
     result = verify_result(test_output=test_output, expected_test_ids=expected_test_ids, exit_code=completed.returncode)
     if bundle is not None and source_hashes["protectedBundle"] != _tree_sha256(bundle):
         raise OracleContractError("protected test bundle changed during oracle execution")

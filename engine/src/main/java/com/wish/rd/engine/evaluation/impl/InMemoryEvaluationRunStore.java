@@ -90,6 +90,44 @@ public final class InMemoryEvaluationRunStore implements EvaluationRunStore {
     }
 
     @Override
+    public EvaluationRun updateSampleProgress(
+            String runId,
+            int sampleCount,
+            int passedSampleCount,
+            int failedSampleCount,
+            long now
+    ) {
+        EvaluationRun[] updated = new EvaluationRun[1];
+        runs.compute(runId, (ignored, current) -> {
+            if (current == null) {
+                throw new NoSuchElementException("evaluation run not found: " + runId);
+            }
+            updated[0] = current.withTrialSampleProgress(sampleCount, passedSampleCount, failedSampleCount, now);
+            return updated[0];
+        });
+        return updated[0];
+    }
+
+    @Override
+    public EvaluationRun setDispatchPaused(String runId, boolean paused, long expectedVersion, long now) {
+        EvaluationRun[] updated = new EvaluationRun[1];
+        runs.compute(runId, (ignored, current) -> {
+            if (current == null) {
+                throw new NoSuchElementException("evaluation run not found: " + runId);
+            }
+            if (current.version() != expectedVersion) {
+                throw new IllegalStateException("evaluation version conflict: " + runId);
+            }
+            if (current.status().isTerminal()) {
+                throw new IllegalStateException("terminal evaluation run is immutable: " + runId);
+            }
+            updated[0] = current.withDispatchPaused(paused, now);
+            return updated[0];
+        });
+        return updated[0];
+    }
+
+    @Override
     public void appendArtifacts(String runId, List<EvaluationArtifact> values) {
         if (!runs.containsKey(runId)) {
             throw new NoSuchElementException("evaluation run not found: " + runId);

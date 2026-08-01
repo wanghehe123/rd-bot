@@ -26,7 +26,7 @@ public final class EvaluationRunHistorySqlProvider {
                 <script>
                 SELECT id, name, attempt_no, parent_run_id, status, phase_message, progress_percent,
                        config_json, sample_count, passed_sample_count, failed_sample_count, overall_passed,
-                       metrics_json, error_category, error_message, version,
+                       metrics_json, error_category, error_message, dispatch_paused, version,
                        created_at, started_at, finished_at, updated_at
                   FROM rd_evaluation_runs
                 %s

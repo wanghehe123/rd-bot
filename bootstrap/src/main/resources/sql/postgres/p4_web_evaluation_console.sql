@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS rd_evaluation_runs (
     metrics_json JSONB NOT NULL DEFAULT '[]'::jsonb,
     error_category VARCHAR(128) NOT NULL DEFAULT '',
     error_message TEXT NOT NULL DEFAULT '',
+    dispatch_paused BOOLEAN NOT NULL DEFAULT FALSE,
     version BIGINT NOT NULL DEFAULT 0,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     started_at TIMESTAMPTZ,
@@ -116,3 +117,8 @@ CREATE TABLE IF NOT EXISTS rd_evaluation_trial_events (
 
 CREATE INDEX IF NOT EXISTS idx_evaluation_trial_event_timeline
     ON rd_evaluation_trial_events (trial_id, occurred_at, id);
+
+-- Coding benchmark 控制面：暂停派发是运行标记而非新增 Campaign 状态，
+-- 因此挂在 rd_evaluation_runs 上而不是引入 PAUSED 状态污染状态图。
+ALTER TABLE rd_evaluation_runs
+    ADD COLUMN IF NOT EXISTS dispatch_paused BOOLEAN NOT NULL DEFAULT FALSE;

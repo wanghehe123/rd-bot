@@ -62,6 +62,7 @@ class PostgresEvaluationRunStoreTest {
         verify(runMapper).insertRun(runRow.capture());
         assertEquals("CREATED", runRow.getValue().status);
         assertEquals("fixture-web", runRow.getValue().name);
+        assertEquals(false, runRow.getValue().dispatchPaused);
         ArgumentCaptor<EvaluationEventRow> eventRow = ArgumentCaptor.forClass(EvaluationEventRow.class);
         verify(eventMapper).insertEvent(eventRow.capture());
         assertEquals("CREATED", eventRow.getValue().toStatus);
@@ -89,6 +90,28 @@ class PostgresEvaluationRunStoreTest {
         verify(eventMapper).insertEvent(eventCaptor.capture());
         assertEquals("QUEUED", eventCaptor.getValue().fromStatus);
         assertEquals("RECORDING", eventCaptor.getValue().toStatus);
+    }
+
+    @Test
+    void shouldRoundTripDispatchPausedBetweenRowAndSnapshot() throws Exception {
+        EvaluationRunMapper runMapper = mock(EvaluationRunMapper.class);
+        EvaluationEventMapper eventMapper = mock(EvaluationEventMapper.class);
+        EvaluationArtifactMapper artifactMapper = mock(EvaluationArtifactMapper.class);
+        PostgresEvaluationRunStore store = store(runMapper, eventMapper, artifactMapper);
+        EvaluationRunRow paused = row(EvaluationRunStatus.QUEUED, 1L);
+        paused.dispatchPaused = true;
+        when(runMapper.selectById(101L)).thenReturn(paused);
+        when(runMapper.compareAndSet(any())).thenReturn(1);
+
+        EvaluationRun loaded = store.find("101").orElseThrow();
+        EvaluationRun updated = store.transition("101", EvaluationRunStatus.QUEUED,
+                EvaluationRunStatus.RECORDING, "record", "", "", 2_000L);
+
+        assertEquals(true, loaded.dispatchPaused());
+        assertEquals(true, updated.dispatchPaused());
+        ArgumentCaptor<EvaluationRunRow> rowCaptor = ArgumentCaptor.forClass(EvaluationRunRow.class);
+        verify(runMapper).compareAndSet(rowCaptor.capture());
+        assertEquals(true, rowCaptor.getValue().dispatchPaused);
     }
 
     @Test

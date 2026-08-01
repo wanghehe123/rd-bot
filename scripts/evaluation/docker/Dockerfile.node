@@ -1,0 +1,79 @@
+# =============================================================================
+# Dockerfile.node — RD-Bot Coding-Evaluation Node.js 20 Toolchain (linux/amd64)
+# =============================================================================
+# Evaluation V2 Step 1a template.  Consumed by the evaluation build pipeline.
+#
+# DIGEST PINNING STRATEGY
+# -----------------------
+# Obtain the current digest for node:20-bookworm-slim (amd64) on the host:
+#
+#   curl -sL "https://index.docker.io/v2/library/node/manifests/20-bookworm-slim" \
+#     -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
+#   | jq -r '.config.digest'
+#
+# Then build with:
+#   docker build \
+#       --build-arg "BASE_IMAGE_DIGEST=sha256:<digest_from_above>" \
+#       -t rd-bot/coding-eval-node:20260730-node20-amd64-v1 \
+#       -f Dockerfile.node .
+#
+# Replace @NODE_20_BOOKWORM_SLIM_DIGEST@ below with the concrete sha256:... value.
+# =============================================================================
+
+# ── pinned base ────────────────────────────────────────────────────────────────
+FROM node:20-bookworm-slim@sha256:@NODE_20_BOOKWORM_SLIM_DIGEST@
+
+# ── build arguments ───────────────────────────────────────────────────────────
+ARG TOOLCHAIN_SHA256="REPLACE_WITH_ACTUAL_TOOLCHAIN_LAYER_SHA256_AFTER_BUILD"
+
+# ── system packages ───────────────────────────────────────────────────────────
+# git, curl, jq, unzip, ca-certificates — same rationale as Dockerfile.java21
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        git \
+        curl \
+        jq \
+        unzip \
+        ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && apt-get clean
+
+# ── additional Node.js package managers ───────────────────────────────────────
+# pnpm: fast, disk-efficient, used by some frontend toolchains
+# yarn: required by some ts-node / jest configurations
+# npm is pre-installed on the node:20 base image.
+RUN corepack enable \
+ && corepack prepare pnpm@latest --activate \
+ && yarn config set enableNetwork false \
+ && npm config set offline true
+
+# ── conventional env layout ───────────────────────────────────────────────────
+# Keep PATH pointing to the node:20-bundled node_modules/.bin first.
+ENV RD_EVAL_OFFLINE=1 \
+    YARN_ENABLE_NETWORK=0 \
+    npm_config_offline=true
+
+# ── working directory ─────────────────────────────────────────────────────────
+WORKDIR /work
+
+# ── non-root runtime user ────────────────────────────────────────────────────
+RUN groupadd --gid 1000 agent \
+ && useradd --uid 1000 --gid agent --shell /bin/bash --create-home agent
+
+RUN mkdir -p /work \
+ && chown -R agent:agent /work
+
+USER agent
+
+# ── OCI labels ────────────────────────────────────────────────────────────────
+LABEL org.opencontainers.image.title="rd-bot/coding-eval-node" \
+      org.opencontainers.image.description="RD-Bot coding benchmark Node.js 20 toolchain (linux/amd64)" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.source="https://github.com/wish233/rd-bot" \
+      org.opencontainers.image.platform="linux/amd64" \
+      rd.evaluation.kind="coding-benchmark" \
+      rd.evaluation.toolchain="node20" \
+      rd.evaluation.platform="linux/amd64" \
+      rd.evaluation.build-toolchain-sha256="${TOOLCHAIN_SHA256}"
+
+CMD ["/bin/bash"]

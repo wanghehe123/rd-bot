@@ -12,6 +12,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -38,6 +40,10 @@ class DockerCodingBenchmarkExecutorTest {
         assertFalse(oracleCommand.toString().contains(request.agentCache().toString()));
         assertTrue(oracleCommand.toString().contains(request.candidatePatch().toString()));
         assertTrue(oracleCommand.contains("none"));
+        assertTrue(
+                oracleCommand.stream().anyMatch(arg -> arg.contains("rd_eval_oracle.py")),
+                "oracle must mount the host verifier script into toolchain images"
+        );
         int entrypoint = oracleCommand.indexOf("--entrypoint");
         assertTrue(entrypoint >= 0);
         assertEquals("", oracleCommand.get(entrypoint + 1));
@@ -113,7 +119,7 @@ class DockerCodingBenchmarkExecutorTest {
                 .findFirst()
                 .orElseThrow();
         assertTrue(agentCommand.contains("GRADLE_USER_HOME=/work/cache/gradle"));
-        assertTrue(agentCommand.contains("MAVEN_OPTS=-Dmaven.repo.local=/work/cache/m2/repository"));
+        assertTrue(agentCommand.contains("MAVEN_OPTS=-Dmaven.repo.local=/work/cache/m2 -Dfile.encoding=UTF-8"));
         assertTrue(agentCommand.contains("npm_config_cache=/work/cache/npm"));
     }
 
@@ -143,6 +149,36 @@ class DockerCodingBenchmarkExecutorTest {
     }
 
     @Test
+    void shouldPromotePatchDiffWhenCandidatePatchIsMissing() throws Exception {
+        CapturingDockerRunner runner = new CapturingDockerRunner(false, false, false, true);
+        DockerCodingBenchmarkExecutor executor = new DockerCodingBenchmarkExecutor(runner);
+        CodingBenchmarkExecutionRequest request = request(false);
+
+        CodingBenchmarkExecutionResult result = executor.execute(request);
+
+        assertFalse(result.infrastructureFailure());
+        assertTrue(Files.isRegularFile(request.candidatePatch()));
+        assertTrue(Files.size(request.candidatePatch()) > 0);
+        assertTrue(started(runner, "rd-eval-oracle-case-01-a"));
+        assertTrue(Files.readString(request.agentOutputDirectory().resolve("candidate-patch-source.json"))
+                .contains("PROMOTED_PATCH_DIFF"));
+    }
+
+    @Test
+    void shouldStillRunOracleWhenAgentExitsUncleanlyButPublishedAPatch() throws Exception {
+        CapturingDockerRunner runner = new CapturingDockerRunner(false, true, false, false, true);
+        DockerCodingBenchmarkExecutor executor = new DockerCodingBenchmarkExecutor(runner);
+        CodingBenchmarkExecutionRequest request = request(false);
+
+        CodingBenchmarkExecutionResult result = executor.execute(request);
+
+        assertFalse(result.infrastructureFailure());
+        assertEquals(1, result.agentExitCode());
+        assertTrue(Files.isRegularFile(request.candidatePatch()));
+        assertTrue(started(runner, "rd-eval-oracle-case-01-a"));
+    }
+
+    @Test
     void shouldFailClosedWhenTheAgentDoesNotPublishACandidatePatch() throws Exception {
         CapturingDockerRunner runner = new CapturingDockerRunner(false, false);
         DockerCodingBenchmarkExecutor executor = new DockerCodingBenchmarkExecutor(runner);
@@ -157,6 +193,7 @@ class DockerCodingBenchmarkExecutorTest {
         assertFalse(runner.commands().stream().anyMatch(command -> command.contains("rd-eval-oracle-case-01-a")));
     }
 
+
     @Test
     void shouldQuarantineAStaleCandidatePatchBeforeTheAgentStarts() throws Exception {
         CapturingDockerRunner runner = new CapturingDockerRunner();
@@ -170,14 +207,66 @@ class DockerCodingBenchmarkExecutorTest {
         assertFalse(runner.commands().stream().anyMatch(command -> command.contains("rd-eval-agent-case-01-a")));
     }
 
+    @Test
+    void shouldSignalTheOracleHookAfterAgentWorkAndBeforeTheOracleContainer() throws Exception {
+        CapturingDockerRunner runner = new CapturingDockerRunner();
+        DockerCodingBenchmarkExecutor executor = new DockerCodingBenchmarkExecutor(runner);
+        AtomicInteger hookCalls = new AtomicInteger();
+        AtomicBoolean agentFinishedWhenHookRan = new AtomicBoolean();
+        AtomicBoolean oracleStartedWhenHookRan = new AtomicBoolean(true);
+
+        CodingBenchmarkExecutionResult result = executor.execute(request(), () -> {
+            hookCalls.incrementAndGet();
+            agentFinishedWhenHookRan.set(started(runner, "rd-eval-agent-case-01-a"));
+            oracleStartedWhenHookRan.set(started(runner, "rd-eval-oracle-case-01-a"));
+        });
+
+        assertEquals(1, hookCalls.get());
+        assertTrue(agentFinishedWhenHookRan.get());
+        assertFalse(oracleStartedWhenHookRan.get());
+        assertFalse(result.infrastructureFailure());
+        assertTrue(started(runner, "rd-eval-oracle-case-01-a"));
+    }
+
+    @Test
+    void shouldNotSignalTheOracleHookWhenTheAgentDoesNotPublishACandidatePatch() throws Exception {
+        CapturingDockerRunner runner = new CapturingDockerRunner(false, false);
+        DockerCodingBenchmarkExecutor executor = new DockerCodingBenchmarkExecutor(runner);
+        AtomicInteger hookCalls = new AtomicInteger();
+
+        CodingBenchmarkExecutionResult result = executor.execute(request(false), hookCalls::incrementAndGet);
+
+        assertEquals(0, hookCalls.get());
+        assertTrue(result.errorMessage().contains("candidate patch"));
+    }
+
+    @Test
+    void shouldNotSignalTheOracleHookWhenTheTrialIsQuarantinedBeforeTheAgentStarts() throws Exception {
+        CapturingDockerRunner runner = new CapturingDockerRunner();
+        DockerCodingBenchmarkExecutor executor = new DockerCodingBenchmarkExecutor(runner);
+        AtomicInteger hookCalls = new AtomicInteger();
+
+        CodingBenchmarkExecutionResult result = executor.execute(request(true), hookCalls::incrementAndGet);
+
+        assertEquals(0, hookCalls.get());
+        assertTrue(result.infrastructureFailure());
+    }
+
+    private static boolean started(CapturingDockerRunner runner, String containerName) {
+        return runner.commands().stream().anyMatch(command -> command.contains(containerName));
+    }
+
     private CodingBenchmarkExecutionRequest request() throws Exception {
         return request(false);
     }
 
     private CodingBenchmarkExecutionRequest request(boolean precreateCandidatePatch) throws Exception {
-        Path agentRepository = Files.createDirectories(tempDir.resolve("agent/repo"));
-        Path agentCache = Files.createDirectories(tempDir.resolve("agent/cache"));
-        Path agentOutput = Files.createDirectories(tempDir.resolve("agent/output"));
+        Path trialRoot = tempDir.resolve("trial");
+        Path agentRepository = Files.createDirectories(trialRoot.resolve("repo"));
+        Path agentCache = Files.createDirectories(trialRoot.resolve("cache"));
+        Path agentOutput = Files.createDirectories(trialRoot.resolve("output"));
+        Path agentInput = Files.createDirectories(trialRoot.resolve("input"));
+        Files.writeString(agentInput.resolve("request.json"), "{\"protocol\":\"rd-pi-request/v1\"}\n");
         Path verifierRepository = Files.createDirectories(tempDir.resolve("verifier/repo"));
         Path verifierCache = Files.createDirectories(tempDir.resolve("verifier/cache"));
         Path protectedBundle = Files.createDirectories(tempDir.resolve("protected-tests"));
@@ -213,9 +302,11 @@ class DockerCodingBenchmarkExecutorTest {
     }
 
     private CodingBenchmarkExecutionRequest runtimePatchRequest() throws Exception {
-        Path agentRepository = Files.createDirectories(tempDir.resolve("runtime-agent/repo"));
-        Path agentCache = Files.createDirectories(tempDir.resolve("runtime-agent/cache"));
-        Path agentOutput = Files.createDirectories(tempDir.resolve("runtime-agent/output"));
+        Path trialRoot = tempDir.resolve("runtime-trial");
+        Path agentRepository = Files.createDirectories(trialRoot.resolve("repo"));
+        Path agentCache = Files.createDirectories(trialRoot.resolve("cache"));
+        Path agentOutput = Files.createDirectories(trialRoot.resolve("output"));
+        Files.createDirectories(trialRoot.resolve("input"));
         Path verifierRepository = Files.createDirectories(tempDir.resolve("runtime-verifier/repo"));
         Path verifierCache = Files.createDirectories(tempDir.resolve("runtime-verifier/cache"));
         Path output = Files.createDirectories(tempDir.resolve("runtime-output"));
@@ -247,37 +338,131 @@ class DockerCodingBenchmarkExecutorTest {
         );
     }
 
+    @Test
+    void shouldStartRelayBeforeAgentAndRemoveItDuringCleanup() throws Exception {
+        CapturingDockerRunner runner = new CapturingDockerRunner();
+        DockerCodingBenchmarkExecutor executor = new DockerCodingBenchmarkExecutor(runner);
+
+        executor.execute(request());
+
+        assertTrue(runner.commands().stream().anyMatch(command -> command.contains("rd-eval-relay-case-01-a")));
+        assertTrue(runner.commands().stream().anyMatch(command ->
+                command.contains("docker") && command.contains("rm") && command.contains("-f") && command.contains("rd-eval-relay-case-01-a")));
+        List<String> agentIndex = runner.commands().stream()
+                .filter(command -> command.contains("rd-eval-agent-case-01-a"))
+                .findFirst()
+                .orElseThrow();
+        List<String> relayRun = runner.commands().stream()
+                .filter(command -> command.contains("rd-eval-relay-case-01-a") && command.contains("run") && command.contains("-d"))
+                .findFirst()
+                .orElseThrow();
+        List<String> egressConnect = runner.commands().stream()
+                .filter(command -> command.contains("network") && command.contains("connect") && command.contains("bridge"))
+                .findFirst()
+                .orElseThrow();
+        assertEquals(1, relayRun.stream().filter("--network"::equals).count());
+        assertTrue(relayRun.contains("rd-eval-network-case-01-a"));
+        assertFalse(relayRun.contains("bridge"));
+        assertEquals(List.of("docker", "network", "connect", "bridge", "rd-eval-relay-case-01-a"), egressConnect);
+        assertTrue(runner.commands().indexOf(relayRun) < runner.commands().indexOf(egressConnect));
+        assertTrue(runner.commands().indexOf(egressConnect) < runner.commands().indexOf(agentIndex));
+        assertTrue(agentIndex.toString().contains("dst=/work/input,readonly"));
+    }
+
+    @Test
+    void shouldQuarantineWhenRelayEgressConnectFails() throws Exception {
+        CapturingDockerRunner runner = new CapturingDockerRunner(false, true, true);
+        DockerCodingBenchmarkExecutor executor = new DockerCodingBenchmarkExecutor(runner);
+        CodingBenchmarkExecutionRequest request = request();
+
+        CodingBenchmarkExecutionResult result = executor.execute(request);
+
+        assertTrue(result.infrastructureFailure());
+        assertTrue(result.errorMessage().contains("relay container egress connect failed"));
+        assertTrue(result.errorMessage().contains("network connect denied"));
+        assertFalse(runner.commands().stream().anyMatch(command -> command.contains("rd-eval-agent-case-01-a")));
+        assertTrue(runner.commands().stream().anyMatch(command ->
+                command.contains("docker") && command.contains("rm") && command.contains("-f") && command.contains("rd-eval-relay-case-01-a")));
+    }
+
     private static final class CapturingDockerRunner implements DockerCodingBenchmarkExecutor.DockerCommandRunner {
         private final List<List<String>> commands = new ArrayList<>();
         private final boolean failCleanup;
         private final boolean publishCandidatePatch;
+        private final boolean failRelayEgressConnect;
+        private final boolean publishPatchDiff;
+        private final boolean failAgent;
 
         private CapturingDockerRunner() {
-            this(false, true);
+            this(false, true, false, false, false);
         }
 
         private CapturingDockerRunner(boolean failCleanup) {
-            this(failCleanup, true);
+            this(failCleanup, true, false, false, false);
         }
 
         private CapturingDockerRunner(boolean failCleanup, boolean publishCandidatePatch) {
+            this(failCleanup, publishCandidatePatch, false, false, false);
+        }
+
+        private CapturingDockerRunner(boolean failCleanup, boolean publishCandidatePatch, boolean failRelayEgressConnect) {
+            this(failCleanup, publishCandidatePatch, failRelayEgressConnect, false, false);
+        }
+
+        private CapturingDockerRunner(
+                boolean failCleanup,
+                boolean publishCandidatePatch,
+                boolean failRelayEgressConnect,
+                boolean publishPatchDiff
+        ) {
+            this(failCleanup, publishCandidatePatch, failRelayEgressConnect, publishPatchDiff, false);
+        }
+
+        private CapturingDockerRunner(
+                boolean failCleanup,
+                boolean publishCandidatePatch,
+                boolean failRelayEgressConnect,
+                boolean publishPatchDiff,
+                boolean failAgent
+        ) {
             this.failCleanup = failCleanup;
             this.publishCandidatePatch = publishCandidatePatch;
+            this.failRelayEgressConnect = failRelayEgressConnect;
+            this.publishPatchDiff = publishPatchDiff;
+            this.failAgent = failAgent;
         }
 
         @Override
         public DockerCodingBenchmarkExecutor.DockerCommandResult run(List<String> command, long timeoutMillis) throws java.io.IOException {
             commands.add(List.copyOf(command));
-            if (publishCandidatePatch && command.contains("rd-eval-agent-case-01-a")) {
+            if ((publishCandidatePatch || publishPatchDiff) && command.contains("rd-eval-agent-case-01-a")) {
                 String mount = command.stream()
                         .filter(value -> value.startsWith("type=bind,src=") && value.endsWith(",dst=/work/output"))
                         .findFirst()
                         .orElseThrow();
                 String source = mount.substring("type=bind,src=".length(), mount.length() - ",dst=/work/output".length());
-                Files.writeString(Path.of(source).resolve("candidate.patch"), "diff --git a/a b/a\\n");
+                if (publishCandidatePatch) {
+                    Files.writeString(Path.of(source).resolve("candidate.patch"), "diff --git a/a b/a\\n");
+                }
+                if (publishPatchDiff) {
+                    Files.writeString(Path.of(source).resolve("patch.diff"), "diff --git a/from-bridge b/from-bridge\n");
+                }
+                if (failAgent) {
+                    return new DockerCodingBenchmarkExecutor.DockerCommandResult(1, "", "agent exited uncleanly");
+                }
             }
             if (failCleanup && command.size() >= 3 && command.get(1).equals("network") && command.get(2).equals("rm")) {
                 return new DockerCodingBenchmarkExecutor.DockerCommandResult(1, "", "cleanup failed");
+            }
+            if (command.contains("rd-eval-relay-case-01-a") && command.contains("run") && command.contains("-d")) {
+                return new DockerCodingBenchmarkExecutor.DockerCommandResult(0, "", "");
+            }
+            if (failRelayEgressConnect
+                    && command.size() >= 5
+                    && command.get(1).equals("network")
+                    && command.get(2).equals("connect")
+                    && command.get(3).equals("bridge")) {
+                return new DockerCodingBenchmarkExecutor.DockerCommandResult(1, "", "network connect denied");
             }
             return new DockerCodingBenchmarkExecutor.DockerCommandResult(0, "", "");
         }

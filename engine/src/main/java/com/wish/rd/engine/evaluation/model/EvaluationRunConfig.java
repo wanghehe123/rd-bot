@@ -21,7 +21,8 @@ public record EvaluationRunConfig(
         boolean strictMissingRecords,
         String baselineRunId,
         String taskId,
-        EvaluationMode mode
+        EvaluationMode mode,
+        String snapshotId
 ) {
     private static final Pattern DATASET_PATTERN = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{0,199}\\.jsonl");
     private static final Pattern LABEL_PATTERN = Pattern.compile("[A-Za-z0-9._:-]{0,120}");
@@ -40,6 +41,7 @@ public record EvaluationRunConfig(
         mode = mode == null
                 ? (source == EvaluationSource.TASK_RUN ? EvaluationMode.TASK_AUDIT : EvaluationMode.LEGACY_QUALITY)
                 : mode;
+        snapshotId = snapshotId == null ? "" : snapshotId.strip();
     }
 
     /** Backward-compatible constructor for configurations that already include task-run fields. */
@@ -59,7 +61,7 @@ public record EvaluationRunConfig(
             String taskId
     ) {
         this(name, datasetId, source, environmentId, sampleLimit, baseUrl, ragLogPath, timeoutSeconds,
-                judgeProvider, judgeLimit, strictMissingRecords, baselineRunId, taskId, null);
+                judgeProvider, judgeLimit, strictMissingRecords, baselineRunId, taskId, null, "");
     }
 
     /** Backward-compatible constructor for persisted and test configurations created before task-run evaluation. */
@@ -78,7 +80,7 @@ public record EvaluationRunConfig(
             String baselineRunId
     ) {
         this(name, datasetId, source, environmentId, sampleLimit, baseUrl, ragLogPath, timeoutSeconds,
-                judgeProvider, judgeLimit, strictMissingRecords, baselineRunId, "", null);
+                judgeProvider, judgeLimit, strictMissingRecords, baselineRunId, "", null, "");
     }
 
     /** Validates all Web-controlled values before a run or process is created. */

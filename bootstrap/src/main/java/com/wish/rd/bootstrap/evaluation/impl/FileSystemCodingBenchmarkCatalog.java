@@ -30,7 +30,8 @@ public final class FileSystemCodingBenchmarkCatalog implements CodingBenchmarkCa
             "environment-manifest.json",
             "knowledge-manifest.json",
             "analysis-plan.json",
-            "readiness-report.json"
+            "readiness-report.json",
+            "runtime-manifest.json"
     );
     private static final String PROVENANCE_MANIFEST = "benchmark-provenance.json";
     private static final Pattern SNAPSHOT_ID_PATTERN = Pattern.compile("[A-Za-z0-9._-]{1,120}");

@@ -315,6 +315,13 @@ class EvaluationRunEngineTest {
         public EvaluationRun complete(String runId, EvaluationRunStatus expected, EvaluationExecutionResult result, long now) {
             return delegate.complete(runId, expected, result, now);
         }
+        public EvaluationRun updateSampleProgress(String runId, int sampleCount, int passedSampleCount,
+                                                  int failedSampleCount, long now) {
+            return delegate.updateSampleProgress(runId, sampleCount, passedSampleCount, failedSampleCount, now);
+        }
+        public EvaluationRun setDispatchPaused(String runId, boolean paused, long expectedVersion, long now) {
+            return delegate.setDispatchPaused(runId, paused, expectedVersion, now);
+        }
         public void appendArtifacts(String runId, List<EvaluationArtifact> artifacts) { delegate.appendArtifacts(runId, artifacts); }
         public List<EvaluationRunEvent> listEvents(String runId) { return delegate.listEvents(runId); }
         public List<EvaluationArtifact> listArtifacts(String runId) { return delegate.listArtifacts(runId); }
@@ -350,6 +357,13 @@ class EvaluationRunEngineTest {
         }
         public EvaluationRun complete(String runId, EvaluationRunStatus expected, EvaluationExecutionResult result, long now) {
             return delegate.complete(runId, expected, result, now);
+        }
+        public EvaluationRun updateSampleProgress(String runId, int sampleCount, int passedSampleCount,
+                                                  int failedSampleCount, long now) {
+            return delegate.updateSampleProgress(runId, sampleCount, passedSampleCount, failedSampleCount, now);
+        }
+        public EvaluationRun setDispatchPaused(String runId, boolean paused, long expectedVersion, long now) {
+            return delegate.setDispatchPaused(runId, paused, expectedVersion, now);
         }
         public void appendArtifacts(String runId, List<EvaluationArtifact> artifacts) { delegate.appendArtifacts(runId, artifacts); }
         public List<EvaluationRunEvent> listEvents(String runId) { return delegate.listEvents(runId); }

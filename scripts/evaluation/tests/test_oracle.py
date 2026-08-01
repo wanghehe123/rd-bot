@@ -141,6 +141,60 @@ class OracleContractTest(unittest.TestCase):
                     network_mode="none",
                 )
 
+    def test_expected_ids_parser_scores_on_exit_code_without_collection_line(self) -> None:
+        def _prepare(temp_dir: str) -> tuple[Path, Path, Path]:
+            repository = Path(temp_dir) / "repository"
+            repository.mkdir()
+            self._git(repository, "init", "-q")
+            self._git(repository, "config", "user.email", "test@example.com")
+            self._git(repository, "config", "user.name", "Test User")
+            (repository / "src.txt").write_text("before\n", encoding="utf-8")
+            (repository / "test.txt").write_text("base\n", encoding="utf-8")
+            self._git(repository, "add", "src.txt", "test.txt")
+            self._git(repository, "commit", "-qm", "base")
+            candidate = Path(temp_dir) / "candidate.patch"
+            candidate.write_text(
+                "diff --git a/src.txt b/src.txt\n--- a/src.txt\n+++ b/src.txt\n@@ -1 +1 @@\n-before\n+after\n",
+                encoding="utf-8",
+            )
+            protected_test_patch = Path(temp_dir) / "runtime-withheld.patch"
+            protected_test_patch.write_text(
+                "diff --git a/test.txt b/test.txt\n--- a/test.txt\n+++ b/test.txt\n@@ -1 +1 @@\n-base\n+withheld\n",
+                encoding="utf-8",
+            )
+            return repository, candidate, protected_test_patch
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository, candidate, protected_test_patch = _prepare(temp_dir)
+            passing = run_oracle(
+                verifier_repository=repository,
+                patch_path=candidate,
+                protected_bundle=None,
+                protected_target=None,
+                protected_test_patch=protected_test_patch,
+                command=[sys.executable, "-c", "raise SystemExit(0)"],
+                expected_test_ids=["com.example.Issue#test"],
+                network_mode="none",
+                result_parser="EXPECTED_IDS",
+            )
+            self.assertEqual("PASS", passing.verdict)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository, candidate, protected_test_patch = _prepare(temp_dir)
+            failing = run_oracle(
+                verifier_repository=repository,
+                patch_path=candidate,
+                protected_bundle=None,
+                protected_target=None,
+                protected_test_patch=protected_test_patch,
+                command=[sys.executable, "-c", "raise SystemExit(1)"],
+                expected_test_ids=["com.example.Issue#test"],
+                network_mode="none",
+                result_parser="EXPECTED_IDS",
+            )
+            self.assertEqual("TEST_FAIL", failing.verdict)
+            self.assertEqual((), failing.missing_test_ids)
+
     @staticmethod
     def _git(directory: Path, *arguments: str) -> None:
         subprocess.run(["git", "-C", str(directory), *arguments], check=True)

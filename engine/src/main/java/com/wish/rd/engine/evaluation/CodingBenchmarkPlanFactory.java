@@ -38,6 +38,15 @@ public final class CodingBenchmarkPlanFactory {
     }
 
     /**
+     * Creates a factory with a Snowflake ID supplier for PostgreSQL-compatible numeric IDs.
+     *
+     * @param trialIdSupplier source of unique persisted logical trial IDs (Snowflake recommended)
+     */
+    public CodingBenchmarkPlanFactory(Supplier<String> trialIdSupplier) {
+        this(trialIdSupplier, System::currentTimeMillis);
+    }
+
+    /**
      * Creates a factory with injectable ID and time sources for deterministic tests and adapters.
      *
      * @param trialIdSupplier source of unique persisted logical trial IDs

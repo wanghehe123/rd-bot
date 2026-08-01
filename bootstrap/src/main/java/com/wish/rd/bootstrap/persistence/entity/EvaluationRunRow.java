@@ -26,6 +26,7 @@ public class EvaluationRunRow {
     public String metricsJson;
     public String errorCategory;
     public String errorMessage;
+    public Boolean dispatchPaused;
     public Long version;
     public OffsetDateTime createdAt;
     public OffsetDateTime startedAt;

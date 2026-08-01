@@ -1,0 +1,26 @@
+# =============================================================================
+# requirements.txt — Python dependencies for RD-Bot Evaluation V2 Relay
+# =============================================================================
+# Pinned for reproducibility.  Update versions by running:
+#   pip-compile --generate-hashes requirements.in  # requires pip-tools
+# Then pin in this file with == version and re-run pip install.
+#
+# Runtime environment: Python 3.12 + linux/amd64 (debian bookworm-slim base)
+# =============================================================================
+
+# aiohttp — async HTTP server with full control over request routing and
+# connection management.  We use aiohttp (not httpx or requests) because:
+#   1. It is a pure-Python library with no C extension surface beyond
+#      the standard asyncio event loop (already in stdlib).
+#   2. It provides ClientSession with fine-grained redirect control
+#      (allow_redirects=False is a first-class parameter).
+#   3. It has no dependencies that conflict with the minimal container image.
+aiohttp==3.11.11
+
+# gunicorn — production WSGI/ASGI server.  Used to run the aiohttp app
+# in a multi-worker configuration if the host orchestrator wants more than
+# one relay worker per container (default is single-worker via web.run_app).
+# Even in single-worker mode gunicorn adds process supervision and signal
+# handling (graceful shutdown on SIGTERM) that aiohttp.web.run_app alone
+# does not provide by default.
+gunicorn==23.0.0

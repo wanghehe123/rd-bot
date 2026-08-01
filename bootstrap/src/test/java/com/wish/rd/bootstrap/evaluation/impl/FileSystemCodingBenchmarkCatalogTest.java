@@ -22,7 +22,8 @@ class FileSystemCodingBenchmarkCatalogTest {
             "environment-manifest.json",
             "knowledge-manifest.json",
             "analysis-plan.json",
-            "readiness-report.json"
+            "readiness-report.json",
+            "runtime-manifest.json"
     );
 
     @TempDir
