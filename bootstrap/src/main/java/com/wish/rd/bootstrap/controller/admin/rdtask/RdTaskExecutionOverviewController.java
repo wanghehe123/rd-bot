@@ -13,6 +13,7 @@ import com.wish.rd.engine.agent.impl.InMemoryAgentStageRunStore;
 import com.wish.rd.engine.agent.model.AgentRole;
 import com.wish.rd.engine.agent.model.AgentStageArtifact;
 import com.wish.rd.engine.agent.model.AgentStageRun;
+import com.wish.rd.engine.agent.model.AgentStageStatus;
 import com.wish.rd.exec.repair.docker.impl.DockerExecutionRegistry;
 import com.wish.rd.exec.repair.docker.trace.ClaudeExecutionTraceParser;
 import com.wish.rd.exec.repair.docker.trace.model.ClaudeExecutionTraceSnapshot;
@@ -47,6 +48,7 @@ import java.math.RoundingMode;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.concurrent.atomic.AtomicLong;
@@ -647,21 +649,10 @@ public class RdTaskExecutionOverviewController {
         boolean actualAvailable = false;
         long finalActualTokens = 0L;
         for (AgentStageRun stageRun : stageRuns) {
-            boolean stageUsageFound = false;
-            for (Map<String, Object> attempt : providerAttempts(stageRun.providerAttemptsJson())) {
-                if (!providerAttemptUsageAvailable(attempt)) {
-                    continue;
-                }
-                stageUsageFound = true;
+            long stageTokens = measuredStageActualTokens(stageRun);
+            if (stageTokens > 0L) {
                 actualAvailable = true;
-                finalActualTokens = safeAdd(finalActualTokens, measuredTotalTokens(attempt));
-            }
-            if (!stageUsageFound) {
-                long artifactUsage = measuredTokensFromAgentEvents(stageRun);
-                if (artifactUsage > 0L) {
-                    actualAvailable = true;
-                    finalActualTokens = safeAdd(finalActualTokens, artifactUsage);
-                }
+                finalActualTokens = safeAdd(finalActualTokens, stageTokens);
             }
         }
         long runningTokens = runningExecutions.stream()
@@ -694,6 +685,48 @@ public class RdTaskExecutionOverviewController {
         );
     }
 
+    private long measuredStageActualTokens(AgentStageRun stageRun) {
+        long attemptTokens = 0L;
+        boolean attemptMeasured = false;
+        for (Map<String, Object> attempt : providerAttempts(stageRun.providerAttemptsJson())) {
+            if (!providerAttemptUsageAvailable(attempt)) {
+                continue;
+            }
+            attemptMeasured = true;
+            attemptTokens = safeAdd(attemptTokens, measuredTotalTokens(attempt));
+        }
+        if (attemptMeasured) {
+            return attemptTokens;
+        }
+        if (shouldMeasureAgentEventsArtifact(stageRun)) {
+            return measuredTokensFromAgentEvents(stageRun);
+        }
+        return 0L;
+    }
+
+    private boolean shouldMeasureAgentEventsArtifact(AgentStageRun stageRun) {
+        if (isTerminalFailureStage(stageRun)) {
+            return hasAgentEventsArtifact(stageRun);
+        }
+        return true;
+    }
+
+    private boolean isTerminalFailureStage(AgentStageRun stageRun) {
+        if (stageRun == null) {
+            return false;
+        }
+        AgentStageStatus status = stageRun.status();
+        return status == AgentStageStatus.FAILED_RETRYABLE
+                || status == AgentStageStatus.FAILED_NEEDS_HUMAN
+                || "ORCHESTRATION_INTERRUPTED".equalsIgnoreCase(text(stageRun.errorCategory()));
+    }
+
+    private boolean hasAgentEventsArtifact(AgentStageRun stageRun) {
+        return artifactStore.listByTask(stageRun.taskId()).stream()
+                .anyMatch(artifact -> stageRun.stageRunId().equals(artifact.stageRunId())
+                        && "AGENT_EVENTS".equals(artifact.artifactType()));
+    }
+
     private boolean providerAttemptUsageAvailable(Map<String, Object> attempt) {
         if (attempt == null || attempt.isEmpty()) {
             return false;
@@ -701,8 +734,26 @@ public class RdTaskExecutionOverviewController {
         if (Boolean.TRUE.equals(attempt.get("tokenUsageAvailable"))) {
             return true;
         }
-        return Boolean.TRUE.equals(attempt.get("tokenUsageFinalized"))
-                && measuredTotalTokens(attempt) > 0L;
+        if (Boolean.TRUE.equals(attempt.get("tokenUsageFinalized"))
+                && measuredTotalTokens(attempt) > 0L) {
+            return true;
+        }
+        return measuredTotalTokens(attempt) > 0L && isFailureProviderAttemptStatus(text(attempt.get("status")));
+    }
+
+    private static boolean isFailureProviderAttemptStatus(String status) {
+        if (status == null || status.isBlank()) {
+            return false;
+        }
+        return switch (status.toUpperCase(Locale.ROOT)) {
+            case "FAILED", "FAILED_RETRYABLE", "FAILED_NEEDS_HUMAN", "FAILED_VALIDATION",
+                    "ORCHESTRATION_INTERRUPTED", "INTERRUPTED" -> true;
+            default -> false;
+        };
+    }
+
+    private static String text(Object value) {
+        return value == null ? "" : value.toString().strip();
     }
 
     private long measuredTotalTokens(Map<String, Object> attempt) {

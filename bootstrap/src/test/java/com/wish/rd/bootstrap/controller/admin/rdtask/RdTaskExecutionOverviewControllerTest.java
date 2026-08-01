@@ -590,6 +590,45 @@ class RdTaskExecutionOverviewControllerTest {
     }
 
     @Test
+    void shouldIncludeFailedAttemptUsageFromAgentEventsArtifact() throws Exception {
+        RdRequirementTask task = registry.createRequirementTask(new CreateRequirementTaskCommand(
+                "失败 attempt token 入账", "P1", "https://github.com/example/repo.git", "example", "repo", "main",
+                "失败 attempt 也要计入 token", List.of("API 返回预算"), false
+        ));
+        AgentStageRun failedStage = stageRunStore.save(new AgentStageRun(
+                "stage-coding-failed", task.taskId(), AgentRole.CODING_AGENT, AgentStageStatus.FAILED_RETRYABLE, 1,
+                task.taskId() + ":CODING_AGENT:1", "", "", "", "pi",
+                "[{\"provider\":\"pi\",\"status\":\"FAILED\",\"errorCategory\":\"ORCHESTRATION_INTERRUPTED\"}]",
+                "{}", "ORCHESTRATION_INTERRUPTED", "previous role attempt was interrupted", 1L, 2L, 1L, 2L
+        ));
+        String agentEvents = """
+                {"protocol":"rd-agent-event/v1","eventType":"TURN_STARTED","sourceSequence":1}
+                {"protocol":"rd-agent-event/v1","eventType":"ASSISTANT_TEXT_COMPLETED","sourceSequence":2,"payload":{"usage":{"input":120,"output":80,"cacheRead":0,"cacheWrite":0}}}
+                {"protocol":"rd-agent-event/v1","eventType":"TURN_COMPLETED","sourceSequence":3,"payload":{"usage":{"input":120,"output":80,"cacheRead":0,"cacheWrite":0}}}
+                {"protocol":"rd-agent-event/v1","eventType":"RUNTIME_STOPPED","sourceSequence":4}
+                """;
+        artifactStore.save(new AgentStageArtifact(
+                "agent-events-failed",
+                failedStage.stageRunId(),
+                task.taskId(),
+                AgentRole.CODING_AGENT,
+                "AGENT_EVENTS",
+                "rd-artifact://stage-coding-failed/agent-events",
+                "Pi agent events",
+                agentEvents,
+                "sha256:agent-events-failed",
+                "{}",
+                1_783_000_100_000L
+        ));
+
+        mockMvc.perform(get("/admin/rd-tasks/{taskId}/execution-overview", task.taskId()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.tokenBudget.actualAvailable", is(true)))
+                .andExpect(jsonPath("$.tokenBudget.finalActualTokens", is(200)))
+                .andExpect(jsonPath("$.tokenBudget.actualAccumulatedTokens", is(200)));
+    }
+
+    @Test
     void shouldMarkActualTokenUsageUnavailableWithoutMeasuredProviderAttempts() throws Exception {
         RdRequirementTask task = registry.createRequirementTask(new CreateRequirementTaskCommand(
                 "Token 不可用测试", "P1", "https://github.com/example/repo.git", "example", "repo", "main",

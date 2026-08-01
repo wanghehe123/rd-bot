@@ -9,8 +9,11 @@ import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 
 /** Aggregates provider usage from normalized Pi {@code agent-events.jsonl} artifacts. */
 public final class AgentEventTokenUsageParser {
@@ -33,13 +36,11 @@ public final class AgentEventTokenUsageParser {
     if (eventsJsonl == null || eventsJsonl.isBlank()) {
       return unavailable();
     }
-    long inputTokens = 0L;
-    long outputTokens = 0L;
-    long cacheReadTokens = 0L;
-    long cacheWriteTokens = 0L;
-    BigDecimal estimatedCostUsd = BigDecimal.ZERO;
     boolean finalized = false;
-    Set<Long> countedSequences = new HashSet<>();
+    int turnIndex = -1;
+    Map<Integer, JsonNode> turnCompletedUsage = new HashMap<>();
+    Map<Integer, JsonNode> assistantUsage = new HashMap<>();
+    Map<Long, JsonNode> orphanUsage = new HashMap<>();
     for (String line : eventsJsonl.split("\\R")) {
       JsonNode event = parseLine(line);
       if (event == null) {
@@ -49,31 +50,70 @@ public final class AgentEventTokenUsageParser {
       if ("AGENT_SETTLED".equals(eventType) || "RUNTIME_STOPPED".equals(eventType)) {
         finalized = true;
       }
+      if ("TURN_STARTED".equals(eventType)) {
+        turnIndex++;
+        continue;
+      }
       if (!"ASSISTANT_TEXT_COMPLETED".equals(eventType) && !"TURN_COMPLETED".equals(eventType)) {
         continue;
       }
-      long sourceSequence = event.path("sourceSequence").asLong(-1L);
-      if (sourceSequence < 0L || !countedSequences.add(sourceSequence)) {
-        continue;
-      }
       JsonNode usage = event.path("payload").path("usage");
-      if (!usage.isObject() || usage.isEmpty()) {
+      if (!hasCountableUsage(usage)) {
         continue;
       }
-      long input = nonNegativeLong(usage, "input");
-      long output = nonNegativeLong(usage, "output");
-      long cacheRead = nonNegativeLong(usage, "cacheRead");
-      long cacheWrite = nonNegativeLong(usage, "cacheWrite");
-      if (input == 0L && output == 0L && cacheRead == 0L && cacheWrite == 0L) {
+      if ("TURN_COMPLETED".equals(eventType)) {
+        if (turnIndex >= 0) {
+          turnCompletedUsage.put(turnIndex, usage);
+        } else {
+          orphanUsage.put(event.path("sourceSequence").asLong(-1L), usage);
+        }
         continue;
       }
-      inputTokens += input;
-      outputTokens += output;
-      cacheReadTokens += cacheRead;
-      cacheWriteTokens += cacheWrite;
-      estimatedCostUsd = firstCost(usage.path("cost"), estimatedCostUsd);
+      if (turnIndex >= 0) {
+        assistantUsage.put(turnIndex, usage);
+      } else {
+        orphanUsage.put(event.path("sourceSequence").asLong(-1L), usage);
+      }
     }
-    if (countedSequences.isEmpty()) {
+    Set<Integer> turnIndexes = new TreeSet<>();
+    turnIndexes.addAll(turnCompletedUsage.keySet());
+    turnIndexes.addAll(assistantUsage.keySet());
+    long inputTokens = 0L;
+    long outputTokens = 0L;
+    long cacheReadTokens = 0L;
+    long cacheWriteTokens = 0L;
+    BigDecimal estimatedCostUsd = BigDecimal.ZERO;
+    int usageEventCount = 0;
+    for (int turn : turnIndexes) {
+      JsonNode usage = turnCompletedUsage.getOrDefault(turn, assistantUsage.get(turn));
+      if (!hasCountableUsage(usage)) {
+        continue;
+      }
+      inputTokens += nonNegativeLong(usage, "input");
+      outputTokens += nonNegativeLong(usage, "output");
+      cacheReadTokens += nonNegativeLong(usage, "cacheRead");
+      cacheWriteTokens += nonNegativeLong(usage, "cacheWrite");
+      estimatedCostUsd = firstCost(usage.path("cost"), estimatedCostUsd);
+      usageEventCount++;
+    }
+    Set<Long> countedOrphans = new HashSet<>();
+    for (Map.Entry<Long, JsonNode> entry : orphanUsage.entrySet()) {
+      long sourceSequence = entry.getKey();
+      if (sourceSequence < 0L || !countedOrphans.add(sourceSequence)) {
+        continue;
+      }
+      JsonNode usage = entry.getValue();
+      if (!hasCountableUsage(usage)) {
+        continue;
+      }
+      inputTokens += nonNegativeLong(usage, "input");
+      outputTokens += nonNegativeLong(usage, "output");
+      cacheReadTokens += nonNegativeLong(usage, "cacheRead");
+      cacheWriteTokens += nonNegativeLong(usage, "cacheWrite");
+      estimatedCostUsd = firstCost(usage.path("cost"), estimatedCostUsd);
+      usageEventCount++;
+    }
+    if (usageEventCount == 0) {
       return unavailable();
     }
     long totalTokens = inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens;
@@ -84,7 +124,7 @@ public final class AgentEventTokenUsageParser {
         cacheWriteTokens,
         totalTokens,
         estimatedCostUsd,
-        countedSequences.size(),
+        usageEventCount,
         finalized,
         true
     );
@@ -94,6 +134,16 @@ public final class AgentEventTokenUsageParser {
     return new AgentEventTokenUsageSnapshot(
         0L, 0L, 0L, 0L, 0L, BigDecimal.ZERO, 0, false, false
     );
+  }
+
+  private static boolean hasCountableUsage(JsonNode usage) {
+    if (usage == null || !usage.isObject() || usage.isEmpty()) {
+      return false;
+    }
+    return nonNegativeLong(usage, "input") > 0L
+        || nonNegativeLong(usage, "output") > 0L
+        || nonNegativeLong(usage, "cacheRead") > 0L
+        || nonNegativeLong(usage, "cacheWrite") > 0L;
   }
 
   private static JsonNode parseLine(String line) {
