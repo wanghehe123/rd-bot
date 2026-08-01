@@ -256,7 +256,7 @@ export function createApprovedResourceLoader({
     additionalExtensionPaths: [...verifiedManifest.extensionPaths],
     extensionFactories: [...extensionFactories],
     agentsFilesOverride: ({ agentsFiles }) => ({
-      agentsFiles: filterAgentsFilesForPolicy(
+      agentsFiles: resolveAgentsFilesForPolicy(
         agentsFiles,
         projectRoot,
         contextPolicy,
@@ -334,18 +334,35 @@ function normalizeContextPolicy(policy) {
   return { mode, limits, expectedFiles };
 }
 
-function filterAgentsFilesForPolicy(agentsFiles, projectRoot, contextPolicy, contextDiscovery) {
+/**
+ * Reconcile Pi's per-directory context discovery with the frozen preflight load set.
+ * Pi's loadContextFileFromDir returns only the first match (AGENTS.md before CLAUDE.md)
+ * per directory; merge in any preflight-accepted files Pi omitted so the session and
+ * post-reload manifest reflect the full policy load set.
+ */
+function resolveAgentsFilesForPolicy(agentsFiles, projectRoot, contextPolicy, contextDiscovery) {
   const mode = contextPolicy?.mode ?? CONTEXT_POLICY_MODES.LEGACY_OBSERVE_ONLY;
   if (mode === CONTEXT_POLICY_MODES.LEGACY_OBSERVE_ONLY || !contextDiscovery) {
     return (agentsFiles ?? []).filter((file) => isAllowedContextFile(file.path, projectRoot));
   }
-  const allowed = new Set(
-    contextDiscovery.loaded.map((entry) => normalizeRepoRelative(projectRoot, resolve(projectRoot, entry.path))),
-  );
-  return (agentsFiles ?? []).filter((file) => {
-    const relativePath = normalizeRepoRelative(projectRoot, file.path);
-    return allowed.has(relativePath);
-  });
+  const piFilesByPath = new Map();
+  for (const file of agentsFiles ?? []) {
+    piFilesByPath.set(normalizeRepoRelative(projectRoot, file.path), file);
+  }
+  const resolved = [];
+  for (const entry of contextDiscovery.loaded) {
+    const relativePath = normalizeRepoRelative(projectRoot, resolve(projectRoot, entry.path));
+    const piFile = piFilesByPath.get(relativePath);
+    if (piFile) {
+      resolved.push(piFile);
+      continue;
+    }
+    resolved.push({
+      path: resolve(projectRoot, entry.path),
+      content: entry.content ?? "",
+    });
+  }
+  return resolved;
 }
 
 async function collectContextCandidates(repoRoot) {

@@ -15,9 +15,11 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 import {
+  buildDiscoveryFromContextFiles,
   buildPreflightRuntimeContextManifest,
   runContextPreflight,
   shouldRunContextPreflight,
+  validatePostReloadContext,
 } from "./context-preflight.mjs";
 import {
   EVENT_TYPES,
@@ -85,6 +87,7 @@ export async function run(options = {}) {
   let sessionFile;
   let contextFiles = [];
   let contextDiscovery;
+  let preflightValidation;
   let stateProjector;
 
   try {
@@ -103,16 +106,10 @@ export async function run(options = {}) {
         request.contextPolicy,
       );
       contextDiscovery = discovery;
-      const preflightManifest = buildPreflightRuntimeContextManifest({
-        request,
-        discovery,
-        validation,
-        inputManifestHash: request.inputManifestHash ?? "",
-        contextPolicyHash: request.contextPolicy?.policyHash ?? "",
-      });
-      await safeWriteJson(paths.runtimeContextManifest, preflightManifest);
+      preflightValidation = validation;
       await sink.lifecycle("RESOURCES_LOADED", {
-        contextPreflight: preflightManifest.status,
+        contextPreflight: validation.accepted ? "ACCEPTED" : "REJECTED",
+        phase: "preflight",
         loadedPaths: validation.loadedPaths,
         violationCount: validation.violations.length,
       });
@@ -175,14 +172,52 @@ export async function run(options = {}) {
       throw new Error("selected Pi extension failed to load");
     }
     contextFiles = contextFileMetadata(resourceLoader.getAgentsFiles().agentsFiles);
-    await sink.lifecycle("RESOURCES_LOADED", {
-      extensionSetId: verifiedManifest.manifest.extensionSetId,
-      extensionSetVersion: verifiedManifest.manifest.extensionSetVersion,
-      extensionPaths: verifiedManifest.extensionPaths,
-      contextFiles,
-      extensionCount: extensionsResult.extensions.length,
-    });
-    if (!contextPreflightEnabled) {
+    if (contextPreflightEnabled) {
+      const postReloadLoaded = buildDiscoveryFromContextFiles(
+        contextFiles,
+        contextDiscovery.mode,
+        request.repoPath,
+      );
+      const postReloadDiscovery = {
+        mode: contextDiscovery.mode,
+        loaded: postReloadLoaded.loaded,
+        rejected: contextDiscovery.rejected,
+      };
+      const postReloadValidation = validatePostReloadContext(
+        postReloadDiscovery,
+        request.contextPolicy,
+        preflightValidation,
+      );
+      const runtimeContextManifest = buildPreflightRuntimeContextManifest({
+        request,
+        discovery: postReloadDiscovery,
+        validation: postReloadValidation,
+        inputManifestHash: request.inputManifestHash ?? "",
+        contextPolicyHash: request.contextPolicy?.policyHash ?? "",
+      });
+      await safeWriteJson(paths.runtimeContextManifest, runtimeContextManifest);
+      await sink.lifecycle("RESOURCES_LOADED", {
+        contextPreflight: postReloadValidation.accepted ? "ACCEPTED" : "REJECTED",
+        phase: "post-reload",
+        loadedPaths: postReloadValidation.loadedPaths,
+        violationCount: postReloadValidation.violations.length,
+        extensionSetId: verifiedManifest.manifest.extensionSetId,
+        extensionSetVersion: verifiedManifest.manifest.extensionSetVersion,
+        extensionPaths: verifiedManifest.extensionPaths,
+        contextFiles,
+        extensionCount: extensionsResult.extensions.length,
+      });
+      if (!postReloadValidation.accepted) {
+        throw new Error(`post-reload context rejected: ${postReloadValidation.violations.join("; ")}`);
+      }
+    } else {
+      await sink.lifecycle("RESOURCES_LOADED", {
+        extensionSetId: verifiedManifest.manifest.extensionSetId,
+        extensionSetVersion: verifiedManifest.manifest.extensionSetVersion,
+        extensionPaths: verifiedManifest.extensionPaths,
+        contextFiles,
+        extensionCount: extensionsResult.extensions.length,
+      });
       await writeRuntimeContextManifest({
         request,
         paths,

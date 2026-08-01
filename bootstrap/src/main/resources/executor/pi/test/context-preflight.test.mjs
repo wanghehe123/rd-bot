@@ -11,14 +11,21 @@ import {
   REQUEST_PROTOCOL_V2,
 } from "../src/protocol.mjs";
 import {
+  buildDiscoveryFromContextFiles,
   buildPreflightRuntimeContextManifest,
   computeEffectiveContextHash,
   PREFLIGHT_STATUS,
   runContextPreflight,
   shouldRunContextPreflight,
   validateContextPreflight,
+  validatePostReloadContext,
 } from "../src/context-preflight.mjs";
-import { CONTEXT_POLICY_MODES } from "../src/resource-loader.mjs";
+import {
+  CONTEXT_POLICY_MODES,
+  contextFileMetadata,
+  createApprovedResourceLoader,
+} from "../src/resource-loader.mjs";
+import { SettingsManager } from "@earendil-works/pi-coding-agent";
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const fixtureRepo = join(testDir, "fixtures", "context-policy-repo");
@@ -181,28 +188,125 @@ test("ROOT_ONLY REJECTED when undeclared nested file would load", async () => {
   assert.equal(manifest.status, PREFLIGHT_STATUS.REJECTED);
 });
 
-test("preflight harness writes runtime-context-manifest before provider gate", async () => {
+function emptyVerifiedManifest() {
+  return {
+    manifest: {
+      extensionSetId: "test-set",
+      extensionSetVersion: 1,
+    },
+    extensionPaths: [],
+  };
+}
+
+async function postReloadHarness(contextPolicy) {
+  const { discovery, validation: preflightValidation } = await runContextPreflight(fixtureRepo, contextPolicy);
+  const resourceLoader = createApprovedResourceLoader({
+    cwd: fixtureRepo,
+    agentDir: join(tmpdir(), "rd-pi-agent-dir"),
+    verifiedManifest: emptyVerifiedManifest(),
+    settingsManager: SettingsManager.inMemory(
+      {
+        compaction: { enabled: false },
+        retry: { enabled: true, maxRetries: 2 },
+        enableAnalytics: false,
+        packages: [],
+        extensions: [],
+        skills: [],
+        prompts: [],
+        themes: [],
+      },
+      { projectTrusted: false },
+    ),
+    contextPolicy,
+    contextDiscovery: discovery,
+  });
+  await resourceLoader.reload();
+  const contextFiles = contextFileMetadata(resourceLoader.getAgentsFiles().agentsFiles);
+  const postReloadLoaded = buildDiscoveryFromContextFiles(
+    contextFiles,
+    discovery.mode,
+    fixtureRepo,
+  );
+  const postReloadDiscovery = {
+    mode: discovery.mode,
+    loaded: postReloadLoaded.loaded,
+    rejected: discovery.rejected,
+  };
+  const postReloadValidation = validatePostReloadContext(
+    postReloadDiscovery,
+    contextPolicy,
+    preflightValidation,
+  );
+  const manifest = buildPreflightRuntimeContextManifest({
+    request: baseRequest({ contextPolicy }),
+    discovery: postReloadDiscovery,
+    validation: postReloadValidation,
+    contextPolicyHash: contextPolicy.policyHash,
+  });
+  return {
+    preflightValidation,
+    postReloadValidation,
+    postReloadDiscovery,
+    contextFiles,
+    manifest,
+  };
+}
+
+test("post-reload manifest is final truth and includes both root context files", async () => {
   const contextPolicy = await rootOnlyPolicyWithFixtureHashes();
-  const output = await mkdtemp(join(tmpdir(), "rd-pi-preflight-harness-"));
+  const output = await mkdtemp(join(tmpdir(), "rd-pi-post-reload-"));
   await mkdir(output, { recursive: true });
   const manifestPath = join(output, "runtime-context-manifest.json");
 
-  const providerGate = { started: false };
-  const { discovery, validation } = await runContextPreflight(fixtureRepo, contextPolicy);
-  const manifest = buildPreflightRuntimeContextManifest({
-    request: baseRequest({ contextPolicy }),
-    discovery,
-    validation,
-    contextPolicyHash: contextPolicy.policyHash,
-  });
+  const {
+    preflightValidation,
+    postReloadValidation,
+    contextFiles,
+    manifest,
+  } = await postReloadHarness(contextPolicy);
+
+  assert.equal(preflightValidation.accepted, true);
+  assert.equal(postReloadValidation.accepted, true);
+  assert.deepEqual(postReloadValidation.loadedPaths, ["AGENTS.md", "CLAUDE.md"]);
+  assert.deepEqual(contextFiles.map((file) => file.path.endsWith("AGENTS.md") || file.path.endsWith("CLAUDE.md")), [true, true]);
+
   await writeFile(manifestPath, `${JSON.stringify(manifest)}\n`, "utf8");
-
-  if (validation.accepted) {
-    providerGate.started = true;
-  }
-
-  assert.equal(providerGate.started, true);
   const persisted = JSON.parse(await readFile(manifestPath, "utf8"));
   assert.equal(persisted.status, PREFLIGHT_STATUS.ACCEPTED);
-  assert.ok(persisted.observedFiles.length >= 2);
+  const loaded = persisted.observedFiles.filter((entry) => entry.trustDecision === "LOADED");
+  assert.deepEqual(loaded.map((entry) => entry.path), ["AGENTS.md", "CLAUDE.md"]);
+});
+
+test("post-reload mismatch with preflight accepted set fails closed", async () => {
+  const contextPolicy = {
+    protocol: "rd-runtime-context-policy/v1",
+    mode: CONTEXT_POLICY_MODES.ROOT_ONLY,
+    policyHash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    expectedFiles: [],
+  };
+  const { discovery, validation: preflightValidation } = await runContextPreflight(fixtureRepo, contextPolicy);
+  assert.equal(preflightValidation.accepted, true);
+  assert.deepEqual(preflightValidation.loadedPaths, ["AGENTS.md", "CLAUDE.md"]);
+
+  const postReloadDiscovery = {
+    mode: discovery.mode,
+    loaded: [discovery.loaded[0]],
+    rejected: discovery.rejected,
+  };
+  const postReloadValidation = validatePostReloadContext(
+    postReloadDiscovery,
+    contextPolicy,
+    preflightValidation,
+  );
+  assert.equal(postReloadValidation.accepted, false);
+  assert.ok(postReloadValidation.violations.some((violation) => violation.includes("post-reload loaded set mismatch")));
+
+  const manifest = buildPreflightRuntimeContextManifest({
+    request: baseRequest({ contextPolicy }),
+    discovery: postReloadDiscovery,
+    validation: postReloadValidation,
+    contextPolicyHash: contextPolicy.policyHash,
+  });
+  assert.equal(manifest.status, PREFLIGHT_STATUS.REJECTED);
+  assert.equal(manifest.effectiveContextHash, "");
 });

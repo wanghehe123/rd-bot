@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 
+import { resolve } from "node:path";
+
 import { REQUEST_PROTOCOL_V2 } from "./protocol.mjs";
 import { CONTEXT_POLICY_MODES, discoverContextFiles } from "./resource-loader.mjs";
 
@@ -75,6 +77,53 @@ export function validateContextPreflight(discovery, contextPolicy) {
     violations: Object.freeze([...violations]),
     loadedPaths: Object.freeze([...loadedPaths]),
   });
+}
+
+/** Build a discovery-shaped load set from post-reload resource-loader metadata. */
+export function buildDiscoveryFromContextFiles(contextFiles, mode, repoPath) {
+  const root = resolve(repoPath || "/work/repo");
+  const loaded = (contextFiles ?? []).map((file) => {
+    const absolutePath = resolve(file.path ?? "");
+    const relativePath = absolutePath.startsWith(`${root}/`)
+      ? absolutePath.slice(root.length + 1).replace(/\\/g, "/")
+      : normalizeRepoPath(file.path);
+    return {
+      path: relativePath,
+      sha256: normalizeSha256(file.sha256),
+      bytes: file.bytes ?? 0,
+    };
+  });
+  return Object.freeze({
+    mode: mode ?? CONTEXT_POLICY_MODES.LEGACY_OBSERVE_ONLY,
+    loaded: Object.freeze(loaded),
+    rejected: Object.freeze([]),
+  });
+}
+
+/**
+ * Validate the post-reload loaded context against policy and, under ROOT_ONLY,
+ * against the preflight-accepted load set.
+ */
+export function validatePostReloadContext(discovery, contextPolicy, preflightValidation) {
+  const validation = validateContextPreflight(discovery, contextPolicy);
+  if (!validation.accepted) {
+    return validation;
+  }
+  const mode = contextPolicy?.mode ?? CONTEXT_POLICY_MODES.LEGACY_OBSERVE_ONLY;
+  if (mode === CONTEXT_POLICY_MODES.ROOT_ONLY && preflightValidation?.accepted) {
+    const preflightPaths = [...preflightValidation.loadedPaths];
+    const postReloadPaths = discovery.loaded.map((entry) => entry.path);
+    if (!arraysEqual(preflightPaths, postReloadPaths)) {
+      return Object.freeze({
+        accepted: false,
+        violations: Object.freeze([
+          `post-reload loaded set mismatch: preflight [${preflightPaths.join(",")}] vs reload [${postReloadPaths.join(",")}]`,
+        ]),
+        loadedPaths: Object.freeze([...postReloadPaths]),
+      });
+    }
+  }
+  return validation;
 }
 
 /** Build the runtime context manifest artifact for preflight (ACCEPTED or REJECTED). */
