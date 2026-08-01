@@ -19,6 +19,7 @@ import com.wish.rd.rag.project.agent.model.ModelProviderProtocol;
 import com.wish.rd.rag.runtime.model.RdRequirementTask;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
@@ -186,7 +187,7 @@ public final class EngineRequirementExecutionProfileResolver
         AgentToolPolicy toolPolicy = resolveToolPolicy(runtimeType, profile);
         value.put("toolPolicyId", toolPolicy.policyId());
         value.put("toolPolicyVersion", toolPolicy.version());
-        value.put("toolPolicy", toolPolicyJson(toolPolicy));
+        value.put("toolPolicy", toolPolicyJson(toolPolicy, dynamicStateEnabled));
         ModelProviderProfile provider = resolveProvider(runtimeType, profile);
         value.put("providerProtocol", provider == null ? "" : provider.protocol().name());
         value.put("providerBaseUrl", provider == null ? "" : provider.baseUrl());
@@ -245,12 +246,41 @@ public final class EngineRequirementExecutionProfileResolver
                 ));
     }
 
+    private static final List<String> DYNAMIC_STATE_TOOLS = List.of(
+            "rd_todo_rewrite",
+            "rd_todo_update_status",
+            "rd_record_fact"
+    );
+
     private static Map<String, Object> toolPolicyJson(AgentToolPolicy policy) {
+        return toolPolicyJson(policy, false);
+    }
+
+    /**
+     * Serializes the frozen tool policy. When dynamic state is enabled, state tools are
+     * merged into hostAllow/allow (and removed from deny) so Pi Bridge can register them.
+     */
+    private static Map<String, Object> toolPolicyJson(AgentToolPolicy policy, boolean dynamicStateEnabled) {
+        java.util.LinkedHashSet<String> hostAllow = new java.util.LinkedHashSet<>(policy.hostAllow());
+        java.util.LinkedHashSet<String> allow = new java.util.LinkedHashSet<>(policy.allow());
+        java.util.LinkedHashSet<String> deny = new java.util.LinkedHashSet<>(policy.deny());
+        if (dynamicStateEnabled) {
+            for (String tool : DYNAMIC_STATE_TOOLS) {
+                hostAllow.add(tool);
+                allow.add(tool);
+                deny.remove(tool);
+            }
+        }
+        List<String> effective = allow.stream()
+                .filter(hostAllow::contains)
+                .filter(tool -> !deny.contains(tool))
+                .sorted()
+                .toList();
         Map<String, Object> value = new LinkedHashMap<>();
-        value.put("hostAllow", policy.hostAllow().stream().sorted().toList());
-        value.put("allow", policy.allow().stream().sorted().toList());
-        value.put("deny", policy.deny().stream().sorted().toList());
-        value.put("effectiveAllow", policy.effectiveAllow());
+        value.put("hostAllow", hostAllow.stream().sorted().toList());
+        value.put("allow", allow.stream().sorted().toList());
+        value.put("deny", deny.stream().sorted().toList());
+        value.put("effectiveAllow", effective);
         value.put("enabled", policy.enabled());
         return value;
     }

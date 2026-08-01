@@ -122,8 +122,8 @@ class PostgresAgentStageArtifactStoreTest {
                 artifact.createdAtEpochMillis()
         ));
 
-        verify(mapper).insert(any(RdAgentStageArtifactRow.class));
-        verify(mapper, never()).upsertStageArtifact(any());
+        verify(mapper).upsertStageArtifact(any(RdAgentStageArtifactRow.class));
+        verify(mapper, never()).insert(org.mockito.ArgumentMatchers.<RdAgentStageArtifactRow>any());
         assertEquals(artifact.artifactId(), again.artifactId());
         assertEquals("{\"version\":1}", again.contentPreview());
     }

@@ -70,7 +70,9 @@ public final class PostgresAgentStageArtifactStore implements AgentStageArtifact
         RdAgentStageArtifactRow row = toRow(artifact);
         RdAgentStageArtifactRow existing = mapper.selectById(row.id);
         if (existing == null) {
-            mapper.insert(row);
+            // Use the annotated upsert (#{metadataJson}::jsonb). BaseMapper#insert binds
+            // varchar without a cast and fails on PostgreSQL jsonb columns.
+            mapper.upsertStageArtifact(row);
             if (evidenceMapper != null && isPrivateQaEvidence(artifact)) {
                 evidenceMapper.upsertEvidenceObject(toEvidenceRow(artifact));
             }

@@ -91,6 +91,9 @@ class EngineRequirementExecutionProfileResolverTest {
         assertTrue(snapshotJson.contains("\"dynamicStateEnabled\":true"));
         assertTrue(snapshotJson.contains("\"maxInjectedStateBytes\":16384"));
         assertTrue(snapshotJson.contains("\"toolRetryPolicyVersion\":\"rd-tool-retry/v1\""));
+        assertTrue(snapshotJson.contains("\"rd_todo_rewrite\""));
+        assertTrue(snapshotJson.contains("\"rd_todo_update_status\""));
+        assertTrue(snapshotJson.contains("\"rd_record_fact\""));
     }
 
     private EngineRequirementExecutionProfileResolver resolver(
