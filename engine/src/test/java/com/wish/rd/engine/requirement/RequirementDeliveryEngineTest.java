@@ -129,7 +129,7 @@ class RequirementDeliveryEngineTest {
                 pullRequestPublisher
         );
         engine.setExecutionProfileResolver((resolvedTask, role, stageRunId, attemptNo) ->
-                new RequirementExecutionProfileResolution("snapshot-" + stageRunId)
+                RequirementExecutionProfileResolution.of("snapshot-" + stageRunId, "")
         );
 
         RequirementDeliveryResult result = engine.submit(task.taskId());
@@ -331,7 +331,7 @@ class RequirementDeliveryEngineTest {
                 pullRequestPublisher
         );
         engine.setExecutionProfileResolver((resolvedTask, role, stageRunId, attemptNo) ->
-                new RequirementExecutionProfileResolution("snapshot-" + stageRunId));
+                RequirementExecutionProfileResolution.of("snapshot-" + stageRunId, ""));
         return engine;
     }
 

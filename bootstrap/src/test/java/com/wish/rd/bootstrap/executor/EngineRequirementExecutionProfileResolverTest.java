@@ -80,7 +80,13 @@ class EngineRequirementExecutionProfileResolverTest {
         );
         resolver.resolve(task(), AgentRole.CODING_AGENT, "stage-context", 1);
         String snapshotJson = snapshots.findByStageRunId("stage-context").orElseThrow().snapshotJson();
+        RequirementExecutionProfileResolution resolution = resolver.resolve(
+                task(), AgentRole.CODING_AGENT, "stage-context", 1
+        );
         assertTrue(snapshotJson.contains("\"contextProtocolVersion\":\"FACTS_V1\""));
+        assertEquals("FACTS_V1", resolution.contextProtocolVersion());
+        assertTrue(resolution.dynamicStateEnabled());
+        assertEquals(snapshotJson, resolution.snapshotJson());
         assertTrue(snapshotJson.contains("\"agentStateSchemaVersion\":\"rd-agent-state/v1\""));
         assertTrue(snapshotJson.contains("\"dynamicStateEnabled\":true"));
         assertTrue(snapshotJson.contains("\"maxInjectedStateBytes\":16384"));

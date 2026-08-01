@@ -178,6 +178,83 @@ class RdTaskExecutionOverviewControllerTest {
     }
 
     @Test
+    void shouldExposeAgentStateSummaryWithoutFullLedger() throws Exception {
+        RdRequirementTask task = registry.createRequirementTask(new CreateRequirementTaskCommand(
+                "Agent state 概览测试",
+                "P2",
+                "https://github.com/example/repo.git",
+                "example",
+                "repo",
+                "main",
+                "展示 agent state 摘要",
+                List.of("overview 返回脱敏 state 计数"),
+                false
+        ));
+        AgentStageRun stageRun = stageRunStore.save(new AgentStageRun(
+                "stage-state-1001",
+                task.taskId(),
+                AgentRole.CODING_AGENT,
+                AgentStageStatus.RUNNING,
+                1,
+                task.taskId() + ":CODING_AGENT:1",
+                "",
+                "",
+                "",
+                "pi",
+                "[]",
+                "{}",
+                "",
+                "",
+                1_783_000_000_000L,
+                1_783_000_000_000L,
+                1_783_000_000_000L,
+                0L
+        ));
+        String agentStatePreview = """
+                {
+                  "protocol": "rd-agent-state/v1",
+                  "sequence": 7,
+                  "generatedAt": "2026-08-01T00:00:00Z",
+                  "taskId": "%s",
+                  "stageRunId": "stage-state-1001",
+                  "role": "CODING_AGENT",
+                  "attemptNo": 1,
+                  "todos": [
+                    {"todoId":"t1","title":"task one","status":"PENDING"},
+                    {"todoId":"t2","title":"task two","status":"IN_PROGRESS"},
+                    {"todoId":"t3","title":"task three","status":"BLOCKED"},
+                    {"todoId":"t4","title":"task four","status":"DONE"}
+                  ]
+                }""".formatted(task.taskId());
+        artifactStore.save(new AgentStageArtifact(
+                "agent-state-1001",
+                stageRun.stageRunId(),
+                task.taskId(),
+                AgentRole.CODING_AGENT,
+                "AGENT_STATE_SNAPSHOT",
+                "rd-artifact://stage-state-1001/agent-state",
+                "agent state snapshot",
+                agentStatePreview,
+                "sha256:agent-state",
+                "{\"contentLength\":" + agentStatePreview.length() + "}",
+                1_783_000_100_000L
+        ));
+
+        mockMvc.perform(get("/admin/rd-tasks/{taskId}/execution-overview", task.taskId()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.stageRuns[0].agentStateAvailable", is(true)))
+                .andExpect(jsonPath("$.stageRuns[0].agentStateSequence", is(7)))
+                .andExpect(jsonPath("$.stageRuns[0].agentStateSchemaVersion", is("rd-agent-state/v1")))
+                .andExpect(jsonPath("$.stageRuns[0].agentStateTodoPending", is(1)))
+                .andExpect(jsonPath("$.stageRuns[0].agentStateTodoInProgress", is(1)))
+                .andExpect(jsonPath("$.stageRuns[0].agentStateTodoBlocked", is(1)))
+                .andExpect(jsonPath("$.stageRuns[0].agentStateTodoDone", is(1)))
+                .andExpect(jsonPath("$.stageRuns[0].agentStatePreviewTruncated", is(false)))
+                .andExpect(jsonPath("$.stageRuns[0].agentStateContentHash", is("sha256:agent-state")))
+                .andExpect(jsonPath("$.stageRuns[0].resultPreview", not(containsString("verifiedFactSummaries"))));
+    }
+
+    @Test
     void shouldReturnExecutionOverviewWithStagesBudgetAndRunningExecutions() throws Exception {
         RdRequirementTask task = registry.createRequirementTask(new CreateRequirementTaskCommand(
                 "执行观测测试",

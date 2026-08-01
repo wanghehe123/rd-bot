@@ -115,7 +115,10 @@ public final class EngineRequirementExecutionProfileResolver
                 .orElse(null);
         if (existing != null) {
             verifyExisting(existing, task, role, attemptNo);
-            return new RequirementExecutionProfileResolution(existing.snapshotId());
+            return RequirementExecutionProfileResolution.of(
+                    existing.snapshotId(),
+                    existing.snapshotJson()
+            );
         }
 
         AgentExecutionProfile profile = profileService.resolve(task.projectId(), task.taskId(), role.name())
@@ -136,7 +139,7 @@ public final class EngineRequirementExecutionProfileResolver
                 System.currentTimeMillis()
         );
         AgentExecutionProfileSnapshot stored = snapshotService.resolveOrSave(requested);
-        return new RequirementExecutionProfileResolution(stored.snapshotId());
+        return RequirementExecutionProfileResolution.of(stored.snapshotId(), stored.snapshotJson());
     }
 
     private void verifyExisting(

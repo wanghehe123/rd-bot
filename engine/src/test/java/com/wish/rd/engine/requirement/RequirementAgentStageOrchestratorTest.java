@@ -219,6 +219,52 @@ class RequirementAgentStageOrchestratorTest {
                 .allMatch(artifact -> artifact.contentPreview().contains("\"mode\":\"LEGACY_OBSERVE_ONLY\"")));
     }
 
+    @Test
+    void reviewer_prompt_excludes_coding_executor_baseline_under_legacy_protocol() {
+        AgentWorkflowPlan plan = reviewerOnlyPlan();
+        OrchestratorTestHarness harness = new OrchestratorTestHarness()
+                .prestageRoles(plan.roles())
+                .prestageRoleContexts(plan.roles());
+
+        RequirementExecutionResult result = harness.orchestrator.run(
+                plan, harness.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION, null);
+
+        assertTrue(result.success());
+        String prompt = harness.executor.lastPromptByRole.get(AgentRole.REQUIREMENT_REVIEWER);
+        assertNotNull(prompt);
+        assertFalse(prompt.contains("完成需求编码"));
+    }
+
+    @Test
+    void reviewer_prompt_includes_facts_contract_under_facts_v1_protocol() {
+        AgentWorkflowPlan plan = reviewerOnlyPlan();
+        OrchestratorTestHarness harness = new OrchestratorTestHarness()
+                .prestageRoles(plan.roles())
+                .prestageRoleContexts(plan.roles());
+        harness.orchestrator.setExecutionProfileResolver(new FactsProfileResolver());
+
+        RequirementExecutionResult result = harness.orchestrator.run(
+                plan, harness.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION, null);
+
+        assertTrue(result.success());
+        String prompt = harness.executor.lastPromptByRole.get(AgentRole.REQUIREMENT_REVIEWER);
+        assertNotNull(prompt);
+        assertFalse(prompt.contains("完成需求编码"));
+        assertTrue(prompt.contains("\"facts\""));
+        assertTrue(prompt.contains("environmentNotes"));
+    }
+
+    private static AgentWorkflowPlan reviewerOnlyPlan() {
+        return new AgentWorkflowPlan(
+                List.of(AgentRole.REQUIREMENT_REVIEWER),
+                false,
+                false,
+                1,
+                Map.of(AgentRole.REQUIREMENT_REVIEWER, 1.0d),
+                "TEST_REVIEWER_ONLY"
+        );
+    }
+
     // ---------- (h) orchestrator_enforces_one_qa_remediation_pass_for_D_plan ----------
     @Test
     void orchestrator_enforces_one_qa_remediation_pass_for_D_plan() {
@@ -600,7 +646,22 @@ class RequirementAgentStageOrchestratorTest {
         @Override
         public RequirementExecutionProfileResolution resolve(
                 RdRequirementTask task, AgentRole role, String stageRunId, int attemptNo) {
-            return new RequirementExecutionProfileResolution("snap-" + stageRunId);
+            return RequirementExecutionProfileResolution.of("snap-" + stageRunId, "");
+        }
+    }
+
+    /** Test profile resolver: FACTS_V1 + dynamic state enabled. */
+    static final class FactsProfileResolver implements RequirementExecutionProfileResolverPort {
+        @Override
+        public RequirementExecutionProfileResolution resolve(
+                RdRequirementTask task, AgentRole role, String stageRunId, int attemptNo) {
+            String snapshotJson = """
+                    {
+                      "contextProtocolVersion":"FACTS_V1",
+                      "dynamicStateEnabled":true,
+                      "agentStateSchemaVersion":"rd-agent-state/v1"
+                    }""";
+            return RequirementExecutionProfileResolution.of("snap-facts-" + stageRunId, snapshotJson);
         }
     }
 

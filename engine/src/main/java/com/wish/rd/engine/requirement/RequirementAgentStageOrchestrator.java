@@ -28,6 +28,7 @@ import com.wish.rd.rag.runtime.model.RdRequirementTask;
 import com.wish.rd.rag.runtime.model.TaskMaterial;
 import com.wish.rd.rag.retrieval.run.model.RetrievalConsumerType;
 import com.wish.rd.rag.retrieval.run.model.RetrievalRunStatus;
+import com.wish.rd.rag.project.agent.model.ContextProtocolVersion;
 import com.wish.rd.rag.project.agent.model.RoleExecutionInputManifest;
 
 import java.io.IOException;
@@ -263,25 +264,8 @@ public class RequirementAgentStageOrchestrator {
             stage = bindRoleContext(stage, roleContext);
             // PENDING -> CONTEXT_READY：将该角色的上下文包绑定为本阶段执行上下文快照。
             stage = transitionStage(stage, AgentStageStatus.CONTEXT_READY, "", "");
-            // CONTEXT_READY -> DISPATCHING：准备调度并构造角色提示词。
+            // CONTEXT_READY -> DISPATCHING：准备调度并解析冻结 profile，再构造角色提示词。
             stage = transitionStage(stage, AgentStageStatus.DISPATCHING, "", "");
-            String recoverySection = joinPromptSections(
-                    recoveryPromptSection(activeRetry, role, roleRecoveryEvidence),
-                    previousFailureFeedbackSection(task.taskId(), role, stage.attemptNo())
-            );
-            String rolePrompt = buildAgentPrompt(
-                    role,
-                    task,
-                    materials,
-                    context,
-                    planSnapshot,
-                    policyDecision,
-                    roleContext,
-                    upstreamResultJson,
-                    recoverySection
-            );
-            // DISPATCHING -> RUNNING：记录 prompt 快照后进入正式执行。
-            stage = capturePromptArtifact(stage, rolePrompt);
             RequirementExecutionProfileResolution executionProfileResolution;
             try {
                 executionProfileResolution = executionProfileResolver.resolve(
@@ -317,6 +301,24 @@ public class RequirementAgentStageOrchestrator {
                         )
                 );
             }
+            String recoverySection = joinPromptSections(
+                    recoveryPromptSection(activeRetry, role, roleRecoveryEvidence),
+                    previousFailureFeedbackSection(task.taskId(), role, stage.attemptNo())
+            );
+            String rolePrompt = buildAgentPrompt(
+                    role,
+                    task,
+                    materials,
+                    context,
+                    planSnapshot,
+                    policyDecision,
+                    roleContext,
+                    upstreamResultJson,
+                    recoverySection,
+                    executionProfileResolution
+            );
+            // DISPATCHING -> RUNNING：记录 prompt 快照后进入正式执行。
+            stage = capturePromptArtifact(stage, rolePrompt);
             stage = captureRoleExecutionInputManifest(
                     stage,
                     role,
@@ -324,7 +326,8 @@ public class RequirementAgentStageOrchestrator {
                     materials,
                     roleContext,
                     rolePrompt,
-                    roleInstruction(role) + "\n" + roleOutputContract(role),
+                    roleInstruction(role, executionProfileResolution) + "\n"
+                            + roleOutputContract(role, executionProfileResolution),
                     upstreamResultJson,
                     executionProfileResolution,
                     recoverySection,
@@ -985,7 +988,8 @@ public class RequirementAgentStageOrchestrator {
             RequirementPolicyDecision policyDecision,
             RoleContextPackage roleContext,
             String upstreamResultJson,
-            String recoveryPromptSection
+            String recoveryPromptSection,
+            RequirementExecutionProfileResolution executionProfileResolution
     ) {
         return """
                 你是 RD-Bot 多 Agent 需求交付链路中的 %s。
@@ -1014,19 +1018,27 @@ public class RequirementAgentStageOrchestrator {
                 %s
                 """.formatted(
                 role.name(),
-                roleInstruction(role),
+                roleInstruction(role, executionProfileResolution),
                 roleContextJson(roleContext),
                 repositoryDiscoveryPromptSection(roleContext),
                 upstreamHandoffPromptSection(role, upstreamResultJson),
                 budgetEstimatePromptSection(role, task),
                 lightweightDeliveryPromptSection(role, task),
                 recoveryPromptSection,
-                buildBasePrompt(task, materials, context, planSnapshot, policyDecision),
-                roleOutputContract(role)
+                buildBasePrompt(
+                        role,
+                        task,
+                        materials,
+                        context,
+                        planSnapshot,
+                        policyDecision
+                ),
+                roleOutputContract(role, executionProfileResolution)
         ).strip();
     }
 
     private String buildBasePrompt(
+            AgentRole role,
             RdRequirementTask task,
             List<TaskMaterial> materials,
             RequirementContextPackage context,
@@ -1034,7 +1046,7 @@ public class RequirementAgentStageOrchestrator {
             RequirementPolicyDecision policyDecision
     ) {
         return """
-                你是 RD-Bot 的需求交付执行器。请在受控仓库中完成需求编码、测试，并准备可审查 PR。
+                %s
 
                 # 任务
                 - taskId: %s
@@ -1071,10 +1083,9 @@ public class RequirementAgentStageOrchestrator {
                 %s
 
                 # 输出要求
-                - 修改代码后运行必要的测试或构建命令。
-                - 返回结构化 JSON，status 使用 SUCCESS/FAILED/NEED_INFO/UNSAFE。
-                - 成功时提供 summary、changedFiles、testSummary 和 prBody。
+                %s
                 """.formatted(
+                basePromptMission(role),
                 task.taskId(),
                 task.title(),
                 task.priority(),
@@ -1090,8 +1101,39 @@ public class RequirementAgentStageOrchestrator {
                 policyDecision.riskLevel(),
                 policyDecision.reason(),
                 context.suggestedValidationCommands(),
-                materialPrompt(materials)
+                materialPrompt(materials),
+                basePromptOutputRequirements(role)
         ).strip();
+    }
+
+    private String basePromptMission(AgentRole role) {
+        return switch (role) {
+            case CODING_AGENT ->
+                    "你是 RD-Bot 的需求交付执行器。请在受控仓库中完成需求编码、测试，并准备可审查 PR。";
+            case QA_AGENT ->
+                    "你是 RD-Bot 的 QA 验证执行器。请在受控仓库中基于上游交付候选执行真实验收与回归验证，采集可审计证据。";
+            default ->
+                    "你是 RD-Bot 的需求交付链路参与者。请在本角色职责范围内完成任务分析、评审或方案设计；不要修改仓库代码或创建 PR。";
+        };
+    }
+
+    private String basePromptOutputRequirements(AgentRole role) {
+        return switch (role) {
+            case CODING_AGENT -> """
+                    - 修改代码后运行必要的测试或构建命令。
+                    - 返回结构化 JSON，status 使用 SUCCESS/FAILED/NEED_INFO/UNSAFE。
+                    - 成功时提供 summary、changedFiles、testSummary 和 prBody。
+                    """.strip();
+            case QA_AGENT -> """
+                    - 执行真实验证命令并采集 qa-evidence/ 下的可审计证据。
+                    - 返回结构化 JSON，status 使用 PASSED/FAILED/SKIPPED。
+                    - 每条 acceptanceResults 必须引用真实证据文件；不要准备或创建 PR。
+                    """.strip();
+            default -> """
+                    - 返回结构化 JSON，严格遵循当前角色输出协议。
+                    - 不要修改仓库代码、不要运行交付级构建/测试、不要创建 PR。
+                    """.strip();
+        };
     }
 
     private RequirementExecutionResult executeRole(
@@ -2596,7 +2638,14 @@ public class RequirementAgentStageOrchestrator {
         return "";
     }
 
-    private String roleInstruction(AgentRole role) {
+    private String roleInstruction(AgentRole role, RequirementExecutionProfileResolution resolution) {
+        if (resolution != null && resolution.protocolVersion() == ContextProtocolVersion.FACTS_V1) {
+            return roleInstructionFactsV1(role, resolution.dynamicStateEnabled());
+        }
+        return roleInstructionLegacy(role);
+    }
+
+    private String roleInstructionLegacy(AgentRole role) {
         return switch (role) {
             case REQUIREMENT_REVIEWER -> """
                     - 只做需求评审，不修改代码，不创建 PR。
@@ -2647,7 +2696,55 @@ public class RequirementAgentStageOrchestrator {
         };
     }
 
-    private String roleOutputContract(AgentRole role) {
+    private String roleInstructionFactsV1(AgentRole role, boolean dynamicStateEnabled) {
+        String dynamicStateHint = dynamicStateEnabled
+                ? "- 动态状态已开启：优先用 rd_record_fact 记录可验证事实，再写入 result.json 的 facts[]。"
+                : "- 动态状态未开启：把环境事实结构化写入 result.json 的 facts[]。";
+        return switch (role) {
+            case REQUIREMENT_REVIEWER -> """
+                    - 只做需求评审，不修改代码，不创建 PR。
+                    %s
+                    - 不要自由填写 environmentNotes；Harness 会从 fresh OBSERVED facts 派生 environmentNotes，手写冲突 notes 会导致结果被拒绝。
+                    - 输出结构化需求评审结果，明确能否做、缺失信息、风险和验收覆盖。
+                    - 当评审允许进入下一角色时，使用已安装的 role-handoff-document Skill，把可执行交接写入 /work/output/handoff/next.md；预算见 context.json 的 roleHandoffMaxTokens。
+                    - 交接文档承载详细约束、验收、风险和待确认项；result.json 中只保留 next_prompt 的简短指针，绝不写对象存储地址或凭据。
+                    - 结果必须写入 /work/output/result.json，且只使用当前角色输出 JSON 协议。
+                    """.formatted(dynamicStateHint).strip();
+            case SOLUTION_ARCHITECT -> """
+                    - 基于需求评审和证据制定开发方案，不修改代码，不创建 PR。
+                    %s
+                    - 上游 facts 视为已验证事实直接沿用；本轮新发现的环境事实追加写入 facts[]，不要填写 environmentNotes。
+                    - 输出影响文件、接口/数据变更、实现步骤、验收映射和测试计划。
+                    - 使用已安装的 role-handoff-document Skill，把完整开发计划写入 /work/output/handoff/next.md，供 CODING_AGENT 作为受控附件读取；预算见 context.json 的 roleHandoffMaxTokens。
+                    - result.json 中的 next_prompt 只提供目标角色、短摘要和固定相对路径；不要把完整计划或 RustFS 地址复制进 JSON。
+                    - 结果必须写入 /work/output/result.json，且只使用当前角色输出 JSON 协议。
+                    """.formatted(dynamicStateHint).strip();
+            case CODING_AGENT -> """
+                    - 根据需求评审和方案执行代码修改。
+                    %s
+                    - 上游 facts 视为已验证事实直接沿用，不要重复探测；本轮新发现的环境事实（含可用的测试执行方式）追加写入 facts[]，供 QA 直接沿用。
+                    - 不要自由填写 environmentNotes；Harness 会从 fresh OBSERVED facts 派生 environmentNotes。
+                    - 依赖树和 /work/cache 是当前任务与重试共享的状态：不得删除 node_modules、package-lock.json 或 /work/cache。先检查现有依赖；仅在依赖确实缺失时执行一次与 lockfile 匹配的安装。安装失败时保留诊断并停止重复清理、重复安装或绕过包管理器的手工下载。
+                    - Next.js 服务验收必须使用生产模式：执行 npm run build && npm run start；不得以 npm run dev 作为交付验证服务。
+                    - HTTP 请求必须设置不超过 30 秒的请求超时；启动服务和每个 bash 命令都必须有有限 deadline。超时后停止临时服务、保留日志，并提交 FAILED 结构化结果；不得无限等待。
+                    - 该阶段只负责代码修改和交付候选证据，不创建 PR。
+                    - 使用已安装的 role-handoff-document Skill，把变更、已执行测试、风险和 QA 注意事项写入 /work/output/handoff/next.md；预算见 context.json 的 roleHandoffMaxTokens。
+                    - result.json 中的 next_prompt 只提供目标角色、短摘要和固定相对路径；不得透传完整日志、Docker 元数据或对象存储地址。
+                    - 成功时返回 prBody、changedFiles、testSummary 和真实测试证据，等待控制面复核后发布。
+                    """.formatted(dynamicStateHint).strip();
+            case QA_AGENT -> roleInstructionLegacy(AgentRole.QA_AGENT);
+            default -> throw new IllegalArgumentException("unsupported requirement role: " + role);
+        };
+    }
+
+    private String roleOutputContract(AgentRole role, RequirementExecutionProfileResolution resolution) {
+        if (resolution != null && resolution.protocolVersion() == ContextProtocolVersion.FACTS_V1) {
+            return roleOutputContractFactsV1(role);
+        }
+        return roleOutputContractLegacy(role);
+    }
+
+    private String roleOutputContractLegacy(AgentRole role) {
         return switch (role) {
             case REQUIREMENT_REVIEWER -> """
                     只输出一个 JSON 对象，不要 markdown：
@@ -2738,6 +2835,86 @@ public class RequirementAgentStageOrchestrator {
                       "evidenceManifestArtifactId": "qa-evidence/manifest.json"
                     }
                     """.strip();
+            default -> throw new IllegalArgumentException("unsupported requirement role: " + role);
+        };
+    }
+
+    private String roleOutputContractFactsV1(AgentRole role) {
+        String observedFactExample = """
+                {
+                  "factId": "env-test-entry",
+                  "kind": "OBSERVED",
+                  "statement": "npm test 可在当前仓库执行",
+                  "sourceArtifactId": "qa-evidence/commands/test.log",
+                  "sourceStageRunId": "stage-run-id",
+                  "observedAt": "2026-08-01T00:00:00Z",
+                  "freshnessPolicy": "SAME_REVISION",
+                  "repoRevision": "abc123"
+                }""".strip();
+        return switch (role) {
+            case REQUIREMENT_REVIEWER -> """
+                    只输出一个 JSON 对象，不要 markdown：
+                    {
+                      "decision": "APPROVED|NEED_INFO|REJECTED",
+                      "feasibility": "CAN_DO|NEED_INFO|UNSAFE",
+                      "missingInformation": [],
+                      "risks": [],
+                      "acceptanceCoverage": ["每条验收标准的覆盖判断"],
+                      "facts": [%s],
+                      "budgetEstimate": {
+                        "initialTokens": 0,
+                        "retryReserveTokens": 0,
+                        "estimatedTotalTokens": 0,
+                        "confidence": "LOW|MEDIUM|HIGH；预算章节未提供历史实际样本时必须填 LOW，否则整个结果会被拒绝",
+                        "basis": "基于四角色首轮、一次重试预留和给定历史实际 token 样本的模型判断",
+                        "historicalSamples": []
+                      },
+                      "next_prompt": {
+                        "targetRole": "SOLUTION_ARCHITECT",
+                        "summary": "最多 1200 个字符的下游摘要",
+                        "handoffArtifact": "handoff/next.md"
+                      }
+                    }
+                    不要包含 environmentNotes；Harness 会从 fresh OBSERVED facts 派生。
+                    """.formatted(observedFactExample).strip();
+            case SOLUTION_ARCHITECT -> """
+                    只输出一个 JSON 对象，不要 markdown：
+                    {
+                      "summary": "开发方案摘要",
+                      "affectedFiles": ["预计影响文件"],
+                      "implementationSteps": ["可执行开发步骤"],
+                      "acceptanceMapping": [{"criteria":"验收标准","validation":"真实验证方式"}],
+                      "testPlan": [{"criteria":"验收标准","command":"真实测试命令"}],
+                      "facts": [%s],
+                      "next_prompt": {
+                        "targetRole": "CODING_AGENT",
+                        "summary": "最多 1200 个字符的下游摘要",
+                        "handoffArtifact": "handoff/next.md"
+                      }
+                    }
+                    不要包含 environmentNotes；无新发现时 facts 可为空数组。
+                    """.formatted(observedFactExample).strip();
+            case CODING_AGENT -> """
+                    只输出一个 JSON 对象，不要 markdown：
+                    {
+                      "status": "SUCCESS|FAILED|NEED_INFO|UNSAFE",
+                      "summary": "实现摘要",
+                      "changedFiles": ["实际改动文件"],
+                      "testCommands": ["真实执行过的命令"],
+                      "testStatus": "PASSED|FAILED|SKIPPED",
+                      "riskLevel": "LOW|MEDIUM|HIGH",
+                      "facts": [%s],
+                      "prBody": "候选 PR 正文，包含改动和真实验证证据",
+                      "needHumanAction": false,
+                      "next_prompt": {
+                        "targetRole": "QA_AGENT",
+                        "summary": "最多 1200 个字符的 QA 交接摘要",
+                        "handoffArtifact": "handoff/next.md"
+                      }
+                    }
+                    不要包含 environmentNotes；Harness 会从 fresh OBSERVED facts 派生。
+                    """.formatted(observedFactExample).strip();
+            case QA_AGENT -> roleOutputContractLegacy(AgentRole.QA_AGENT);
             default -> throw new IllegalArgumentException("unsupported requirement role: " + role);
         };
     }

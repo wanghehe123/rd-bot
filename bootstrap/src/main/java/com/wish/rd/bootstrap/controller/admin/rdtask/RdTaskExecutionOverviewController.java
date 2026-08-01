@@ -179,6 +179,7 @@ public class RdTaskExecutionOverviewController {
         List<AgentRole> stageOrder = stageOrder(task);
         List<AgentStageRun> stageRuns = sortedStageRuns(task.taskId(), stageOrder);
         Map<String, AgentStageArtifact> artifactById = artifactsById(task.taskId());
+        Map<String, AgentStageArtifact> latestAgentStateByStage = latestAgentStateSnapshots(task.taskId());
         AgentStageProgressCalculator.AgentStageProgress stageProgress = stageProgressCalculator.calculate(
                 task.taskType(),
                 stageRuns
@@ -186,7 +187,7 @@ public class RdTaskExecutionOverviewController {
         List<RoleContextPackage> contextPackages = contextPackageStore.listByTask(task.taskId());
         ExecutionBudgetView budget = budget(contextPackages, stageRuns);
         List<StageRunView> stageViews = stageRuns.stream()
-                .map(stageRun -> toStageRunView(stageRun, now, artifactById))
+                .map(stageRun -> toStageRunView(stageRun, now, artifactById, latestAgentStateByStage))
                 .toList();
         List<DockerExecutionRegistry.RunningExecution> runningExecutionSnapshots = executionRegistry.runningExecutions().stream()
                 .filter(execution -> task.taskId().equals(execution.taskId()))
@@ -449,10 +450,25 @@ public class RdTaskExecutionOverviewController {
                 ));
     }
 
+    private Map<String, AgentStageArtifact> latestAgentStateSnapshots(String taskId) {
+        Map<String, AgentStageArtifact> latest = new LinkedHashMap<>();
+        for (AgentStageArtifact artifact : artifactStore.listByTask(taskId)) {
+            if (!"AGENT_STATE_SNAPSHOT".equals(artifact.artifactType())) {
+                continue;
+            }
+            AgentStageArtifact existing = latest.get(artifact.stageRunId());
+            if (existing == null || compareArtifact(artifact, existing) > 0) {
+                latest.put(artifact.stageRunId(), artifact);
+            }
+        }
+        return latest;
+    }
+
     private StageRunView toStageRunView(
             AgentStageRun stageRun,
             long now,
-            Map<String, AgentStageArtifact> artifactById
+            Map<String, AgentStageArtifact> artifactById,
+            Map<String, AgentStageArtifact> latestAgentStateByStage
     ) {
         List<Map<String, Object>> providerAttempts = providerAttemptsCny(
                 providerAttempts(stageRun.providerAttemptsJson())
@@ -461,6 +477,9 @@ public class RdTaskExecutionOverviewController {
         AgentStageArtifact resultArtifact = artifactById.get(stageRun.resultArtifactId());
         String resultPreview = resultPreview(stageRun, resultArtifact);
         String resultSummary = resultArtifact == null ? "" : resultArtifact.summary();
+        AgentStateOverviewSummary agentState = agentStateOverview(
+                latestAgentStateByStage.get(stageRun.stageRunId())
+        );
         return new StageRunView(
                 stageRun.stageRunId(),
                 stageRun.taskId(),
@@ -485,8 +504,88 @@ public class RdTaskExecutionOverviewController {
                 stageRun.startedAtEpochMillis(),
                 stageRun.finishedAtEpochMillis(),
                 elapsedMillis,
-                stageRun.startedAtEpochMillis() > 0L && stageRun.finishedAtEpochMillis() <= 0L
+                stageRun.startedAtEpochMillis() > 0L && stageRun.finishedAtEpochMillis() <= 0L,
+                agentState.available(),
+                agentState.sequence(),
+                agentState.schemaVersion(),
+                agentState.todoPending(),
+                agentState.todoInProgress(),
+                agentState.todoBlocked(),
+                agentState.todoDone(),
+                agentState.previewTruncated(),
+                agentState.contentHash()
         );
+    }
+
+    private AgentStateOverviewSummary agentStateOverview(AgentStageArtifact artifact) {
+        if (artifact == null || artifact.contentPreview().isBlank()) {
+            return AgentStateOverviewSummary.empty();
+        }
+        try {
+            JsonNode root = OBJECT_MAPPER.readTree(artifact.contentPreview());
+            long sequence = root.path("sequence").asLong(0L);
+            String schemaVersion = root.path("protocol").asText("");
+            int pending = 0;
+            int inProgress = 0;
+            int blocked = 0;
+            int done = 0;
+            JsonNode todos = root.path("todos");
+            if (todos.isArray()) {
+                for (JsonNode todo : todos) {
+                    switch (todo.path("status").asText("")) {
+                        case "PENDING" -> pending++;
+                        case "IN_PROGRESS" -> inProgress++;
+                        case "BLOCKED" -> blocked++;
+                        case "DONE" -> done++;
+                        default -> {
+                            // CANCELLED and unknown statuses are omitted from summary counts.
+                        }
+                    }
+                }
+            }
+            return new AgentStateOverviewSummary(
+                    true,
+                    sequence,
+                    schemaVersion,
+                    pending,
+                    inProgress,
+                    blocked,
+                    done,
+                    agentStatePreviewTruncated(artifact),
+                    artifact.contentHash()
+            );
+        } catch (Exception ignored) {
+            return AgentStateOverviewSummary.empty();
+        }
+    }
+
+    private static boolean agentStatePreviewTruncated(AgentStageArtifact artifact) {
+        try {
+            JsonNode metadata = OBJECT_MAPPER.readTree(artifact.metadataJson());
+            long contentLength = metadata.path("contentLength").asLong(0L);
+            if (contentLength > 0L) {
+                return contentLength > artifact.contentPreview().length();
+            }
+        } catch (Exception ignored) {
+            // Metadata is optional for overview truncation hints.
+        }
+        return false;
+    }
+
+    private record AgentStateOverviewSummary(
+            boolean available,
+            long sequence,
+            String schemaVersion,
+            int todoPending,
+            int todoInProgress,
+            int todoBlocked,
+            int todoDone,
+            boolean previewTruncated,
+            String contentHash
+    ) {
+        private static AgentStateOverviewSummary empty() {
+            return new AgentStateOverviewSummary(false, 0L, "", 0, 0, 0, 0, false, "");
+        }
     }
 
     private static String resultPreview(AgentStageRun stageRun, AgentStageArtifact resultArtifact) {
@@ -891,7 +990,16 @@ public class RdTaskExecutionOverviewController {
             long startedAtEpochMillis,
             long finishedAtEpochMillis,
             long elapsedMillis,
-            boolean running
+            boolean running,
+            boolean agentStateAvailable,
+            long agentStateSequence,
+            String agentStateSchemaVersion,
+            int agentStateTodoPending,
+            int agentStateTodoInProgress,
+            int agentStateTodoBlocked,
+            int agentStateTodoDone,
+            boolean agentStatePreviewTruncated,
+            String agentStateContentHash
     ) {
     }
 
