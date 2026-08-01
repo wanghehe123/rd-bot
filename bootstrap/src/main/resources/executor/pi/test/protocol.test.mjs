@@ -3,10 +3,15 @@ import assert from "node:assert/strict";
 
 import { EventNormalizer } from "../src/event-normalizer.mjs";
 import {
+  INPUT_MANIFEST_PATH,
+  REQUEST_PROTOCOL,
+  REQUEST_PROTOCOL_V2,
   normalizePiEvent,
   parseJsonLine,
   redact,
+  validateContextPolicy,
   validateRequest,
+  validateRequestV2,
 } from "../src/protocol.mjs";
 import { validateResult, validateRoleResult } from "../src/result-tool.mjs";
 import {
@@ -36,10 +41,55 @@ const request = {
   toolPolicy: { allow: ["read", "bash", "edit", "write", "rd_submit_result"] },
 };
 
+const requestV2 = {
+  ...request,
+  protocol: REQUEST_PROTOCOL_V2,
+  inputManifestPath: INPUT_MANIFEST_PATH,
+  inputManifestHash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  contextPolicy: {
+    protocol: "rd-runtime-context-policy/v1",
+    mode: "ROOT_ONLY",
+    policyHash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    expectedFiles: [{ path: "AGENTS.md", contentHash: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" }],
+  },
+};
+
+test("keeps v1 as the default request protocol constant", () => {
+  assert.equal(REQUEST_PROTOCOL, "rd-pi-request/v1");
+  assert.equal(REQUEST_PROTOCOL_V2, "rd-pi-request/v2");
+});
+
 test("validates the fixed one-shot request contract", () => {
   assert.equal(validateRequest(request), request);
   assert.throws(() => validateRequest({ ...request, credentialEnvironmentVariable: "secret-value" }));
   assert.throws(() => validateRequest({ ...request, repoPath: "/tmp/repo" }));
+});
+
+test("validates request v2 fixed manifest path, hashes, and context policy", () => {
+  assert.equal(validateRequestV2(requestV2), requestV2);
+  assert.throws(() => validateRequestV2({ ...requestV2, protocol: REQUEST_PROTOCOL }));
+  assert.throws(() => validateRequestV2({ ...requestV2, inputManifestPath: "/work/input/other.json" }));
+  assert.throws(() => validateRequestV2({ ...requestV2, inputManifestHash: "deadbeef" }));
+  assert.throws(() => validateRequestV2({
+    ...requestV2,
+    contextPolicy: { ...requestV2.contextPolicy, mode: "IMPLICIT_NESTED" },
+  }));
+  assert.throws(() => validateRequestV2({
+    ...requestV2,
+    contextPolicy: { ...requestV2.contextPolicy, policyHash: "not-a-hash" },
+  }));
+});
+
+test("validates runtime context policy objects independently", () => {
+  assert.equal(validateContextPolicy(requestV2.contextPolicy), requestV2.contextPolicy);
+  assert.throws(() => validateContextPolicy({
+    ...requestV2.contextPolicy,
+    protocol: "rd-runtime-context-policy/v0",
+  }));
+  assert.throws(() => validateContextPolicy({
+    ...requestV2.contextPolicy,
+    expectedFiles: [{ path: "AGENTS.md", contentHash: "bad" }],
+  }));
 });
 
 test("accepts optional coding-benchmark patch and budget fields", () => {

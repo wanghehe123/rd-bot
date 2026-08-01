@@ -1,4 +1,7 @@
 export const REQUEST_PROTOCOL = "rd-pi-request/v1";
+export const REQUEST_PROTOCOL_V2 = "rd-pi-request/v2";
+export const RUNTIME_CONTEXT_POLICY_PROTOCOL = "rd-runtime-context-policy/v1";
+export const INPUT_MANIFEST_PATH = "/work/input/role-execution-input-manifest.json";
 export const EVENT_PROTOCOL = "rd-agent-event/v1";
 export const MAX_LINE_BYTES = 256 * 1024;
 export const MAX_TEXT_BYTES = 64 * 1024;
@@ -40,12 +43,28 @@ const ROLES = new Set([
   "QA_AGENT",
 ]);
 
+const CONTEXT_POLICY_MODES = new Set([
+  "LEGACY_OBSERVE_ONLY",
+  "ROOT_ONLY",
+  "ROOT_AND_ALLOWLISTED_NESTED",
+]);
+
+const SHA256_HASH_PATTERN = /^sha256:[0-9a-fA-F]{64}$/;
+
 export function validateRequest(request) {
+  return validateRequestForProtocol(request, REQUEST_PROTOCOL);
+}
+
+export function validateRequestV2(request) {
+  return validateRequestForProtocol(request, REQUEST_PROTOCOL_V2);
+}
+
+function validateRequestForProtocol(request, expectedProtocol) {
   if (!request || typeof request !== "object" || Array.isArray(request)) {
     throw new Error("request must be a JSON object");
   }
   requireString(request.protocol, "protocol");
-  if (request.protocol !== REQUEST_PROTOCOL) {
+  if (request.protocol !== expectedProtocol) {
     throw new Error(`unsupported request protocol: ${request.protocol}`);
   }
   for (const field of [
@@ -70,6 +89,14 @@ export function validateRequest(request) {
       || request.outputPath !== "/work/output"
       || request.resourceManifestPath !== "/work/input/resource-manifest.json") {
     throw new Error("request paths must use the fixed /work contract");
+  }
+  if (expectedProtocol === REQUEST_PROTOCOL_V2) {
+    requireString(request.inputManifestPath, "inputManifestPath");
+    if (request.inputManifestPath !== INPUT_MANIFEST_PATH) {
+      throw new Error("inputManifestPath must use the fixed role execution input manifest path");
+    }
+    requireSha256Hash(request.inputManifestHash, "inputManifestHash");
+    validateContextPolicy(request.contextPolicy);
   }
   if (request.credentialEnvironmentVariable !== undefined
       && !/^[A-Z_][A-Z0-9_]*$/.test(request.credentialEnvironmentVariable)) {
@@ -130,6 +157,42 @@ export function validateRequest(request) {
     }
   }
   return request;
+}
+
+export function validateContextPolicy(contextPolicy) {
+  if (!isObject(contextPolicy)) {
+    throw new Error("contextPolicy must be an object");
+  }
+  requireString(contextPolicy.protocol, "contextPolicy.protocol");
+  if (contextPolicy.protocol !== RUNTIME_CONTEXT_POLICY_PROTOCOL) {
+    throw new Error(`unsupported context policy protocol: ${contextPolicy.protocol}`);
+  }
+  requireSha256Hash(contextPolicy.policyHash, "contextPolicy.policyHash");
+  requireString(contextPolicy.mode, "contextPolicy.mode");
+  if (!CONTEXT_POLICY_MODES.has(contextPolicy.mode)) {
+    throw new Error(`unsupported context policy mode: ${contextPolicy.mode}`);
+  }
+  if (!Array.isArray(contextPolicy.expectedFiles)) {
+    throw new Error("contextPolicy.expectedFiles must be an array");
+  }
+  for (const [index, expectedFile] of contextPolicy.expectedFiles.entries()) {
+    if (!isObject(expectedFile)) {
+      throw new Error(`contextPolicy.expectedFiles[${index}] must be an object`);
+    }
+    requireString(expectedFile.path, `contextPolicy.expectedFiles[${index}].path`);
+    if (expectedFile.contentHash !== undefined && expectedFile.contentHash !== "") {
+      requireSha256Hash(expectedFile.contentHash, `contextPolicy.expectedFiles[${index}].contentHash`);
+    }
+  }
+  return contextPolicy;
+}
+
+function requireSha256Hash(value, field) {
+  requireString(value, field);
+  if (!SHA256_HASH_PATTERN.test(value)) {
+    throw new Error(`${field} must be a sha256: hash`);
+  }
+  return value;
 }
 
 export function parseJsonLine(line, maxBytes = MAX_LINE_BYTES) {

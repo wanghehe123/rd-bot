@@ -1,0 +1,37 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "rd-runtime-context-policy-v1.schema.json",
+  "title": "RD runtime context loading policy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol", "policyHash", "mode", "expectedFiles"],
+  "properties": {
+    "protocol": { "const": "rd-runtime-context-policy/v1" },
+    "policyHash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-fA-F]{64}$"
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["LEGACY_OBSERVE_ONLY", "ROOT_ONLY", "ROOT_AND_ALLOWLISTED_NESTED"]
+    },
+    "expectedFiles": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/runtimeContextFileExpectation" }
+    }
+  },
+  "definitions": {
+    "runtimeContextFileExpectation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "contentHash"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "contentHash": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-fA-F]{64}$|^$"
+        }
+      }
+    }
+  }
+}

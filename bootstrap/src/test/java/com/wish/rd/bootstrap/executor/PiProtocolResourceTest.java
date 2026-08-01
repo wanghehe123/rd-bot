@@ -21,6 +21,10 @@ class PiProtocolResourceTest {
     void shouldShipVersionedRequestEventAndResultSchemas() throws IOException {
         for (String resource : List.of(
                 "rd-pi-request-v1.schema.json",
+                "rd-pi-request-v2.schema.json",
+                "rd-role-execution-input-manifest-v1.schema.json",
+                "rd-runtime-context-policy-v1.schema.json",
+                "rd-runtime-context-manifest-v1.schema.json",
                 "rd-agent-event-v1.schema.json",
                 "rd-result-v1.schema.json",
                 "rd-agent-fact-v1.schema.json",
@@ -63,6 +67,37 @@ class PiProtocolResourceTest {
 
         JsonNode action = read("rd-agent-state-action-v1.schema.json");
         assertTrue(action.path("properties").path("decision").path("enum").toString().contains("ACCEPTED"));
+    }
+
+    @Test
+    void shouldRequireRequestV2ManifestPathAndContextPolicy() throws IOException {
+        JsonNode request = read("rd-pi-request-v2.schema.json");
+        assertEquals("rd-pi-request/v2", request.path("properties").path("protocol").path("const").asText());
+        assertTrue(request.path("required").toString().contains("inputManifestPath"));
+        assertTrue(request.path("required").toString().contains("contextPolicy"));
+        assertTrue(request.path("required").toString().contains("inputManifestHash"));
+        assertEquals(
+                "/work/input/role-execution-input-manifest.json",
+                request.path("properties").path("inputManifestPath").path("const").asText()
+        );
+
+        JsonNode policy = read("rd-runtime-context-policy-v1.schema.json");
+        assertEquals(
+                "rd-runtime-context-policy/v1",
+                policy.path("properties").path("protocol").path("const").asText()
+        );
+        assertTrue(policy.path("properties").path("mode").path("enum").toString().contains("ROOT_ONLY"));
+        assertTrue(policy.path("properties").path("mode").path("enum").toString().contains("LEGACY_OBSERVE_ONLY"));
+
+        JsonNode inputManifest = read("rd-role-execution-input-manifest-v1.schema.json");
+        assertTrue(inputManifest.path("required").toString().contains("runtimeContextPolicy"));
+        assertTrue(inputManifest.path("required").toString().contains("budget"));
+
+        JsonNode runtimeManifest = read("rd-runtime-context-manifest-v1.schema.json");
+        assertEquals(
+                "rd-runtime-context-manifest/v1",
+                runtimeManifest.path("properties").path("protocol").path("const").asText()
+        );
     }
 
     private JsonNode read(String name) throws IOException {

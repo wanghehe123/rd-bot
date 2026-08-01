@@ -1,0 +1,94 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "rd-runtime-context-manifest-v1.schema.json",
+  "title": "RD runtime context loading manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "protocol",
+    "taskId",
+    "stageRunId",
+    "role",
+    "attemptNo",
+    "mode",
+    "runtime",
+    "provider",
+    "model",
+    "executionProfileSnapshotId",
+    "inputManifestHash",
+    "contextPolicyHash",
+    "generatedAt",
+    "observedFiles",
+    "totalFiles",
+    "totalBytes",
+    "effectiveContextHash",
+    "status"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "integer", "minimum": 1 },
+    "protocol": { "const": "rd-runtime-context-manifest/v1" },
+    "taskId": { "type": "string", "minLength": 1 },
+    "stageRunId": { "type": "string", "minLength": 1 },
+    "role": {
+      "type": "string",
+      "enum": ["REQUIREMENT_REVIEWER", "SOLUTION_ARCHITECT", "CODING_AGENT", "QA_AGENT"]
+    },
+    "attemptNo": { "type": "integer", "minimum": 1 },
+    "mode": {
+      "type": "string",
+      "enum": ["LEGACY_OBSERVE_ONLY", "ROOT_ONLY", "ROOT_AND_ALLOWLISTED_NESTED"]
+    },
+    "runtime": { "type": "string" },
+    "provider": { "type": "string" },
+    "model": { "type": "string" },
+    "executionProfileSnapshotId": { "type": "string" },
+    "inputManifestHash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-fA-F]{64}$|^$"
+    },
+    "contextPolicyHash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-fA-F]{64}$|^$"
+    },
+    "generatedAt": { "type": "string", "minLength": 1 },
+    "observedFiles": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/runtimeContextFileDecision" }
+    },
+    "totalFiles": { "type": "integer", "minimum": 0 },
+    "totalBytes": { "type": "integer", "minimum": 0 },
+    "effectiveContextHash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-fA-F]{64}$|^$"
+    },
+    "status": { "type": "string", "minLength": 1 }
+  },
+  "definitions": {
+    "runtimeContextFileDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "contentHash",
+        "bytes",
+        "loadOrder",
+        "scope",
+        "trustDecision",
+        "rejectReason"
+      ],
+      "properties": {
+        "path": { "type": "string" },
+        "contentHash": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-fA-F]{64}$|^$"
+        },
+        "bytes": { "type": "integer", "minimum": 0 },
+        "loadOrder": { "type": "integer", "minimum": 0 },
+        "scope": { "type": "string" },
+        "trustDecision": { "type": "string" },
+        "rejectReason": { "type": "string" }
+      }
+    }
+  }
+}

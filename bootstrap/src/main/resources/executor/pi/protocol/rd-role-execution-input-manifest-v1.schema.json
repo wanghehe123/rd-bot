@@ -1,0 +1,205 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "rd-role-execution-input-manifest-v1.schema.json",
+  "title": "RD role execution input manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "taskId",
+    "stageRunId",
+    "role",
+    "attemptNo",
+    "mode",
+    "roleContract",
+    "taskBaseline",
+    "evidence",
+    "handoffs",
+    "recovery",
+    "runtimeContextPolicy",
+    "prompt",
+    "materialsSummary",
+    "executionProfile",
+    "budget",
+    "semanticSignature",
+    "contextPackageId",
+    "promptArtifactId",
+    "expectedArtifactIds"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "integer", "minimum": 1 },
+    "taskId": { "type": "string", "minLength": 1 },
+    "stageRunId": { "type": "string", "minLength": 1 },
+    "role": {
+      "type": "string",
+      "enum": ["REQUIREMENT_REVIEWER", "SOLUTION_ARCHITECT", "CODING_AGENT", "QA_AGENT"]
+    },
+    "attemptNo": { "type": "integer", "minimum": 1 },
+    "mode": {
+      "type": "string",
+      "enum": ["LEGACY_OBSERVE_ONLY", "ROOT_ONLY", "ROOT_AND_ALLOWLISTED_NESTED"]
+    },
+    "roleContract": { "$ref": "#/definitions/roleContractReference" },
+    "taskBaseline": { "$ref": "#/definitions/taskBaselineReference" },
+    "evidence": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/roleExecutionEvidenceEntry" }
+    },
+    "handoffs": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/handoffManifestEntry" }
+    },
+    "recovery": { "$ref": "#/definitions/recoveryManifestEntry" },
+    "runtimeContextPolicy": { "$ref": "rd-runtime-context-policy-v1.schema.json" },
+    "prompt": { "$ref": "#/definitions/roleExecutionPromptAudit" },
+    "materialsSummary": { "$ref": "#/definitions/materialsSummaryReference" },
+    "executionProfile": { "$ref": "#/definitions/executionProfileReference" },
+    "budget": { "$ref": "#/definitions/roleExecutionBudget" },
+    "semanticSignature": { "type": "string" },
+    "contextPackageId": { "type": "string" },
+    "promptArtifactId": { "type": "string" },
+    "expectedArtifactIds": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    }
+  },
+  "definitions": {
+    "roleContractReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "contentHash"],
+      "properties": {
+        "version": { "type": "string", "minLength": 1 },
+        "contentHash": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-fA-F]{64}$|^$"
+        }
+      }
+    },
+    "taskBaselineReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifactId", "contentHash"],
+      "properties": {
+        "artifactId": { "type": "string" },
+        "contentHash": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-fA-F]{64}$|^$"
+        }
+      }
+    },
+    "roleExecutionEvidenceEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sourceId",
+        "sourceType",
+        "factKind",
+        "contentHash",
+        "excerptHash",
+        "truncated",
+        "selectedReason"
+      ],
+      "properties": {
+        "sourceId": { "type": "string" },
+        "sourceType": { "type": "string" },
+        "factKind": { "type": "string" },
+        "contentHash": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-fA-F]{64}$|^$"
+        },
+        "excerptHash": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-fA-F]{64}$|^$"
+        },
+        "truncated": { "type": "boolean" },
+        "selectedReason": { "type": "string" }
+      }
+    },
+    "handoffManifestEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifactId", "artifactUri", "contentHash", "sourceRole", "targetRole"],
+      "properties": {
+        "artifactId": { "type": "string" },
+        "artifactUri": { "type": "string" },
+        "contentHash": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-fA-F]{64}$|^$"
+        },
+        "sourceRole": { "type": "string" },
+        "targetRole": { "type": "string" }
+      }
+    },
+    "recoveryManifestEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceStageRunId", "contentHash", "sourceAttemptNo", "reason"],
+      "properties": {
+        "sourceStageRunId": { "type": "string" },
+        "contentHash": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-fA-F]{64}$|^$"
+        },
+        "sourceAttemptNo": { "type": "integer", "minimum": 0 },
+        "reason": { "type": "string" }
+      }
+    },
+    "roleExecutionPromptAudit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contentHash", "bytes", "estimatedTokens", "estimatorVersion"],
+      "properties": {
+        "contentHash": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-fA-F]{64}$|^$"
+        },
+        "bytes": { "type": "integer", "minimum": 0 },
+        "estimatedTokens": { "type": "integer", "minimum": 0 },
+        "estimatorVersion": { "type": "string", "minLength": 1 }
+      }
+    },
+    "materialsSummaryReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contentHash", "materialCount"],
+      "properties": {
+        "contentHash": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-fA-F]{64}$|^$"
+        },
+        "materialCount": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "executionProfileReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["snapshotId", "snapshotHash"],
+      "properties": {
+        "snapshotId": { "type": "string" },
+        "snapshotHash": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-fA-F]{64}$|^$"
+        }
+      }
+    },
+    "roleExecutionBudget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "model",
+        "maxContextTokens",
+        "reservedOutputTokens",
+        "estimatedInputTokens",
+        "estimatorVersion"
+      ],
+      "properties": {
+        "model": { "type": "string" },
+        "maxContextTokens": { "type": "integer" },
+        "reservedOutputTokens": { "type": "integer" },
+        "estimatedInputTokens": { "type": "integer", "minimum": 0 },
+        "estimatorVersion": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}
