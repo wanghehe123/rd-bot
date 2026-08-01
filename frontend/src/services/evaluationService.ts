@@ -6,7 +6,9 @@ export type EvaluationJudgeProvider = "NONE" | "RAGAS" | "OPENAI_COMPATIBLE";
 export type EvaluationRunStatus =
   | "CREATED"
   | "QUEUED"
+  | "PREPARING"
   | "RECORDING"
+  | "RUNNING_TRIALS"
   | "SCORING"
   | "REPORTING"
   | "DIFFING"
@@ -109,6 +111,8 @@ export type EvaluationRunConfig = {
   strictMissingRecords: boolean;
   baselineRunId: string;
   taskId: string;
+  mode?: "LEGACY_QUALITY" | "TASK_AUDIT" | "CODING_BENCHMARK";
+  snapshotId?: string;
 };
 
 export type EvaluationRun = {
@@ -127,6 +131,7 @@ export type EvaluationRun = {
   metricsJson: string;
   errorCategory: string;
   errorMessage: string;
+  dispatchPaused?: boolean;
   version: number;
   createdAtEpochMillis: number;
   startedAtEpochMillis: number;
@@ -230,4 +235,127 @@ export const retryEvaluationRun = (runId: string) =>
   api.post<EvaluationRun, EvaluationRun>(`/admin/evaluations/runs/${runId}/retry`, {});
 
 export const isEvaluationRunActive = (status: EvaluationRunStatus) =>
-  ["CREATED", "QUEUED", "RECORDING", "SCORING", "REPORTING", "DIFFING", "CANCEL_REQUESTED"].includes(status);
+  ["CREATED", "QUEUED", "PREPARING", "RUNNING_TRIALS", "RECORDING", "SCORING", "REPORTING", "DIFFING", "CANCEL_REQUESTED"].includes(status);
+
+export type CodingBenchmarkSnapshot = {
+  snapshotId: string;
+  displayLabel: string;
+  snapshotDigest: string;
+  caseCount: number;
+};
+
+export type CodingBenchmarkTrial = {
+  trialId: string;
+  campaignId: string;
+  caseId: string;
+  arm: "A" | "B" | "C" | "D";
+  replicateNo: number;
+  status: string;
+  verdict: string;
+  attemptNo: number;
+  version: number;
+  leaseOwner: string;
+  leaseExpiresAtEpochMillis: number;
+  errorCategory: string;
+  errorMessage: string;
+  createdAtEpochMillis: number;
+  updatedAtEpochMillis: number;
+};
+
+export const getCodingBenchmarkSnapshots = () =>
+  api.get<CodingBenchmarkSnapshot[], CodingBenchmarkSnapshot[]>("/admin/evaluations/coding-benchmarks/snapshots");
+
+export const getCodingBenchmarkSnapshot = (snapshotId: string) =>
+  api.get<CodingBenchmarkSnapshot, CodingBenchmarkSnapshot>(`/admin/evaluations/coding-benchmarks/snapshots/${snapshotId}`);
+
+export const getCodingBenchmarkCampaigns = (limit = 20) =>
+  api.get<EvaluationRun[], EvaluationRun[]>("/admin/evaluations/coding-benchmarks/campaigns", {
+    params: { limit }
+  });
+
+export const getCodingBenchmarkCampaign = (runId: string) =>
+  api.get<EvaluationRun, EvaluationRun>(`/admin/evaluations/coding-benchmarks/campaigns/${runId}`);
+
+export const getCodingBenchmarkTrials = (runId: string) =>
+  api.get<CodingBenchmarkTrial[], CodingBenchmarkTrial[]>(
+    `/admin/evaluations/coding-benchmarks/campaigns/${runId}/trials`
+  );
+
+export type CodingBenchmarkTrialEvent = {
+  eventId: string;
+  campaignId: string;
+  trialId: string;
+  fromStatus: string | null;
+  toStatus: string;
+  version: number;
+  message: string;
+  errorCategory: string;
+  errorMessage: string;
+  occurredAtEpochMillis: number;
+};
+
+export type CodingBenchmarkTrialDetail = {
+  trial: CodingBenchmarkTrial;
+  events: CodingBenchmarkTrialEvent[];
+  artifacts: Array<{
+    key: string;
+    label: string;
+    sizeBytes: number;
+    available: boolean;
+  }>;
+  previews: Array<{
+    key: string;
+    label: string;
+    content: string;
+    truncated: boolean;
+  }>;
+};
+
+export type CodingBenchmarkTrialArtifactContent = {
+  key: string;
+  label: string;
+  content: string;
+  truncated: boolean;
+  sizeBytes: number;
+};
+
+export const getCodingBenchmarkTrialDetail = (runId: string, trialId: string) =>
+  api.get<CodingBenchmarkTrialDetail, CodingBenchmarkTrialDetail>(
+    `/admin/evaluations/coding-benchmarks/campaigns/${runId}/trials/${trialId}`
+  );
+
+export const getCodingBenchmarkTrialArtifact = (runId: string, trialId: string, artifactKey: string) =>
+  api.get<CodingBenchmarkTrialArtifactContent, CodingBenchmarkTrialArtifactContent>(
+    `/admin/evaluations/coding-benchmarks/campaigns/${runId}/trials/${trialId}/artifacts/${encodeURIComponent(artifactKey)}`
+  );
+
+export const createCodingBenchmarkProbe = (snapshotId: string, name?: string) =>
+  api.post<EvaluationRun, EvaluationRun>("/admin/evaluations/coding-benchmarks/probe", {
+    snapshotId,
+    name: name || ""
+  });
+
+export const createCodingBenchmarkFormal = (snapshotId: string, name?: string, sentinelCaseIds?: string[]) =>
+  api.post<EvaluationRun, EvaluationRun>("/admin/evaluations/coding-benchmarks/formal", {
+    snapshotId,
+    name: name || "",
+    sentinelCaseIds: sentinelCaseIds || []
+  });
+
+export const pauseCodingBenchmarkCampaign = (runId: string) =>
+  api.post<EvaluationRun, EvaluationRun>(
+    `/admin/evaluations/coding-benchmarks/campaigns/${runId}/pause`,
+    {}
+  );
+
+export const resumeCodingBenchmarkCampaign = (runId: string) =>
+  api.post<EvaluationRun, EvaluationRun>(
+    `/admin/evaluations/coding-benchmarks/campaigns/${runId}/resume`,
+    {}
+  );
+
+export const cancelCodingBenchmarkCampaign = (runId: string) =>
+  api.post<EvaluationRun, EvaluationRun>(
+    `/admin/evaluations/coding-benchmarks/campaigns/${runId}/cancel`,
+    {}
+  );

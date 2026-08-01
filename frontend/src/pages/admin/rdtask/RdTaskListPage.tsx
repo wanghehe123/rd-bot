@@ -250,6 +250,8 @@ export function RdTaskListPage() {
   const [statusFilter, setStatusFilter] = useState<string | undefined>(urlFilters.status);
   const [taskTypeFilter, setTaskTypeFilter] = useState<string | undefined>(urlFilters.taskType);
   const [projectIdFilter, setProjectIdFilter] = useState<string | undefined>(urlFilters.projectId);
+  const [filterProjectOptions, setFilterProjectOptions] = useState<RdProject[]>([]);
+  const [filterProjectsLoading, setFilterProjectsLoading] = useState(false);
   const [keyword, setKeyword] = useState(urlFilters.keyword || "");
   const [searchInput, setSearchInput] = useState(urlFilters.keyword || "");
 
@@ -264,6 +266,26 @@ export function RdTaskListPage() {
     nextSearchParams.delete("create");
     setSearchParams(nextSearchParams, { replace: true });
   }, [searchParams, setSearchParams]);
+
+  useEffect(() => {
+    let active = true;
+    setFilterProjectsLoading(true);
+    getProjectsPage({ enabled: true, page: 1, pageSize: 200 })
+      .then((data) => {
+        if (active) setFilterProjectOptions(data.records || []);
+      })
+      .catch((error) => {
+        if (!active) return;
+        setFilterProjectOptions([]);
+        toast.error(getErrorMessage(error, "加载项目筛选项失败"));
+      })
+      .finally(() => {
+        if (active) setFilterProjectsLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const loadTasks = async (
     nextPage = page,
@@ -328,8 +350,12 @@ export function RdTaskListPage() {
     updateUrlFilters({ taskType: next });
   };
 
+  const handleProjectChange = (value: string) => {
+    updateUrlFilters({ projectId: value === "all" ? undefined : value });
+  };
+
   const handleRefresh = () => {
-    loadTasks(1, statusFilter, keyword, taskTypeFilter);
+    loadTasks(1, statusFilter, keyword, taskTypeFilter, projectIdFilter);
   };
 
   const handleTogglePause = async (task: RdTask) => {
@@ -341,7 +367,7 @@ export function RdTaskListPage() {
         await pauseRdTask(task.taskId);
         toast.success("已暂停");
       }
-      loadTasks(page, statusFilter, keyword, taskTypeFilter);
+      loadTasks(page, statusFilter, keyword, taskTypeFilter, projectIdFilter);
     } catch (error) {
       toast.error(getErrorMessage(error, "操作失败"));
     }
@@ -353,7 +379,7 @@ export function RdTaskListPage() {
       await deleteRdTask(deleteTarget.taskId);
       toast.success("已删除");
       setDeleteTarget(null);
-      loadTasks(page, statusFilter, keyword, taskTypeFilter);
+      loadTasks(page, statusFilter, keyword, taskTypeFilter, projectIdFilter);
     } catch (error) {
       toast.error(getErrorMessage(error, "删除失败"));
     }
@@ -402,6 +428,23 @@ export function RdTaskListPage() {
                 {TASK_TYPE_OPTIONS.map((option) => (
                   <SelectItem key={option.value} value={option.value}>
                     {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select
+              value={projectIdFilter || "all"}
+              onValueChange={handleProjectChange}
+              disabled={filterProjectsLoading}
+            >
+              <SelectTrigger className="w-[200px]" aria-label="按项目筛选">
+                <SelectValue placeholder={filterProjectsLoading ? "加载项目中..." : "全部项目"} />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">全部项目</SelectItem>
+                {filterProjectOptions.map((project) => (
+                  <SelectItem key={project.projectId} value={project.projectId}>
+                    {project.name} · {project.projectKey}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -551,7 +594,7 @@ export function RdTaskListPage() {
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => loadTasks(Math.max(1, page - 1), statusFilter, keyword, taskTypeFilter)}
+                  onClick={() => loadTasks(Math.max(1, page - 1), statusFilter, keyword, taskTypeFilter, projectIdFilter)}
                   disabled={page <= 1}
                 >
                   上一页
@@ -562,7 +605,7 @@ export function RdTaskListPage() {
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => loadTasks(Math.min(pages || 1, page + 1), statusFilter, keyword, taskTypeFilter)}
+                  onClick={() => loadTasks(Math.min(pages || 1, page + 1), statusFilter, keyword, taskTypeFilter, projectIdFilter)}
                   disabled={page >= pages}
                 >
                   下一页
@@ -576,14 +619,14 @@ export function RdTaskListPage() {
           open={createOpen}
           mode="create"
           onOpenChange={setCreateOpen}
-          onSuccess={() => loadTasks(1, statusFilter, keyword, taskTypeFilter)}
+          onSuccess={() => loadTasks(1, statusFilter, keyword, taskTypeFilter, projectIdFilter)}
         />
         <RdTaskEditDialog
           open={!!editTarget}
           mode="edit"
           task={editTarget}
           onOpenChange={(open) => setEditTarget(open ? editTarget : null)}
-          onSuccess={() => loadTasks(page, statusFilter, keyword, taskTypeFilter)}
+          onSuccess={() => loadTasks(page, statusFilter, keyword, taskTypeFilter, projectIdFilter)}
         />
 
         <AlertDialog open={!!deleteTarget} onOpenChange={() => setDeleteTarget(null)}>

@@ -20,6 +20,8 @@ const RetrievalRulesPage = lazy(() => import("@/pages/admin/retrieval/RetrievalR
 const ExecutionTracePage = lazy(() => import("@/pages/admin/trace/ExecutionTracePage").then((module) => ({ default: module.ExecutionTracePage })));
 const ExecutionTraceDetailPage = lazy(() => import("@/pages/admin/trace/ExecutionTracePage").then((module) => ({ default: module.ExecutionTraceDetailPage })));
 const EvaluationPage = lazy(() => import("@/pages/admin/evaluation/EvaluationPage").then((module) => ({ default: module.EvaluationPage })));
+const CodingBenchmarkPage = lazy(() => import("@/pages/admin/evaluation/CodingBenchmarkPage").then((module) => ({ default: module.CodingBenchmarkPage })));
+const CodingBenchmarkTrialDetailPage = lazy(() => import("@/pages/admin/evaluation/CodingBenchmarkTrialDetailPage").then((module) => ({ default: module.CodingBenchmarkTrialDetailPage })));
 const SettingsPage = lazy(() => import("./pages/AdminPages").then((module) => ({ default: module.SettingsPage })));
 
 function AdminRouteFallback() {
@@ -54,6 +56,8 @@ export function App() {
             <Route path="traces" element={<ExecutionTracePage />} />
             <Route path="traces/:taskId" element={<ExecutionTraceDetailPage />} />
             <Route path="evaluations" element={<EvaluationPage />} />
+            <Route path="evaluations/coding-benchmarks" element={<CodingBenchmarkPage />} />
+            <Route path="evaluations/coding-benchmarks/campaigns/:runId/trials/:trialId" element={<CodingBenchmarkTrialDetailPage />} />
             <Route path="settings" element={<SettingsPage />} />
           </Route>
           <Route path="*" element={<Navigate to="/admin/dashboard" replace />} />

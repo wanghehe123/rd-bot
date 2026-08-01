@@ -1,14 +1,15 @@
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 import {
+  Activity,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   ClipboardList,
   Database,
+  FlaskConical,
   GitBranch,
   Github,
-  FlaskConical,
   KeyRound,
   Layers,
   LayoutDashboard,
@@ -62,7 +63,16 @@ const menuGroups: Array<{ title: string; items: MenuItem[] }> = [
       { path: "/admin/rd-tasks", label: "任务管理", icon: ListChecks },
       { path: "/admin/mappings", label: "检索规则", icon: KeyRound },
       { path: "/admin/traces", label: "执行追踪", icon: Workflow },
-      { path: "/admin/evaluations", label: "评测", icon: FlaskConical }
+      {
+        id: "evaluations",
+        path: "/admin/evaluations",
+        label: "评测",
+        icon: FlaskConical,
+        children: [
+          { path: "/admin/evaluations", label: "本地评测", icon: FlaskConical },
+          { path: "/admin/evaluations/coding-benchmarks", label: "编码消融评测", icon: Activity }
+        ]
+      }
     ]
   },
   {
@@ -85,6 +95,7 @@ const breadcrumbMap: Record<string, string> = {
   mappings: "检索规则",
   traces: "执行追踪",
   evaluations: "评测",
+  "coding-benchmarks": "编码消融评测",
   users: "用户管理",
   settings: "系统设置"
 };
@@ -106,7 +117,7 @@ export function AdminLayout() {
   const [isMobileViewport, setIsMobileViewport] = useState(() => (
     typeof window !== "undefined" && window.matchMedia("(max-width: 860px)").matches
   ));
-  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({ intent: true });
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({ intent: true, evaluations: true });
   const [passwordOpen, setPasswordOpen] = useState(false);
   const [passwordForm, setPasswordForm] = useState({ currentPassword: "", newPassword: "", confirmPassword: "" });
   const sidebarRef = useRef<HTMLElement>(null);
@@ -126,6 +137,9 @@ export function AdminLayout() {
       if (section === "intent-tree" || section === "intent-list") {
         items.push({ label: "意图管理", to: "/admin/intent-tree" });
         items.push({ label: breadcrumbMap[section] || section });
+      } else if (section === "evaluations" && parts.length > 2) {
+        items.push({ label: "评测", to: "/admin/evaluations" });
+        items.push({ label: breadcrumbMap[parts[2]] || parts[2] });
       } else {
         items.push({ label: breadcrumbMap[section] || section, to: `/admin/${section}` });
       }

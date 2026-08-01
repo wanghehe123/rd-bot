@@ -24,3 +24,12 @@ test("drops blank URL task-list filters instead of making an empty API constrain
     keyword: undefined
   });
 });
+
+test("treats the all-project selector sentinel as no task-list API constraint", () => {
+  assert.deepEqual(taskListFiltersFromSearchParams(new URLSearchParams("projectId=all")), {
+    projectId: undefined,
+    taskType: undefined,
+    status: undefined,
+    keyword: undefined
+  });
+});

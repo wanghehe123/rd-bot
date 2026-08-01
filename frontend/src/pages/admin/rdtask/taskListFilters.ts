@@ -8,7 +8,7 @@ export type TaskListUrlFilters = {
 /** Reads only non-empty filters so a drill-down URL is replayable after navigation. */
 export function taskListFiltersFromSearchParams(searchParams: URLSearchParams): TaskListUrlFilters {
   return {
-    projectId: text(searchParams.get("projectId")),
+    projectId: projectId(searchParams.get("projectId")),
     taskType: text(searchParams.get("taskType")),
     status: text(searchParams.get("status")),
     keyword: text(searchParams.get("keyword"))
@@ -18,4 +18,10 @@ export function taskListFiltersFromSearchParams(searchParams: URLSearchParams): 
 function text(value: string | null): string | undefined {
   const normalized = value?.trim();
   return normalized || undefined;
+}
+
+/** Keeps an old all-project sentinel from becoming a backend project constraint. */
+function projectId(value: string | null): string | undefined {
+  const normalized = text(value);
+  return normalized === "all" ? undefined : normalized;
 }

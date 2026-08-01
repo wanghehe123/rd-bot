@@ -8,6 +8,7 @@ const page = readFileSync(new URL("../src/pages/admin/evaluation/EvaluationPage.
 const service = readFileSync(new URL("../src/services/evaluationService.ts", import.meta.url), "utf8");
 const presentation = readFileSync(new URL("../src/pages/admin/evaluation/evaluationPresentation.ts", import.meta.url), "utf8");
 const tracePage = readFileSync(new URL("../src/pages/admin/trace/ExecutionTracePage.tsx", import.meta.url), "utf8");
+const codingBenchmarkPage = readFileSync(new URL("../src/pages/admin/evaluation/CodingBenchmarkPage.tsx", import.meta.url), "utf8");
 
 test("registers evaluation as a first-class management route and navigation item", () => {
   assert.match(app, /path="evaluations"/);
@@ -100,4 +101,56 @@ test("supports evaluating one persisted execution directly from the trace page",
   assert.match(page, /useSearchParams/);
   assert.match(page, /TASK_RUN/);
   assert.match(page, /任务 ID/);
+});
+
+test("exposes coding benchmark API functions in evaluationService", () => {
+  assert.match(service, /export (const|async function) getCodingBenchmarkSnapshots/);
+  assert.match(service, /export (const|async function) createCodingBenchmarkProbe/);
+  assert.match(service, /export (const|async function) createCodingBenchmarkFormal/);
+  assert.match(service, /CodingBenchmarkSnapshot/);
+  assert.match(service, /\/admin\/evaluations\/coding-benchmarks\/snapshots/);
+  assert.match(service, /\/admin\/evaluations\/coding-benchmarks\/probe/);
+  assert.match(service, /\/admin\/evaluations\/coding-benchmarks\/formal/);
+});
+
+test("CodingBenchmarkPage does not expose arbitrary security-sensitive inputs", () => {
+  assert.doesNotMatch(codingBenchmarkPage, /agentImageDigest/);
+  assert.doesNotMatch(codingBenchmarkPage, /oracleTestCommands/);
+  assert.doesNotMatch(codingBenchmarkPage, /modelApiKey/);
+  assert.doesNotMatch(codingBenchmarkPage, /shellCommand/);
+  assert.doesNotMatch(codingBenchmarkPage, /任意命令/);
+});
+
+test("CodingBenchmarkPage contains probe and formal operation entry points", () => {
+  assert.match(codingBenchmarkPage, /探针/);
+  assert.match(codingBenchmarkPage, /正式/);
+  assert.match(codingBenchmarkPage, /snapshotId/);
+  assert.match(codingBenchmarkPage, /createCodingBenchmarkProbe/);
+  assert.match(codingBenchmarkPage, /createCodingBenchmarkFormal/);
+  assert.match(codingBenchmarkPage, /getCodingBenchmarkSnapshots/);
+  assert.match(codingBenchmarkPage, /setInterval/);
+  assert.match(codingBenchmarkPage, /2_000/);
+  assert.match(codingBenchmarkPage, /isEvaluationRunActive/);
+});
+
+test("exposes coding benchmark pause resume cancel in service and UI", () => {
+  assert.match(service, /export (const|async function) pauseCodingBenchmarkCampaign/);
+  assert.match(service, /export (const|async function) resumeCodingBenchmarkCampaign/);
+  assert.match(service, /export (const|async function) cancelCodingBenchmarkCampaign/);
+  assert.match(service, /dispatchPaused\?: boolean/);
+  assert.match(service, /\/admin\/evaluations\/coding-benchmarks\/campaigns\/\$\{runId\}\/pause/);
+  assert.match(service, /\/admin\/evaluations\/coding-benchmarks\/campaigns\/\$\{runId\}\/resume/);
+  assert.match(service, /\/admin\/evaluations\/coding-benchmarks\/campaigns\/\$\{runId\}\/cancel/);
+  assert.match(codingBenchmarkPage, /pauseCodingBenchmarkCampaign/);
+  assert.match(codingBenchmarkPage, /resumeCodingBenchmarkCampaign/);
+  assert.match(codingBenchmarkPage, /cancelCodingBenchmarkCampaign/);
+  assert.match(codingBenchmarkPage, /暂停/);
+  assert.match(codingBenchmarkPage, /恢复/);
+  assert.match(codingBenchmarkPage, /取消/);
+});
+
+test("registers coding-benchmarks route and navigation item", () => {
+  assert.match(app, /path="evaluations\/coding-benchmarks"/);
+  assert.match(layout, /coding-benchmarks/);
+  assert.match(layout, /编码消融评测/);
 });

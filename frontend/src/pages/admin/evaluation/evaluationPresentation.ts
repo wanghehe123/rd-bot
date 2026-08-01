@@ -3,7 +3,9 @@ import type { EvaluationDatasetKind, EvaluationJudgeProvider, EvaluationRunStatu
 export const evaluationStatusLabel = (status: EvaluationRunStatus) => ({
   CREATED: "已创建",
   QUEUED: "排队中",
+  PREPARING: "准备中",
   RECORDING: "录制样本",
+  RUNNING_TRIALS: "执行中",
   SCORING: "计算指标",
   REPORTING: "生成报告",
   DIFFING: "对比基线",
