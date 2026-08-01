@@ -5,6 +5,7 @@ import com.wish.rd.engine.agent.model.AgentStageRun;
 import com.wish.rd.engine.agent.recovery.InterruptedStageWorkspaceRecoveryPort;
 import com.wish.rd.engine.agent.recovery.model.RecoveredWorkspaceExecution;
 import com.wish.rd.exec.repair.pi.PiSettledWorkspaceRecovery;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
@@ -20,6 +21,7 @@ public final class PiInterruptedStageWorkspaceRecovery implements InterruptedSta
 
     private final PiSettledWorkspaceRecovery recovery;
 
+    @Autowired
     public PiInterruptedStageWorkspaceRecovery(DockerExecutorProperties properties) {
         Path workspaceRoot = properties == null
                 ? DockerExecutorProperties.DEFAULT_WORKSPACE_ROOT
@@ -27,6 +29,7 @@ public final class PiInterruptedStageWorkspaceRecovery implements InterruptedSta
         this.recovery = new PiSettledWorkspaceRecovery(workspaceRoot);
     }
 
+    /** Package-visible for focused unit tests. */
     PiInterruptedStageWorkspaceRecovery(Path workspaceRoot) {
         this.recovery = new PiSettledWorkspaceRecovery(workspaceRoot);
     }
