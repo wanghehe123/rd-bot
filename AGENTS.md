@@ -1,3 +1,11 @@
+## 规划与修改前置阅读
+
+- **规划、实现或修改任何功能前，必须先阅读 `RULE.md` 与该功能最相关的 spec。**
+  RD 任务管理优先阅读 `docs/rd-task-management-requirements.md` 和
+  `docs/rd-task-management-design.md`；先追踪现有代码链路，再补充规则或实现。
+- `RULE.md` 是受保护的仓库约束：不得删除、改名或以空白文件替换。规则需要演进时，
+  在原文件中以可验证的约束追加或修订，并注明真实路径与验证命令。
+
 ## Premium model escalation
 
 Before making a high-risk or difficult engineering decision, load the
