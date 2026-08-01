@@ -170,6 +170,7 @@ export async function run(options = {}) {
       resultPath: paths.result,
       sink,
       context,
+      stateProjector,
       onAccepted: () => {
         resultAccepted = true;
       },
@@ -206,7 +207,7 @@ export async function run(options = {}) {
         errorMessage: boundedText(budgetControls.reason(), 4096),
       }, () => {
         resultAccepted = true;
-      });
+      }, stateProjector);
     } else if (settled && !resultAccepted) {
       // Sessions can settle without the result tool (for example a length-stopped
       // turn with no tool call). Issue exactly one recovery prompt before failing.
@@ -262,7 +263,7 @@ export async function run(options = {}) {
           errorMessage: boundedText(safeError(error), 4096),
         }, () => {
           resultAccepted = true;
-        });
+        }, stateProjector);
         try {
           await ensureDeliveryArtifacts(
             request,
@@ -280,6 +281,14 @@ export async function run(options = {}) {
   } finally {
     if (stateProjector) {
       try {
+        if (stateProjector.snapshot.resultStatus === "PENDING") {
+          await stateProjector.projectTerminalResult({
+            status: "FAILED",
+            reason: protocolSucceeded
+              ? "runtime stopped before terminal result projection"
+              : boundedText(safeError(failure), 512),
+          });
+        }
         await flushStateArtifacts(stateProjector, paths, sink);
       } catch (flushError) {
         console.error(`[rd-pi-bridge] failed to flush agent state artifacts: ${safeError(flushError)}`);
@@ -324,9 +333,15 @@ export async function run(options = {}) {
   return (protocolSucceeded || resultAccepted) ? 0 : 1;
 }
 
-async function acceptBridgeFailureResult(paths, sink, result, onAccepted) {
+async function acceptBridgeFailureResult(paths, sink, result, onAccepted, stateProjector) {
   await writeResultAtomically(paths.result, result);
   onAccepted();
+  if (stateProjector) {
+    await stateProjector.projectTerminalResult({
+      status: result.status ?? "FAILED",
+      reason: result.summary ?? result.errorMessage ?? "",
+    });
+  }
   await safeLifecycle(sink, "RESULT_SUBMITTED", {
     status: result.status,
     summary: boundedText(result.summary, 4096),
@@ -699,7 +714,7 @@ function stringSet(value, fallback) {
   return new Set(values.filter((item) => typeof item === "string" && item.trim() !== ""));
 }
 
-function createResultTool({ resultPath, sink, context, onAccepted }) {
+function createResultTool({ resultPath, sink, context, onAccepted, stateProjector }) {
   return defineTool({
     name: RESULT_TOOL_NAME,
     label: "Submit RD result",
@@ -718,6 +733,12 @@ function createResultTool({ resultPath, sink, context, onAccepted }) {
         }
         await writeResultAtomically(resultPath, result);
         onAccepted();
+        if (stateProjector) {
+          await stateProjector.projectTerminalResult({
+            status: result.status,
+            reason: boundedText(result.summary, 512),
+          });
+        }
         await sink.lifecycle("RESULT_SUBMITTED", {
           status: result.status,
           summary: boundedText(result.summary, 4096),

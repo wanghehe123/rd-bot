@@ -17,6 +17,37 @@ const identity = {
   attemptNo: 1,
 };
 
+test("injectLatestState emits STATE_CONTEXT_INJECTED lifecycle evidence", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rd-state-inject-evidence-"));
+  const projector = new AgentStateProjector({ identity, outputPath: dir, maxInjectedStateBytes: 8192 });
+  await projector.initialize();
+  await projector.applyAction({
+    tool: "rd_todo_rewrite",
+    actionId: "a1",
+    expectedSequence: 0,
+    clientSequence: 1,
+    reason: "plan",
+    todos: [{ id: "t1", title: "Ship", status: "IN_PROGRESS" }],
+  });
+
+  const lifecycleEvents = [];
+  const sink = {
+    lifecycle: async (eventType, payload) => {
+      lifecycleEvents.push({ eventType, payload });
+    },
+  };
+  const messages = [{ role: "user", content: [{ type: "text", text: "start" }] }];
+  injectLatestState(messages, projector, sink);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const injected = lifecycleEvents.find((event) => event.eventType === "STATE_CONTEXT_INJECTED");
+  assert.ok(injected);
+  assert.equal(injected.payload.sequence, projector.sequence);
+  assert.match(injected.payload.hash, /^[a-f0-9]{64}$/);
+  assert.ok(injected.payload.bytes > 0);
+  assert.equal(Object.hasOwn(injected.payload, "text"), false);
+});
+
 test("injectLatestState keeps only one latest rd-agent-state message", async () => {
   const dir = await mkdtemp(join(tmpdir(), "rd-state-inject-"));
   const projector = new AgentStateProjector({ identity, outputPath: dir, maxInjectedStateBytes: 8192 });
@@ -36,7 +67,7 @@ test("injectLatestState keeps only one latest rd-agent-state message", async () 
     { role: "assistant", content: [{ type: "text", text: "working" }] },
     { role: "custom", customType: STATE_CUSTOM_TYPE, content: [{ type: "text", text: "older-state" }] },
   ];
-  const injected = injectLatestState(messages, projector);
+  const injected = injectLatestState(messages, projector, null);
   const stateMessages = injected.filter((message) => message.customType === STATE_CUSTOM_TYPE);
   assert.equal(stateMessages.length, 1);
   assert.match(stateMessages[0].content[0].text, /<rd-agent-state/);

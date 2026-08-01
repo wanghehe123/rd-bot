@@ -21,7 +21,7 @@ export function createDynamicStateExtension({
     factory(pi) {
       pi.on("context", (event) => {
         if (!Array.isArray(event?.messages)) return;
-        event.messages = injectLatestState(event.messages, projector);
+        event.messages = injectLatestState(event.messages, projector, sink);
       });
       pi.on("tool_call", (event) => {
         const toolName = event?.toolName ?? "";
@@ -66,11 +66,23 @@ export function createDynamicStateExtension({
   };
 }
 
-export function injectLatestState(messages, projector) {
+export function injectLatestState(messages, projector, sink = null) {
   const next = (messages ?? []).filter((message) => message?.customType !== STATE_CUSTOM_TYPE);
   if (!projector) return next;
   try {
-    next.push(projector.buildInjectionMessage());
+    const injection = projector.prepareInjection();
+    next.push(injection.message);
+    if (sink?.lifecycle) {
+      void safeLifecycle(sink, "STATE_CONTEXT_INJECTED", {
+        sequence: injection.sequence,
+        hash: injection.hash,
+        bytes: injection.bytes,
+      });
+    }
+    void projector.recordContextInjected({
+      hash: injection.hash,
+      bytes: injection.bytes,
+    });
   } catch (error) {
     next.push({
       role: "custom",
@@ -83,6 +95,14 @@ export function injectLatestState(messages, projector) {
     });
   }
   return next;
+}
+
+async function safeLifecycle(sink, eventType, payload) {
+  try {
+    await sink.lifecycle(eventType, payload);
+  } catch {
+    // observability must not break context injection
+  }
 }
 
 export function createFingerprintHelpers(stageRunId) {

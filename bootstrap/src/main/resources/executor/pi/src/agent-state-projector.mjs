@@ -1,4 +1,5 @@
 import { appendFile, mkdir, writeFile, rename } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 
 export const AGENT_STATE_PROTOCOL = "rd-agent-state/v1";
@@ -13,6 +14,14 @@ const TODO_TRANSITIONS = {
   CANCELLED: new Set(),
 };
 const FACT_KINDS = new Set(["DECLARED", "OBSERVED", "INFERRED", "HISTORICAL"]);
+const TERMINAL_RESULT_STATUSES = new Set([
+  "SUCCESS",
+  "FAILED",
+  "NEED_INFO",
+  "UNSAFE",
+  "PASSED",
+  "SKIPPED",
+]);
 
 export function stateOutputPaths(outputPath = "/work/output") {
   return {
@@ -112,6 +121,7 @@ export class AgentStateProjector {
         recentErrors: recentErrors.slice(0, 8),
         toolCounts: incrementToolCount(this.#snapshot.toolCounts, toolName, !isError),
       };
+      this.#advanceSequence();
       await this.#appendEvent({
         eventType: "TOOL_RESULT_RECORDED",
         payload: { toolName, isError: Boolean(isError), fingerprint: fingerprint ?? "" },
@@ -120,7 +130,42 @@ export class AgentStateProjector {
     });
   }
 
-  buildInjectionMessage() {
+  async projectTerminalResult({ status, reason = "" } = {}) {
+    const normalizedStatus = normalizeTerminalResultStatus(status);
+    return this.#enqueue(async () => {
+      if (this.#snapshot.resultStatus !== "PENDING") {
+        return { projected: false, reason: "resultStatus already terminal" };
+      }
+      const boundedReason = boundedText(reason, 512);
+      this.#snapshot = {
+        ...this.#snapshot,
+        resultStatus: normalizedStatus,
+        blocker: boundedReason || this.#snapshot.blocker,
+      };
+      this.#advanceSequence();
+      await this.#appendEvent({
+        eventType: "STATE_RESULT_PROJECTED",
+        payload: { status: normalizedStatus, reason: boundedReason },
+      });
+      await this.#writeLatest();
+      return { projected: true, status: normalizedStatus, sequence: this.#sequence };
+    });
+  }
+
+  async recordContextInjected({ hash, bytes }) {
+    return this.#enqueue(async () => {
+      await this.#appendEvent({
+        eventType: "STATE_CONTEXT_INJECTED",
+        payload: {
+          sequence: this.#sequence,
+          hash: boundedText(hash, 128),
+          bytes: positiveInteger(bytes, 0),
+        },
+      });
+    });
+  }
+
+  prepareInjection() {
     const bounded = boundSnapshotForInjection(this.#snapshot, this.#maxInjectedStateBytes);
     if (!bounded.ok) {
       this.#injectionBlocker = bounded.reason;
@@ -128,12 +173,24 @@ export class AgentStateProjector {
     }
     const json = JSON.stringify(bounded.snapshot);
     const text = `<rd-agent-state protocol="${AGENT_STATE_PROTOCOL}" sequence="${this.#sequence}">\n${json}\n</rd-agent-state>`;
+    const bytes = Buffer.byteLength(text, "utf8");
+    const hash = sha256Hex(text);
     return {
-      role: "custom",
-      customType: STATE_CUSTOM_TYPE,
-      display: false,
-      content: [{ type: "text", text }],
+      sequence: this.#sequence,
+      hash,
+      bytes,
+      text,
+      message: {
+        role: "custom",
+        customType: STATE_CUSTOM_TYPE,
+        display: false,
+        content: [{ type: "text", text }],
+      },
     };
+  }
+
+  buildInjectionMessage() {
+    return this.prepareInjection().message;
   }
 
   getInjectionText() {
@@ -143,6 +200,12 @@ export class AgentStateProjector {
   #enqueue(task) {
     this.#writeChain = this.#writeChain.then(task);
     return this.#writeChain;
+  }
+
+  #advanceSequence() {
+    this.#sequence += 1;
+    this.#snapshot.sequence = this.#sequence;
+    this.#snapshot.generatedAt = new Date().toISOString();
   }
 
   async #appendEvent({ eventType, payload }) {
@@ -355,4 +418,16 @@ function boundedText(value, maxChars) {
 
 function positiveInteger(value, fallback) {
   return Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
+function normalizeTerminalResultStatus(status) {
+  const normalized = String(status ?? "FAILED").trim().toUpperCase();
+  if (!TERMINAL_RESULT_STATUSES.has(normalized)) {
+    throw new Error(`unsupported terminal result status: ${status}`);
+  }
+  return normalized;
+}
+
+function sha256Hex(value) {
+  return createHash("sha256").update(String(value), "utf8").digest("hex");
 }
