@@ -464,6 +464,12 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
                 && !request.executionProfileSnapshotId().isBlank()) {
             context.put("executionProfileSnapshotId", request.executionProfileSnapshotId());
         }
+        if (!request.inputManifestHash().isBlank()) {
+            context.put("inputManifestHash", request.inputManifestHash());
+        }
+        if (!request.contextPolicyHash().isBlank()) {
+            context.put("contextPolicyHash", request.contextPolicyHash());
+        }
         if (handoffPublisher != null) {
             context.put("roleHandoffMaxTokens", String.valueOf(handoffPublisher.maxTokens()));
         }

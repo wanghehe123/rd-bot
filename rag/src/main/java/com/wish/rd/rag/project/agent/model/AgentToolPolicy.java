@@ -61,6 +61,18 @@ public record AgentToolPolicy(
         );
     }
 
+    /** Read-only QA policy: no repository mutation tools. */
+    public static AgentToolPolicy defaultQaPolicy() {
+        return new AgentToolPolicy(
+                "default-qa",
+                1L,
+                Set.of("read", "bash", "rd_submit_result"),
+                Set.of("read", "bash", "rd_submit_result"),
+                Set.of("edit", "write"),
+                true
+        );
+    }
+
     private static Set<String> normalize(Set<String> values) {
         if (values == null || values.isEmpty()) {
             return Set.of();

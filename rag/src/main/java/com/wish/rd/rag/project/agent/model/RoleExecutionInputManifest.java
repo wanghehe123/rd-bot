@@ -26,7 +26,8 @@ public record RoleExecutionInputManifest(
     RoleExecutionBudget budget,
     String semanticSignature,
     String contextPackageId,
-    String promptArtifactId
+    String promptArtifactId,
+    List<String> expectedArtifactIds
 ) {
 
   public static final int CURRENT_SCHEMA_VERSION = 1;
@@ -57,11 +58,18 @@ public record RoleExecutionInputManifest(
         ? new ExecutionProfileReference("", "")
         : executionProfile;
     budget = budget == null
-        ? new RoleExecutionBudget("", 0L, 0L, 0L, "chars/4-v1")
+        ? new RoleExecutionBudget(RoleExecutionBudget.UNAVAILABLE_MODEL,
+                RoleExecutionBudget.UNAVAILABLE_TOKENS,
+                RoleExecutionBudget.UNAVAILABLE_TOKENS,
+                0L,
+                "chars/4-v1")
         : budget;
     semanticSignature = semanticSignature == null ? "" : semanticSignature.strip();
     contextPackageId = contextPackageId == null ? "" : contextPackageId.strip();
     promptArtifactId = promptArtifactId == null ? "" : promptArtifactId.strip();
+    expectedArtifactIds = expectedArtifactIds == null
+        ? List.of()
+        : List.copyOf(expectedArtifactIds.stream().filter(id -> id != null && !id.isBlank()).toList());
   }
 
   public String manifestHash() {

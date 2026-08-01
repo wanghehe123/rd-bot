@@ -6,8 +6,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wish.rd.engine.agent.model.AgentRole;
 import com.wish.rd.engine.agent.model.AgentStageRun;
 import com.wish.rd.engine.requirement.model.RequirementExecutionProfileResolution;
+import com.wish.rd.engine.retry.model.TaskRetryCheckpoint;
 import com.wish.rd.rag.context.model.RoleContextEvidence;
 import com.wish.rd.rag.context.model.RoleContextPackage;
+import com.wish.rd.rag.project.agent.model.AgentExecutionProfileSnapshot;
 import com.wish.rd.rag.project.agent.model.AgentManifestCanonicalJson;
 import com.wish.rd.rag.project.agent.model.ExecutionProfileReference;
 import com.wish.rd.rag.project.agent.model.HandoffManifestEntry;
@@ -51,7 +53,8 @@ final class RoleExecutionInputManifestBuilder {
       String upstreamResultJson,
       RequirementExecutionProfileResolution executionProfileResolution,
       String recoveryContent,
-      String recoverySourceStageRunId,
+      TaskRetryCheckpoint recoveryCheckpoint,
+      List<String> expectedArtifactIds,
       RoleContextVersionManager roleContextVersionManager
   ) {
     String promptHash = AgentManifestCanonicalJson.contentHash(rolePrompt == null ? "" : rolePrompt);
@@ -82,21 +85,17 @@ final class RoleExecutionInputManifestBuilder {
                 AgentManifestCanonicalJson.contentHash(taskBaselineFingerprint(task, roleContext))
         ),
         evidenceEntries(roleContext),
-        handoffEntries(upstreamResultJson),
-        new RecoveryManifestEntry(
-                recoverySourceStageRunId == null ? "" : recoverySourceStageRunId,
-                recoveryContent == null || recoveryContent.isBlank()
-                        ? ""
-                        : AgentManifestCanonicalJson.contentHash(recoveryContent)
-        ),
+        handoffEntries(upstreamResultJson, role),
+        recoveryEntry(recoveryContent, recoveryCheckpoint),
         runtimeContextPolicy,
         new RoleExecutionPromptAudit(promptHash, promptBytes, estimatedTokens, ESTIMATOR_VERSION),
         materialsSummary(materials),
         executionProfileReference(executionProfileResolution),
-        new RoleExecutionBudget("", 0L, 0L, estimatedTokens, ESTIMATOR_VERSION),
+        executionBudget(executionProfileResolution, estimatedTokens),
         semanticSignature,
         roleContext.packageId(),
-        stage.promptArtifactId()
+        stage.promptArtifactId(),
+        expectedArtifactIds == null ? List.of() : List.copyOf(expectedArtifactIds)
     );
   }
 
@@ -116,16 +115,25 @@ final class RoleExecutionInputManifestBuilder {
     return List.copyOf(entries);
   }
 
-  private static List<HandoffManifestEntry> handoffEntries(String upstreamResultJson) {
+  private static List<HandoffManifestEntry> handoffEntries(String upstreamResultJson, AgentRole currentRole) {
     List<HandoffManifestEntry> entries = new ArrayList<>();
+    String targetRole = currentRole == null ? "" : currentRole.name();
     try {
-      JsonNode root = OBJECT_MAPPER.readTree(upstreamResultJson == null ? "[]" : upstreamResultJson);
-      if (!root.isArray()) {
+      JsonNode root = OBJECT_MAPPER.readTree(upstreamResultJson == null ? "{}" : upstreamResultJson);
+      JsonNode stages = root.path("stages");
+      if (!stages.isArray()) {
         return List.of();
       }
-      for (JsonNode stage : root) {
+      for (JsonNode stage : stages) {
         JsonNode handoff = stage.path("handoff");
         if (!handoff.isObject()) {
+          handoff = stage.path("roleHandoff");
+        }
+        if (!handoff.isObject()) {
+          continue;
+        }
+        String handoffTarget = handoff.path("targetRole").asText("").strip().toUpperCase(Locale.ROOT);
+        if (!handoffTarget.isBlank() && !handoffTarget.equals(targetRole)) {
           continue;
         }
         String artifactUri = handoff.path("artifactUri").asText("");
@@ -133,12 +141,40 @@ final class RoleExecutionInputManifestBuilder {
         if (artifactUri.isBlank() || sha256.isBlank()) {
           continue;
         }
-        entries.add(new HandoffManifestEntry(artifactUri, sha256));
+        String sourceRole = firstNonBlank(
+                handoff.path("sourceRole").asText(""),
+                stage.path("role").asText("")
+        );
+        entries.add(new HandoffManifestEntry(
+                handoff.path("artifactId").asText(""),
+                artifactUri,
+                sha256,
+                sourceRole,
+                handoffTarget.isBlank() ? targetRole : handoffTarget
+        ));
       }
     } catch (JsonProcessingException ignored) {
       return List.of();
     }
     return List.copyOf(entries);
+  }
+
+  private static RecoveryManifestEntry recoveryEntry(
+      String recoveryContent,
+      TaskRetryCheckpoint recoveryCheckpoint
+  ) {
+    String sourceStageRunId = recoveryCheckpoint == null ? "" : recoveryCheckpoint.failedStageRunId();
+    int sourceAttemptNo = recoveryCheckpoint == null
+        ? RecoveryManifestEntry.UNKNOWN_ATTEMPT
+        : recoveryCheckpoint.attemptNo();
+    String reason = recoveryCheckpoint == null ? "" : recoveryCheckpoint.reason();
+    if (reason.isBlank() && recoveryCheckpoint != null) {
+      reason = recoveryCheckpoint.errorMessage();
+    }
+    String contentHash = recoveryContent == null || recoveryContent.isBlank()
+        ? ""
+        : AgentManifestCanonicalJson.contentHash(recoveryContent);
+    return new RecoveryManifestEntry(sourceStageRunId, contentHash, sourceAttemptNo, reason);
   }
 
   private static MaterialsSummaryReference materialsSummary(List<TaskMaterial> materials) {
@@ -160,12 +196,55 @@ final class RoleExecutionInputManifestBuilder {
   private static ExecutionProfileReference executionProfileReference(
       RequirementExecutionProfileResolution executionProfileResolution
   ) {
-    if (executionProfileResolution == null) {
+    if (executionProfileResolution == null || !executionProfileResolution.resolved()) {
       return new ExecutionProfileReference("", "");
     }
+    String snapshotHash = executionProfileResolution.snapshotJson().isBlank()
+        ? ""
+        : AgentExecutionProfileSnapshot.sha256(executionProfileResolution.snapshotJson());
     return new ExecutionProfileReference(
             executionProfileResolution.snapshotId(),
-            ""
+            snapshotHash
+    );
+  }
+
+  private static RoleExecutionBudget executionBudget(
+      RequirementExecutionProfileResolution executionProfileResolution,
+      long estimatedInputTokens
+  ) {
+    if (executionProfileResolution == null || !executionProfileResolution.resolved()) {
+      return unavailableBudget(estimatedInputTokens);
+    }
+    try {
+      JsonNode root = OBJECT_MAPPER.readTree(executionProfileResolution.snapshotJson());
+      String model = firstNonBlank(
+              root.path("modelOverride").asText(""),
+              root.path("providerModelId").asText("")
+      );
+      if (model.isBlank()) {
+        model = RoleExecutionBudget.UNAVAILABLE_MODEL;
+      }
+      long maxContextTokens = root.path("maxContextTokens").asLong(RoleExecutionBudget.UNAVAILABLE_TOKENS);
+      long reservedOutputTokens = root.path("reservedOutputTokens").asLong(RoleExecutionBudget.UNAVAILABLE_TOKENS);
+      if (maxContextTokens <= 0L && maxContextTokens != RoleExecutionBudget.UNAVAILABLE_TOKENS) {
+        maxContextTokens = RoleExecutionBudget.UNAVAILABLE_TOKENS;
+      }
+      if (reservedOutputTokens <= 0L && reservedOutputTokens != RoleExecutionBudget.UNAVAILABLE_TOKENS) {
+        reservedOutputTokens = RoleExecutionBudget.UNAVAILABLE_TOKENS;
+      }
+      return new RoleExecutionBudget(model, maxContextTokens, reservedOutputTokens, estimatedInputTokens, ESTIMATOR_VERSION);
+    } catch (JsonProcessingException exception) {
+      return unavailableBudget(estimatedInputTokens);
+    }
+  }
+
+  private static RoleExecutionBudget unavailableBudget(long estimatedInputTokens) {
+    return new RoleExecutionBudget(
+            RoleExecutionBudget.UNAVAILABLE_MODEL,
+            RoleExecutionBudget.UNAVAILABLE_TOKENS,
+            RoleExecutionBudget.UNAVAILABLE_TOKENS,
+            estimatedInputTokens,
+            ESTIMATOR_VERSION
     );
   }
 
@@ -182,5 +261,13 @@ final class RoleExecutionInputManifestBuilder {
     } catch (JsonProcessingException exception) {
       return task.taskId() + "|" + roleContext.packageId();
     }
+  }
+
+  private static String firstNonBlank(String first, String second) {
+    String safeFirst = first == null ? "" : first.strip();
+    if (!safeFirst.isBlank()) {
+      return safeFirst;
+    }
+    return second == null ? "" : second.strip();
   }
 }

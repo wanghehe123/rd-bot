@@ -191,3 +191,24 @@ CREATE INDEX IF NOT EXISTS idx_rd_agent_private_artifacts_expiry
 
 CREATE INDEX IF NOT EXISTS idx_rd_agent_private_artifacts_stage
     ON rd_agent_private_artifacts (task_id, stage_run_id, created_at DESC);
+
+-- Default immutable tool policies (coding vs read-only QA).
+INSERT INTO rd_agent_tool_policies (policy_id, version, policy_json, policy_hash, enabled)
+VALUES (
+    'legacy-host-bound',
+    1,
+    '{"hostAllow":["bash","edit","rd_record_fact","rd_submit_result","rd_todo_rewrite","rd_todo_update_status","read","write"],"allow":["bash","edit","rd_record_fact","rd_submit_result","rd_todo_rewrite","rd_todo_update_status","read","write"],"deny":[]}',
+    'legacy-host-bound-v1',
+    TRUE
+)
+ON CONFLICT (policy_id, version) DO NOTHING;
+
+INSERT INTO rd_agent_tool_policies (policy_id, version, policy_json, policy_hash, enabled)
+VALUES (
+    'default-qa',
+    1,
+    '{"hostAllow":["bash","rd_submit_result","read"],"allow":["bash","rd_submit_result","read"],"deny":["edit","write"]}',
+    'default-qa-v1',
+    TRUE
+)
+ON CONFLICT (policy_id, version) DO NOTHING;

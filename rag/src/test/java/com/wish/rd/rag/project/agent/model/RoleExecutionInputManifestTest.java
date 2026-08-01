@@ -47,10 +47,11 @@ class RoleExecutionInputManifestTest {
             new RoleExecutionPromptAudit("sha256:prompt", 120L, 30L, "chars/4-v1"),
             new MaterialsSummaryReference("sha256:materials", 2),
             new ExecutionProfileReference("snap-1", ""),
-            new RoleExecutionBudget("", 0L, 0L, 30L, "chars/4-v1"),
+            new RoleExecutionBudget("deepseek-v4-flash", 128_000L, 8_192L, 30L, "chars/4-v1"),
             "semantic-v1",
             "pkg-1",
-            "prompt-1"
+            "prompt-1",
+            List.of("input-manifest-1", "runtime-manifest-1")
     );
   }
 }

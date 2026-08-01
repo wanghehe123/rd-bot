@@ -172,6 +172,36 @@ class RoleContextBuilderTest {
         assertTrue(evidence.summary().length() < hugePreview.length());
     }
 
+    @Test
+    void shouldOmitSameProjectButSemanticallyIrrelevantExperience() {
+        RoleContextBuilder builder = new RoleContextBuilder();
+        RdRequirementTask task = RdRequirementTask.created(
+                "task-1006",
+                new CreateRequirementTaskCommand(
+                        "增加订单催单能力", "P1", "https://github.com/example/waimai.git",
+                        "example", "waimai", "main", "订单详情页可以催单",
+                        List.of("接口测试通过"), false),
+                1_783_000_000_000L);
+        List<RoleContextEvidence> selected = List.of(
+                new RoleContextEvidence(
+                        "root", "TASK_INPUT", "rd-task://task-1006", "需求根证据", "sha256:root",
+                        "订单详情页可以催单", 1_783_000_000_000L,
+                        "required root evidence", 1.0d, "REQUIREMENT_ROOT", true),
+                new RoleContextEvidence(
+                        "history-irrelevant", "WORKFLOW_EXPERIENCE", "rd-experience://coupon", "优惠券系统重构",
+                        "sha256:coupon", "优惠券发放与核销链路优化", 1_783_000_000_000L,
+                        "same project historical experience", 0.42d, "OPTIONAL_HISTORY", false)
+        );
+
+        RoleContextPackage context = builder.buildFromEvidence(
+                "ctx-1006", task, selected, "CODING_AGENT", 8_000, 1, "run-1006",
+                1_783_000_000_001L);
+
+        assertEquals(List.of("root"), context.evidence().stream()
+                .map(RoleContextEvidence::evidenceId).toList());
+        assertTrue(context.omittedEvidenceIds().contains("history-irrelevant"));
+    }
+
     private TaskMaterial material(String id, String title, String preview) {
         return new TaskMaterial(
                 id,

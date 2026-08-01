@@ -122,8 +122,9 @@ public final class RoleContextBuilder {
         boolean invalidReference = evidence.sourceUri().isBlank() || evidence.contentHash().isBlank();
         boolean zeroScoreExperience = "WORKFLOW_EXPERIENCE".equalsIgnoreCase(evidence.sourceType())
             && evidence.relevanceScore() <= 0.0d;
+        boolean irrelevantExperience = irrelevantWorkflowExperience(task, evidence);
         String dedupeKey = evidence.contentHash().isBlank() ? evidence.evidenceId() : evidence.contentHash();
-        if (invalidReference || zeroScoreExperience || !seen.add(dedupeKey)) {
+        if (invalidReference || zeroScoreExperience || irrelevantExperience || !seen.add(dedupeKey)) {
           omitted.add(evidence.evidenceId());
           continue;
         }
@@ -303,8 +304,67 @@ public final class RoleContextBuilder {
     }
 
     private String normalizeRole(String role) {
-      String normalized = role == null ? "" : role.strip().toUpperCase(Locale.ROOT);
-      return normalized.isBlank() ? "REQUIREMENT_REVIEWER" : normalized;
+        String normalized = role == null ? "" : role.strip().toUpperCase(Locale.ROOT);
+        return normalized.isBlank() ? "REQUIREMENT_REVIEWER" : normalized;
+    }
+
+    private boolean irrelevantWorkflowExperience(RdRequirementTask task, RoleContextEvidence evidence) {
+        if (!"WORKFLOW_EXPERIENCE".equalsIgnoreCase(evidence.sourceType())) {
+            return false;
+        }
+        if (evidence.relevanceScore() <= 0.0d) {
+            return true;
+        }
+        String query = taskQuery(task);
+        if (query.isBlank()) {
+            return false;
+        }
+        String corpus = (evidence.title() + " " + evidence.summary()).toLowerCase(Locale.ROOT);
+        return !hasSemanticOverlap(query, corpus);
+    }
+
+    private String taskQuery(RdRequirementTask task) {
+        if (task == null) {
+            return "";
+        }
+        return (task.title() + " " + task.expectedResult()).toLowerCase(Locale.ROOT);
+    }
+
+    private boolean hasSemanticOverlap(String query, String corpus) {
+        for (String token : semanticTokens(query)) {
+            if (corpus.contains(token)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private List<String> semanticTokens(String text) {
+        if (text == null || text.isBlank()) {
+            return List.of();
+        }
+        List<String> tokens = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        for (int i = 0; i < text.length(); i++) {
+            char ch = text.charAt(i);
+            if (Character.isLetterOrDigit(ch) || ch >= '\u4e00' && ch <= '\u9fff') {
+                current.append(ch);
+            } else if (!current.isEmpty()) {
+                addSemanticToken(tokens, current.toString());
+                current.setLength(0);
+            }
+        }
+        if (!current.isEmpty()) {
+            addSemanticToken(tokens, current.toString());
+        }
+        return List.copyOf(tokens);
+    }
+
+    private void addSemanticToken(List<String> tokens, String token) {
+        String normalized = token.toLowerCase(Locale.ROOT);
+        if (normalized.length() >= 2) {
+            tokens.add(normalized);
+        }
     }
 
     private record CandidateEvidence(RoleContextEvidence evidence, int score, int index) {

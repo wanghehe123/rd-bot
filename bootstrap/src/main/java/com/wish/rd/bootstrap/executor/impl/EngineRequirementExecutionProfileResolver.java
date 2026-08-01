@@ -184,7 +184,7 @@ public final class EngineRequirementExecutionProfileResolver
         value.put("modelOverride", profile == null ? "" : profile.modelOverride());
         value.put("extensionSetId", profile == null ? "" : profile.extensionSetId());
         value.put("extensionSetVersion", profile == null ? 0L : profile.extensionSetVersion());
-        AgentToolPolicy toolPolicy = resolveToolPolicy(runtimeType, profile);
+        AgentToolPolicy toolPolicy = resolveToolPolicy(runtimeType, profile, role);
         value.put("toolPolicyId", toolPolicy.policyId());
         value.put("toolPolicyVersion", toolPolicy.version());
         value.put("toolPolicy", toolPolicyJson(toolPolicy, dynamicStateEnabled));
@@ -209,17 +209,22 @@ public final class EngineRequirementExecutionProfileResolver
         }
     }
 
-    private AgentToolPolicy resolveToolPolicy(AgentRuntimeType runtimeType, AgentExecutionProfile profile) {
+    private AgentToolPolicy resolveToolPolicy(
+            AgentRuntimeType runtimeType,
+            AgentExecutionProfile profile,
+            AgentRole role
+    ) {
         if (profile == null) {
-            return AgentToolPolicy.defaultCodingPolicy();
+            return defaultToolPolicy(runtimeType, role == null ? null : role.name());
         }
         if (toolPolicyService == null) {
+            AgentToolPolicy fallback = defaultToolPolicy(runtimeType, profile.role());
             return new AgentToolPolicy(
                     profile.toolPolicyId(),
                     profile.toolPolicyVersion(),
-                    AgentToolPolicy.defaultCodingPolicy().hostAllow(),
-                    AgentToolPolicy.defaultCodingPolicy().allow(),
-                    AgentToolPolicy.defaultCodingPolicy().deny(),
+                    fallback.hostAllow(),
+                    fallback.allow(),
+                    fallback.deny(),
                     true
             );
         }
@@ -229,6 +234,13 @@ public final class EngineRequirementExecutionProfileResolver
                         "AGENT_RUNTIME_PROFILE_INVALID: tool policy is unavailable: " + profile.toolPolicyId()
                                 + "@" + profile.toolPolicyVersion()
                 ));
+    }
+
+    private static AgentToolPolicy defaultToolPolicy(AgentRuntimeType runtimeType, String role) {
+        if (role != null && AgentRole.QA_AGENT.name().equalsIgnoreCase(role)) {
+            return AgentToolPolicy.defaultQaPolicy();
+        }
+        return AgentToolPolicy.defaultCodingPolicy();
     }
 
     private ModelProviderProfile resolveProvider(AgentRuntimeType runtimeType, AgentExecutionProfile profile) {

@@ -19,6 +19,8 @@ import java.util.List;
  * @param upstreamResultJson  上游角色阶段结果 JSON
  * @param stageRunId          当前角色阶段运行 ID
  * @param executionProfileSnapshotId 已冻结的执行 Profile 快照 ID，可为空表示兼容旧调用
+ * @param inputManifestHash   冻结的 role execution input manifest hash，可为空
+ * @param contextPolicyHash   冻结的 runtime context policy hash，可为空
  */
 public record RequirementExecutionRequest(
         String taskId,
@@ -30,7 +32,9 @@ public record RequirementExecutionRequest(
         boolean pullRequestRequired,
         String upstreamResultJson,
         String stageRunId,
-        String executionProfileSnapshotId
+        String executionProfileSnapshotId,
+        String inputManifestHash,
+        String contextPolicyHash
 ) {
 
     public RequirementExecutionRequest(
@@ -45,7 +49,25 @@ public record RequirementExecutionRequest(
     ) {
         this(
                 taskId, task, materials, prompt, role, roleContextJson, pullRequestRequired,
-                upstreamResultJson, "", ""
+                upstreamResultJson, "", "", "", ""
+        );
+    }
+
+    public RequirementExecutionRequest(
+            String taskId,
+            RdRequirementTask task,
+            List<TaskMaterial> materials,
+            String prompt,
+            AgentRole role,
+            String roleContextJson,
+            boolean pullRequestRequired,
+            String upstreamResultJson,
+            String stageRunId,
+            String executionProfileSnapshotId
+    ) {
+        this(
+                taskId, task, materials, prompt, role, roleContextJson, pullRequestRequired,
+                upstreamResultJson, stageRunId, executionProfileSnapshotId, "", ""
         );
     }
 
@@ -55,7 +77,7 @@ public record RequirementExecutionRequest(
             List<TaskMaterial> materials,
             String prompt
     ) {
-        this(taskId, task, materials, prompt, AgentRole.CODING_AGENT, "{}", false, "[]", "", "");
+        this(taskId, task, materials, prompt, AgentRole.CODING_AGENT, "{}", false, "[]", "", "", "", "");
     }
 
     public RequirementExecutionRequest {
@@ -71,5 +93,7 @@ public record RequirementExecutionRequest(
         executionProfileSnapshotId = executionProfileSnapshotId == null
                 ? ""
                 : executionProfileSnapshotId.strip();
+        inputManifestHash = inputManifestHash == null ? "" : inputManifestHash.strip();
+        contextPolicyHash = contextPolicyHash == null ? "" : contextPolicyHash.strip();
     }
 }

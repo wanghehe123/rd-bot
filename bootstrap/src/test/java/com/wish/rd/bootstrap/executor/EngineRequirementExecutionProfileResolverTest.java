@@ -16,6 +16,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class EngineRequirementExecutionProfileResolverTest {
@@ -62,6 +63,25 @@ class EngineRequirementExecutionProfileResolverTest {
 
         assertEquals(AgentRuntimeType.CLAUDE_CODE, codingRuntime);
         assertEquals(AgentRuntimeType.MODEL_ONLY, reviewerRuntime);
+    }
+
+    @Test
+    void shouldFreezeQaCompatibilityPolicyWithoutWriteTools() {
+        InMemoryAgentExecutionProfileSnapshotStore snapshots = new InMemoryAgentExecutionProfileSnapshotStore();
+        EngineRequirementExecutionProfileResolver resolver = new EngineRequirementExecutionProfileResolver(
+                new AgentExecutionProfileService(new InMemoryAgentExecutionProfileStore()),
+                new AgentExecutionProfileSnapshotService(snapshots),
+                snapshots,
+                false
+        );
+        resolver.resolve(task(), AgentRole.QA_AGENT, "stage-qa", 1);
+        String snapshotJson = snapshots.findByStageRunId("stage-qa").orElseThrow().snapshotJson();
+        assertTrue(snapshotJson.contains("\"default-qa\""));
+        assertTrue(snapshotJson.contains("\"read\""));
+        assertTrue(snapshotJson.contains("\"deny\""));
+        assertTrue(snapshotJson.contains("\"edit\""));
+        assertTrue(snapshotJson.contains("\"write\""));
+        assertFalse(snapshotJson.contains("\"effectiveAllow\":[\"read\",\"bash\",\"edit\""));
     }
 
     @Test

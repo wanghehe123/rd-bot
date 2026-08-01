@@ -315,7 +315,7 @@ public class RequirementAgentStageOrchestrator {
             );
             // DISPATCHING -> RUNNING：记录 prompt 快照后进入正式执行。
             stage = capturePromptArtifact(stage, rolePrompt);
-            stage = captureRoleExecutionInputManifest(
+            ManifestCapture manifestCapture = captureRoleExecutionInputManifest(
                     stage,
                     role,
                     task,
@@ -327,8 +327,9 @@ public class RequirementAgentStageOrchestrator {
                     upstreamResultJson,
                     executionProfileResolution,
                     recoverySection,
-                    activeRetry == null ? "" : activeRetry.failedStageRunId()
+                    activeRetry
             );
+            stage = manifestCapture.stage();
             stage = transitionStage(stage, AgentStageStatus.RUNNING, "", "");
             RequirementExecutionResult roleResult;
             try {
@@ -340,7 +341,8 @@ public class RequirementAgentStageOrchestrator {
                         roleContext,
                         upstreamResultJson,
                         stage,
-                        executionProfileResolution.snapshotId()
+                        executionProfileResolution.snapshotId(),
+                        manifestCapture.manifest()
                 );
             } catch (RuntimeException exception) {
                 // RUNNING -> FAILED_RETRYABLE：执行器抛出异常，先记录可重试失败并返回全链路失败。
@@ -605,7 +607,10 @@ public class RequirementAgentStageOrchestrator {
         return stageRunStore.save(stage.withPromptArtifactId(artifact.artifactId(), now));
     }
 
-    private AgentStageRun captureRoleExecutionInputManifest(
+    private record ManifestCapture(AgentStageRun stage, RoleExecutionInputManifest manifest) {
+    }
+
+    private ManifestCapture captureRoleExecutionInputManifest(
             AgentStageRun stage,
             AgentRole role,
             RdRequirementTask task,
@@ -616,13 +621,21 @@ public class RequirementAgentStageOrchestrator {
             String upstreamResultJson,
             RequirementExecutionProfileResolution executionProfileResolution,
             String recoveryContent,
-            String recoverySourceStageRunId
+            TaskRetryCheckpoint recoveryCheckpoint
     ) {
         boolean alreadySaved = artifactStore.listByTask(stage.taskId()).stream()
                 .anyMatch(artifact -> artifact.stageRunId().equals(stage.stageRunId())
                         && RoleExecutionInputManifest.ARTIFACT_TYPE.equals(artifact.artifactType()));
         if (alreadySaved) {
-            return stage;
+            return new ManifestCapture(stage, null);
+        }
+        String inputManifestArtifactId = idGenerator.nextIdString();
+        String runtimeManifestArtifactId = idGenerator.nextIdString();
+        List<String> expectedArtifactIds = new ArrayList<>();
+        expectedArtifactIds.add(inputManifestArtifactId);
+        expectedArtifactIds.add(runtimeManifestArtifactId);
+        if (!stage.promptArtifactId().isBlank()) {
+            expectedArtifactIds.add(stage.promptArtifactId());
         }
         RoleExecutionInputManifest manifest = RoleExecutionInputManifestBuilder.build(
                 stage,
@@ -635,13 +648,14 @@ public class RequirementAgentStageOrchestrator {
                 upstreamResultJson,
                 executionProfileResolution,
                 recoveryContent,
-                recoverySourceStageRunId,
+                recoveryCheckpoint,
+                List.copyOf(expectedArtifactIds),
                 roleContextVersionManager
         );
         String manifestJson = manifest.canonicalJson();
         long now = System.currentTimeMillis();
         persistStageArtifact(new AgentStageArtifact(
-                idGenerator.nextIdString(),
+                inputManifestArtifactId,
                 stage.stageRunId(),
                 stage.taskId(),
                 stage.role(),
@@ -651,7 +665,7 @@ public class RequirementAgentStageOrchestrator {
                 contentPreview(manifestJson),
                 manifest.manifestHash(),
                 """
-                        {"taskId":%s,"stageRunId":%s,"role":%s,"artifactType":%s,"schemaVersion":%d,"manifestHash":%s,"contentLength":%d}
+                        {"taskId":%s,"stageRunId":%s,"role":%s,"artifactType":%s,"schemaVersion":%d,"manifestHash":%s,"contentLength":%d,"runtimeContextManifestArtifactId":%s}
                         """.formatted(
                         json(stage.taskId()),
                         json(stage.stageRunId()),
@@ -659,11 +673,12 @@ public class RequirementAgentStageOrchestrator {
                         json(RoleExecutionInputManifest.ARTIFACT_TYPE),
                         manifest.schemaVersion(),
                         json(manifest.manifestHash()),
-                        manifestJson.length()
+                        manifestJson.length(),
+                        json(runtimeManifestArtifactId)
                 ).strip(),
                 now
         ));
-        return stage;
+        return new ManifestCapture(stage, manifest);
     }
 
     private AgentStageRun captureResultArtifact(AgentStageRun stage, RequirementExecutionResult result) {
@@ -1133,8 +1148,13 @@ public class RequirementAgentStageOrchestrator {
             RoleContextPackage roleContext,
             String upstreamResultJson,
             AgentStageRun stage,
-            String executionProfileSnapshotId
+            String executionProfileSnapshotId,
+            RoleExecutionInputManifest inputManifest
     ) {
+        String inputManifestHash = inputManifest == null ? "" : inputManifest.manifestHash();
+        String contextPolicyHash = inputManifest == null
+                ? ""
+                : inputManifest.runtimeContextPolicy().policyHash();
         return normalizeResult(
                 task.taskId(),
                 executor.execute(new RequirementExecutionRequest(
@@ -1147,7 +1167,9 @@ public class RequirementAgentStageOrchestrator {
                         false,
                         upstreamResultJson,
                         stage.stageRunId(),
-                        executionProfileSnapshotId
+                        executionProfileSnapshotId,
+                        inputManifestHash,
+                        contextPolicyHash
                 ))
         );
     }

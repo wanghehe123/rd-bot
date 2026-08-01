@@ -504,6 +504,14 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         request.put("toolRetryPolicyVersion", text(snapshotJson.path("toolRetryPolicyVersion")));
         request.put("attemptNo", snapshot.attemptNo());
         request.put("resourceManifestPath", "/work/input/resource-manifest.json");
+        String inputManifestHash = text(command.contextJson().get("inputManifestHash"));
+        if (!inputManifestHash.isBlank()) {
+            request.put("inputManifestHash", inputManifestHash);
+        }
+        String contextPolicyHash = text(command.contextJson().get("contextPolicyHash"));
+        if (!contextPolicyHash.isBlank()) {
+            request.put("contextPolicy", Map.of("policyHash", contextPolicyHash));
+        }
         request.put("toolPolicy", Map.of(
                 "hostAllow", toolPolicy.hostAllow(),
                 "allow", toolPolicy.allow(),

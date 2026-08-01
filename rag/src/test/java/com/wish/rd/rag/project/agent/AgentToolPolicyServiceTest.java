@@ -7,9 +7,20 @@ import org.junit.jupiter.api.Test;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class AgentToolPolicyServiceTest {
+
+    @Test
+    void defaultQaPolicyDeniesWriteTools() {
+        AgentToolPolicy policy = AgentToolPolicy.defaultQaPolicy();
+        assertEquals(Set.of("read", "bash", "rd_submit_result"), Set.copyOf(policy.effectiveAllow()));
+        assertTrue(policy.deny().containsAll(Set.of("edit", "write")));
+        assertFalse(policy.hostAllow().contains("edit"));
+        assertFalse(policy.hostAllow().contains("write"));
+    }
 
     @Test
     void rejectsProjectAllowThatExceedsHostUpperBound() {
