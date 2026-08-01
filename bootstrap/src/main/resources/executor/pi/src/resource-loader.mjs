@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { lstat, readFile, readdir } from "node:fs/promises";
-import { basename, relative, resolve, sep } from "node:path";
+import { basename, dirname, relative, resolve, sep } from "node:path";
 
 import {
   DefaultResourceLoader,
@@ -10,6 +10,50 @@ import {
 export const RESOURCE_MANIFEST_PROTOCOL = "rd-agent-resource-manifest/v1";
 export const VERIFIED_STATUS = "VERIFIED";
 export const DEFAULT_EXTENSION_ROOT = "/work/input/extensions";
+
+export const CONTEXT_POLICY_MODES = Object.freeze({
+  LEGACY_OBSERVE_ONLY: "LEGACY_OBSERVE_ONLY",
+  ROOT_ONLY: "ROOT_ONLY",
+  ROOT_AND_ALLOWLISTED_NESTED: "ROOT_AND_ALLOWLISTED_NESTED",
+});
+
+export const DEFAULT_CONTEXT_POLICY_LIMITS = Object.freeze({
+  maxRootFiles: 2,
+  maxNestedFiles: 8,
+  maxFileBytes: 32 * 1024,
+  maxTotalBytes: 64 * 1024,
+  maxDepth: 8,
+});
+
+export const EXCLUDED_CONTEXT_DIRS = Object.freeze([
+  ".git",
+  ".pi",
+  ".agents",
+  "node_modules",
+  ".next",
+  "dist",
+  "build",
+  "target",
+  "coverage",
+  "vendor",
+]);
+
+const CONTEXT_FILE_NAMES = new Set(["AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"]);
+
+const REJECT_REASON = Object.freeze({
+  PATH_ESCAPE: "PATH_ESCAPE",
+  SYMLINK: "SYMLINK",
+  EXCLUDED_DIRECTORY: "EXCLUDED_DIRECTORY",
+  NOT_ROOT_CONTEXT_FILE: "NOT_ROOT_CONTEXT_FILE",
+  NOT_ALLOWLISTED: "NOT_ALLOWLISTED",
+  DEPTH_EXCEEDED: "DEPTH_EXCEEDED",
+  ROOT_FILE_LIMIT: "ROOT_FILE_LIMIT",
+  NESTED_FILE_LIMIT: "NESTED_FILE_LIMIT",
+  FILE_SIZE_EXCEEDED: "FILE_SIZE_EXCEEDED",
+  TOTAL_SIZE_EXCEEDED: "TOTAL_SIZE_EXCEEDED",
+  HASH_MISMATCH: "HASH_MISMATCH",
+  READ_FAILED: "READ_FAILED",
+});
 
 /**
  * Validate the Java-produced resource manifest and re-hash every selected
@@ -84,12 +128,104 @@ export async function loadResourceManifest(path, options = {}) {
  * verified extension paths remain available through additionalExtensionPaths;
  * project .pi settings, skills, prompts, themes, and extensions are not.
  */
+/**
+ * Discover repo context files under a frozen runtime context policy. Returns
+ * deterministic load order and explicit reject decisions for audit and bridge
+ * preflight (P3-V2).
+ */
+export async function discoverContextFiles(repoRoot, policy = {}) {
+  const normalizedPolicy = normalizeContextPolicy(policy);
+  const root = resolve(repoRoot);
+  const limits = normalizedPolicy.limits;
+  const candidates = await collectContextCandidates(root);
+  const allowlistedPaths = buildAllowlistSet(normalizedPolicy.expectedFiles);
+  const expectedHashes = buildExpectedHashMap(normalizedPolicy.expectedFiles);
+
+  const eligible = [];
+  const rejected = [];
+
+  for (const candidate of candidates) {
+    const decision = await evaluateContextCandidate(candidate, root, normalizedPolicy.mode, {
+      limits,
+      allowlistedPaths,
+      expectedHashes,
+    });
+    if (decision.loaded) {
+      eligible.push(decision.entry);
+    } else {
+      rejected.push(decision.entry);
+    }
+  }
+
+  const sorted = sortContextLoadOrder(eligible, root);
+
+  if (normalizedPolicy.mode === CONTEXT_POLICY_MODES.LEGACY_OBSERVE_ONLY) {
+    const loaded = sorted.map((entry) => ({
+      path: entry.relativePath,
+      sha256: entry.sha256,
+      bytes: entry.bytes,
+      content: entry.content,
+    }));
+    return Object.freeze({
+      mode: normalizedPolicy.mode,
+      loaded: Object.freeze(loaded),
+      rejected: Object.freeze(rejected),
+    });
+  }
+
+  const loaded = [];
+  let rootCount = 0;
+  let nestedCount = 0;
+  let totalBytes = 0;
+
+  for (const entry of sorted) {
+    const atRoot = isRootContextPath(root, entry.absolutePath);
+    if (atRoot) {
+      if (rootCount >= limits.maxRootFiles) {
+        rejected.push(rejectEntry(entry.relativePath, entry.sha256, entry.bytes, REJECT_REASON.ROOT_FILE_LIMIT));
+        continue;
+      }
+    } else if (nestedCount >= limits.maxNestedFiles) {
+      rejected.push(rejectEntry(entry.relativePath, entry.sha256, entry.bytes, REJECT_REASON.NESTED_FILE_LIMIT));
+      continue;
+    }
+    if (entry.bytes > limits.maxFileBytes) {
+      rejected.push(rejectEntry(entry.relativePath, entry.sha256, entry.bytes, REJECT_REASON.FILE_SIZE_EXCEEDED));
+      continue;
+    }
+    if (totalBytes + entry.bytes > limits.maxTotalBytes) {
+      rejected.push(rejectEntry(entry.relativePath, entry.sha256, entry.bytes, REJECT_REASON.TOTAL_SIZE_EXCEEDED));
+      continue;
+    }
+    if (atRoot) {
+      rootCount += 1;
+    } else {
+      nestedCount += 1;
+    }
+    totalBytes += entry.bytes;
+    loaded.push({
+      path: entry.relativePath,
+      sha256: entry.sha256,
+      bytes: entry.bytes,
+      content: entry.content,
+    });
+  }
+
+  return Object.freeze({
+    mode: normalizedPolicy.mode,
+    loaded: Object.freeze(loaded),
+    rejected: Object.freeze(rejected),
+  });
+}
+
 export function createApprovedResourceLoader({
   cwd = "/work/repo",
   agentDir = "/work/pi-agent",
   verifiedManifest,
   settingsManager,
   extensionFactories = [],
+  contextPolicy,
+  contextDiscovery,
 } = {}) {
   if (!verifiedManifest || !Array.isArray(verifiedManifest.extensionPaths)) {
     throw new Error("verified resource manifest is required");
@@ -120,7 +256,12 @@ export function createApprovedResourceLoader({
     additionalExtensionPaths: [...verifiedManifest.extensionPaths],
     extensionFactories: [...extensionFactories],
     agentsFilesOverride: ({ agentsFiles }) => ({
-      agentsFiles: agentsFiles.filter((file) => isAllowedContextFile(file.path, projectRoot)),
+      agentsFiles: filterAgentsFilesForPolicy(
+        agentsFiles,
+        projectRoot,
+        contextPolicy,
+        contextDiscovery,
+      ),
     }),
   });
 }
@@ -183,10 +324,245 @@ async function hashFile(path) {
   return digest.digest("hex");
 }
 
+function normalizeContextPolicy(policy) {
+  const mode = policy?.mode ?? CONTEXT_POLICY_MODES.LEGACY_OBSERVE_ONLY;
+  if (!Object.hasOwn(CONTEXT_POLICY_MODES, mode)) {
+    throw new Error(`unsupported context policy mode: ${mode}`);
+  }
+  const limits = { ...DEFAULT_CONTEXT_POLICY_LIMITS, ...(policy?.limits ?? {}) };
+  const expectedFiles = Array.isArray(policy?.expectedFiles) ? policy.expectedFiles : [];
+  return { mode, limits, expectedFiles };
+}
+
+function filterAgentsFilesForPolicy(agentsFiles, projectRoot, contextPolicy, contextDiscovery) {
+  const mode = contextPolicy?.mode ?? CONTEXT_POLICY_MODES.LEGACY_OBSERVE_ONLY;
+  if (mode === CONTEXT_POLICY_MODES.LEGACY_OBSERVE_ONLY || !contextDiscovery) {
+    return (agentsFiles ?? []).filter((file) => isAllowedContextFile(file.path, projectRoot));
+  }
+  const allowed = new Set(
+    contextDiscovery.loaded.map((entry) => normalizeRepoRelative(projectRoot, resolve(projectRoot, entry.path))),
+  );
+  return (agentsFiles ?? []).filter((file) => {
+    const relativePath = normalizeRepoRelative(projectRoot, file.path);
+    return allowed.has(relativePath);
+  });
+}
+
+async function collectContextCandidates(repoRoot) {
+  const candidates = [];
+  await walkContextCandidates(repoRoot, repoRoot, candidates);
+  return candidates;
+}
+
+async function walkContextCandidates(directory, repoRoot, candidates) {
+  const entries = (await readdir(directory, { withFileTypes: true }))
+    .sort((left, right) => left.name.localeCompare(right.name));
+  for (const entry of entries) {
+    const absolutePath = resolve(directory, entry.name);
+    if (entry.isSymbolicLink()) {
+      if (isContextBasename(entry.name)) {
+        candidates.push({ absolutePath, symlink: true });
+      }
+      continue;
+    }
+    if (entry.isDirectory()) {
+      await walkContextCandidates(absolutePath, repoRoot, candidates);
+      continue;
+    }
+    if (entry.isFile() && isContextBasename(entry.name)) {
+      candidates.push({ absolutePath, symlink: false });
+    }
+  }
+}
+
+async function evaluateContextCandidate(candidate, repoRoot, mode, options) {
+  const relativePath = normalizeRepoRelative(repoRoot, candidate.absolutePath);
+  if (!relativePath || !isWithin(candidate.absolutePath, repoRoot)) {
+    return {
+      loaded: false,
+      entry: rejectEntry(relativePath || basename(candidate.absolutePath), "", 0, REJECT_REASON.PATH_ESCAPE),
+    };
+  }
+  if (candidate.symlink && mode !== CONTEXT_POLICY_MODES.LEGACY_OBSERVE_ONLY) {
+    return {
+      loaded: false,
+      entry: rejectEntry(relativePath, "", 0, REJECT_REASON.SYMLINK),
+    };
+  }
+  try {
+    const info = await lstat(candidate.absolutePath);
+    if (info.isSymbolicLink() && mode !== CONTEXT_POLICY_MODES.LEGACY_OBSERVE_ONLY) {
+      return {
+        loaded: false,
+        entry: rejectEntry(relativePath, "", 0, REJECT_REASON.SYMLINK),
+      };
+    }
+  } catch (error) {
+    return {
+      loaded: false,
+      entry: rejectEntry(relativePath, "", 0, REJECT_REASON.READ_FAILED),
+    };
+  }
+  if (mode !== CONTEXT_POLICY_MODES.LEGACY_OBSERVE_ONLY) {
+    if (hasExcludedAncestor(relativePath)) {
+      return {
+        loaded: false,
+        entry: rejectEntry(relativePath, "", 0, REJECT_REASON.EXCLUDED_DIRECTORY),
+      };
+    }
+    const depth = parentDepth(relativePath);
+    if (depth > options.limits.maxDepth) {
+      return {
+        loaded: false,
+        entry: rejectEntry(relativePath, "", 0, REJECT_REASON.DEPTH_EXCEEDED),
+      };
+    }
+  }
+
+  const atRoot = isRootContextPath(repoRoot, candidate.absolutePath);
+  if (mode === CONTEXT_POLICY_MODES.ROOT_ONLY && !atRoot) {
+    return {
+      loaded: false,
+      entry: rejectEntry(relativePath, "", 0, REJECT_REASON.NOT_ROOT_CONTEXT_FILE),
+    };
+  }
+  if (mode === CONTEXT_POLICY_MODES.ROOT_AND_ALLOWLISTED_NESTED) {
+    if (!atRoot && !options.allowlistedPaths.has(relativePath)) {
+      return {
+        loaded: false,
+        entry: rejectEntry(relativePath, "", 0, REJECT_REASON.NOT_ALLOWLISTED),
+      };
+    }
+  }
+
+  let content;
+  try {
+    content = await readFile(candidate.absolutePath, "utf8");
+  } catch (error) {
+    return {
+      loaded: false,
+      entry: rejectEntry(relativePath, "", 0, REJECT_REASON.READ_FAILED),
+    };
+  }
+  const bytes = Buffer.byteLength(content, "utf8");
+  const sha256 = sha256Text(content);
+  const expectedHash = options.expectedHashes.get(relativePath);
+  if (expectedHash && normalizeSha256(expectedHash) !== sha256) {
+    return {
+      loaded: false,
+      entry: rejectEntry(relativePath, sha256, bytes, REJECT_REASON.HASH_MISMATCH),
+    };
+  }
+
+  return {
+    loaded: true,
+    entry: {
+      absolutePath: candidate.absolutePath,
+      relativePath,
+      sha256,
+      bytes,
+      content,
+      atRoot,
+    },
+  };
+}
+
+function sortContextLoadOrder(entries, repoRoot) {
+  return [...entries].sort((left, right) => {
+    const leftRoot = isRootContextPath(repoRoot, left.absolutePath);
+    const rightRoot = isRootContextPath(repoRoot, right.absolutePath);
+    if (leftRoot !== rightRoot) {
+      return leftRoot ? -1 : 1;
+    }
+    if (leftRoot && rightRoot) {
+      const leftAgents = isAgentsBasename(left.relativePath);
+      const rightAgents = isAgentsBasename(right.relativePath);
+      if (leftAgents !== rightAgents) {
+        return leftAgents ? -1 : 1;
+      }
+    }
+    const leftDepth = parentDepth(left.relativePath);
+    const rightDepth = parentDepth(right.relativePath);
+    if (leftDepth !== rightDepth) {
+      return leftDepth - rightDepth;
+    }
+    return left.relativePath.localeCompare(right.relativePath);
+  });
+}
+
+function buildAllowlistSet(expectedFiles) {
+  const allowlisted = new Set();
+  for (const entry of expectedFiles) {
+    const path = normalizeRepoRelative("", entry?.path ?? "");
+    if (path) {
+      allowlisted.add(path);
+    }
+  }
+  return allowlisted;
+}
+
+function buildExpectedHashMap(expectedFiles) {
+  const hashes = new Map();
+  for (const entry of expectedFiles) {
+    const path = normalizeRepoRelative("", entry?.path ?? "");
+    const hash = entry?.contentHash ?? entry?.sha256 ?? "";
+    if (path && hash) {
+      hashes.set(path, hash);
+    }
+  }
+  return hashes;
+}
+
+function rejectEntry(path, sha256, bytes, reason) {
+  const entry = { path, reason };
+  if (sha256) entry.sha256 = sha256;
+  if (bytes > 0) entry.bytes = bytes;
+  return entry;
+}
+
 function isAllowedContextFile(path, projectRoot) {
   const absolutePath = resolve(path);
   if (!isWithin(absolutePath, projectRoot)) return false;
-  return new Set(["AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"]).has(basename(absolutePath));
+  return isContextBasename(basename(absolutePath));
+}
+
+function isContextBasename(name) {
+  return CONTEXT_FILE_NAMES.has(name);
+}
+
+function isAgentsBasename(relativePath) {
+  const name = basename(relativePath);
+  return name === "AGENTS.md" || name === "AGENTS.MD";
+}
+
+function isRootContextPath(repoRoot, absolutePath) {
+  return resolve(dirname(absolutePath)) === resolve(repoRoot);
+}
+
+function normalizeRepoRelative(repoRoot, absolutePath) {
+  if (!absolutePath) return "";
+  const root = repoRoot ? resolve(repoRoot) : "";
+  const normalized = root
+    ? relative(root, resolve(absolutePath))
+    : String(absolutePath).replace(/\\/g, "/");
+  return normalized.split(sep).join("/").replace(/^\/+/, "");
+}
+
+function parentDepth(relativePath) {
+  const parent = dirname(relativePath);
+  if (parent === "." || parent === "") return 0;
+  return parent.split("/").filter(Boolean).length;
+}
+
+function hasExcludedAncestor(relativePath) {
+  const segments = relativePath.split("/");
+  if (segments.length <= 1) return false;
+  return segments.slice(0, -1).some((segment) => EXCLUDED_CONTEXT_DIRS.includes(segment));
+}
+
+function normalizeSha256(value) {
+  const normalized = String(value).trim().toLowerCase();
+  return normalized.startsWith("sha256:") ? normalized.slice(7) : normalized;
 }
 
 function isWithin(path, root) {
