@@ -86,8 +86,8 @@ PiAgentExecutorPropertiesTest,EngineRequirementExecutorAdapterTest \
 | P2.5 context hook 注入 | ✅ mock | 禁止 followUp；多轮只保留最新状态；**真实 SDK provider 未验** |
 | P2.6 facts Host/Bridge 同 fixture | ✅ | `FactsProtocolValidatorParityTest` + Node fixtures |
 | P2.6 下游 facts 传播 | ✅ 最小 | compact handoff 保留 facts；可派生 environmentNotes |
-| P2.6 角色合同默认改写为 FACTS_V1 | ⚠️ | 默认仍 LEGACY；开启 `FACTS_V1` 后 Host/Bridge 强校验，Prompt 合同文案仍以 environmentNotes 为主（灰度开关后需同步改 renderer） |
-| P2.7 管理面 state 只读字段 | ⚠️ 部分 | usage/actualAvailable 已修；最新 snapshot sequence/TODO 统计尚未扩 overview DTO |
+| P2.6 角色合同默认改写为 FACTS_V1 | ✅ | 默认仍 LEGACY；开启 `FACTS_V1` 后 Prompt/Host/Bridge 同步要求 `facts[]`；评审/架构已去掉编码/PR 通用执行器句（`93fed2ec`） |
+| P2.7 管理面 state 只读字段 | ✅ | usage/actualAvailable + StageRunView agentState 脱敏摘要（sequence/schema/TODO 计数/hash） |
 
 ### 验证门状态
 
