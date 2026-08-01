@@ -1,5 +1,7 @@
 package com.wish.rd.rag.context.model;
 
+import com.wish.rd.rag.context.RoleContextBuilder;
+
 import java.util.List;
 
 /**
@@ -48,7 +50,7 @@ public record RoleContextPackage(
         riskHints = riskHints == null
                 ? List.of()
                 : riskHints.stream().map(RoleContextPackage::safe).filter(value -> !value.isBlank()).toList();
-        maxChars = Math.max(0, maxChars);
+        maxChars = RoleContextBuilder.resolveMaxChars(maxChars);
         usedChars = Math.max(0, usedChars);
         omittedEvidenceIds = omittedEvidenceIds == null
                 ? List.of()

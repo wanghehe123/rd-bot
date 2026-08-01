@@ -24,6 +24,7 @@ import com.wish.rd.rag.context.RoleContextPackageStore;
 import com.wish.rd.rag.context.RoleContextBuilder;
 import com.wish.rd.rag.context.impl.InMemoryRoleContextPackageStore;
 import com.wish.rd.rag.context.model.RoleContextPackage;
+import com.wish.rd.rag.context.model.RoleContextEvidence;
 import com.wish.rd.rag.project.agent.model.RoleExecutionInputManifest;
 import com.wish.rd.rag.project.budget.RdProjectTokenBudgetService;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
@@ -252,6 +253,83 @@ class RequirementAgentStageOrchestratorTest {
         assertFalse(prompt.contains("完成需求编码"));
         assertTrue(prompt.contains("\"facts\""));
         assertTrue(prompt.contains("environmentNotes"));
+    }
+
+    @Test
+    void architect_prompt_excludes_coding_executor_baseline_under_legacy_protocol() {
+        AgentWorkflowPlan plan = architectOnlyPlan();
+        OrchestratorTestHarness harness = new OrchestratorTestHarness()
+                .prestageRoles(plan.roles())
+                .prestageRoleContexts(plan.roles());
+
+        RequirementExecutionResult result = harness.orchestrator.run(
+                plan, harness.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION, null);
+
+        assertTrue(result.success());
+        String prompt = harness.executor.lastPromptByRole.get(AgentRole.SOLUTION_ARCHITECT);
+        assertNotNull(prompt);
+        assertFalse(prompt.contains("完成需求编码"));
+        assertFalse(prompt.contains("准备可审查 PR"));
+    }
+
+    @Test
+    void prompt_excludes_unselected_material_body_from_manifest_bypass() {
+        String hugeMarker = "UNSELECTED_HUGE_MATERIAL_MARKER_" + "X".repeat(8_000);
+        AgentWorkflowPlan plan = reviewerOnlyPlan();
+        TaskMaterial unselectedHuge = new TaskMaterial(
+                "mat-huge-unselected",
+                "task-1",
+                com.wish.rd.rag.runtime.model.TaskMaterialType.REQUIREMENT_DOC,
+                com.wish.rd.rag.runtime.model.TaskMaterialSourceType.MANUAL_TEXT,
+                "未选中超大材料",
+                "manual://mat-huge-unselected",
+                "text/plain",
+                "sha256:huge-unselected",
+                hugeMarker,
+                "",
+                "",
+                "",
+                "{}",
+                System.currentTimeMillis(),
+                System.currentTimeMillis()
+        );
+        RoleContextEvidence selectedEvidence = new RoleContextEvidence(
+                "mat-selected",
+                "MANUAL_TEXT",
+                "manual://mat-selected",
+                "已选材料",
+                "sha256:selected",
+                "仅角色上下文中的摘要",
+                System.currentTimeMillis()
+        );
+        OrchestratorTestHarness harness = new OrchestratorTestHarness()
+                .prestageRoles(plan.roles())
+                .prestageRoleContext(
+                        AgentRole.REQUIREMENT_REVIEWER,
+                        List.of(selectedEvidence),
+                        List.of("mat-selected")
+                );
+
+        RequirementExecutionResult result = harness.orchestrator.run(
+                plan, harness.task, List.of(unselectedHuge), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION, null);
+
+        assertTrue(result.success());
+        String prompt = harness.executor.lastPromptByRole.get(AgentRole.REQUIREMENT_REVIEWER);
+        assertNotNull(prompt);
+        assertFalse(prompt.contains(hugeMarker));
+        assertTrue(prompt.contains("仅角色上下文中的摘要"));
+        assertFalse(prompt.contains("# 需求材料"));
+    }
+
+    private static AgentWorkflowPlan architectOnlyPlan() {
+        return new AgentWorkflowPlan(
+                List.of(AgentRole.SOLUTION_ARCHITECT),
+                false,
+                false,
+                1,
+                Map.of(AgentRole.SOLUTION_ARCHITECT, 1.0d),
+                "TEST_ARCHITECT_ONLY"
+        );
     }
 
     private static AgentWorkflowPlan reviewerOnlyPlan() {
@@ -569,6 +647,33 @@ class RequirementAgentStageOrchestratorTest {
                 );
                 roleContextPackageStore.save(roleContext);
             }
+            return this;
+        }
+
+        OrchestratorTestHarness prestageRoleContext(
+                AgentRole role,
+                List<RoleContextEvidence> evidence,
+                List<String> omittedEvidenceIds
+        ) {
+            long now = System.currentTimeMillis();
+            int usedChars = evidence.stream()
+                    .mapToInt(item -> item.title().length() + item.summary().length())
+                    .sum();
+            RoleContextPackage roleContext = new RoleContextPackage(
+                    role.name().toLowerCase() + "-ctx-custom",
+                    task.taskId(),
+                    role.name(),
+                    1,
+                    evidence,
+                    List.of(),
+                    List.of(),
+                    RoleContextBuilder.DEFAULT_MAX_CHARS,
+                    usedChars,
+                    omittedEvidenceIds,
+                    "",
+                    now
+            );
+            roleContextPackageStore.save(roleContext);
             return this;
         }
     }

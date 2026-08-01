@@ -84,8 +84,10 @@ class RoleContextBuilderTest {
                 material("mat-2", "产品补充", "更多用户场景、更多验收边界。")
         ), "REQUIREMENT_REVIEWER", 30, 1_783_000_000_001L);
 
-        assertEquals(List.of("mat-2"), context.omittedEvidenceIds());
-        assertEquals(1, context.evidence().size());
+        assertEquals(2, context.evidence().size());
+        assertTrue(context.usedChars() <= context.maxChars());
+        assertTrue(context.evidence().get(1).summary().length()
+                < "更多用户场景、更多验收边界。".length());
     }
 
     @Test
@@ -123,6 +125,51 @@ class RoleContextBuilderTest {
         assertFalse(context.evidence().stream()
                 .anyMatch(evidence -> evidence.evidenceId().equals("history-noise")));
         assertTrue(context.omittedEvidenceIds().contains("history-noise"));
+    }
+
+    @Test
+    void shouldDefaultZeroOrNegativeMaxCharsToExplicitBudget() {
+        RoleContextBuilder builder = new RoleContextBuilder();
+        RdRequirementTask task = RdRequirementTask.created(
+                "task-1004",
+                new CreateRequirementTaskCommand(
+                        "增加订单催单能力", "P1", "https://github.com/example/waimai.git",
+                        "example", "waimai", "main", "订单详情页可以催单",
+                        List.of("接口测试通过"), false),
+                1_783_000_000_000L);
+
+        RoleContextPackage zeroBudget = builder.build(
+                "ctx-zero", task, List.of(material("mat-1", "产品需求", "用户场景。")),
+                "REQUIREMENT_REVIEWER", 0, 1_783_000_000_001L);
+        RoleContextPackage negativeBudget = builder.build(
+                "ctx-negative", task, List.of(material("mat-1", "产品需求", "用户场景。")),
+                "REQUIREMENT_REVIEWER", -1, 1_783_000_000_001L);
+
+        assertEquals(RoleContextBuilder.DEFAULT_MAX_CHARS, zeroBudget.maxChars());
+        assertEquals(RoleContextBuilder.DEFAULT_MAX_CHARS, negativeBudget.maxChars());
+    }
+
+    @Test
+    void shouldTruncateFirstEvidenceInsteadOfSilentlyBreakingBudget() {
+        RoleContextBuilder builder = new RoleContextBuilder();
+        RdRequirementTask task = RdRequirementTask.created(
+                "task-1005",
+                new CreateRequirementTaskCommand(
+                        "增加订单催单能力", "P1", "https://github.com/example/waimai.git",
+                        "example", "waimai", "main", "订单详情页可以催单",
+                        List.of("接口测试通过"), false),
+                1_783_000_000_000L);
+        String hugePreview = "A".repeat(200);
+
+        RoleContextPackage context = builder.build(
+                "ctx-truncated", task,
+                List.of(material("mat-huge", "标题", hugePreview)),
+                "REQUIREMENT_REVIEWER", 40, 1_783_000_000_001L);
+
+        assertEquals(1, context.evidence().size());
+        RoleContextEvidence evidence = context.evidence().getFirst();
+        assertTrue(context.usedChars() <= context.maxChars());
+        assertTrue(evidence.summary().length() < hugePreview.length());
     }
 
     private TaskMaterial material(String id, String title, String preview) {

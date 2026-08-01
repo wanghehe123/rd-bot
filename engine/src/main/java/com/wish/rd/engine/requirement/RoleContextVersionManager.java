@@ -38,7 +38,7 @@ public final class RoleContextVersionManager {
         this.builder = Objects.requireNonNull(builder, "builder must not be null");
         this.store = Objects.requireNonNull(store, "store must not be null");
         this.idSupplier = Objects.requireNonNull(idSupplier, "idSupplier must not be null");
-        this.maxChars = Math.max(0, maxChars);
+        this.maxChars = RoleContextBuilder.resolveMaxChars(maxChars);
     }
 
     public Map<AgentRole, RoleContextPackage> ensureLatestContexts(
@@ -121,7 +121,6 @@ public final class RoleContextVersionManager {
                 .append('|').append(contextPackage.riskHints())
                 .append('|').append(contextPackage.maxChars())
                 .append('|').append(contextPackage.omittedEvidenceIds())
-                .append('|').append(contextPackage.retrievalRunId())
                 .toString();
     }
 }

@@ -207,9 +207,6 @@ public class RequirementAgentStageOrchestrator {
         String summary = "";
         String deliveryResultJson = "{}";
         for (AgentRole role : plan.roles()) {
-            List<TaskMaterial> roleRecoveryEvidence = recoveryEvidenceMaterialsForRole(
-                    activeRetry, task.taskId(), materials
-            );
             AgentStageRun stage = stageRun(task.taskId(), role);
             // 已成功阶段：直接复用历史产物，不再触发重跑，保持幂等与可恢复性。
             if (stage.status() == AgentStageStatus.SUCCEEDED) {
@@ -302,13 +299,12 @@ public class RequirementAgentStageOrchestrator {
                 );
             }
             String recoverySection = joinPromptSections(
-                    recoveryPromptSection(activeRetry, role, roleRecoveryEvidence),
+                    recoveryPromptSection(activeRetry, role, roleContext),
                     previousFailureFeedbackSection(task.taskId(), role, stage.attemptNo())
             );
             String rolePrompt = buildAgentPrompt(
                     role,
                     task,
-                    materials,
                     context,
                     planSnapshot,
                     policyDecision,
@@ -982,7 +978,6 @@ public class RequirementAgentStageOrchestrator {
     private String buildAgentPrompt(
             AgentRole role,
             RdRequirementTask task,
-            List<TaskMaterial> materials,
             RequirementContextPackage context,
             RequirementPlan planSnapshot,
             RequirementPolicyDecision policyDecision,
@@ -1028,7 +1023,6 @@ public class RequirementAgentStageOrchestrator {
                 buildBasePrompt(
                         role,
                         task,
-                        materials,
                         context,
                         planSnapshot,
                         policyDecision
@@ -1040,7 +1034,6 @@ public class RequirementAgentStageOrchestrator {
     private String buildBasePrompt(
             AgentRole role,
             RdRequirementTask task,
-            List<TaskMaterial> materials,
             RequirementContextPackage context,
             RequirementPlan plan,
             RequirementPolicyDecision policyDecision
@@ -1079,9 +1072,6 @@ public class RequirementAgentStageOrchestrator {
                 # 建议验证命令
                 %s
 
-                # 需求材料
-                %s
-
                 # 输出要求
                 %s
                 """.formatted(
@@ -1101,7 +1091,6 @@ public class RequirementAgentStageOrchestrator {
                 policyDecision.riskLevel(),
                 policyDecision.reason(),
                 context.suggestedValidationCommands(),
-                materialPrompt(materials),
                 basePromptOutputRequirements(role)
         ).strip();
     }
@@ -1971,14 +1960,16 @@ public class RequirementAgentStageOrchestrator {
     private String recoveryPromptSection(
             TaskRetryCheckpoint checkpoint,
             AgentRole role,
-            List<TaskMaterial> recoveryMaterials
+            RoleContextPackage roleContext
     ) {
         if (!isRecoveryRoleOrDownstream(checkpoint, role)) {
             return "";
         }
         String operatorNote = checkpoint.operatorNote();
         String downstreamFailureSection = downstreamFailureFeedbackSection(checkpoint);
-        if (operatorNote.isBlank() && recoveryMaterials.isEmpty() && downstreamFailureSection.isBlank()) {
+        List<com.wish.rd.rag.context.model.RoleContextEvidence> recoveryEvidence =
+                selectedRecoveryEvidence(checkpoint, roleContext);
+        if (operatorNote.isBlank() && recoveryEvidence.isEmpty() && downstreamFailureSection.isBlank()) {
             return "";
         }
         String noteSection = operatorNote.isBlank()
@@ -1987,12 +1978,12 @@ public class RequirementAgentStageOrchestrator {
                         ## 操作员补充说明
                         %s
                         """.formatted(operatorNote).strip();
-        String evidenceSection = recoveryMaterials.isEmpty()
+        String evidenceSection = recoveryEvidence.isEmpty()
                 ? ""
                 : """
                         ## 本次选定证据
                         %s
-                        """.formatted(materialPrompt(recoveryMaterials)).strip();
+                        """.formatted(evidenceReferencePrompt(recoveryEvidence)).strip();
         return """
                 # 本次失败恢复补充
                 - 失败阶段运行 ID: %s
@@ -2943,24 +2934,38 @@ public class RequirementAgentStageOrchestrator {
         };
     }
 
-    private String materialPrompt(List<TaskMaterial> materials) {
-        if (materials == null || materials.isEmpty()) {
+    private List<com.wish.rd.rag.context.model.RoleContextEvidence> selectedRecoveryEvidence(
+            TaskRetryCheckpoint checkpoint,
+            RoleContextPackage roleContext
+    ) {
+        if (checkpoint == null || checkpoint.evidenceMaterialIds().isEmpty() || roleContext == null) {
+            return List.of();
+        }
+        LinkedHashSet<String> selectedIds = new LinkedHashSet<>(checkpoint.evidenceMaterialIds());
+        return roleContext.evidence().stream()
+                .filter(evidence -> selectedIds.contains(evidence.evidenceId()))
+                .toList();
+    }
+
+    private String evidenceReferencePrompt(
+            List<com.wish.rd.rag.context.model.RoleContextEvidence> evidence
+    ) {
+        if (evidence == null || evidence.isEmpty()) {
             return "";
         }
-        return materials.stream()
-                .map(material -> """
+        return evidence.stream()
+                .map(item -> """
                         ## %s
                         - sourceType: %s
                         - sourceUri: %s
                         - contentHash: %s
-
-                        %s
+                        - summary: %s
                         """.formatted(
-                        material.title(),
-                        material.sourceType().name(),
-                        material.sourceUri(),
-                        material.contentHash(),
-                        material.contentPreview()
+                        item.title(),
+                        item.sourceType(),
+                        item.sourceUri(),
+                        item.contentHash(),
+                        item.summary()
                 ).strip())
                 .reduce((left, right) -> left + "\n\n" + right)
                 .orElse("");

@@ -48,7 +48,7 @@ class RoleContextVersionManagerTest {
     }
 
     @Test
-    void shouldBindRoleContextToSuccessfulRetrievalAndVersionNewRuns() {
+    void shouldReuseContextAcrossDifferentRetrievalRunsWithSameEvidence() {
         InMemoryRoleContextPackageStore store = new InMemoryRoleContextPackageStore();
         AtomicInteger ids = new AtomicInteger();
         RoleContextVersionManager manager = new RoleContextVersionManager(
@@ -64,13 +64,14 @@ class RoleContextVersionManagerTest {
                 task, AgentRole.CODING_AGENT, successful("run-1", code), 100L);
         RoleContextPackage sameRun = manager.ensureLatestContext(
                 task, AgentRole.CODING_AGENT, successful("run-1", code), 200L);
-        RoleContextPackage nextRun = manager.ensureLatestContext(
+        RoleContextPackage differentRun = manager.ensureLatestContext(
                 task, AgentRole.CODING_AGENT, successful("run-2", code), 300L);
 
         assertEquals("run-1", first.retrievalRunId());
         assertEquals(first.packageId(), sameRun.packageId());
-        assertEquals(2, nextRun.packageVersion());
-        assertEquals("run-2", nextRun.retrievalRunId());
+        assertEquals(first.packageId(), differentRun.packageId());
+        assertEquals(first.packageVersion(), differentRun.packageVersion());
+        assertEquals(manager.semanticSignatureOf(first), manager.semanticSignatureOf(differentRun));
     }
 
     private RetrievalOutcome successful(String runId, RoleContextEvidence evidence) {
