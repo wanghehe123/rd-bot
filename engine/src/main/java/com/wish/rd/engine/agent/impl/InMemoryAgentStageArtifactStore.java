@@ -23,6 +23,17 @@ public final class InMemoryAgentStageArtifactStore implements AgentStageArtifact
     }
 
     @Override
+    public AgentStageArtifact saveImmutable(AgentStageArtifact artifact) {
+        AgentStageArtifact existing = artifacts.get(artifact.artifactId());
+        if (existing == null) {
+            artifacts.put(artifact.artifactId(), artifact);
+            return artifact;
+        }
+        AgentStageArtifactStore.assertImmutableCompatible(existing, artifact);
+        return existing;
+    }
+
+    @Override
     public List<AgentStageArtifact> listByTask(String taskId) {
         String normalizedTaskId = taskId == null ? "" : taskId.strip();
         return artifacts.values().stream()

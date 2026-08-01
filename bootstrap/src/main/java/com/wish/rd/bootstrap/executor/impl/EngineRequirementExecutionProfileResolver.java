@@ -34,6 +34,9 @@ public final class EngineRequirementExecutionProfileResolver
     private final boolean openAiChatEnabled;
     private final ModelProviderProfileService providerProfileService;
     private final AgentToolPolicyService toolPolicyService;
+    private final String contextProtocolVersion;
+    private final boolean dynamicStateEnabled;
+    private final int maxInjectedStateBytes;
 
     public EngineRequirementExecutionProfileResolver(
             AgentExecutionProfileService profileService,
@@ -47,7 +50,10 @@ public final class EngineRequirementExecutionProfileResolver
                 snapshotStore,
                 openAiChatEnabled,
                 null,
-                null
+                null,
+                "LEGACY_ENVIRONMENT_NOTES",
+                false,
+                8192
         );
     }
 
@@ -59,12 +65,39 @@ public final class EngineRequirementExecutionProfileResolver
             ModelProviderProfileService providerProfileService,
             AgentToolPolicyService toolPolicyService
     ) {
+        this(
+                profileService,
+                snapshotService,
+                snapshotStore,
+                openAiChatEnabled,
+                providerProfileService,
+                toolPolicyService,
+                "LEGACY_ENVIRONMENT_NOTES",
+                false,
+                8192
+        );
+    }
+
+    public EngineRequirementExecutionProfileResolver(
+            AgentExecutionProfileService profileService,
+            AgentExecutionProfileSnapshotService snapshotService,
+            AgentExecutionProfileSnapshotStore snapshotStore,
+            boolean openAiChatEnabled,
+            ModelProviderProfileService providerProfileService,
+            AgentToolPolicyService toolPolicyService,
+            String contextProtocolVersion,
+            boolean dynamicStateEnabled,
+            int maxInjectedStateBytes
+    ) {
         this.profileService = Objects.requireNonNull(profileService, "profileService must not be null");
         this.snapshotService = Objects.requireNonNull(snapshotService, "snapshotService must not be null");
         this.snapshotStore = Objects.requireNonNull(snapshotStore, "snapshotStore must not be null");
         this.openAiChatEnabled = openAiChatEnabled;
         this.providerProfileService = providerProfileService;
         this.toolPolicyService = toolPolicyService;
+        this.contextProtocolVersion = normalizeProtocolVersion(contextProtocolVersion);
+        this.dynamicStateEnabled = dynamicStateEnabled;
+        this.maxInjectedStateBytes = maxInjectedStateBytes > 0 ? maxInjectedStateBytes : 8192;
     }
 
     @Override
@@ -160,6 +193,11 @@ public final class EngineRequirementExecutionProfileResolver
         value.put("credentialEnvironmentVariable", provider == null ? "" : provider.credentialEnvironmentVariable());
         value.put("sessionPolicy", "ARCHIVE_NO_RESUME");
         value.put("resolvedFrom", profile == null ? "COMPATIBILITY_DEFAULT" : "REGISTERED_PROFILE");
+        value.put("contextProtocolVersion", contextProtocolVersion);
+        value.put("agentStateSchemaVersion", "rd-agent-state/v1");
+        value.put("dynamicStateEnabled", dynamicStateEnabled);
+        value.put("maxInjectedStateBytes", maxInjectedStateBytes);
+        value.put("toolRetryPolicyVersion", "rd-tool-retry/v1");
         try {
             return OBJECT_MAPPER.writeValueAsString(value);
         } catch (JsonProcessingException exception) {
@@ -223,6 +261,11 @@ public final class EngineRequirementExecutionProfileResolver
 
     private static String snapshotId(String stageRunId) {
         return "agent-profile-" + stageRunId;
+    }
+
+    private static String normalizeProtocolVersion(String value) {
+        String normalized = value == null ? "" : value.strip();
+        return normalized.isBlank() ? "LEGACY_ENVIRONMENT_NOTES" : normalized;
     }
 
     private static String requireText(String value, String fieldName) {

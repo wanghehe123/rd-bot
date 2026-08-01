@@ -19,6 +19,14 @@
     "retryRecommendation": { "type": "string" },
     "next_prompt": { "type": "object" },
     "roleHandoff": { "type": "object" },
-    "candidatePatch": { "type": "object" }
+    "candidatePatch": { "type": "object" },
+    "environmentNotes": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1, "maxLength": 512 }
+    },
+    "facts": {
+      "type": "array",
+      "items": { "$ref": "rd-agent-fact-v1.schema.json" }
+    }
   }
 }

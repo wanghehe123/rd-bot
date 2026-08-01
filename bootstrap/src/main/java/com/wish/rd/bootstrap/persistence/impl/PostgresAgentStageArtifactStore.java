@@ -66,6 +66,22 @@ public final class PostgresAgentStageArtifactStore implements AgentStageArtifact
     }
 
     @Override
+    public AgentStageArtifact saveImmutable(AgentStageArtifact artifact) {
+        RdAgentStageArtifactRow row = toRow(artifact);
+        RdAgentStageArtifactRow existing = mapper.selectById(row.id);
+        if (existing == null) {
+            mapper.insert(row);
+            if (evidenceMapper != null && isPrivateQaEvidence(artifact)) {
+                evidenceMapper.upsertEvidenceObject(toEvidenceRow(artifact));
+            }
+            return artifact;
+        }
+        AgentStageArtifact existingArtifact = toArtifact(existing);
+        AgentStageArtifactStore.assertImmutableCompatible(existingArtifact, artifact);
+        return existingArtifact;
+    }
+
+    @Override
     public List<AgentStageArtifact> listByTask(String taskId) {
         return mapper.selectList(new QueryWrapper<RdAgentStageArtifactRow>()
                         .eq("task_id", PostgresPersistenceSupport.parseId(taskId)))

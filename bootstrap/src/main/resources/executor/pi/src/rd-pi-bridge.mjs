@@ -29,10 +29,14 @@ import {
   loadResourceManifest,
 } from "./resource-loader.mjs";
 import { validateResult, validateRoleResult, writeResultAtomically } from "./result-tool.mjs";
+import { AgentStateProjector } from "./agent-state-projector.mjs";
+import { createAgentStateTools, STATE_TOOL_NAMES } from "./agent-state-tools.mjs";
+import { createDynamicStateExtension } from "./context-state-injection.mjs";
 
 const RESULT_TOOL_NAME = "rd_submit_result";
 const DEFAULT_OUTPUT_PATH = "/work/output";
 const DEFAULT_MAX_RAW_EVENT_BYTES = 16 * 1024 * 1024;
+const DEFAULT_BASH_COMMAND_TIMEOUT_MILLIS = 15 * 60 * 1000;
 const FAILURE_RESULT = {
   status: "FAILED",
   summary: "Pi bridge failed before a structured agent result was accepted",
@@ -73,6 +77,7 @@ export async function run(options = {}) {
   let verifiedManifest;
   let sessionFile;
   let contextFiles = [];
+  let stateProjector;
 
   try {
     await sink.lifecycle("RUNTIME_READY", {
@@ -84,13 +89,42 @@ export async function run(options = {}) {
 
     verifiedManifest = await loadResourceManifest(request.resourceManifestPath);
     const settingsManager = safeSettingsManager();
-    const observability = createObservabilityExtension(sink, context);
+    const dynamicState = resolveDynamicStateConfig(request);
+    if (dynamicState.enabled) {
+      assertStateToolsPermitted(request.toolPolicy);
+    }
+    const observability = createObservabilityExtension(sink, context, bashCommandTimeoutMillis(), {
+      maxAgentTurns: request.maxAgentTurns,
+      maxTotalTokens: request.maxTotalTokens,
+    });
+    const budgetControls = observability.budgetControls;
+    const extensionFactories = [observability];
+    let stateTools = [];
+    if (dynamicState.enabled) {
+      stateProjector = new AgentStateProjector({
+        identity: {
+          taskId: request.taskId,
+          stageRunId: request.stageRunId,
+          role: request.role,
+          attemptNo: dynamicState.attemptNo,
+        },
+        outputPath: paths.output,
+        maxInjectedStateBytes: dynamicState.maxInjectedStateBytes,
+      });
+      await stateProjector.initialize();
+      stateTools = createAgentStateTools({ projector: stateProjector, sink });
+      extensionFactories.push(createDynamicStateExtension({
+        projector: stateProjector,
+        sink,
+        stageRunId: request.stageRunId,
+      }));
+    }
     const resourceLoader = createApprovedResourceLoader({
       cwd: request.repoPath,
       agentDir: "/work/pi-agent",
       verifiedManifest,
       settingsManager,
-      extensionFactories: [observability],
+      extensionFactories,
     });
     // H1: resource discovery happens once, before session creation. The bridge
     // is one-shot except for a single bounded result-recovery prompt issued when
@@ -114,6 +148,13 @@ export async function run(options = {}) {
       contextFiles,
       extensionCount: extensionsResult.extensions.length,
     });
+    await writeRuntimeContextManifest({
+      request,
+      paths,
+      contextFiles,
+      inputManifestHash: request.inputManifestHash ?? "",
+      contextPolicyHash: request.contextPolicy?.policyHash ?? "",
+    });
 
     const modelRuntime = await configureModelRuntime(request, paths.private);
     const resolvedModel = resolveCliModel({
@@ -124,7 +165,7 @@ export async function run(options = {}) {
     if (!resolvedModel.model) {
       throw new Error(resolvedModel.error ?? `model was not found: ${request.provider}/${request.model}`);
     }
-    const toolNames = resolveToolNames(request.toolPolicy);
+    const toolNames = resolveToolNames(request.toolPolicy, dynamicState);
     const resultTool = createResultTool({
       resultPath: paths.result,
       sink,
@@ -141,7 +182,7 @@ export async function run(options = {}) {
       model: resolvedModel.model,
       thinkingLevel: request.thinkingLevel,
       tools: toolNames,
-      customTools: [resultTool],
+      customTools: [resultTool, ...stateTools],
       resourceLoader,
       sessionManager,
       settingsManager,
@@ -157,7 +198,16 @@ export async function run(options = {}) {
     await session.prompt(prompt);
     await session.waitForIdle();
     await sink.flush();
-    if (settled && !resultAccepted) {
+    if (budgetControls?.isExceeded?.() && !resultAccepted) {
+      await acceptBridgeFailureResult(paths, sink, {
+        ...FAILURE_RESULT,
+        failureCategory: "BUDGET_EXCEEDED",
+        summary: "Agent stopped after exhausting the coding-benchmark turn/token budget",
+        errorMessage: boundedText(budgetControls.reason(), 4096),
+      }, () => {
+        resultAccepted = true;
+      });
+    } else if (settled && !resultAccepted) {
       // Sessions can settle without the result tool (for example a length-stopped
       // turn with no tool call). Issue exactly one recovery prompt before failing.
       await safeLifecycle(sink, "PROTOCOL_ERROR", {
@@ -165,14 +215,17 @@ export async function run(options = {}) {
         error: "session settled without rd_submit_result; issuing one recovery prompt",
       });
       settled = false;
+      if (budgetControls) budgetControls.ignoreBudget = true;
       await session.prompt(
         `Your session ended without submitting the structured result. Call ${RESULT_TOOL_NAME} now, exactly once, with the COMPLETE role protocol JSON object required by your instructions (all required fields, not just status and summary). Do not run any other tool, do not repeat prior work, and do not print file contents.`,
       );
       await session.waitForIdle();
       await sink.flush();
     }
-    if (!settled) throw new Error("Pi session became idle without agent_settled");
-    if (!resultAccepted) throw new Error("Pi session settled without rd_submit_result");
+    if (!resultAccepted) {
+      if (!settled) throw new Error("Pi session became idle without agent_settled");
+      throw new Error("Pi session settled without rd_submit_result");
+    }
     const result = validateResult(JSON.parse(await readFile(paths.result, "utf8")));
     await ensureDeliveryArtifacts(request, paths, result, sink);
     sessionFile = session.sessionManager.getSessionFile();
@@ -187,27 +240,51 @@ export async function run(options = {}) {
         path: sessionFile,
       });
     }
+    if (stateProjector) {
+      await flushStateArtifacts(stateProjector, paths, sink);
+    }
     protocolSucceeded = true;
   } catch (error) {
     failure = error;
+    const budgetHit = String(safeError(error)).includes("BUDGET_EXCEEDED");
     await safeLifecycle(sink, "PROTOCOL_ERROR", {
-      category: "PI_BRIDGE_PROTOCOL",
+      category: budgetHit ? "BUDGET_EXCEEDED" : "PI_BRIDGE_PROTOCOL",
       error: safeError(error),
     });
     if (!resultAccepted) {
       try {
-        await writeResultAtomically(paths.result, {
+        await acceptBridgeFailureResult(paths, sink, {
           ...FAILURE_RESULT,
+          failureCategory: budgetHit ? "BUDGET_EXCEEDED" : FAILURE_RESULT.failureCategory,
+          summary: budgetHit
+            ? "Agent stopped after exhausting the coding-benchmark turn/token budget"
+            : FAILURE_RESULT.summary,
           errorMessage: boundedText(safeError(error), 4096),
+        }, () => {
+          resultAccepted = true;
         });
-        await safeLifecycle(sink, "RESULT_REJECTED", {
-          reason: "structured result was not accepted",
-        });
+        try {
+          await ensureDeliveryArtifacts(
+            request,
+            paths,
+            JSON.parse(await readFile(paths.result, "utf8")),
+            sink,
+          );
+        } catch (artifactError) {
+          console.error(`[rd-pi-bridge] failed to materialize delivery artifacts: ${safeError(artifactError)}`);
+        }
       } catch (resultError) {
         console.error(`[rd-pi-bridge] failed to write failure result: ${safeError(resultError)}`);
       }
     }
   } finally {
+    if (stateProjector) {
+      try {
+        await flushStateArtifacts(stateProjector, paths, sink);
+      } catch (flushError) {
+        console.error(`[rd-pi-bridge] failed to flush agent state artifacts: ${safeError(flushError)}`);
+      }
+    }
     if (unsubscribe) unsubscribe();
     if (session) session.dispose();
     await safeLifecycle(sink, "RUNTIME_STOPPED", {
@@ -244,7 +321,17 @@ export async function run(options = {}) {
       protocolSucceeded = false;
     }
   }
-  return protocolSucceeded ? 0 : 1;
+  return (protocolSucceeded || resultAccepted) ? 0 : 1;
+}
+
+async function acceptBridgeFailureResult(paths, sink, result, onAccepted) {
+  await writeResultAtomically(paths.result, result);
+  onAccepted();
+  await safeLifecycle(sink, "RESULT_SUBMITTED", {
+    status: result.status,
+    summary: boundedText(result.summary, 4096),
+    source: "bridge-budget-or-protocol",
+  });
 }
 
 export function executionPrompt(request) {
@@ -255,15 +342,21 @@ export function executionPrompt(request) {
     "Do not write result.json yourself; the bridge accepts results only through the tool.",
     "Use SUCCESS only when the requested work and acceptance checks are complete. Use FAILED, NEED_INFO, or UNSAFE when they are not.",
   ];
-  const roleInstructions = roleArtifactInstructions(role);
+  const roleInstructions = roleArtifactInstructions(role, request);
   return `${request.prompt}\n\n` + [...common, ...roleInstructions].join("\n");
 }
 
-function roleArtifactInstructions(role) {
+function roleArtifactInstructions(role, request = {}) {
+  const patchPath = typeof request.patchArtifactPath === "string" && request.patchArtifactPath.trim()
+    ? request.patchArtifactPath.trim()
+    : "/work/output/patch.diff";
   switch (role) {
     case "CODING_AGENT":
       return [
-        "Before submitting a SUCCESS result, write the unified git diff to /work/output/patch.diff and a concise test log to /work/output/test.log.",
+        "Reuse the existing dependency tree and /work/cache. Never delete node_modules or package-lock.json; only install a genuinely missing dependency once, using the existing lockfile, and preserve the first failure diagnostic instead of repeating cleanup and install cycles.",
+        "For Next.js delivery verification, use npm run build && npm run start; do not use npm run dev as the acceptance server.",
+        "Every HTTP probe must set a request timeout of 30 seconds or less. Every bash call receives a hard deadline; when a probe or command times out, stop the temporary server, preserve its log, and submit FAILED rather than waiting indefinitely.",
+        `Before submitting a SUCCESS result, write the unified git diff (including untracked new files; prefer git add -A then git diff --cached --binary) to ${patchPath} and a concise test log to /work/output/test.log.`,
       ];
     case "REQUIREMENT_REVIEWER":
     case "SOLUTION_ARCHITECT":
@@ -314,16 +407,31 @@ async function ensureDeliveryArtifacts(request, paths, result, sink) {
 }
 
 async function ensureCodingArtifacts(request, paths, result, sink) {
-  const patchPath = join(paths.output, "patch.diff");
+  const configured = typeof request.patchArtifactPath === "string" ? request.patchArtifactPath.trim() : "";
+  const patchPath = configured || join(paths.output, "patch.diff");
+  const artifactName = configured ? configured.slice("/work/output/".length) : "patch.diff";
   if (!(await fileExists(patchPath))) {
     try {
-      const { stdout } = await execFileAsync("git", ["-C", request.repoPath, "diff"], {
-        maxBuffer: 32 * 1024 * 1024,
+      const diff = await materializeRepoDiff(request.repoPath);
+      await writeFile(patchPath, diff, "utf8");
+      await sink.lifecycle("ARTIFACT_WRITTEN", {
+        artifact: artifactName,
+        path: patchPath,
+        source: "bridge-git-diff",
       });
-      await writeFile(patchPath, stdout, "utf8");
-      await sink.lifecycle("ARTIFACT_WRITTEN", { artifact: "patch.diff", path: patchPath, source: "bridge-git-diff" });
     } catch (error) {
-      console.error(`[rd-pi-bridge] failed to materialize patch.diff: ${safeError(error)}`);
+      console.error(`[rd-pi-bridge] failed to materialize ${artifactName}: ${safeError(error)}`);
+    }
+  }
+  // Keep legacy patch.diff populated when the coding-benchmark path is used, so
+  // older host tooling that still looks for patch.diff keeps working.
+  const legacyPatch = join(paths.output, "patch.diff");
+  if (patchPath !== legacyPatch && (await fileExists(patchPath)) && !(await fileExists(legacyPatch))) {
+    try {
+      const content = await readFile(patchPath, "utf8");
+      await writeFile(legacyPatch, content, "utf8");
+    } catch (error) {
+      console.error(`[rd-pi-bridge] failed to mirror patch.diff: ${safeError(error)}`);
     }
   }
   const testLogPath = join(paths.output, "test.log");
@@ -340,6 +448,42 @@ async function ensureCodingArtifacts(request, paths, result, sink) {
     } catch (error) {
       console.error(`[rd-pi-bridge] failed to materialize test.log: ${safeError(error)}`);
     }
+  }
+}
+
+async function materializeRepoDiff(repoPath) {
+  const { mkdtemp, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const indexDir = await mkdtemp(join(tmpdir(), "rd-pi-index-"));
+  const indexFile = join(indexDir, "index");
+  const env = { ...process.env, GIT_INDEX_FILE: indexFile };
+  try {
+    await execFileAsync("git", ["-C", repoPath, "read-tree", "HEAD"], { env, maxBuffer: 32 * 1024 * 1024 });
+    await execFileAsync(
+      "git",
+      [
+        "-C",
+        repoPath,
+        "add",
+        "-A",
+        "--",
+        ".",
+        ":(exclude)node_modules",
+        ":(exclude)target",
+        ":(exclude)build",
+        ":(exclude).gradle",
+        ":(exclude)dist",
+      ],
+      { env, maxBuffer: 32 * 1024 * 1024 },
+    );
+    const { stdout } = await execFileAsync(
+      "git",
+      ["-C", repoPath, "diff", "--cached", "--binary", "HEAD"],
+      { env, maxBuffer: 32 * 1024 * 1024 },
+    );
+    return stdout;
+  } finally {
+    await rm(indexDir, { recursive: true, force: true });
   }
 }
 
@@ -376,9 +520,63 @@ function outputPaths(outputPath) {
     session: join(privatePath, "session"),
     rawEvents: join(privatePath, "pi-raw-events.jsonl"),
     runtimeMeta: join(output, "runtime-meta.json"),
+    runtimeContextManifest: join(output, "runtime-context-manifest.json"),
     events: join(output, "agent-events.jsonl"),
     result: join(output, "result.json"),
   };
+}
+
+/** Writes the audit-only observed runtime context manifest after resource discovery. */
+export async function writeRuntimeContextManifest({
+  request,
+  paths,
+  contextFiles,
+  inputManifestHash = "",
+  contextPolicyHash = "",
+}) {
+  const repoRoot = resolve(request.repoPath || "/work/repo");
+  const observedFiles = (contextFiles ?? []).map((file, index) => {
+    const absolutePath = resolve(file.path ?? "");
+    const relativePath = absolutePath.startsWith(`${repoRoot}/`)
+      ? absolutePath.slice(repoRoot.length + 1)
+      : (file.path ?? "");
+    const contentHash = file.sha256
+      ? (String(file.sha256).startsWith("sha256:") ? String(file.sha256) : `sha256:${file.sha256}`)
+      : "";
+    return {
+      path: relativePath.replace(/\\/g, "/"),
+      contentHash,
+      bytes: file.bytes ?? 0,
+      loadOrder: index + 1,
+      scope: "REPO",
+      trustDecision: "LOADED",
+      rejectReason: "",
+    };
+  });
+  const totalBytes = observedFiles.reduce((sum, file) => sum + (file.bytes ?? 0), 0);
+  const manifest = {
+    schemaVersion: 1,
+    protocol: "rd-runtime-context-manifest/v1",
+    taskId: request.taskId,
+    stageRunId: request.stageRunId,
+    role: request.role,
+    attemptNo: request.attemptNo ?? 1,
+    mode: "LEGACY_OBSERVE_ONLY",
+    runtime: "PI",
+    provider: request.provider ?? "",
+    model: request.model ?? "",
+    executionProfileSnapshotId: request.snapshotId ?? "",
+    inputManifestHash: inputManifestHash || "",
+    contextPolicyHash: contextPolicyHash || "",
+    generatedAt: new Date().toISOString(),
+    observedFiles,
+    totalFiles: observedFiles.length,
+    totalBytes,
+    effectiveContextHash: "",
+    status: "OBSERVED",
+  };
+  await safeWriteJson(paths.runtimeContextManifest, manifest);
+  return manifest;
 }
 
 async function readValidatedRequest(path) {
@@ -440,16 +638,60 @@ async function configureModelRuntime(request, privatePath) {
   return runtime;
 }
 
-function resolveToolNames(policy) {
+export function resolveDynamicStateConfig(request) {
+  const policy = request?.policy && typeof request.policy === "object" ? request.policy : {};
+  const enabled = request?.dynamicStateEnabled === true || policy.dynamicStateEnabled === true;
+  const maxInjectedStateBytes = positiveSafeInteger(
+    request?.maxInjectedStateBytes ?? policy.maxInjectedStateBytes,
+    8192,
+  );
+  const attemptNo = positiveSafeInteger(request?.attemptNo ?? policy.attemptNo, 1);
+  return { enabled, maxInjectedStateBytes, attemptNo };
+}
+
+function assertStateToolsPermitted(policy) {
   const value = policy && typeof policy === "object" ? policy : {};
-  const hostAllow = stringSet(value.hostAllow, ["read", "bash", "edit", "write", RESULT_TOOL_NAME]);
+  const hostAllow = stringSet(value.hostAllow, []);
+  const requested = stringSet(value.allow, [...hostAllow]);
+  const denied = stringSet(value.deny, []);
+  for (const toolName of STATE_TOOL_NAMES) {
+    if (!hostAllow.has(toolName) || !requested.has(toolName) || denied.has(toolName)) {
+      throw new Error(`${toolName} is not permitted by the frozen tool policy (dynamicStateEnabled)`);
+    }
+  }
+}
+
+function resolveToolNames(policy, dynamicState = { enabled: false }) {
+  const value = policy && typeof policy === "object" ? policy : {};
+  const defaultHost = ["read", "bash", "edit", "write", RESULT_TOOL_NAME];
+  if (dynamicState.enabled) defaultHost.push(...STATE_TOOL_NAMES);
+  const hostAllow = stringSet(value.hostAllow, defaultHost);
   const requested = stringSet(value.allow, [...hostAllow]);
   const denied = stringSet(value.deny, []);
   const active = [...requested].filter((name) => hostAllow.has(name) && !denied.has(name));
   if (!active.includes(RESULT_TOOL_NAME)) {
     throw new Error(`${RESULT_TOOL_NAME} is not permitted by the frozen tool policy`);
   }
+  if (dynamicState.enabled) {
+    for (const toolName of STATE_TOOL_NAMES) {
+      if (!active.includes(toolName)) {
+        throw new Error(`${toolName} is not permitted by the frozen tool policy`);
+      }
+    }
+  }
   return active;
+}
+
+async function flushStateArtifacts(projector, paths, sink) {
+  await projector.flush();
+  await safeLifecycle(sink, "ARTIFACT_WRITTEN", {
+    artifact: "agent-state-events.jsonl",
+    path: join(paths.output, "agent-state-events.jsonl"),
+  });
+  await safeLifecycle(sink, "ARTIFACT_WRITTEN", {
+    artifact: "agent-state-latest.json",
+    path: join(paths.output, "agent-state-latest.json"),
+  });
 }
 
 function stringSet(value, fallback) {
@@ -495,20 +737,104 @@ function createResultTool({ resultPath, sink, context, onAccepted }) {
   });
 }
 
-function createObservabilityExtension(sink, context) {
+export function createObservabilityExtension(sink, context, commandTimeoutMillis = bashCommandTimeoutMillis(), budget = {}) {
+  const boundedTimeout = positiveSafeInteger(commandTimeoutMillis, DEFAULT_BASH_COMMAND_TIMEOUT_MILLIS);
+  const maxAgentTurns = positiveSafeInteger(
+    budget.maxAgentTurns ?? process.env.RD_PI_MAX_AGENT_TURNS,
+    0,
+  );
+  const maxTotalTokens = positiveSafeInteger(
+    budget.maxTotalTokens ?? process.env.RD_PI_MAX_TOTAL_TOKENS,
+    0,
+  );
+  let providerTurns = 0;
+  let cumulativeUsage = 0;
+  let budgetWarned = false;
+  let budgetExceeded = false;
+  const controls = {
+    ignoreBudget: false,
+    isExceeded: () => budgetExceeded,
+    reason: () => (budgetExceeded
+      ? `BUDGET_EXCEEDED: maxAgentTurns=${maxAgentTurns} turns=${providerTurns} cumulativeUsage=${cumulativeUsage}`
+      : ""),
+  };
   return {
     name: "rd-observability",
     hidden: true,
+    budgetControls: controls,
     factory(pi) {
-      pi.on("before_provider_request", (event) => sink.lifecycle("PROVIDER_REQUESTED", {
-        provider: event.model?.provider,
-        model: event.model?.id,
-      }));
-      pi.on("after_provider_response", (event) => sink.lifecycle("PROVIDER_RESPONDED", {
-        status: event.status,
-      }));
+      // Pi's built-in bash tool accepts a millisecond timeout. Mutating the tool
+      // input here enforces a host-owned cap even when the model omits timeout.
+      pi.on("tool_call", (event) => {
+        if (event?.toolName === "bash" && event.input && typeof event.input === "object") {
+          const command = typeof event.input.command === "string" ? event.input.command : "";
+          if (command.includes("/work/output/private")) {
+            throw new Error("TOOL_BLOCKED: /work/output/private is not readable by the agent");
+          }
+          const requested = positiveSafeInteger(event.input.timeout, boundedTimeout);
+          event.input.timeout = Math.min(requested, boundedTimeout);
+        }
+      });
+      pi.on("before_provider_request", (event) => {
+        if (controls.ignoreBudget) {
+          return sink.lifecycle("PROVIDER_REQUESTED", {
+            provider: event.model?.provider,
+            model: event.model?.id,
+            turn: providerTurns,
+            recovery: true,
+          });
+        }
+        providerTurns += 1;
+        if (maxAgentTurns > 0 && providerTurns > maxAgentTurns) {
+          budgetExceeded = true;
+          throw new Error(`BUDGET_EXCEEDED: maxAgentTurns=${maxAgentTurns}`);
+        }
+        if (maxAgentTurns > 0 && !budgetWarned && providerTurns === Math.max(1, maxAgentTurns - 3)) {
+          budgetWarned = true;
+          void sink.lifecycle("PROTOCOL_ERROR", {
+            category: "BUDGET_WARNING",
+            error: `approaching maxAgentTurns=${maxAgentTurns}; submit result immediately`,
+          });
+        }
+        return sink.lifecycle("PROVIDER_REQUESTED", {
+          provider: event.model?.provider,
+          model: event.model?.id,
+          turn: providerTurns,
+        });
+      });
+      pi.on("after_provider_response", (event) => {
+        cumulativeUsage += usageTokenTotal(event);
+        if (!controls.ignoreBudget && maxTotalTokens > 0 && cumulativeUsage > maxTotalTokens) {
+          budgetExceeded = true;
+          throw new Error(`BUDGET_EXCEEDED: maxTotalTokens=${maxTotalTokens} cumulativeUsage=${cumulativeUsage}`);
+        }
+        return sink.lifecycle("PROVIDER_RESPONDED", {
+          status: event.status,
+          cumulativeUsage,
+        });
+      });
     },
   };
+}
+
+function usageTokenTotal(event) {
+  const candidates = [
+    event?.usage,
+    event?.response?.usage,
+    event?.message?.usage,
+    event?.result?.usage,
+  ];
+  let total = 0;
+  for (const usage of candidates) {
+    if (!usage || typeof usage !== "object") continue;
+    for (const key of ["input", "output", "cacheRead", "cacheWrite", "input_tokens", "output_tokens", "prompt_tokens", "completion_tokens"]) {
+      const value = usage[key];
+      if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+        total += value;
+      }
+    }
+  }
+  return total;
 }
 
 export class EventSink {
@@ -621,6 +947,13 @@ function positiveNumber(value, fallback) {
 
 function maxRawEventBytes() {
   return positiveSafeInteger(process.env.RD_PI_MAX_RAW_EVENT_BYTES, DEFAULT_MAX_RAW_EVENT_BYTES);
+}
+
+function bashCommandTimeoutMillis() {
+  return positiveSafeInteger(
+    process.env.RD_PI_BASH_COMMAND_TIMEOUT_MILLIS,
+    DEFAULT_BASH_COMMAND_TIMEOUT_MILLIS,
+  );
 }
 
 function positiveSafeInteger(value, fallback) {

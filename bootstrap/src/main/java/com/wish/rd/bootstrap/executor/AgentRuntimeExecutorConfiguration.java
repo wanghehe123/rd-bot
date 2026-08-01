@@ -95,7 +95,8 @@ public class AgentRuntimeExecutorConfiguration {
             AgentExecutionProfileSnapshotStore snapshotStore,
             com.wish.rd.bootstrap.executor.OpenAiChatCompletionsProperties openAiProperties,
             ModelProviderProfileService providerProfileService,
-            AgentToolPolicyService toolPolicyService
+            AgentToolPolicyService toolPolicyService,
+            PiAgentExecutorProperties piProperties
     ) {
         return new EngineRequirementExecutionProfileResolver(
                 profileService,
@@ -103,7 +104,10 @@ public class AgentRuntimeExecutorConfiguration {
                 snapshotStore,
                 openAiProperties.isEnabled(),
                 providerProfileService,
-                toolPolicyService
+                toolPolicyService,
+                piProperties.getContextProtocolVersion(),
+                piProperties.isDynamicStateEnabled(),
+                piProperties.getMaxInjectedStateBytes()
         );
     }
 }

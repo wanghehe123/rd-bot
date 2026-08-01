@@ -1,0 +1,82 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "rd-agent-state-v1.schema.json",
+  "title": "RD agent state snapshot",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "protocol",
+    "sequence",
+    "generatedAt",
+    "taskId",
+    "stageRunId",
+    "role",
+    "attemptNo"
+  ],
+  "properties": {
+    "protocol": { "const": "rd-agent-state/v1" },
+    "sequence": { "type": "integer", "minimum": 0 },
+    "generatedAt": { "type": "string", "minLength": 1 },
+    "taskId": { "type": "string", "minLength": 1 },
+    "stageRunId": { "type": "string", "minLength": 1 },
+    "role": {
+      "type": "string",
+      "enum": ["REQUIREMENT_REVIEWER", "SOLUTION_ARCHITECT", "CODING_AGENT", "QA_AGENT"]
+    },
+    "attemptNo": { "type": "integer", "minimum": 1 },
+    "repoRoot": { "type": "string" },
+    "cwd": { "type": "string" },
+    "branch": { "type": "string" },
+    "revision": { "type": "string" },
+    "runtime": { "type": "string" },
+    "allowedOperations": { "type": "array", "items": { "type": "string" } },
+    "deniedOperations": { "type": "array", "items": { "type": "string" } },
+    "todos": {
+      "type": "array",
+      "items": { "$ref": "rd-agent-todo-v1.schema.json" }
+    },
+    "verifiedFactSummaries": { "type": "array", "items": { "type": "string", "maxLength": 512 } },
+    "toolCallCounts": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } },
+    "recentErrorFingerprint": { "type": "string" },
+    "consecutiveRepeatCount": { "type": "integer", "minimum": 0 },
+    "resultStatus": { "type": "string" },
+    "blocker": { "type": "string", "maxLength": 512 },
+    "inputBudgetTokens": { "type": "integer", "minimum": 0 },
+    "reservedOutputTokens": { "type": "integer", "minimum": 0 },
+    "consumedInputTokens": { "type": "integer", "minimum": 0 },
+    "capabilities": {
+      "type": "array",
+      "items": { "$ref": "rd-agent-state-capability-v1.schema.json" }
+    }
+  },
+  "definitions": {
+    "todo": {
+      "$id": "rd-agent-todo-v1.schema.json",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["todoId", "title", "status"],
+      "properties": {
+        "todoId": { "type": "string", "minLength": 1 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "status": {
+          "type": "string",
+          "enum": ["PENDING", "IN_PROGRESS", "BLOCKED", "DONE", "CANCELLED"]
+        },
+        "evidenceArtifactId": { "type": "string" },
+        "evidenceToolCallId": { "type": "string" },
+        "blockerReason": { "type": "string", "maxLength": 512 }
+      }
+    },
+    "capability": {
+      "$id": "rd-agent-state-capability-v1.schema.json",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "enabled"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "enabled": { "type": "boolean" },
+        "reason": { "type": "string", "maxLength": 256 }
+      }
+    }
+  }
+}

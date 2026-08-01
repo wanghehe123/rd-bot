@@ -15,6 +15,8 @@ public class PiAgentExecutorProperties {
     public static final String DEFAULT_IMAGE = "rd-bot/pi-agent:local";
     public static final String DEFAULT_QA_IMAGE = "rd-bot/pi-agent-qa:local";
     public static final String DEFAULT_NETWORK_MODE = "bridge";
+    public static final long DEFAULT_EXECUTION_TIMEOUT_MILLIS = 60L * 60L * 1000L;
+    public static final long DEFAULT_BASH_COMMAND_TIMEOUT_MILLIS = 15L * 60L * 1000L;
 
     private String image = DEFAULT_IMAGE;
     private String qaImage = DEFAULT_QA_IMAGE;
@@ -25,9 +27,36 @@ public class PiAgentExecutorProperties {
     private String networkMode = DEFAULT_NETWORK_MODE;
     private boolean removeAfterExit = true;
     private boolean allowPrivileged = false;
-    private long executionTimeoutMillis = 0L;
+    private long executionTimeoutMillis = DEFAULT_EXECUTION_TIMEOUT_MILLIS;
+    private long bashCommandTimeoutMillis = DEFAULT_BASH_COMMAND_TIMEOUT_MILLIS;
     private long rawEventMaxBytes = 16L * 1024L * 1024L;
+    private String contextProtocolVersion = "LEGACY_ENVIRONMENT_NOTES";
+    private boolean dynamicStateEnabled = false;
+    private int maxInjectedStateBytes = 8192;
 
+    public String getContextProtocolVersion() {
+        return contextProtocolVersion;
+    }
+
+    public void setContextProtocolVersion(String contextProtocolVersion) {
+        this.contextProtocolVersion = textOrDefault(contextProtocolVersion, "LEGACY_ENVIRONMENT_NOTES");
+    }
+
+    public boolean isDynamicStateEnabled() {
+        return dynamicStateEnabled;
+    }
+
+    public void setDynamicStateEnabled(boolean dynamicStateEnabled) {
+        this.dynamicStateEnabled = dynamicStateEnabled;
+    }
+
+    public int getMaxInjectedStateBytes() {
+        return maxInjectedStateBytes;
+    }
+
+    public void setMaxInjectedStateBytes(int maxInjectedStateBytes) {
+        this.maxInjectedStateBytes = maxInjectedStateBytes > 0 ? maxInjectedStateBytes : 8192;
+    }
     public String getImage() {
         return image;
     }
@@ -81,7 +110,16 @@ public class PiAgentExecutorProperties {
     }
 
     public void setExecutionTimeoutMillis(long executionTimeoutMillis) {
-        this.executionTimeoutMillis = Math.max(0L, executionTimeoutMillis);
+        this.executionTimeoutMillis = positiveTimeout(executionTimeoutMillis, DEFAULT_EXECUTION_TIMEOUT_MILLIS);
+    }
+
+    public long getBashCommandTimeoutMillis() {
+        return bashCommandTimeoutMillis;
+    }
+
+    public void setBashCommandTimeoutMillis(long bashCommandTimeoutMillis) {
+        this.bashCommandTimeoutMillis = positiveTimeout(
+                bashCommandTimeoutMillis, DEFAULT_BASH_COMMAND_TIMEOUT_MILLIS);
     }
 
     public long getRawEventMaxBytes() {
@@ -101,8 +139,13 @@ public class PiAgentExecutorProperties {
                 removeAfterExit,
                 allowPrivileged,
                 executionTimeoutMillis,
+                bashCommandTimeoutMillis,
                 rawEventMaxBytes
         );
+    }
+
+    private static long positiveTimeout(long value, long fallback) {
+        return value > 0L ? value : fallback;
     }
 
     private static String textOrDefault(String value, String fallback) {

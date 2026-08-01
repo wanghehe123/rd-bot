@@ -97,6 +97,12 @@ public final class RoleContextVersionManager {
                 : store.save(candidate);
     }
 
+    /** Exposes the semantic signature used for context-package reuse decisions. */
+    public String semanticSignatureOf(RoleContextPackage contextPackage) {
+        Objects.requireNonNull(contextPackage, "contextPackage must not be null");
+        return semanticSignature(contextPackage);
+    }
+
     private String semanticSignature(RoleContextPackage contextPackage) {
         StringBuilder value = new StringBuilder(contextPackage.role()).append('|');
         for (RoleContextEvidence evidence : contextPackage.evidence()) {

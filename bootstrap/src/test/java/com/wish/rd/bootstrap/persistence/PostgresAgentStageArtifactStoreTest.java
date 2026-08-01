@@ -14,8 +14,10 @@ import org.mockito.ArgumentCaptor;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -86,6 +88,79 @@ class PostgresAgentStageArtifactStoreTest {
         assertEquals("image/png", saved.contentType);
         assertEquals(2048L, saved.sizeBytes);
         assertEquals("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", saved.sha256);
+    }
+
+    @Test
+    void saveImmutableShouldInsertOnceAndReturnExistingOnMatchingHash() {
+        AgentStageArtifact artifact = new AgentStageArtifact(
+                "7478000000000000202",
+                "7478000000000000101",
+                "7478000000000000000",
+                AgentRole.CODING_AGENT,
+                "ROLE_EXECUTION_INPUT_MANIFEST",
+                "rd-agent-stage://7478000000000000000/7478000000000000101/manifest",
+                "manifest",
+                "{\"version\":1}",
+                "sha256:abc",
+                "{}",
+                1_783_000_000_000L
+        );
+        when(mapper.selectById(7478000000000000202L)).thenReturn(null, row(artifact));
+
+        store.saveImmutable(artifact);
+        AgentStageArtifact again = store.saveImmutable(new AgentStageArtifact(
+                artifact.artifactId(),
+                artifact.stageRunId(),
+                artifact.taskId(),
+                artifact.role(),
+                artifact.artifactType(),
+                artifact.artifactUri(),
+                artifact.summary(),
+                "{\"version\":2}",
+                artifact.contentHash(),
+                artifact.metadataJson(),
+                artifact.createdAtEpochMillis()
+        ));
+
+        verify(mapper).insert(any(RdAgentStageArtifactRow.class));
+        verify(mapper, never()).upsertStageArtifact(any());
+        assertEquals(artifact.artifactId(), again.artifactId());
+        assertEquals("{\"version\":1}", again.contentPreview());
+    }
+
+    @Test
+    void saveImmutableShouldRejectConflictingHash() {
+        AgentStageArtifact artifact = new AgentStageArtifact(
+                "7478000000000000203",
+                "7478000000000000101",
+                "7478000000000000000",
+                AgentRole.CODING_AGENT,
+                "ROLE_EXECUTION_INPUT_MANIFEST",
+                "rd-agent-stage://7478000000000000000/7478000000000000101/manifest",
+                "manifest",
+                "{\"version\":1}",
+                "sha256:abc",
+                "{}",
+                1_783_000_000_000L
+        );
+        when(mapper.selectById(7478000000000000203L)).thenReturn(row(artifact));
+
+        IllegalStateException error = assertThrows(IllegalStateException.class, () -> store.saveImmutable(
+                new AgentStageArtifact(
+                        artifact.artifactId(),
+                        artifact.stageRunId(),
+                        artifact.taskId(),
+                        artifact.role(),
+                        artifact.artifactType(),
+                        artifact.artifactUri(),
+                        artifact.summary(),
+                        artifact.contentPreview(),
+                        "sha256:def",
+                        artifact.metadataJson(),
+                        artifact.createdAtEpochMillis()
+                )
+        ));
+        assertEquals("immutable artifact conflict: 7478000000000000203", error.getMessage());
     }
 
     private RdAgentStageArtifactRow row(AgentStageArtifact artifact) {

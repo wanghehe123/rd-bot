@@ -64,6 +64,29 @@ class EngineRequirementExecutionProfileResolverTest {
         assertEquals(AgentRuntimeType.MODEL_ONLY, reviewerRuntime);
     }
 
+    @Test
+    void shouldFreezeContextProtocolFieldsInSnapshotJson() {
+        InMemoryAgentExecutionProfileSnapshotStore snapshots = new InMemoryAgentExecutionProfileSnapshotStore();
+        EngineRequirementExecutionProfileResolver resolver = new EngineRequirementExecutionProfileResolver(
+                new AgentExecutionProfileService(new InMemoryAgentExecutionProfileStore()),
+                new AgentExecutionProfileSnapshotService(snapshots),
+                snapshots,
+                false,
+                null,
+                null,
+                "FACTS_V1",
+                true,
+                16384
+        );
+        resolver.resolve(task(), AgentRole.CODING_AGENT, "stage-context", 1);
+        String snapshotJson = snapshots.findByStageRunId("stage-context").orElseThrow().snapshotJson();
+        assertTrue(snapshotJson.contains("\"contextProtocolVersion\":\"FACTS_V1\""));
+        assertTrue(snapshotJson.contains("\"agentStateSchemaVersion\":\"rd-agent-state/v1\""));
+        assertTrue(snapshotJson.contains("\"dynamicStateEnabled\":true"));
+        assertTrue(snapshotJson.contains("\"maxInjectedStateBytes\":16384"));
+        assertTrue(snapshotJson.contains("\"toolRetryPolicyVersion\":\"rd-tool-retry/v1\""));
+    }
+
     private EngineRequirementExecutionProfileResolver resolver(
             AgentExecutionProfileService profileService,
             InMemoryAgentExecutionProfileSnapshotStore snapshotStore,

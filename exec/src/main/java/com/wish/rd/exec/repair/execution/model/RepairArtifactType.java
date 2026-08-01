@@ -11,6 +11,8 @@ public enum RepairArtifactType {
     DOCKER_METADATA,
     CLAUDE_EVENTS,
     AGENT_EVENTS,
+    AGENT_STATE_EVENTS,
+    AGENT_STATE_SNAPSHOT,
     PI_RAW_EVENTS,
     PI_SESSION,
     AGENT_RUNTIME_META,
@@ -25,5 +27,6 @@ public enum RepairArtifactType {
     QA_VIDEO,
     QA_EVIDENCE_MANIFEST,
     HANDOFF_MARKDOWN,
+    RUNTIME_CONTEXT_MANIFEST,
     OTHER
 }

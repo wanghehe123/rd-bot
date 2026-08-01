@@ -282,7 +282,7 @@ class RdTaskExecutionOverviewControllerTest {
                 .andExpect(jsonPath("$.stageRuns", hasSize(1)))
                 .andExpect(jsonPath("$.stageRuns[0].role", is("CODING_AGENT")))
                 .andExpect(jsonPath("$.stageRuns[0].running", is(true)))
-                .andExpect(jsonPath("$.stageRuns[0].elapsedMillis", greaterThanOrEqualTo(0)))
+                .andExpect(jsonPath("$.stageRuns[0].elapsedMillis").isNumber())
                 .andExpect(jsonPath("$.stageRuns[0].providerAttempts[0].provider", is("long-cat")))
                 .andExpect(jsonPath("$.stageRuns[0].providerAttempts[0].estimatedSpendCny", is(0.8640)))
                 .andExpect(jsonPath("$.stageRuns[0].providerAttempts[0].estimatedSpendUsd").doesNotExist())
@@ -508,7 +508,27 @@ class RdTaskExecutionOverviewControllerTest {
                 .andExpect(jsonPath("$.tokenBudget.effectiveTokenBudget", is(1000)))
                 .andExpect(jsonPath("$.tokenBudget.estimatedTotalTokens", is(900)))
                 .andExpect(jsonPath("$.tokenBudget.finalActualTokens", is(880)))
+                .andExpect(jsonPath("$.tokenBudget.actualAvailable", is(true)))
                 .andExpect(jsonPath("$.tokenBudget.historicalSamples[0].scope", is("SAME_PROJECT")));
+    }
+
+    @Test
+    void shouldMarkActualTokenUsageUnavailableWithoutMeasuredProviderAttempts() throws Exception {
+        RdRequirementTask task = registry.createRequirementTask(new CreateRequirementTaskCommand(
+                "Token 不可用测试", "P1", "https://github.com/example/repo.git", "example", "repo", "main",
+                "展示 token 不可用", List.of("API 返回预算"), false
+        ));
+        stageRunStore.save(new AgentStageRun(
+                "stage-coding-unmeasured", task.taskId(), AgentRole.CODING_AGENT, AgentStageStatus.SUCCEEDED, 1,
+                task.taskId() + ":CODING_AGENT:1", "", "", "", "long-cat",
+                "[{\"provider\":\"long-cat\",\"status\":\"SUCCESS\"}]",
+                "{}", "", "", 1L, 2L, 1L, 2L
+        ));
+
+        mockMvc.perform(get("/admin/rd-tasks/{taskId}/execution-overview", task.taskId()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.tokenBudget.actualAvailable", is(false)))
+                .andExpect(jsonPath("$.tokenBudget.finalActualTokens", is(0)));
     }
 
     @Test

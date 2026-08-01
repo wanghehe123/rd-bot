@@ -13,7 +13,7 @@ import {
   hashResourcePath,
   validateResourceManifest,
 } from "../src/resource-loader.mjs";
-import { EventSink, executionPrompt } from "../src/rd-pi-bridge.mjs";
+import { EventSink, createObservabilityExtension, executionPrompt, writeRuntimeContextManifest } from "../src/rd-pi-bridge.mjs";
 
 import { mkdtemp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -42,16 +42,34 @@ test("validates the fixed one-shot request contract", () => {
   assert.throws(() => validateRequest({ ...request, repoPath: "/tmp/repo" }));
 });
 
-test("accepts an optional applyCandidatePatch boolean", () => {
-  const withFlag = { ...request, applyCandidatePatch: true };
-  assert.equal(validateRequest(withFlag), withFlag);
-  assert.throws(() => validateRequest({ ...request, applyCandidatePatch: "yes" }));
+test("accepts optional coding-benchmark patch and budget fields", () => {
+  const withFields = {
+    ...request,
+    patchArtifactPath: "/work/output/candidate.patch",
+    maxAgentTurns: 40,
+    maxTotalTokens: 2_000_000,
+  };
+  assert.equal(validateRequest(withFields), withFields);
+  assert.throws(() => validateRequest({ ...request, patchArtifactPath: "/tmp/x" }));
+  assert.throws(() => validateRequest({ ...request, maxAgentTurns: 0 }));
+});
+
+test("uses patchArtifactPath in coding prompt when provided", () => {
+  const coding = executionPrompt({
+    ...request,
+    role: "CODING_AGENT",
+    patchArtifactPath: "/work/output/candidate.patch",
+  });
+  assert.match(coding, /candidate\.patch/);
 });
 
 test("tailors the execution prompt to each delivery role", () => {
   const coding = executionPrompt({ ...request, role: "CODING_AGENT" });
   assert.match(coding, /patch\.diff/);
   assert.match(coding, /test\.log/);
+  assert.match(coding, /never delete node_modules or package-lock\.json/i);
+  assert.match(coding, /npm run build && npm run start/);
+  assert.match(coding, /HTTP.*request timeout/i);
   assert.doesNotMatch(coding, /handoff\/next\.md/);
 
   const reviewer = executionPrompt({ ...request, role: "REQUIREMENT_REVIEWER" });
@@ -67,6 +85,29 @@ test("tailors the execution prompt to each delivery role", () => {
   assert.match(qa, /QA_AGENT role protocol/);
   assert.match(qa, /do not fabricate/i);
   assert.doesNotMatch(qa, /patch\.diff/);
+});
+
+test("enforces the bridge-owned hard deadline for every bash tool call", async () => {
+  const handlers = new Map();
+  const extension = createObservabilityExtension(
+    { lifecycle: async () => {} },
+    { stageRunId: "stage-1", taskId: "task-1" },
+    5_000,
+  );
+  extension.factory({ on(eventName, handler) { handlers.set(eventName, handler); } });
+  const toolCall = handlers.get("tool_call");
+
+  const omittedTimeout = { toolName: "bash", input: { command: "node smoke.mjs" } };
+  await toolCall(omittedTimeout);
+  assert.equal(omittedTimeout.input.timeout, 5_000);
+
+  const smallerTimeout = { toolName: "bash", input: { command: "npm test", timeout: 2_000 } };
+  await toolCall(smallerTimeout);
+  assert.equal(smallerTimeout.input.timeout, 2_000);
+
+  const oversizedTimeout = { toolName: "bash", input: { command: "npm run build", timeout: 60_000 } };
+  await toolCall(oversizedTimeout);
+  assert.equal(oversizedTimeout.input.timeout, 5_000);
 });
 
 test("rejects oversized or malformed JSON lines", () => {
@@ -441,4 +482,30 @@ test("fails closed for an unverified or escaped extension resource", async () =>
       resources: [{ ...baseManifest.resources[0], path: join(root, "outside.mjs") }],
     }, { root: extensionRoot }),
   );
+});
+
+test("writes audit-only runtime context manifest after resource discovery", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rd-pi-runtime-manifest-"));
+  const output = join(root, "output");
+  await mkdir(output, { recursive: true });
+  const manifest = await writeRuntimeContextManifest({
+    request: {
+      ...request,
+      repoPath: root,
+      attemptNo: 1,
+    },
+    paths: {
+      runtimeContextManifest: join(output, "runtime-context-manifest.json"),
+    },
+    contextFiles: [
+      { path: join(root, "AGENTS.md"), sha256: "deadbeef", bytes: 12 },
+    ],
+    inputManifestHash: "sha256:abc",
+  });
+  const persisted = JSON.parse(await readFile(join(output, "runtime-context-manifest.json"), "utf8"));
+  assert.equal(manifest.mode, "LEGACY_OBSERVE_ONLY");
+  assert.equal(persisted.observedFiles.length, 1);
+  assert.equal(persisted.observedFiles[0].path, "AGENTS.md");
+  assert.equal(persisted.observedFiles[0].trustDecision, "LOADED");
+  assert.equal(persisted.inputManifestHash, "sha256:abc");
 });

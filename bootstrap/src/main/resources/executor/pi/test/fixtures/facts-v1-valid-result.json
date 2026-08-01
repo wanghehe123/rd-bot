@@ -1,0 +1,27 @@
+{
+  "status": "SUCCESS",
+  "summary": "Implemented feature with observed environment facts.",
+  "changedFiles": ["src/App.java"],
+  "testCommands": ["npm test"],
+  "testStatus": "PASSED",
+  "riskLevel": "LOW",
+  "prBody": "Adds feature.",
+  "needHumanAction": false,
+  "facts": [
+    {
+      "factId": "fact-1",
+      "kind": "OBSERVED",
+      "statement": "npm install requires --include=dev in this workspace",
+      "sourceArtifactId": "artifact-tool-1",
+      "sourceStageRunId": "stage-1",
+      "sourceToolCallId": "tool-call-1",
+      "repoRevision": "abc123",
+      "observedAt": "2026-08-01T08:00:00Z",
+      "commandHash": "sha256:deadbeef",
+      "freshnessPolicy": "SAME_REVISION"
+    }
+  ],
+  "environmentNotes": [
+    "npm install requires --include=dev in this workspace"
+  ]
+}

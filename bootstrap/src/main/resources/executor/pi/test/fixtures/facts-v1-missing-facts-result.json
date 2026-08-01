@@ -1,0 +1,10 @@
+{
+  "status": "SUCCESS",
+  "summary": "Missing facts array under FACTS_V1.",
+  "changedFiles": ["src/App.java"],
+  "testCommands": ["npm test"],
+  "testStatus": "PASSED",
+  "riskLevel": "LOW",
+  "prBody": "Adds feature.",
+  "needHumanAction": false
+}

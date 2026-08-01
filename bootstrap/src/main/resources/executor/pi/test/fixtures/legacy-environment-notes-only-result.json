@@ -1,0 +1,13 @@
+{
+  "status": "SUCCESS",
+  "summary": "Legacy result with environment notes only.",
+  "changedFiles": ["src/App.java"],
+  "testCommands": ["npm test"],
+  "testStatus": "PASSED",
+  "riskLevel": "LOW",
+  "prBody": "Adds feature.",
+  "needHumanAction": false,
+  "environmentNotes": [
+    "npm install requires --include=dev in this workspace"
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "rd-agent-state-action-v1.schema.json",
+  "title": "RD agent state action",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "actionId",
+    "expectedSequence",
+    "clientSequence",
+    "decision",
+    "reason"
+  ],
+  "properties": {
+    "actionId": { "type": "string", "minLength": 1 },
+    "expectedSequence": { "type": "integer", "minimum": 0 },
+    "clientSequence": { "type": "integer", "minimum": 0 },
+    "decision": {
+      "type": "string",
+      "enum": ["ACCEPTED", "REJECTED"]
+    },
+    "reason": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "actionType": {
+      "type": "string",
+      "enum": [
+        "TODO_REWRITE",
+        "TODO_UPDATE_STATUS",
+        "RECORD_FACT",
+        "SYSTEM"
+      ]
+    }
+  }
+}

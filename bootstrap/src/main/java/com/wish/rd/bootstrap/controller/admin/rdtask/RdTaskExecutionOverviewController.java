@@ -19,6 +19,7 @@ import com.wish.rd.exec.repair.docker.trace.model.ClaudeExecutionTraceSnapshot;
 import com.wish.rd.exec.repair.alert.BudgetCurrencyConverter;
 import com.wish.rd.exec.repair.runtime.model.AgentExecutionEvent;
 import com.wish.rd.exec.repair.runtime.AgentExecutionEventParser;
+import com.wish.rd.exec.repair.runtime.usage.AgentEventTokenUsageParser;
 import com.wish.rd.exec.repair.runtime.AgentExecutionEventStore;
 import com.wish.rd.exec.repair.runtime.model.AgentExecutionTraceSnapshot;
 import com.wish.rd.rag.context.RoleContextPackageStore;
@@ -73,6 +74,7 @@ public class RdTaskExecutionOverviewController {
     private final DockerExecutorProperties dockerExecutorProperties;
     private final BudgetCurrencyConverter budgetCurrencyConverter;
     private final AgentStageProgressCalculator stageProgressCalculator;
+    private final AgentEventTokenUsageParser agentEventTokenUsageParser = new AgentEventTokenUsageParser();
     private final ClaudeExecutionTraceParser executionTraceParser = new ClaudeExecutionTraceParser();
     private RdProjectTokenBudgetService projectTokenBudgetService;
 
@@ -543,19 +545,38 @@ public class RdTaskExecutionOverviewController {
         String confidence = text(budget.path("confidence"));
         String basis = text(budget.path("basis"));
         List<Map<String, Object>> historicalSamples = jsonObjectList(budget.path("historicalSamples"));
+        boolean actualAvailable = false;
         long finalActualTokens = 0L;
         for (AgentStageRun stageRun : stageRuns) {
+            boolean stageUsageFound = false;
             for (Map<String, Object> attempt : providerAttempts(stageRun.providerAttemptsJson())) {
-                finalActualTokens = safeAdd(finalActualTokens, nonNegativeLong(attempt.get("totalTokens")));
+                if (!providerAttemptUsageAvailable(attempt)) {
+                    continue;
+                }
+                stageUsageFound = true;
+                actualAvailable = true;
+                finalActualTokens = safeAdd(finalActualTokens, measuredTotalTokens(attempt));
+            }
+            if (!stageUsageFound) {
+                long artifactUsage = measuredTokensFromAgentEvents(stageRun);
+                if (artifactUsage > 0L) {
+                    actualAvailable = true;
+                    finalActualTokens = safeAdd(finalActualTokens, artifactUsage);
+                }
             }
         }
         long runningTokens = runningExecutions.stream()
                 .map(DockerExecutionRegistry.RunningExecution::tokenUsage)
-                .mapToLong(usage -> usage == null ? 0L : usage.totalTokens())
+                .filter(usage -> usage != null && usage.available())
+                .mapToLong(usage -> usage.totalTokens())
                 .reduce(0L, RdTaskExecutionOverviewController::safeAdd);
-        long actualAccumulatedTokens = safeAdd(finalActualTokens, runningTokens);
+        if (runningTokens > 0L) {
+            actualAvailable = true;
+        }
+        long actualAccumulatedTokens = actualAvailable
+                ? safeAdd(finalActualTokens, runningTokens)
+                : 0L;
         boolean estimateAvailable = estimatedTotalTokens > 0L || !confidence.isBlank() || !basis.isBlank();
-        boolean actualAvailable = finalActualTokens > 0L || runningTokens > 0L;
         return new TokenBudgetView(
                 effectiveTokenBudget,
                 initialTokens,
@@ -572,6 +593,45 @@ public class RdTaskExecutionOverviewController {
                 effectiveTokenBudget > 0L && (estimatedTotalTokens > effectiveTokenBudget
                         || actualAccumulatedTokens > effectiveTokenBudget)
         );
+    }
+
+    private boolean providerAttemptUsageAvailable(Map<String, Object> attempt) {
+        if (attempt == null || attempt.isEmpty()) {
+            return false;
+        }
+        if (Boolean.TRUE.equals(attempt.get("tokenUsageAvailable"))) {
+            return true;
+        }
+        return Boolean.TRUE.equals(attempt.get("tokenUsageFinalized"))
+                && measuredTotalTokens(attempt) > 0L;
+    }
+
+    private long measuredTotalTokens(Map<String, Object> attempt) {
+        long total = nonNegativeLong(attempt.get("totalTokens"));
+        if (total > 0L) {
+            return total;
+        }
+        return safeAdd(
+                nonNegativeLong(attempt.get("inputTokens")),
+                safeAdd(
+                        nonNegativeLong(attempt.get("outputTokens")),
+                        safeAdd(
+                                nonNegativeLong(attempt.get("cacheReadInputTokens")),
+                                nonNegativeLong(attempt.get("cacheCreationInputTokens"))
+                        )
+                )
+        );
+    }
+
+    private long measuredTokensFromAgentEvents(AgentStageRun stageRun) {
+        return artifactStore.listByTask(stageRun.taskId()).stream()
+                .filter(artifact -> stageRun.stageRunId().equals(artifact.stageRunId()))
+                .filter(artifact -> "AGENT_EVENTS".equals(artifact.artifactType()))
+                .max(RdTaskExecutionOverviewController::compareArtifact)
+                .map(artifact -> agentEventTokenUsageParser.parse(artifact.contentPreview()))
+                .filter(usage -> usage.available())
+                .map(usage -> usage.totalTokens())
+                .orElse(0L);
     }
 
     private static JsonNode latestRequirementBudget(List<AgentStageRun> stageRuns) {

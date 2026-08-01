@@ -10,6 +10,9 @@ import java.util.List;
 import java.util.Set;
 import com.wish.rd.exec.repair.result.model.StructuredRepairResult;
 import com.wish.rd.exec.repair.result.model.StructuredResultValidation;
+import com.wish.rd.rag.project.agent.model.ContextProtocolVersion;
+import com.wish.rd.rag.project.agent.model.FactFreshnessEvaluator;
+import com.wish.rd.rag.project.agent.model.RoleExecutionFactsValidator;
 
 /**
  * 校验 Claude Code result.json 的纯业务协议，不依赖 Docker、GitHub、Spring 或本地文件系统。
@@ -46,6 +49,22 @@ public final class StructuredResultValidator {
      * @return 校验结果；无效 JSON 和业务错误都会返回对象而不是抛出异常
      */
     public StructuredResultValidation validate(String json) {
+        return validate(json, ContextProtocolVersion.LEGACY_ENVIRONMENT_NOTES.name(), null);
+    }
+
+    /**
+     * 解析并校验 agent 输出的 result.json 内容，按冻结的 context protocol 校验 facts。
+     *
+     * @param json                    agent 输出 JSON
+     * @param contextProtocolVersion  冻结协议版本
+     * @param freshnessContext        可选新鲜度上下文，用于 environmentNotes 派生校验
+     * @return 校验结果
+     */
+    public StructuredResultValidation validate(
+            String json,
+            String contextProtocolVersion,
+            FactFreshnessEvaluator.FreshnessContext freshnessContext
+    ) {
         JsonNode root;
         try {
             root = objectMapper.readTree(json == null ? "" : json);
@@ -68,6 +87,11 @@ public final class StructuredResultValidator {
         }
 
         List<String> errors = validateBusinessFields(root, result);
+        errors.addAll(RoleExecutionFactsValidator.validateFactsProtocol(
+                root,
+                ContextProtocolVersion.parse(contextProtocolVersion),
+                freshnessContext
+        ));
         return new StructuredResultValidation(errors.isEmpty(), result, errors);
     }
 

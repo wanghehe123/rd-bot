@@ -179,6 +179,9 @@ class RequirementDeliveryEngineTest {
         assertTrue(captured.getFirst().prompt().contains("# 实现计划"));
         assertTrue(captured.getFirst().prompt().contains("# 策略决策"));
         assertTrue(captured.getFirst().prompt().contains("policyAction: ALLOWED"));
+        assertTrue(captured.get(2).prompt().contains("不得删除 node_modules、package-lock.json 或 /work/cache"));
+        assertTrue(captured.get(2).prompt().contains("npm run build && npm run start"));
+        assertTrue(captured.get(2).prompt().contains("HTTP 请求必须设置不超过 30 秒的请求超时"));
         assertTrue(captured.get(3).prompt().contains("\"acceptanceResults\""));
         assertTrue(captured.get(3).prompt().contains("真实执行命令"));
         assertTrue(captured.get(3).prompt().contains("\"failureCategory\""));

@@ -6,10 +6,10 @@ import com.fasterxml.jackson.core.JsonToken;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.wish.rd.engine.agent.model.AgentStageArtifact;
 import com.wish.rd.engine.agent.AgentStageArtifactStore;
 import com.wish.rd.engine.agent.model.AgentRole;
 import com.wish.rd.engine.agent.AgentStagePlanner;
+import com.wish.rd.engine.agent.model.AgentStageArtifact;
 import com.wish.rd.engine.agent.model.AgentStageRun;
 import com.wish.rd.engine.agent.AgentStageRunStore;
 import com.wish.rd.engine.agent.AgentStageTransitions;
@@ -26,10 +26,10 @@ import com.wish.rd.framework.id.SnowflakeIdGenerator;
 import com.wish.rd.rag.context.impl.InMemoryRoleContextPackageStore;
 import com.wish.rd.rag.context.RoleContextBuilder;
 import com.wish.rd.rag.context.model.RoleContextEvidence;
-import com.wish.rd.rag.context.model.RoleContextPackage;
 import com.wish.rd.rag.retrieval.run.model.RetrievalConsumerType;
 import com.wish.rd.engine.retrieval.DeepRetrievalOrchestrator;
 import com.wish.rd.engine.retrieval.model.RetrievalOutcome;
+import com.wish.rd.rag.context.model.RoleContextPackage;
 import com.wish.rd.rag.context.RoleContextPackageStore;
 import com.wish.rd.rag.project.budget.RdProjectTokenBudgetService;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
@@ -58,11 +58,11 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.stream.Collectors;
+import com.wish.rd.engine.requirement.model.AgentWorkflowPlan;
 import com.wish.rd.engine.requirement.model.RequirementContextPackage;
 import com.wish.rd.engine.requirement.model.RequirementDeliveryResult;
 import com.wish.rd.engine.requirement.model.RequirementDeliveryReviewResult;
 import com.wish.rd.engine.requirement.model.RequirementExecutionRequest;
-import com.wish.rd.engine.requirement.model.RequirementExecutionProfileResolution;
 import com.wish.rd.engine.requirement.model.RequirementExecutionResult;
 import com.wish.rd.engine.requirement.model.RequirementPlan;
 import com.wish.rd.engine.requirement.model.RequirementPolicyDecision;
@@ -82,6 +82,8 @@ import com.wish.rd.engine.retry.model.TaskRetryCheckpointStatus;
  * 需求交付编排引擎。
  *
  * <p>负责把已创建的 REQUIREMENT 任务转换成执行器输入，推进任务状态，并记录 PR 结果。
+ * 多角色阶段主循环（240 行）已迁出到 {@link RequirementAgentStageOrchestrator}，
+ * 本类仅负责高层 retry、policy、PR 复核与发布等链路编排。
  */
 @Service
 public class RequirementDeliveryEngine {
@@ -126,12 +128,17 @@ public class RequirementDeliveryEngine {
     private RdProjectTokenBudgetService projectTokenBudgetService;
     private RequirementExecutionProfileResolverPort executionProfileResolver =
             RequirementExecutionProfileResolverPort.unavailable();
+    private RequirementAgentStageOrchestrator stageOrchestrator;
 
-    @Autowired(required = false)
+    @Autowired
     void setDeepRetrievalOrchestrator(DeepRetrievalOrchestrator orchestrator) {
         this.retrievalRecorder = orchestrator == null
                 ? null
                 : new RequirementContextRetrievalRecorder(orchestrator);
+        // Keep the orchestrator's retrieval recorder in sync — it owns this collaborator.
+        if (this.stageOrchestrator != null) {
+            this.stageOrchestrator.setRetrievalRecorder(this.retrievalRecorder);
+        }
     }
 
     @Autowired(required = false)
@@ -154,6 +161,24 @@ public class RequirementDeliveryEngine {
         this.executionProfileResolver = executionProfileResolver == null
                 ? RequirementExecutionProfileResolverPort.unavailable()
                 : executionProfileResolver;
+        // Keep the orchestrator's resolver in sync — orchestrator owns this collaborator
+        // (no longer a bridge callback into the engine), but tests wire it after construction.
+        if (this.stageOrchestrator != null) {
+            this.stageOrchestrator.setExecutionProfileResolver(this.executionProfileResolver);
+        }
+    }
+
+    /**
+     * Wired by Spring after construction when {@link RequirementAgentStageOrchestrator} is a bean.
+     * The engine never reaches into orchestrator internals — it only delegates to its public API.
+     * Tests / non-Spring code paths keep working because the constructor already builds a default
+     * orchestrator; this setter only overrides when an explicit bean is present.
+     */
+    @Autowired(required = false)
+    void setStageOrchestrator(RequirementAgentStageOrchestrator stageOrchestrator) {
+        if (stageOrchestrator != null) {
+            this.stageOrchestrator = stageOrchestrator;
+        }
     }
 
     public RequirementDeliveryEngine(
@@ -590,6 +615,26 @@ public class RequirementDeliveryEngine {
         this.pullRequestPublisher = pullRequestPublisher == null
                 ? RequirementPullRequestPublisherPort.unavailable()
                 : pullRequestPublisher;
+        // Stage orchestrator is now self-contained: it owns its collaborators and the 240-line
+        // stage loop. The engine only holds an injection point and any explicitly-injected
+        // orchestrator will overwrite this default via {@link
+        // #setStageOrchestrator(RequirementAgentStageOrchestrator)} when Spring resolves the bean.
+        // Reuse the same RoleContextVersionManager instance so engine-side ensureLatestContexts
+        // and orchestrator-side ensureLatestContext stay consistent.
+        this.stageOrchestrator = new RequirementAgentStageOrchestrator(
+                stageRunStore,
+                artifactStore,
+                roleContextPackageStore,
+                this.roleContextVersionManager,
+                retrievalRecorder,
+                executionProfileResolver,
+                projectTokenBudgetService,
+                alertSink,
+                experienceStore,
+                taskRegistry,
+                executor,
+                this.idGenerator
+        );
     }
 
     /**
@@ -1306,7 +1351,16 @@ public class RequirementDeliveryEngine {
             RequirementPolicyDecision policyDecision,
             TaskRetryCheckpoint activeRetry
     ) {
-        return executeAgentStages(task, materials, context, plan, policyDecision, activeRetry, "", 0);
+        // 生产 D 路径：直接委托给 stageOrchestrator，保持字节级行为不变。
+        return stageOrchestrator.run(
+                AgentWorkflowPlan.production(),
+                task,
+                materials,
+                context,
+                plan,
+                policyDecision,
+                activeRetry
+        );
     }
 
     private RequirementExecutionResult executeAgentStages(
@@ -1319,337 +1373,10 @@ public class RequirementDeliveryEngine {
             String qaRemediationResultJson,
             int qaRemediationCount
     ) {
-        // 多角色执行链路（单任务内按固定顺序）：REQ_REVIEWER -> SOLUTION_ARCHITECT -> CODING_AGENT -> QA_AGENT。
-        // 阶段状态流转（可重入）：PENDING -> CONTEXT_READY -> DISPATCHING -> RUNNING -> RESULT_COLLECTING
-        // -> VERIFYING -> SUCCEEDED
-        // 每一阶段独立失败分支：
-        // RUNNING 中抛异常 -> FAILED_RETRYABLE
-        // 发现 PR URL 违规 -> FAILED_NEEDS_HUMAN
-        // 阶段失败/评审需人工 -> FAILED_NEEDS_HUMAN
-        // 已终态（SUCCEEDED/FAILED_NEEDS_HUMAN/SKIPPED/CANCELLED）直接拒绝继续编排。
-        List<String> stageResults = new ArrayList<>();
-        String pullRequestUrl = "";
-        String summary = "";
-        String deliveryResultJson = "{}";
-        List<TaskMaterial> recoveryEvidenceMaterials = recoveryEvidenceMaterials(activeRetry, task.taskId(), materials);
-        // 可优化为责任链模式
-        for (AgentRole role : AgentRole.requirementDeliveryOrder()) {
-            AgentStageRun stage = stageRun(task.taskId(), role);
-            // 已成功阶段：直接复用历史产物，不再触发重跑，保持幂等与可恢复性。
-            if (stage.status() == AgentStageStatus.SUCCEEDED) {
-                stageResults.add(reusedStageResultJson(stage));
-                continue;
-            }
-            // 阶段已进入终态但不成功时，当前提交链路直接失败（避免在异常阶段上继续向后推进）。
-            if (stage.status().isTerminal()) {
-                return RequirementExecutionResult.failure(
-                        task.taskId(),
-                        "agent stage is terminal before execution: " + role + " " + stage.status(),
-                        aggregateAgentResultsJson("FAILED", pullRequestUrl, stageResults)
-                );
-            }
-            // Persist complete role results for audit, but dispatch only a bounded handoff manifest.
-            // This keeps Docker metadata and raw model JSON out of downstream retrieval and prompts.
-            String upstreamResultJson = compactUpstreamHandoffJson(stageResults);
-            if (role == AgentRole.CODING_AGENT && !qaRemediationResultJson.isBlank()) {
-                upstreamResultJson = qaRemediationUpstreamJson(upstreamResultJson, qaRemediationResultJson);
-            }
-            RoleContextPackage roleContext;
-            if (retrievalRecorder == null) {
-                roleContext = latestRoleContext(task.taskId(), role);
-            } else {
-                List<TaskMaterial> retrievalMaterials = materialsWithReusableExperience(
-                        task, materials, System.currentTimeMillis()
-                );
-                RetrievalOutcome retrieval = retrievalRecorder.recordOnly(
-                        task, retrievalMaterials, RetrievalConsumerType.AGENT_ROLE, role,
-                        stage.stageRunId(), upstreamResultJson
-                );
-                if (!retrieval.succeeded()) {
-                    String reason = firstNonBlank(
-                            retrieval.stopReason(), "RAG retrieval did not satisfy " + role + " evidence gate"
-                    );
-                    AgentStageRun failedStage = stageRunStore.transition(
-                            stage.stageRunId(), AgentStageStatus.FAILED_NEEDS_HUMAN,
-                            "RAG_EVIDENCE_INSUFFICIENT", reason, System.currentTimeMillis()
-                    );
-                    publishStageAlert(
-                            failedStage, AgentWorkflowAlertType.STAGE_FAILED_NEEDS_HUMAN,
-                            reason
-                    );
-                    return RequirementExecutionResult.failure(
-                            task.taskId(), reason,
-                            aggregateAgentResultsJson("NEEDS_HUMAN", pullRequestUrl, stageResults)
-                    );
-                }
-                roleContext = roleContextVersionManager.ensureLatestContext(
-                        task, role, retrieval, System.currentTimeMillis()
-                );
-            }
-            stage = bindRoleContext(stage, roleContext);
-            // PENDING -> CONTEXT_READY：将该角色的上下文包绑定为本阶段执行上下文快照。
-            stage = transitionStage(stage, AgentStageStatus.CONTEXT_READY, "", "");
-            // CONTEXT_READY -> DISPATCHING：准备调度并构造角色提示词。
-            stage = transitionStage(stage, AgentStageStatus.DISPATCHING, "", "");
-            String rolePrompt = buildAgentPrompt(
-                    role,
-                    task,
-                    materials,
-                    context,
-                    plan,
-                    policyDecision,
-                    roleContext,
-                    upstreamResultJson,
-                    joinPromptSections(
-                            recoveryPromptSection(activeRetry, role, recoveryEvidenceMaterials),
-                            previousFailureFeedbackSection(task.taskId(), role, stage.attemptNo())
-                    )
-            );
-            // DISPATCHING -> RUNNING：记录 prompt 快照后进入正式执行。
-            stage = capturePromptArtifact(stage, rolePrompt);
-            RequirementExecutionProfileResolution executionProfileResolution;
-            try {
-                executionProfileResolution = executionProfileResolver.resolve(
-                        task,
-                        role,
-                        stage.stageRunId(),
-                        stage.attemptNo()
-                );
-            } catch (RuntimeException exception) {
-                boolean retryable = profileResolutionFailureIsRetryable(exception);
-                AgentStageStatus failureStatus = retryable
-                        ? AgentStageStatus.FAILED_RETRYABLE
-                        : AgentStageStatus.FAILED_NEEDS_HUMAN;
-                String category = profileResolutionFailureCategory(exception, retryable);
-                String reason = safe(exception.getMessage());
-                AgentStageRun failedStage = stageRunStore.transition(
-                        stage.stageRunId(),
-                        failureStatus,
-                        category,
-                        reason,
-                        System.currentTimeMillis()
-                );
-                publishStageAlert(
-                        failedStage,
-                        retryable
-                                ? AgentWorkflowAlertType.STAGE_FAILED_RETRYABLE
-                                : AgentWorkflowAlertType.STAGE_FAILED_NEEDS_HUMAN,
-                        reason.isBlank() ? category : reason
-                );
-                return RequirementExecutionResult.failure(
-                        task.taskId(),
-                        "agent execution profile resolution failed: " + role,
-                        aggregateAgentResultsJson(
-                                retryable ? "FAILED" : "NEEDS_HUMAN",
-                                pullRequestUrl,
-                                stageResults
-                        )
-                );
-            }
-            stage = transitionStage(stage, AgentStageStatus.RUNNING, "", "");
-            RequirementExecutionResult roleResult;
-            try {
-                roleResult = normalizeResult(
-                        task.taskId(),
-                        executor.execute(new RequirementExecutionRequest(
-                                task.taskId(),
-                                task,
-                                materials,
-                                rolePrompt,
-                                role,
-                                roleContextJson(roleContext),
-                                false,
-                                upstreamResultJson,
-                                stage.stageRunId(),
-                                executionProfileResolution.snapshotId()
-                        ))
-                );
-            } catch (RuntimeException exception) {
-                // RUNNING -> FAILED_RETRYABLE：执行器抛出异常，先记录可重试失败并返回全链路失败。
-                AgentStageRun failedStage = stageRunStore.transition(
-                        stage.stageRunId(),
-                        AgentStageStatus.FAILED_RETRYABLE,
-                        "AGENT_EXECUTOR_EXCEPTION",
-                        exception.getMessage(),
-                        System.currentTimeMillis()
-                );
-                publishStageAlert(
-                        failedStage,
-                        AgentWorkflowAlertType.STAGE_FAILED_RETRYABLE,
-                        "agent executor exception: " + safe(exception.getMessage())
-                );
-                return RequirementExecutionResult.failure(
-                        task.taskId(),
-                        "agent executor exception: " + role + " " + safe(exception.getMessage()),
-                        aggregateAgentResultsJson("FAILED", pullRequestUrl, stageResults)
-                );
-            }
-            // 结果产出：保存角色产物并补齐 provider 元数据，进入 RESULT_COLLECTING。
-            stage = captureResultArtifact(stage, roleResult);
-            stage = recordProviderMetadata(stage, roleResult);
-            stage = transitionStage(stage, AgentStageStatus.RESULT_COLLECTING, "", "");
-            if (!roleResult.pullRequestUrl().isBlank()) {
-                // 所有角色禁止在角色阶段直接返回 PR 地址：RESULT_COLLECTING -> FAILED_NEEDS_HUMAN（强制交由交付复核阶段）。
-                String reason = "agent stage returned pullRequestUrl before delivery review: " + role;
-                AgentStageRun failedStage = stageRunStore.transition(
-                        stage.stageRunId(),
-                        AgentStageStatus.FAILED_NEEDS_HUMAN,
-                        "AGENT_PR_POLICY_VIOLATION",
-                        reason,
-                        System.currentTimeMillis()
-                );
-                publishStageAlert(
-                        failedStage,
-                        AgentWorkflowAlertType.STAGE_FAILED_NEEDS_HUMAN,
-                        reason
-                );
-                stageResults.add(stageResultJson(role, roleResult));
-                return RequirementExecutionResult.failure(
-                        task.taskId(),
-                        reason,
-                        aggregateAgentResultsJson("NEEDS_HUMAN", pullRequestUrl, stageResults)
-                );
-            }
-            if (!roleResult.success()) {
-                // RESULT_COLLECTING -> FAILED_NEEDS_HUMAN：角色执行失败，带上错误原因，阻断后续角色。
-                String reason = roleResult.errorMessage().isBlank()
-                        ? "agent stage failed: " + role
-                        : roleResult.errorMessage();
-                AgentStageRun failedStage = stageRunStore.transition(
-                        stage.stageRunId(),
-                        AgentStageStatus.FAILED_NEEDS_HUMAN,
-                        "AGENT_RESULT_REJECTED",
-                        reason,
-                        System.currentTimeMillis()
-                );
-                publishStageAlert(
-                        failedStage,
-                        role == AgentRole.QA_AGENT
-                                ? AgentWorkflowAlertType.QA_FAILED
-                                : AgentWorkflowAlertType.STAGE_FAILED_NEEDS_HUMAN,
-                        reason
-                );
-                stageResults.add(stageResultJson(role, roleResult));
-                if (role == AgentRole.QA_AGENT
-                        && qaRemediationCount < 1
-                        && isCodingRemediationRequested(roleResult.resultJson())) {
-                    List<AgentStageRun> remediationStages = createQaRemediationAttempts(task.taskId());
-                    if (!remediationStages.isEmpty()) {
-                        publishQaRemediationStarted(failedStage, remediationStages, roleResult.resultJson());
-                        return executeAgentStages(
-                                task,
-                                materials,
-                                context,
-                                plan,
-                                policyDecision,
-                                activeRetry,
-                                roleResult.resultJson(),
-                                qaRemediationCount + 1
-                        );
-                    }
-                }
-                // 任意角色 FAILED_NEEDS_HUMAN 都必须聚合为 NEEDS_HUMAN，
-                // 否则上层会把任务误标成 REJECTED（CP-06）。
-                return RequirementExecutionResult.failure(
-                        task.taskId(),
-                        role + " failed: " + reason,
-                        aggregateAgentResultsJson("NEEDS_HUMAN", pullRequestUrl, stageResults)
-                );
-            }
-            if (role == AgentRole.REQUIREMENT_REVIEWER) {
-                // 需求评审角色完成后，补充一次业务门控：NEED/HUMAN 或异常状态 -> FAILED_NEEDS_HUMAN（不进入下一角色）。
-                RequirementReviewGateDecision reviewGateDecision = requirementReviewGateDecision(roleResult);
-                if (reviewGateDecision.needsHuman()) {
-                    AgentStageRun failedStage = stageRunStore.transition(
-                            stage.stageRunId(),
-                            AgentStageStatus.FAILED_NEEDS_HUMAN,
-                            "REQUIREMENT_REVIEW_NEEDS_HUMAN",
-                            reviewGateDecision.reason(),
-                            System.currentTimeMillis()
-                    );
-                    publishStageAlert(
-                            failedStage,
-                            AgentWorkflowAlertType.STAGE_FAILED_NEEDS_HUMAN,
-                            reviewGateDecision.reason()
-                    );
-                    stageResults.add(stageResultJson(role, roleResult));
-                    return RequirementExecutionResult.failure(
-                            task.taskId(),
-                            reviewGateDecision.reason(),
-                            aggregateAgentResultsJson("NEEDS_HUMAN", pullRequestUrl, stageResults)
-                    );
-                }
-                List<BudgetHistorySample> historicalSamples = historicalBudgetSamples(task);
-                TokenBudgetEstimate budgetEstimate = tokenBudgetEstimate(roleResult.resultJson(), historicalSamples.isEmpty());
-                if (!budgetEstimate.valid()) {
-                    String reason = "invalid requirement review budget estimate: " + budgetEstimate.reason();
-                    AgentStageRun failedStage = stageRunStore.transition(
-                            stage.stageRunId(),
-                            AgentStageStatus.FAILED_NEEDS_HUMAN,
-                            "REQUIREMENT_REVIEW_BUDGET_INVALID",
-                            reason,
-                            System.currentTimeMillis()
-                    );
-                    publishStageAlert(failedStage, AgentWorkflowAlertType.STAGE_FAILED_NEEDS_HUMAN, reason);
-                    stageResults.add(stageResultJson(role, roleResult));
-                    return RequirementExecutionResult.failure(
-                            task.taskId(),
-                            reason,
-                            aggregateAgentResultsJson("NEEDS_HUMAN", pullRequestUrl, stageResults)
-                    );
-                }
-                long effectiveTokenBudget = effectiveTokenBudget(task);
-                String budgetSnapshotJson = budgetSnapshotJson(
-                        roleResult.resultJson(),
-                        budgetEstimate,
-                        effectiveTokenBudget,
-                        historicalSamples
-                );
-                stage = stageRunStore.save(stage.withReviewResultJson(budgetSnapshotJson, System.currentTimeMillis()));
-                if (effectiveTokenBudget > 0L && budgetEstimate.estimatedTotalTokens() > effectiveTokenBudget) {
-                    stage = transitionStage(stage, AgentStageStatus.VERIFYING, "", "");
-                    stage = transitionStage(stage, AgentStageStatus.SUCCEEDED, "", "");
-                    stageResults.add(stageResultJson(role, roleResult));
-                    captureExperience(stage, roleResult, experienceType(role));
-                    RdRequirementTask waitingApproval = taskRegistry.markRequirementWaitingApproval(
-                            task.taskId(),
-                            budgetSnapshotJson
-                    );
-                    publishTaskLifecycleAlert(
-                            waitingApproval.taskId(),
-                            AgentWorkflowAlertType.TASK_BLOCKED,
-                            "预估 token 用量超过有效额度，等待人工预算审批",
-                            "确认预估、额度与超出量后提交审批说明"
-                    );
-                    return RequirementExecutionResult.success(
-                            task.taskId(),
-                            "token budget approval required",
-                            "",
-                            budgetSnapshotJson
-                    );
-                }
-            }
-            if (role == AgentRole.CODING_AGENT) {
-                // 代码交付阶段产出作为交付交付结果基底，供后续 PR 复核聚合。
-                deliveryResultJson = roleResult.resultJson();
-            }
-            if (!roleResult.summary().isBlank()) {
-                summary = roleResult.summary();
-            }
-            // RESULT_COLLECTING -> VERIFYING -> SUCCEEDED：单角色执行成功后，进入阶段验收并标记完成。
-            stage = transitionStage(stage, AgentStageStatus.VERIFYING, "", "");
-            stage = transitionStage(stage, AgentStageStatus.SUCCEEDED, "", "");
-            stageResults.add(stageResultJson(role, roleResult));
-            captureExperience(stage, roleResult, experienceType(role));
-        }
-        // 四个角色全部 SUCCEEDED：聚合为交付执行最终结果并返回，交付层将进入 PR 复核与发布。
-        RequirementExecutionResult finalResult = RequirementExecutionResult.success(
-                task.taskId(),
-                summary,
-                pullRequestUrl,
-                mergeDeliveryResultJson(deliveryResultJson, pullRequestUrl, stageResults)
-        );
-        return finalResult;
+        // QA 修复回路递归入口：因 spec §5.2 限制只能直跑 production（D）plan，这里也是。
+        // qaRemediationResultJson / qaRemediationCount 由 orchestrator 内部维护，本入口仅作
+        // 反向兼容（即不再使用，但保留编译期签名）。
+        return executeAgentStages(task, materials, context, plan, policyDecision, activeRetry);
     }
 
     private long effectiveTokenBudget(RdRequirementTask task) {
@@ -2955,6 +2682,9 @@ public class RequirementDeliveryEngine {
             case CODING_AGENT -> """
                     - 根据需求评审和方案执行代码修改。
                     - 上游环境备忘视为已验证事实直接沿用，不要重复探测；本轮新发现的环境事实（含可用的测试执行方式）追加写入 result.json 的 environmentNotes，供 QA 直接沿用。
+                    - 依赖树和 /work/cache 是当前任务与重试共享的状态：不得删除 node_modules、package-lock.json 或 /work/cache。先检查现有依赖；仅在依赖确实缺失时执行一次与 lockfile 匹配的安装。安装失败时保留诊断并停止重复清理、重复安装或绕过包管理器的手工下载。
+                    - Next.js 服务验收必须使用生产模式：执行 npm run build && npm run start；不得以 npm run dev 作为交付验证服务。
+                    - HTTP 请求必须设置不超过 30 秒的请求超时；启动服务和每个 bash 命令都必须有有限 deadline。超时后停止临时服务、保留日志，并提交 FAILED 结构化结果；不得无限等待。
                     - 该阶段只负责代码修改和交付候选证据，不创建 PR。
                     - 使用已安装的 role-handoff-document Skill，把变更、已执行测试、风险和 QA 注意事项写入 /work/output/handoff/next.md；预算见 context.json 的 roleHandoffMaxTokens。
                     - result.json 中的 next_prompt 只提供目标角色、短摘要和固定相对路径；不得透传完整日志、Docker 元数据或对象存储地址。

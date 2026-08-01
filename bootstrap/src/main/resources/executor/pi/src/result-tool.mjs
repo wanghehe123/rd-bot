@@ -26,6 +26,157 @@ const QA_DECISION_SOURCES = new Set([
   "TASK_OVERRIDE", "PROJECT_PROFILE", "REPOSITORY_CONFIG", "AUTO_DETECTION", "NOT_APPLICABLE",
 ]);
 
+export const CONTEXT_PROTOCOL_VERSION = {
+  LEGACY_ENVIRONMENT_NOTES: "LEGACY_ENVIRONMENT_NOTES",
+  FACTS_V1: "FACTS_V1",
+};
+
+const FACT_KINDS = new Set(["DECLARED", "OBSERVED", "INFERRED", "HISTORICAL"]);
+const FRESHNESS_POLICIES = new Set(["SAME_REVISION", "SAME_WORKSPACE", "TTL", "ALWAYS_RECHECK"]);
+const MAX_FACT_STATEMENT_LENGTH = 512;
+const DEFAULT_MAX_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Derives legacy environmentNotes from fresh OBSERVED facts (sorted by factId).
+ */
+export function deriveEnvironmentNotesFromFacts(facts, freshnessContext = {}) {
+  if (!Array.isArray(facts)) {
+    return [];
+  }
+  return [...facts]
+      .filter((fact) => isPromptEligibleFact(fact, freshnessContext))
+      .sort((left, right) => String(left.factId).localeCompare(String(right.factId)))
+      .map((fact) => redactStatement(String(fact.statement ?? "").trim()))
+      .filter((statement) => statement.length > 0);
+}
+
+/**
+ * Validates facts[] under the frozen context protocol. Mirrors host RoleExecutionFactsValidator.
+ */
+export function validateFacts(result, protocolVersion, freshnessContext = {}) {
+  if (protocolVersion !== CONTEXT_PROTOCOL_VERSION.FACTS_V1) {
+    return [];
+  }
+  const errors = [];
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    return ["result must be a JSON object"];
+  }
+  if (!Object.hasOwn(result, "facts")) {
+    errors.push("facts must be present when contextProtocolVersion is FACTS_V1");
+    return errors;
+  }
+  if (!Array.isArray(result.facts)) {
+    errors.push("facts must be an array");
+    return errors;
+  }
+  result.facts.forEach((fact, index) => {
+    errors.push(...validateFactNode(fact, `facts[${index}]`));
+  });
+  if (Object.hasOwn(result, "environmentNotes")) {
+    errors.push(...validateEnvironmentNotesConsistency(
+        result.environmentNotes,
+        result.facts,
+        freshnessContext,
+    ));
+  }
+  return errors;
+}
+
+function validateFactNode(fact, prefix) {
+  const errors = [];
+  if (!fact || typeof fact !== "object" || Array.isArray(fact)) {
+    errors.push(`${prefix} must be an object`);
+    return errors;
+  }
+  checkNonBlankString(fact, "factId", `${prefix}.factId`, errors);
+  checkEnum(fact, "kind", FACT_KINDS, errors, `${prefix}.kind`);
+  const statement = String(fact.statement ?? "").trim();
+  if (!statement) {
+    errors.push(`${prefix}.statement must not be blank`);
+  } else if (statement.length > MAX_FACT_STATEMENT_LENGTH) {
+    errors.push(`${prefix}.statement exceeds max length ${MAX_FACT_STATEMENT_LENGTH}`);
+  }
+  checkEnum(fact, "freshnessPolicy", FRESHNESS_POLICIES, errors, `${prefix}.freshnessPolicy`);
+  if (fact.kind === "OBSERVED") {
+    checkNonBlankString(fact, "sourceArtifactId", `${prefix}.sourceArtifactId`, errors);
+    checkNonBlankString(fact, "sourceStageRunId", `${prefix}.sourceStageRunId`, errors);
+    checkNonBlankString(fact, "observedAt", `${prefix}.observedAt`, errors);
+  }
+  if (fact.freshnessPolicy === "SAME_REVISION") {
+    checkNonBlankString(fact, "repoRevision", `${prefix}.repoRevision`, errors);
+  }
+  if (fact.freshnessPolicy === "SAME_WORKSPACE") {
+    checkNonBlankString(fact, "workspaceFingerprint", `${prefix}.workspaceFingerprint`, errors);
+  }
+  if (fact.freshnessPolicy === "TTL") {
+    checkNonBlankString(fact, "expiresAt", `${prefix}.expiresAt`, errors);
+  }
+  if ((fact.kind === "INFERRED" || fact.kind === "HISTORICAL") && fact.confidence != null) {
+    const confidence = Number(fact.confidence);
+    if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
+      errors.push(`${prefix}.confidence must be between 0 and 1`);
+    }
+  }
+  return errors;
+}
+
+function validateEnvironmentNotesConsistency(environmentNotes, facts, freshnessContext) {
+  if (!Array.isArray(environmentNotes)) {
+    return ["environmentNotes must be an array"];
+  }
+  for (const note of environmentNotes) {
+    if (typeof note !== "string" || note.trim() === "") {
+      return ["environmentNotes entries must be non-blank strings"];
+    }
+  }
+  const submitted = environmentNotes.map((note) => note.trim());
+  const derived = deriveEnvironmentNotesFromFacts(facts, freshnessContext);
+  if (submitted.length !== derived.length || submitted.some((note, index) => note !== derived[index])) {
+    return ["environmentNotes must match fresh OBSERVED facts derivation"];
+  }
+  return [];
+}
+
+function isPromptEligibleFact(fact, freshnessContext) {
+  return fact?.kind === "OBSERVED" && evaluateFreshness(fact, freshnessContext) === "FRESH";
+}
+
+function evaluateFreshness(fact, freshnessContext) {
+  const now = freshnessContext.harnessNow ? Date.parse(freshnessContext.harnessNow) : Date.now();
+  const maxTtlMs = freshnessContext.maxTtlMs ?? DEFAULT_MAX_TTL_MS;
+  switch (fact.freshnessPolicy) {
+    case "SAME_REVISION":
+      return fact.repoRevision && freshnessContext.currentRevision
+          && fact.repoRevision === freshnessContext.currentRevision
+        ? "FRESH"
+        : "STALE";
+    case "SAME_WORKSPACE":
+      return fact.workspaceFingerprint && freshnessContext.currentWorkspaceFingerprint
+          && fact.workspaceFingerprint === freshnessContext.currentWorkspaceFingerprint
+        ? "FRESH"
+        : "STALE";
+    case "TTL": {
+      const expiresAt = Date.parse(String(fact.expiresAt ?? ""));
+      if (!Number.isFinite(expiresAt) || expiresAt <= now) {
+        return "STALE";
+      }
+      const observedAt = Date.parse(String(fact.observedAt ?? ""));
+      const observedMs = Number.isFinite(observedAt) ? observedAt : now;
+      return expiresAt - observedMs <= maxTtlMs ? "FRESH" : "STALE";
+    }
+    case "ALWAYS_RECHECK":
+    default:
+      return "STALE";
+  }
+}
+
+function redactStatement(statement) {
+  return statement.replace(
+      /(api[_-]?key|token|password|secret|authorization)\s*[:=]\s*\S+/gi,
+      "$1=[REDACTED]",
+  );
+}
+
 export function validateResult(result) {
   if (!result || typeof result !== "object" || Array.isArray(result)) {
     throw new Error("result must be a JSON object");
@@ -44,22 +195,26 @@ export function validateResult(result) {
  * time. Returns the full error list so the agent can repair every violation
  * with a single follow-up rd_submit_result call.
  */
-export function validateRoleResult(role, result) {
+export function validateRoleResult(role, result, protocolVersion = CONTEXT_PROTOCOL_VERSION.LEGACY_ENVIRONMENT_NOTES, freshnessContext = {}) {
   if (!result || typeof result !== "object" || Array.isArray(result)) {
     return ["result must be a JSON object"];
   }
-  switch (role) {
-    case "REQUIREMENT_REVIEWER":
-      return validateRequirementReview(result);
-    case "SOLUTION_ARCHITECT":
-      return validateSolutionPlan(result);
-    case "CODING_AGENT":
-      return validateCodingResult(result);
-    case "QA_AGENT":
-      return validateQaReport(result);
-    default:
-      return [];
-  }
+  const errors = (() => {
+    switch (role) {
+      case "REQUIREMENT_REVIEWER":
+        return validateRequirementReview(result);
+      case "SOLUTION_ARCHITECT":
+        return validateSolutionPlan(result);
+      case "CODING_AGENT":
+        return validateCodingResult(result);
+      case "QA_AGENT":
+        return validateQaReport(result);
+      default:
+        return [];
+    }
+  })();
+  errors.push(...validateFacts(result, protocolVersion, freshnessContext));
+  return errors;
 }
 
 function validateRequirementReview(result) {

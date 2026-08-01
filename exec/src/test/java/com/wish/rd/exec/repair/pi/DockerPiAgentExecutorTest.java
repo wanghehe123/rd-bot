@@ -2,6 +2,7 @@ package com.wish.rd.exec.repair.pi;
 
 import com.wish.rd.exec.repair.pi.impl.DockerPiAgentExecutor;
 import com.wish.rd.exec.repair.runtime.model.AgentRuntimeExecutionRequest;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wish.rd.exec.repair.docker.ContainerOutputListener;
 import com.wish.rd.exec.repair.docker.RepairWorkspaceFactory;
@@ -78,8 +79,67 @@ class DockerPiAgentExecutorTest {
         assertEquals("/work/cache/pip", runner.request.env().get("PIP_CACHE_DIR"));
         assertEquals("/work/cache/yarn", runner.request.env().get("YARN_CACHE_FOLDER"));
         assertEquals("16777216", runner.request.env().get("RD_PI_MAX_RAW_EVENT_BYTES"));
+        assertEquals("900000", runner.request.env().get("RD_PI_BASH_COMMAND_TIMEOUT_MILLIS"));
         assertFalse(result.dockerMetadataJson().containsValue("test-provider-secret"));
         assertEquals("snapshot-1", result.dockerMetadataJson().get("executionProfileSnapshotId"));
+    }
+
+    @Test
+    void shouldPersistProviderAttemptsWithMeasuredPiTokenUsage() throws Exception {
+        CapturingRunner runner = new CapturingRunner() {
+            @Override
+            public ContainerRunResult run(ContainerRunRequest request, ContainerOutputListener listener) throws IOException {
+                Files.createDirectories(request.outputDirectory());
+                Files.writeString(request.outputDirectory().resolve("result.json"), """
+                        {
+                          "status": "SUCCESS",
+                          "summary": "Pi produced a valid patch",
+                          "prBody": "Implementation details",
+                          "changedFiles": ["src/App.java"],
+                          "testCommands": ["./mvnw test"],
+                          "testStatus": "PASSED",
+                          "riskLevel": "LOW",
+                          "needHumanAction": false
+                        }
+                        """, StandardCharsets.UTF_8);
+                Files.writeString(request.outputDirectory().resolve("patch.diff"), "diff\n");
+                Files.writeString(request.outputDirectory().resolve("test.log"), "ok\n");
+                String events = """
+                        {"protocol":"rd-agent-event/v1","eventType":"ASSISTANT_TEXT_COMPLETED","sourceSequence":1,"stageRunId":"stage-1","taskId":"task-1","role":"CODING_AGENT","payload":{"usage":{"input":10,"output":11,"cacheRead":12,"cacheWrite":13}}}
+                        {"protocol":"rd-agent-event/v1","eventType":"AGENT_SETTLED","sourceSequence":2,"stageRunId":"stage-1","taskId":"task-1","role":"CODING_AGENT"}
+                        """;
+                Files.writeString(request.outputDirectory().resolve("agent-events.jsonl"), events, StandardCharsets.UTF_8);
+                Files.writeString(request.outputDirectory().resolve("runtime-context-manifest.json"), """
+                        {"schemaVersion":1,"mode":"LEGACY_OBSERVE_ONLY","observedFiles":[]}
+                        """, StandardCharsets.UTF_8);
+                listener.onStdout(events);
+                return new ContainerRunResult(
+                        0,
+                        12L,
+                        "",
+                        "",
+                        request.outputDirectory().resolve("result.json"),
+                        request.outputDirectory().resolve("patch.diff"),
+                        request.outputDirectory().resolve("test.log"),
+                        null,
+                        null,
+                        Map.of("containerName", request.containerName())
+                );
+            }
+        };
+        DockerPiAgentExecutor executor = executor(runner, AgentExecutionEventSink.noop(), ignored -> "secret");
+
+        RepairExecutionResult result = executor.execute(new AgentRuntimeExecutionRequest(
+                snapshot("snapshot-usage", "stage-1", "task-1", AgentRuntimeType.PI, ""),
+                command("task-1", "CODING_AGENT")
+        ));
+
+        JsonNode attempts = OBJECT_MAPPER.readTree(result.dockerMetadataJson().get("providerAttemptsJson"));
+        assertEquals(1, attempts.size());
+        assertTrue(attempts.get(0).path("tokenUsageAvailable").asBoolean());
+        assertEquals(46L, attempts.get(0).path("totalTokens").asLong());
+        assertTrue(result.artifacts().stream()
+                .anyMatch(artifact -> "runtime-context-manifest.json".equals(artifact.name())));
     }
 
     @Test

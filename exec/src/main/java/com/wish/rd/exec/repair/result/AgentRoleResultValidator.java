@@ -10,6 +10,9 @@ import java.util.Locale;
 import java.util.Set;
 import com.wish.rd.exec.repair.result.model.AgentRoleResultValidation;
 import com.wish.rd.exec.repair.result.model.StructuredResultValidation;
+import com.wish.rd.rag.project.agent.model.ContextProtocolVersion;
+import com.wish.rd.rag.project.agent.model.FactFreshnessEvaluator;
+import com.wish.rd.rag.project.agent.model.RoleExecutionFactsValidator;
 
 /**
  * 多角色 Agent 产物协议校验器。
@@ -77,22 +80,43 @@ public final class AgentRoleResultValidator {
      * @return 校验结果
      */
     public AgentRoleResultValidation validate(String role, String json) {
+        return validate(role, json, ContextProtocolVersion.LEGACY_ENVIRONMENT_NOTES.name(), null);
+    }
+
+    /**
+     * 校验指定角色的 JSON 产物，并按冻结 context protocol 校验 facts。
+     */
+    public AgentRoleResultValidation validate(
+            String role,
+            String json,
+            String contextProtocolVersion,
+            FactFreshnessEvaluator.FreshnessContext freshnessContext
+    ) {
         String normalizedRole = normalizeRole(role);
         if ("CODING_AGENT".equals(normalizedRole)) {
-            StructuredResultValidation validation = structuredResultValidator.validate(json);
+            StructuredResultValidation validation = structuredResultValidator.validate(
+                    json,
+                    contextProtocolVersion,
+                    freshnessContext
+            );
             return new AgentRoleResultValidation(validation.valid(), validation.errors());
         }
         JsonNode root = parseObject(json);
         if (root == null) {
             return new AgentRoleResultValidation(false, List.of("result json root must be an object"));
         }
-        List<String> errors = switch (normalizedRole) {
+        List<String> errors = new ArrayList<>(switch (normalizedRole) {
             case "REQUIREMENT_REVIEWER" -> validateRequirementReview(root);
             case "SOLUTION_ARCHITECT" -> validateSolutionPlan(root);
             case "QA_AGENT" -> validateQaReport(root);
             default -> List.of("unsupported agent role: " + normalizedRole);
-        };
-        return new AgentRoleResultValidation(errors.isEmpty(), errors);
+        });
+        errors.addAll(RoleExecutionFactsValidator.validateFactsProtocol(
+                root,
+                ContextProtocolVersion.parse(contextProtocolVersion),
+                freshnessContext
+        ));
+        return new AgentRoleResultValidation(errors.isEmpty(), List.copyOf(errors));
     }
 
     private JsonNode parseObject(String json) {

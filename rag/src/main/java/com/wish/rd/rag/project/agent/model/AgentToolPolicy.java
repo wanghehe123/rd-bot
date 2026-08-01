@@ -36,8 +36,26 @@ public record AgentToolPolicy(
         return new AgentToolPolicy(
                 "legacy-host-bound",
                 1L,
-                Set.of("read", "bash", "edit", "write", "rd_submit_result"),
-                Set.of("read", "bash", "edit", "write", "rd_submit_result"),
+                Set.of(
+                        "read",
+                        "bash",
+                        "edit",
+                        "write",
+                        "rd_submit_result",
+                        "rd_todo_rewrite",
+                        "rd_todo_update_status",
+                        "rd_record_fact"
+                ),
+                Set.of(
+                        "read",
+                        "bash",
+                        "edit",
+                        "write",
+                        "rd_submit_result",
+                        "rd_todo_rewrite",
+                        "rd_todo_update_status",
+                        "rd_record_fact"
+                ),
                 Set.of(),
                 true
         );

@@ -27,6 +27,8 @@ export const EVENT_TYPES = Object.freeze([
   "RESULT_SUBMITTED",
   "RESULT_REJECTED",
   "ARTIFACT_WRITTEN",
+  "STATE_ACTION_RECORDED",
+  "TOOL_FINGERPRINT_RECORDED",
   "PROTOCOL_ERROR",
 ]);
 
@@ -79,6 +81,22 @@ export function validateRequest(request) {
   if (request.applyCandidatePatch !== undefined && typeof request.applyCandidatePatch !== "boolean") {
     throw new Error("applyCandidatePatch must be a boolean");
   }
+  if (request.patchArtifactPath !== undefined) {
+    requireString(request.patchArtifactPath, "patchArtifactPath");
+    if (!request.patchArtifactPath.startsWith("/work/output/")) {
+      throw new Error("patchArtifactPath must stay under /work/output/");
+    }
+  }
+  if (request.maxAgentTurns !== undefined) {
+    if (!Number.isInteger(request.maxAgentTurns) || request.maxAgentTurns < 1) {
+      throw new Error("maxAgentTurns must be a positive integer");
+    }
+  }
+  if (request.maxTotalTokens !== undefined) {
+    if (!Number.isInteger(request.maxTotalTokens) || request.maxTotalTokens < 1) {
+      throw new Error("maxTotalTokens must be a positive integer");
+    }
+  }
   if (request.baseUrl !== undefined) {
     requireString(request.baseUrl, "baseUrl");
     let url;
@@ -96,6 +114,19 @@ export function validateRequest(request) {
   }
   if (!isObject(request.toolPolicy)) {
     throw new Error("toolPolicy must be an object");
+  }
+  if (request.dynamicStateEnabled !== undefined && typeof request.dynamicStateEnabled !== "boolean") {
+    throw new Error("dynamicStateEnabled must be a boolean");
+  }
+  if (request.maxInjectedStateBytes !== undefined) {
+    if (!Number.isInteger(request.maxInjectedStateBytes) || request.maxInjectedStateBytes < 1) {
+      throw new Error("maxInjectedStateBytes must be a positive integer");
+    }
+  }
+  if (request.attemptNo !== undefined) {
+    if (!Number.isInteger(request.attemptNo) || request.attemptNo < 1) {
+      throw new Error("attemptNo must be a positive integer");
+    }
   }
   return request;
 }

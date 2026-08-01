@@ -27,14 +27,19 @@ import com.wish.rd.exec.repair.result.model.StructuredRepairResult;
 import com.wish.rd.exec.repair.result.model.StructuredResultValidation;
 import com.wish.rd.exec.repair.runtime.AgentEventLineDecoder;
 import com.wish.rd.exec.repair.runtime.AgentExecutionEventSink;
-import com.wish.rd.exec.repair.runtime.model.AgentRuntimeExecutionRequest;
 import com.wish.rd.exec.repair.runtime.AgentRuntimeExecutorPort;
+import com.wish.rd.exec.repair.runtime.model.AgentRuntimeExecutionRequest;
+import com.wish.rd.exec.repair.runtime.usage.AgentEventTokenUsageParser;
+import com.wish.rd.exec.repair.runtime.usage.model.AgentEventTokenUsageSnapshot;
 import com.wish.rd.exec.repair.security.SecretRedactor;
 import com.wish.rd.exec.repair.security.model.ExecutionAllowlistPolicy;
 import com.wish.rd.rag.project.agent.model.AgentExecutionProfileSnapshot;
 import com.wish.rd.rag.project.agent.model.AgentRuntimeType;
+import com.wish.rd.rag.project.agent.model.ContextProtocolVersion;
+import com.wish.rd.rag.project.agent.model.FactFreshnessEvaluator;
 import com.wish.rd.rag.project.agent.model.ModelProviderProtocol;
 
+import java.math.BigDecimal;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.channels.FileChannel;
@@ -46,6 +51,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Instant;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -70,6 +76,8 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
     private static final String CONTAINER_OUTPUT = "/work/output";
     private static final String CONTAINER_CACHE = "/work/cache";
     private static final String RESULT_TOOL = "rd_submit_result";
+    private static final long DEFAULT_EXECUTION_TIMEOUT_MILLIS = 60L * 60L * 1000L;
+    private static final long DEFAULT_BASH_COMMAND_TIMEOUT_MILLIS = 15L * 60L * 1000L;
     private static final String AGENT_RESULT_JSON = "__agentResultJson";
     private static final int SAFE_EVENT_PREVIEW_CHARS = 64 * 1024;
     private static final Set<String> SUPPORTED_ROLES = Set.of(
@@ -489,6 +497,12 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         request.put("applyCandidatePatch", Boolean.parseBoolean(
                 command.policyJson().getOrDefault("applyCandidatePatch", "false")
         ));
+        request.put("dynamicStateEnabled", snapshotJson.path("dynamicStateEnabled").asBoolean(false));
+        request.put("maxInjectedStateBytes", positiveInt(snapshotJson.path("maxInjectedStateBytes"), 8192));
+        request.put("contextProtocolVersion", text(snapshotJson.path("contextProtocolVersion")));
+        request.put("agentStateSchemaVersion", text(snapshotJson.path("agentStateSchemaVersion")));
+        request.put("toolRetryPolicyVersion", text(snapshotJson.path("toolRetryPolicyVersion")));
+        request.put("attemptNo", snapshot.attemptNo());
         request.put("resourceManifestPath", "/work/input/resource-manifest.json");
         request.put("toolPolicy", Map.of(
                 "hostAllow", toolPolicy.hostAllow(),
@@ -584,6 +598,8 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         environment.put("PIP_CACHE_DIR", CONTAINER_CACHE + "/pip");
         environment.put("YARN_CACHE_FOLDER", CONTAINER_CACHE + "/yarn");
         environment.put("RD_PI_MAX_RAW_EVENT_BYTES", String.valueOf(configuration.rawEventMaxBytes()));
+        environment.put("RD_PI_BASH_COMMAND_TIMEOUT_MILLIS",
+                String.valueOf(configuration.bashCommandTimeoutMillis()));
         QaExecutionProfile qaProfile = qaProvision == null ? null : qaProvision.profile();
         if (qaProfile != null) {
             environment.put("RD_QA_PROFILE_FILE", "/work/input/qa-profile.json");
@@ -686,12 +702,24 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         }
         String rawJson = Files.readString(resultPath, StandardCharsets.UTF_8);
         String role = snapshot.role();
+        JsonNode snapshotJson = parseSnapshot(snapshot);
+        String contextProtocolVersion = frozenContextProtocolVersion(snapshotJson);
+        FactFreshnessEvaluator.FreshnessContext freshnessContext = freshnessContext(command, snapshotJson);
         // Non-coding roles submit a role protocol JSON, not the coding structured result;
         // validate it with the role-specific validator and skip the coding contract.
         if (usesAgentRoleProtocol(role)) {
-            return validateRoleProtocolResult(role, rawJson, artifacts, dockerMetadata);
+            return validateRoleProtocolResult(
+                    role,
+                    rawJson,
+                    artifacts,
+                    dockerMetadata,
+                    contextProtocolVersion,
+                    freshnessContext
+            );
         }
-        StructuredResultValidation validation = resultValidator.validate(rawJson);
+        StructuredResultValidation validation = ContextProtocolVersion.FACTS_V1.name().equals(contextProtocolVersion)
+                ? resultValidator.validate(rawJson, contextProtocolVersion, freshnessContext)
+                : resultValidator.validate(rawJson);
         if (!validation.valid()) {
             return failed(
                     RepairExecutionStatus.FAILED_VALIDATION,
@@ -739,9 +767,13 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
             String role,
             String rawJson,
             List<RepairArtifact> artifacts,
-            Map<String, String> dockerMetadata
+            Map<String, String> dockerMetadata,
+            String contextProtocolVersion,
+            FactFreshnessEvaluator.FreshnessContext freshnessContext
     ) {
-        AgentRoleResultValidation roleValidation = ROLE_RESULT_VALIDATOR.validate(role, rawJson);
+        AgentRoleResultValidation roleValidation = ContextProtocolVersion.FACTS_V1.name().equals(contextProtocolVersion)
+                ? ROLE_RESULT_VALIDATOR.validate(role, rawJson, contextProtocolVersion, freshnessContext)
+                : ROLE_RESULT_VALIDATOR.validate(role, rawJson);
         if (!roleValidation.valid()) {
             return failed(
                     RepairExecutionStatus.FAILED_VALIDATION,
@@ -942,6 +974,9 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
             case "patch.diff" -> RepairArtifactType.PATCH_DIFF;
             case "test.log" -> RepairArtifactType.TEST_LOG;
             case "agent-events.jsonl" -> RepairArtifactType.AGENT_EVENTS;
+            case "agent-state-events.jsonl" -> RepairArtifactType.AGENT_STATE_EVENTS;
+            case "agent-state-latest.json" -> RepairArtifactType.AGENT_STATE_SNAPSHOT;
+            case "runtime-context-manifest.json" -> RepairArtifactType.RUNTIME_CONTEXT_MANIFEST;
             case "runtime-meta.json" -> RepairArtifactType.AGENT_RUNTIME_META;
             case "docker-meta.json" -> RepairArtifactType.DOCKER_METADATA;
             case "handoff/next.md" -> RepairArtifactType.HANDOFF_MARKDOWN;
@@ -1102,8 +1137,80 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                 .map(RepairArtifact::uri)
                 .reduce((a, b) -> a + "," + b)
                 .orElse(""));
+        metadata.put("providerAttemptsJson", providerAttemptsJson(
+                provider,
+                result,
+                artifacts,
+                events
+        ));
         result.metadata().forEach((key, value) -> metadata.put("runner." + key, SecretRedactor.redactValue(key, value)));
         return Map.copyOf(metadata);
+    }
+
+    private static String providerAttemptsJson(
+            ProviderSpec provider,
+            ContainerRunResult result,
+            List<RepairArtifact> artifacts,
+            EventCapture events
+    ) {
+        AgentEventTokenUsageSnapshot usage = tokenUsageFromArtifacts(artifacts);
+        Map<String, Object> attempt = new LinkedHashMap<>();
+        attempt.put("provider", provider == null ? "" : provider.providerId());
+        attempt.put("attempt", 1);
+        attempt.put("status", result == null || result.exitCode() != 0 ? "FAILED" : "SUCCESS");
+        attempt.put("tokenUsageAvailable", usage.available());
+        attempt.put("tokenUsageFinalized", usage.finalized());
+        if (usage.available()) {
+            attempt.put("inputTokens", usage.inputTokens());
+            attempt.put("outputTokens", usage.outputTokens());
+            attempt.put("cacheReadInputTokens", usage.cacheReadTokens());
+            attempt.put("cacheCreationInputTokens", usage.cacheWriteTokens());
+            attempt.put("totalTokens", usage.totalTokens());
+            if (usage.estimatedCostUsd().signum() > 0) {
+                attempt.put("estimatedCostUsd", usage.estimatedCostUsd().toPlainString());
+            }
+            attempt.put("usageEventCount", usage.usageEventCount());
+        }
+        if (events != null) {
+            attempt.put("agentSettled", events.agentSettled);
+            attempt.put("resultSubmitted", events.resultSubmitted);
+        }
+        try {
+            return OBJECT_MAPPER.writeValueAsString(List.of(attempt));
+        } catch (JsonProcessingException exception) {
+            return "[]";
+        }
+    }
+
+    private static AgentEventTokenUsageSnapshot tokenUsageFromArtifacts(List<RepairArtifact> artifacts) {
+        if (artifacts == null || artifacts.isEmpty()) {
+            return new AgentEventTokenUsageSnapshot(
+                    0L, 0L, 0L, 0L, 0L, BigDecimal.ZERO, 0, false, false
+            );
+        }
+        AgentEventTokenUsageParser parser = new AgentEventTokenUsageParser();
+        for (RepairArtifact artifact : artifacts) {
+            if (artifact.type() != RepairArtifactType.AGENT_EVENTS) {
+                continue;
+            }
+            String uri = artifact.uri();
+            if (uri == null || uri.isBlank()) {
+                continue;
+            }
+            try {
+                if (uri.startsWith("file:")) {
+                    AgentEventTokenUsageSnapshot parsed = parser.parse(Path.of(java.net.URI.create(uri)));
+                    if (parsed.available()) {
+                        return parsed;
+                    }
+                }
+            } catch (RuntimeException ignored) {
+                // Fall through to the next artifact candidate.
+            }
+        }
+        return new AgentEventTokenUsageSnapshot(
+                0L, 0L, 0L, 0L, 0L, BigDecimal.ZERO, 0, false, false
+        );
     }
 
     private static Map<String, String> baseMetadata(
@@ -1206,6 +1313,43 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
 
     private static String text(JsonNode node) {
         return node == null || node.isMissingNode() || node.isNull() ? "" : node.asText("").strip();
+    }
+
+    private static String frozenContextProtocolVersion(JsonNode snapshotJson) {
+        String version = text(snapshotJson.path("contextProtocolVersion"));
+        return version.isBlank() ? ContextProtocolVersion.LEGACY_ENVIRONMENT_NOTES.name() : version;
+    }
+
+    private static FactFreshnessEvaluator.FreshnessContext freshnessContext(
+            RepairJobCommand command,
+            JsonNode snapshotJson
+    ) {
+        String revision = firstNonBlank(
+                text(snapshotJson.path("repoRevision")),
+                command == null ? "" : command.baseBranch()
+        );
+        String workspaceFingerprint = firstNonBlank(
+                text(snapshotJson.path("workspaceFingerprint")),
+                command == null ? "" : command.taskId()
+        );
+        return new FactFreshnessEvaluator.FreshnessContext(
+                revision,
+                workspaceFingerprint,
+                Instant.now(),
+                FactFreshnessEvaluator.DEFAULT_MAX_TTL
+        );
+    }
+
+    private static int positiveInt(JsonNode node, int defaultValue) {
+        if (node == null || node.isMissingNode() || node.isNull() || !node.canConvertToInt()) {
+            return defaultValue;
+        }
+        int value = node.asInt(defaultValue);
+        return value > 0 ? value : defaultValue;
+    }
+
+    private static String firstNonBlank(String first, String second) {
+        return !first.isBlank() ? first : second;
     }
 
     private static String text(String value) {
@@ -1412,6 +1556,7 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
             boolean removeAfterExit,
             boolean allowPrivileged,
             long executionTimeoutMillis,
+            long bashCommandTimeoutMillis,
             long rawEventMaxBytes
     ) {
 
@@ -1420,7 +1565,10 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
             qaImage = imageText(qaImage);
             command = requireCommand(command);
             networkMode = imageText(networkMode);
-            executionTimeoutMillis = Math.max(0L, executionTimeoutMillis);
+            executionTimeoutMillis = positiveTimeout(
+                    executionTimeoutMillis, DEFAULT_EXECUTION_TIMEOUT_MILLIS);
+            bashCommandTimeoutMillis = positiveTimeout(
+                    bashCommandTimeoutMillis, DEFAULT_BASH_COMMAND_TIMEOUT_MILLIS);
             rawEventMaxBytes = Math.max(1L, rawEventMaxBytes);
             if (allowPrivileged) {
                 throw new IllegalArgumentException("Pi executor never permits privileged containers");
@@ -1436,7 +1584,7 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                 long executionTimeoutMillis
         ) {
             this(image, "", command, networkMode, removeAfterExit, allowPrivileged, executionTimeoutMillis,
-                    16L * 1024L * 1024L);
+                    DEFAULT_BASH_COMMAND_TIMEOUT_MILLIS, 16L * 1024L * 1024L);
         }
 
         public Configuration(
@@ -1449,7 +1597,7 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                 long executionTimeoutMillis
         ) {
             this(image, qaImage, command, networkMode, removeAfterExit, allowPrivileged, executionTimeoutMillis,
-                    16L * 1024L * 1024L);
+                    DEFAULT_BASH_COMMAND_TIMEOUT_MILLIS, 16L * 1024L * 1024L);
         }
 
         public static Configuration defaultConfiguration() {
@@ -1460,9 +1608,14 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                     "bridge",
                     true,
                     false,
-                    0L,
+                    DEFAULT_EXECUTION_TIMEOUT_MILLIS,
+                    DEFAULT_BASH_COMMAND_TIMEOUT_MILLIS,
                     16L * 1024L * 1024L
             );
+        }
+
+        private static long positiveTimeout(long value, long fallback) {
+            return value > 0L ? value : fallback;
         }
 
         private static String requireText(String value, String field) {
