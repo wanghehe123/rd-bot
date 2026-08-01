@@ -1,8 +1,10 @@
 package com.wish.rd.engine.retry;
 
-import com.wish.rd.engine.agent.AgentStageRunStore;
 import com.wish.rd.engine.agent.AgentStageArtifactStore;
+import com.wish.rd.engine.agent.AgentStageRunStore;
 import com.wish.rd.engine.agent.AgentStageTransitions;
+import com.wish.rd.engine.agent.recovery.InterruptedStageRecoveryService;
+import com.wish.rd.engine.agent.recovery.InterruptedStageWorkspaceRecoveryPort;
 import com.wish.rd.engine.agent.model.AgentRole;
 import com.wish.rd.engine.agent.model.AgentStageRun;
 import com.wish.rd.engine.agent.model.AgentStageStatus;
@@ -47,6 +49,10 @@ public final class TaskRetryEngine {
     private final TaskRetryCheckpointStore checkpointStore;
     private final TaskMaterialStore materialStore;
     private final TaskFailureRecoveryService failureRecoveryService;
+    private InterruptedStageRecoveryService interruptedStageRecoveryService;
+    private InterruptedStageWorkspaceRecoveryPort workspaceRecoveryPort =
+            InterruptedStageWorkspaceRecoveryPort.unavailable();
+    private AgentStageArtifactStore artifactStore = AgentStageArtifactStore.noop();
     private final TaskRetryPointResolver resolver;
     private final TaskRetryDispatcherPort dispatcher;
     private final Supplier<String> idSupplier;
@@ -163,10 +169,41 @@ public final class TaskRetryEngine {
         this.materialStore = Objects.requireNonNull(materialStore, "materialStore must not be null");
         this.failureRecoveryService = Objects.requireNonNull(
                 failureRecoveryService, "failureRecoveryService must not be null");
+        this.interruptedStageRecoveryService = rebuildInterruptedStageRecoveryService();
         this.resolver = resolver == null ? new TaskRetryPointResolver() : resolver;
         this.dispatcher = Objects.requireNonNull(dispatcher, "dispatcher must not be null");
         this.idSupplier = Objects.requireNonNull(idSupplier, "idSupplier must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
+    }
+
+    @Autowired(required = false)
+    void setInterruptedStageWorkspaceRecovery(InterruptedStageWorkspaceRecoveryPort workspaceRecoveryPort) {
+        this.workspaceRecoveryPort = workspaceRecoveryPort == null
+                ? InterruptedStageWorkspaceRecoveryPort.unavailable()
+                : workspaceRecoveryPort;
+        this.interruptedStageRecoveryService = rebuildInterruptedStageRecoveryService();
+    }
+
+    @Autowired(required = false)
+    void setAgentStageArtifactStore(AgentStageArtifactStore artifactStore) {
+        this.artifactStore = artifactStore == null ? AgentStageArtifactStore.noop() : artifactStore;
+        this.interruptedStageRecoveryService = rebuildInterruptedStageRecoveryService();
+    }
+
+    /** Direct injection for tests and non-Spring assembly. */
+    public void setInterruptedStageRecoveryService(InterruptedStageRecoveryService interruptedStageRecoveryService) {
+        this.interruptedStageRecoveryService = interruptedStageRecoveryService == null
+                ? rebuildInterruptedStageRecoveryService()
+                : interruptedStageRecoveryService;
+    }
+
+    private InterruptedStageRecoveryService rebuildInterruptedStageRecoveryService() {
+        return new InterruptedStageRecoveryService(
+                workspaceRecoveryPort,
+                stageRunStore,
+                artifactStore,
+                idSupplier
+        );
     }
 
     /** Returns the current retry point without changing task or attempt state. */
@@ -408,6 +445,9 @@ public final class TaskRetryEngine {
             AgentStageRun latest = existing.stream().filter(stage -> stage.role() == role)
                     .max(STAGE_RECENCY).orElse(null);
             if (latest != null && AgentStageTransitions.requiresFreshAttemptOnRecovery(latest.status())) {
+                if (interruptedStageRecoveryService.tryRecoverInterruptedStage(latest, now())) {
+                    continue;
+                }
                 latest = stageRunStore.transition(
                         latest.stageRunId(),
                         AgentStageStatus.FAILED_RETRYABLE,

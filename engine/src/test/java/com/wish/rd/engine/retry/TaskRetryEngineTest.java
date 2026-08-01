@@ -1,7 +1,8 @@
 package com.wish.rd.engine.retry;
 
-import com.wish.rd.engine.agent.impl.InMemoryAgentStageRunStore;
 import com.wish.rd.engine.agent.impl.InMemoryAgentStageArtifactStore;
+import com.wish.rd.engine.agent.impl.InMemoryAgentStageRunStore;
+import com.wish.rd.engine.agent.recovery.InterruptedStageRecoveryService;
 import com.wish.rd.engine.agent.model.AgentRole;
 import com.wish.rd.engine.agent.model.AgentStageArtifact;
 import com.wish.rd.engine.agent.model.AgentStageRun;
@@ -31,6 +32,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -60,6 +62,44 @@ class TaskRetryEngineTest {
         assertEquals(List.of(1, 2), attempts(stages, AgentRole.CODING_AGENT));
         assertEquals(List.of(1), attempts(stages, AgentRole.QA_AGENT));
         assertEquals(RdTaskStatus.RECOVERING, tasks.task.status());
+    }
+
+    @Test
+    void shouldRecoverSettledWorkspaceWithoutCreatingFreshAttemptOnRetry() {
+        InMemoryAgentStageRunStore stages = new InMemoryAgentStageRunStore();
+        InMemoryAgentStageArtifactStore artifacts = new InMemoryAgentStageArtifactStore();
+        stages.save(stage("reviewer-1", AgentRole.REQUIREMENT_REVIEWER, 1, AgentStageStatus.SUCCEEDED));
+        stages.save(stage("architect-1", AgentRole.SOLUTION_ARCHITECT, 1, AgentStageStatus.SUCCEEDED));
+        stages.save(stage("coding-1", AgentRole.CODING_AGENT, 1, AgentStageStatus.FAILED_NEEDS_HUMAN));
+        stages.save(stage("coding-2", AgentRole.CODING_AGENT, 2, AgentStageStatus.RUNNING));
+        stages.save(stage("qa-1", AgentRole.QA_AGENT, 1, AgentStageStatus.PENDING));
+        FakeTaskPort tasks = new FakeTaskPort(task(RdTaskStatus.FAILED_NEEDS_HUMAN, "{}"));
+        TaskRetryEngine engine = engine(
+                tasks,
+                stages,
+                new InMemoryTaskRetryCheckpointStore(),
+                new ArrayList<>(),
+                new AtomicInteger()
+        );
+        engine.setInterruptedStageRecoveryService(new InterruptedStageRecoveryService(
+                interrupted -> java.util.Optional.of(new com.wish.rd.engine.agent.recovery.model.RecoveredWorkspaceExecution(
+                        true,
+                        "{\"status\":\"SUCCESS\",\"summary\":\"coding recovered\"}",
+                        "",
+                        "",
+                        "pi-opencode",
+                        "[]"
+                )),
+                stages,
+                artifacts,
+                () -> "artifact-1"
+        ));
+
+        engine.retry("task-1", "USER");
+
+        assertEquals(List.of(1, 2), attempts(stages, AgentRole.CODING_AGENT));
+        assertEquals(AgentStageStatus.SUCCEEDED, stages.findById("coding-2").orElseThrow().status());
+        assertFalse(stages.findById("coding-2").orElseThrow().resultArtifactId().isBlank());
     }
 
     @Test

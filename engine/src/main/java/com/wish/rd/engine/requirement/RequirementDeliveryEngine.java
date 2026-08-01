@@ -13,6 +13,8 @@ import com.wish.rd.engine.agent.model.AgentStageArtifact;
 import com.wish.rd.engine.agent.model.AgentStageRun;
 import com.wish.rd.engine.agent.AgentStageRunStore;
 import com.wish.rd.engine.agent.AgentStageTransitions;
+import com.wish.rd.engine.agent.recovery.InterruptedStageRecoveryService;
+import com.wish.rd.engine.agent.recovery.InterruptedStageWorkspaceRecoveryPort;
 import com.wish.rd.engine.agent.model.AgentStageStatus;
 import com.wish.rd.engine.agent.model.AgentWorkflowAlert;
 import com.wish.rd.engine.agent.AgentWorkflowAlertSinkPort;
@@ -129,6 +131,7 @@ public class RequirementDeliveryEngine {
     private RequirementExecutionProfileResolverPort executionProfileResolver =
             RequirementExecutionProfileResolverPort.unavailable();
     private RequirementAgentStageOrchestrator stageOrchestrator;
+    private InterruptedStageRecoveryService interruptedStageRecoveryService;
 
     @Autowired
     void setDeepRetrievalOrchestrator(DeepRetrievalOrchestrator orchestrator) {
@@ -635,6 +638,34 @@ public class RequirementDeliveryEngine {
                 executor,
                 this.idGenerator
         );
+        this.interruptedStageRecoveryService = new InterruptedStageRecoveryService(
+                InterruptedStageWorkspaceRecoveryPort.unavailable(),
+                stageRunStore,
+                artifactStore,
+                this.idGenerator::nextIdString
+        );
+    }
+
+    @Autowired(required = false)
+    void setInterruptedStageWorkspaceRecovery(InterruptedStageWorkspaceRecoveryPort workspaceRecoveryPort) {
+        this.interruptedStageRecoveryService = new InterruptedStageRecoveryService(
+                workspaceRecoveryPort,
+                stageRunStore,
+                artifactStore,
+                idGenerator::nextIdString
+        );
+    }
+
+    /** Direct injection for tests and non-Spring assembly. */
+    public void setInterruptedStageRecoveryService(InterruptedStageRecoveryService interruptedStageRecoveryService) {
+        this.interruptedStageRecoveryService = interruptedStageRecoveryService == null
+                ? new InterruptedStageRecoveryService(
+                        InterruptedStageWorkspaceRecoveryPort.unavailable(),
+                        stageRunStore,
+                        artifactStore,
+                        idGenerator::nextIdString
+                )
+                : interruptedStageRecoveryService;
     }
 
     /**
@@ -1154,6 +1185,10 @@ public class RequirementDeliveryEngine {
             }
             if (isRetryableRequirementStatus(task.status())
                     && AgentStageTransitions.requiresFreshAttemptOnRecovery(latest.status())) {
+                if (interruptedStageRecoveryService != null
+                        && interruptedStageRecoveryService.tryRecoverInterruptedStage(latest, now)) {
+                    continue;
+                }
                 stageRunStore.transition(
                         latest.stageRunId(),
                         AgentStageStatus.FAILED_RETRYABLE,

@@ -11,6 +11,8 @@ import com.wish.rd.engine.agent.AgentWorkflowAlertSinkPort;
 import com.wish.rd.engine.agent.model.AgentWorkflowAlertType;
 import com.wish.rd.engine.agent.impl.InMemoryAgentStageArtifactStore;
 import com.wish.rd.engine.agent.impl.InMemoryAgentStageRunStore;
+import com.wish.rd.engine.agent.recovery.InterruptedStageRecoveryService;
+import com.wish.rd.engine.agent.recovery.model.RecoveredWorkspaceExecution;
 import com.wish.rd.engine.agent.model.WorkflowExperienceEntry;
 import com.wish.rd.engine.agent.WorkflowExperienceStore;
 import com.wish.rd.engine.agent.model.WorkflowExperienceType;
@@ -2404,6 +2406,82 @@ class RequirementDeliveryEngineTest {
                 .findFirst()
                 .orElseThrow()
                 .status());
+    }
+
+    @Test
+    void shouldRecoverSettledWorkspaceWithoutCreatingFreshAttempt() {
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(), new InMemoryRdTaskStatusEventStore(), generator());
+        InMemoryTaskMaterialStore materialStore = new InMemoryTaskMaterialStore();
+        RdRequirementTask task = createRequirementTask(
+                registry,
+                materialStore,
+                "settled-workspace-recovery-material",
+                "恢复已结算工作区",
+                "中断后应补采集而不是新建 attempt",
+                "模拟 Bridge 已 RESULT_SUBMITTED 且 AGENT_SETTLED 的恢复场景。"
+        );
+        InMemoryAgentStageRunStore stages = new InMemoryAgentStageRunStore();
+        InMemoryAgentStageArtifactStore artifacts = new InMemoryAgentStageArtifactStore();
+        stages.save(AgentStageRun.pending("reviewer-1", task.taskId(), AgentRole.REQUIREMENT_REVIEWER, 1,
+                task.taskId() + ":REQUIREMENT_REVIEWER:1", 10L)
+                .withStatus(AgentStageStatus.SUCCEEDED, "", "", 20L));
+        stages.save(AgentStageRun.pending("architect-1", task.taskId(), AgentRole.SOLUTION_ARCHITECT, 1,
+                task.taskId() + ":SOLUTION_ARCHITECT:1", 10L)
+                .withStatus(AgentStageStatus.RUNNING, "", "", 40L));
+        stages.save(AgentStageRun.pending("coding-1", task.taskId(), AgentRole.CODING_AGENT, 1,
+                task.taskId() + ":CODING_AGENT:1", 10L));
+        stages.save(AgentStageRun.pending("qa-1", task.taskId(), AgentRole.QA_AGENT, 1,
+                task.taskId() + ":QA_AGENT:1", 10L));
+        registry.markRequirementFailedRetryable(task.taskId(), "worker interrupted", "{\"failurePhase\":\"AGENT_ROLE\"}");
+
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry,
+                materialStore,
+                request -> RequirementExecutionResult.success(
+                        request.taskId(), request.role().name() + " recovered", "",
+                        request.role() == AgentRole.CODING_AGENT
+                                ? codingResultJson(request.role())
+                                : roleResultJson(request.role())
+                ),
+                new RequirementContextBuilder(),
+                new RequirementPlanGenerator(),
+                new RuleBasedRequirementPolicyGate(),
+                new AgentStagePlanner(new AtomicStageIdSupplier()),
+                stages,
+                new RoleContextBuilder(),
+                new InMemoryRoleContextPackageStore(),
+                AgentWorkflowAlertSinkPort.noop(),
+                WorkflowExperienceStore.noop(),
+                new RequirementDeliveryReviewer(),
+                new RecordingRequirementPullRequestPublisher()
+        );
+        engine.setInterruptedStageRecoveryService(new InterruptedStageRecoveryService(
+                stage -> java.util.Optional.of(new RecoveredWorkspaceExecution(
+                        true,
+                        roleResultJson(AgentRole.SOLUTION_ARCHITECT),
+                        "",
+                        "",
+                        "pi-opencode",
+                        "[]"
+                )),
+                stages,
+                artifacts,
+                generator()::nextIdString
+        ));
+
+        RequirementDeliveryResult result = engine.submit(task.taskId());
+
+        assertEquals(RdTaskStatus.COMPLETED, result.status());
+        List<AgentStageRun> architectAttempts = stages.listByTask(task.taskId()).stream()
+                .filter(stage -> stage.role() == AgentRole.SOLUTION_ARCHITECT)
+                .toList();
+        assertEquals(List.of(1), architectAttempts.stream().map(AgentStageRun::attemptNo).toList());
+        assertEquals(AgentStageStatus.SUCCEEDED, architectAttempts.getFirst().status());
+        assertFalse(architectAttempts.getFirst().resultArtifactId().isBlank());
+        assertTrue(artifacts.listByTask(task.taskId()).stream()
+                .anyMatch(artifact -> artifact.stageRunId().equals("architect-1")
+                        && "RESULT_JSON".equals(artifact.artifactType())));
     }
 
     @Test
