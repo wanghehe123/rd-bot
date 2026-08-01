@@ -15,12 +15,19 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 import {
+  buildPreflightRuntimeContextManifest,
+  runContextPreflight,
+  shouldRunContextPreflight,
+} from "./context-preflight.mjs";
+import {
   EVENT_TYPES,
   MAX_LINE_BYTES,
+  REQUEST_PROTOCOL_V2,
   boundedText,
   parseJsonLine,
   redact,
   validateRequest,
+  validateRequestV2,
 } from "./protocol.mjs";
 import { EventNormalizer } from "./event-normalizer.mjs";
 import {
@@ -77,6 +84,7 @@ export async function run(options = {}) {
   let verifiedManifest;
   let sessionFile;
   let contextFiles = [];
+  let contextDiscovery;
   let stateProjector;
 
   try {
@@ -88,6 +96,30 @@ export async function run(options = {}) {
     });
 
     verifiedManifest = await loadResourceManifest(request.resourceManifestPath);
+    const contextPreflightEnabled = shouldRunContextPreflight(request);
+    if (contextPreflightEnabled) {
+      const { discovery, validation } = await runContextPreflight(
+        request.repoPath,
+        request.contextPolicy,
+      );
+      contextDiscovery = discovery;
+      const preflightManifest = buildPreflightRuntimeContextManifest({
+        request,
+        discovery,
+        validation,
+        inputManifestHash: request.inputManifestHash ?? "",
+        contextPolicyHash: request.contextPolicy?.policyHash ?? "",
+      });
+      await safeWriteJson(paths.runtimeContextManifest, preflightManifest);
+      await sink.lifecycle("RESOURCES_LOADED", {
+        contextPreflight: preflightManifest.status,
+        loadedPaths: validation.loadedPaths,
+        violationCount: validation.violations.length,
+      });
+      if (!validation.accepted) {
+        throw new Error(`context preflight rejected: ${validation.violations.join("; ")}`);
+      }
+    }
     const settingsManager = safeSettingsManager();
     const dynamicState = resolveDynamicStateConfig(request);
     if (dynamicState.enabled) {
@@ -125,6 +157,8 @@ export async function run(options = {}) {
       verifiedManifest,
       settingsManager,
       extensionFactories,
+      contextPolicy: contextPreflightEnabled ? request.contextPolicy : undefined,
+      contextDiscovery,
     });
     // H1: resource discovery happens once, before session creation. The bridge
     // is one-shot except for a single bounded result-recovery prompt issued when
@@ -148,13 +182,15 @@ export async function run(options = {}) {
       contextFiles,
       extensionCount: extensionsResult.extensions.length,
     });
-    await writeRuntimeContextManifest({
-      request,
-      paths,
-      contextFiles,
-      inputManifestHash: request.inputManifestHash ?? "",
-      contextPolicyHash: request.contextPolicy?.policyHash ?? "",
-    });
+    if (!contextPreflightEnabled) {
+      await writeRuntimeContextManifest({
+        request,
+        paths,
+        contextFiles,
+        inputManifestHash: request.inputManifestHash ?? "",
+        contextPolicyHash: request.contextPolicy?.policyHash ?? "",
+      });
+    }
 
     const modelRuntime = await configureModelRuntime(request, paths.private);
     const resolvedModel = resolveCliModel({
@@ -597,6 +633,9 @@ export async function writeRuntimeContextManifest({
 async function readValidatedRequest(path) {
   const content = await readFile(path, "utf8");
   const parsed = parseJsonLine(content.trim(), MAX_LINE_BYTES);
+  if (parsed.protocol === REQUEST_PROTOCOL_V2) {
+    return validateRequestV2(parsed);
+  }
   return validateRequest(parsed);
 }
 
