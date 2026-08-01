@@ -2,7 +2,8 @@
 
 ## 状态
 
-`READY_FOR_SENTINEL_REHEARSAL` — Host 可 opt-in 物化 `rd-pi-request/v2`；生产默认仍为 `v1`。
+`P3_V3_SENTINEL_PASS` — 2026-08-01 付费 ROOT_ONLY sentinel 已通过（`tmp/p3-v3-sentinel/evidence-summary.md`）。
+Host 可 opt-in 物化 `rd-pi-request/v2`；生产默认仍为 `v1`。
 未启用生产灰度，未扩大 `dynamicStateEnabled` / `FACTS_V1`。
 
 对应方案：`docs/superpowers/specs/2026-08-01-role-context-optimization-validation-and-improvement-plan.markdown` §P3-V2→V3。
@@ -75,13 +76,21 @@ Profile snapshot 必须保存上表 **Id**，不能只存可移动 tag。
 
 ---
 
-## 4. V3 sentinel 仍缺（付费 / 可控 fake provider）
+## 4. V3 sentinel（付费）— 已完成 2026-08-01
 
-1. 用 fixture repo 写不同 sentinel 文本到多层 `AGENTS.md`/`CLAUDE.md`。
-2. Host 以 **v2 + ROOT_ONLY（或精确 allowlist）** 物化 expected hashes（需在 rehearsal 路径构造 policy，不是生产 LEGACY builder）。
-3. 跑一次 Pi（真实或 fake provider），证明模型实际输入只含 expected sentinel。
-4. 核对 `RESOURCES_LOADED` / runtime manifest / Host artifact 路径·hash·order 一致。
-5. **不**在失败时把 Profile 默认切到 context v2。
+直跑 bridge（非全量 README canary）：
+
+| 项 | 值 |
+| --- | --- |
+| 证据 | `tmp/p3-v3-sentinel/evidence-summary.md` |
+| Image | `sha256:a1fc49c086ed8ca8970e9688fd46848793a9f992c340de6dd256f5a15550cc1e` |
+| Provider | opencode-go / deepseek-v4-flash |
+| Preflight | ACCEPTED；LOADED 仅 root；6 个 nested REJECTED |
+| Model VISIBLE | `SENTINEL_ROOT_AGENTS,SENTINEL_ROOT_CLAUDE` only |
+| Tokens (Σ turns) | in 2300 / out 1904 / cacheRead 4352；墙钟 ~20s |
+| 生产灰度 | **未开** |
+
+后续可选：allowlist nested 精确单测付费；Host 管线 LEGACY→ROOT_ONLY builder；Claude V4。
 
 ---
 
