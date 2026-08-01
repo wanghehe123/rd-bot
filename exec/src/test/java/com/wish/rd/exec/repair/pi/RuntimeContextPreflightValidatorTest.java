@@ -31,8 +31,8 @@ class RuntimeContextPreflightValidatorTest {
     RuntimeContextManifest manifest = manifest(
         "ACCEPTED",
         List.of(
-            loaded("AGENTS.md", "sha256:111", 1),
-            loaded("CLAUDE.md", "sha256:222", 2)
+            loaded("AGENTS.md", "sha256:111", 1, 12),
+            loaded("CLAUDE.md", "sha256:222", 2, 12)
         )
     );
 
@@ -52,15 +52,15 @@ class RuntimeContextPreflightValidatorTest {
     );
     RuntimeContextManifest hashMismatch = manifest(
         "ACCEPTED",
-        List.of(loaded("AGENTS.md", "sha256:999", 1))
+        List.of(loaded("AGENTS.md", "sha256:999", 1, 12))
     );
     RuntimeContextManifest nested = manifest(
         "ACCEPTED",
-        List.of(loaded("src/AGENTS.md", "sha256:111", 1))
+        List.of(loaded("src/AGENTS.md", "sha256:111", 1, 12))
     );
     RuntimeContextManifest rejectedStatus = manifest(
         "REJECTED",
-        List.of(loaded("AGENTS.md", "sha256:111", 1))
+        List.of(loaded("AGENTS.md", "sha256:111", 1, 12))
     );
 
     assertFalse(validator.validate(policy, hashMismatch).accepted());
@@ -76,7 +76,68 @@ class RuntimeContextPreflightValidatorTest {
     );
   }
 
+  @Test
+  void shouldRejectIdentityAndRejectReasonGaps() {
+    RuntimeContextPolicy policy = new RuntimeContextPolicy(
+        "rd-runtime-context-policy/v1",
+        "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        RuntimeContextPolicyMode.ROOT_ONLY,
+        List.of(new RuntimeContextFileExpectation("AGENTS.md", "sha256:111"))
+    );
+    RuntimeContextManifest manifest = new RuntimeContextManifest(
+        1,
+        RuntimeContextManifest.PROTOCOL,
+        "task-other",
+        "stage-1",
+        "CODING_AGENT",
+        2,
+        RuntimeContextPolicyMode.ROOT_ONLY,
+        "PI",
+        "anthropic",
+        "claude",
+        "snapshot-other",
+        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "2026-08-01T00:00:00Z",
+        List.of(
+            loaded("AGENTS.md", "sha256:111", 1, 12),
+            new RuntimeContextFileDecision(
+                "src/AGENTS.md", "", 0, 0, "REPO", "REJECTED", "")
+        ),
+        1,
+        12,
+        "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "ACCEPTED"
+    );
+    RuntimeContextPreflightValidator.ExpectedIdentity identity =
+        new RuntimeContextPreflightValidator.ExpectedIdentity(
+            "task-1",
+            "stage-1",
+            "CODING_AGENT",
+            1,
+            "snapshot-1",
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        );
+
+    RuntimeContextPreflightValidator.ValidationResult result =
+        validator.validate(policy, manifest, identity);
+
+    assertFalse(result.accepted());
+    assertTrue(result.violations().stream().anyMatch(v -> v.contains("taskId mismatch")));
+    assertTrue(result.violations().stream().anyMatch(v -> v.contains("attemptNo mismatch")));
+    assertTrue(result.violations().stream().anyMatch(v -> v.contains("executionProfileSnapshotId mismatch")));
+    assertTrue(result.violations().stream().anyMatch(v -> v.contains("missing rejectReason")));
+  }
+
   private static RuntimeContextManifest manifest(String status, List<RuntimeContextFileDecision> observed) {
+    long bytes = observed.stream()
+        .filter(file -> "LOADED".equals(file.trustDecision()))
+        .mapToLong(RuntimeContextFileDecision::bytes)
+        .sum();
+    int loadedCount = (int) observed.stream()
+        .filter(file -> "LOADED".equals(file.trustDecision()))
+        .count();
     return new RuntimeContextManifest(
         1,
         RuntimeContextManifest.PROTOCOL,
@@ -93,14 +154,14 @@ class RuntimeContextPreflightValidatorTest {
         "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "2026-08-01T00:00:00Z",
         observed,
-        observed.size(),
-        observed.stream().mapToLong(RuntimeContextFileDecision::bytes).sum(),
+        loadedCount,
+        bytes,
         "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
         status
     );
   }
 
-  private static RuntimeContextFileDecision loaded(String path, String hash, int order) {
-    return new RuntimeContextFileDecision(path, hash, 12, order, "REPO", "LOADED", "");
+  private static RuntimeContextFileDecision loaded(String path, String hash, int order, long bytes) {
+    return new RuntimeContextFileDecision(path, hash, bytes, order, "REPO", "LOADED", "");
   }
 }

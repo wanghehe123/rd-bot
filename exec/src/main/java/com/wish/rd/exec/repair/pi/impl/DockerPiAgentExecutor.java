@@ -261,7 +261,15 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                 String inputManifestJson = text(command.contextJson().get("inputManifestJson"));
                 PiRequestV2Materializer.materializeInputManifest(workspace.inputDirectory(), inputManifestJson);
                 Path requestPath = workspace.inputDirectory().resolve("request.json").normalize();
-                writeRequest(requestPath, snapshot, command, snapshotJson, provider, toolPolicy);
+                writeRequest(
+                        requestPath,
+                        snapshot,
+                        command,
+                        snapshotJson,
+                        provider,
+                        toolPolicy,
+                        workspace.repoDirectory()
+                );
 
                 Map<String, String> environment = runtimeEnvironment(snapshot, provider, qaProvision);
                 ContainerRunRequest containerRequest = containerRequest(command, snapshot, workspace, environment);
@@ -311,6 +319,7 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
             );
             RepairExecutionResult preflightFailure = validateRuntimeContextPreflight(
                     command,
+                    snapshot,
                     workspace.outputDirectory(),
                     dockerMetadata,
                     artifacts
@@ -493,7 +502,8 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
             RepairJobCommand command,
             JsonNode snapshotJson,
             ProviderSpec provider,
-            ToolPolicySpec toolPolicy
+            ToolPolicySpec toolPolicy,
+            Path repoDirectory
     ) throws IOException {
         boolean v2 = PiRequestV2Materializer.isV2(configuration.requestProtocolVersion());
         Map<String, Object> request = new LinkedHashMap<>();
@@ -539,7 +549,13 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
             }
             request.put("inputManifestHash", inputManifestHash);
             request.put("inputManifestPath", PiRequestV2Materializer.CONTAINER_INPUT_MANIFEST_PATH);
-            request.put("contextPolicy", PiRequestV2Materializer.parseContextPolicy(contextPolicyJson));
+            request.put(
+                    "contextPolicy",
+                    enrichContextPolicyHashes(
+                            PiRequestV2Materializer.parseContextPolicy(contextPolicyJson),
+                            repoDirectory
+                    )
+            );
         } else {
             if (!inputManifestHash.isBlank()) {
                 request.put("inputManifestHash", inputManifestHash);
@@ -566,8 +582,62 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         Files.writeString(requestPath, OBJECT_MAPPER.writeValueAsString(request) + "\n", StandardCharsets.UTF_8);
     }
 
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> enrichContextPolicyHashes(
+            Map<String, Object> contextPolicy,
+            Path repoDirectory
+    ) throws IOException {
+        if (contextPolicy == null || repoDirectory == null || !Files.isDirectory(repoDirectory)) {
+            return contextPolicy;
+        }
+        Object expectedRaw = contextPolicy.get("expectedFiles");
+        if (!(expectedRaw instanceof List<?> expectedList) || expectedList.isEmpty()) {
+            return contextPolicy;
+        }
+        List<Map<String, Object>> enriched = new java.util.ArrayList<>();
+        for (Object entry : expectedList) {
+            if (!(entry instanceof Map<?, ?> raw)) {
+                continue;
+            }
+            Map<String, Object> file = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> item : raw.entrySet()) {
+                file.put(String.valueOf(item.getKey()), item.getValue());
+            }
+            String path = String.valueOf(file.getOrDefault("path", ""));
+            path = path == null || "null".equals(path) ? "" : path.strip();
+            String hash = String.valueOf(file.getOrDefault("contentHash", ""));
+            hash = hash == null || "null".equals(hash) ? "" : hash.strip();
+            if (!path.isBlank() && hash.isBlank() && !path.contains("..") && !path.startsWith("/")) {
+                Path candidate = repoDirectory.resolve(path).normalize();
+                if (candidate.startsWith(repoDirectory.normalize())
+                        && Files.isRegularFile(candidate, LinkOption.NOFOLLOW_LINKS)) {
+                    file.put("contentHash", "sha256:" + sha256Hex(Files.readAllBytes(candidate)));
+                }
+            }
+            enriched.add(Map.copyOf(file));
+        }
+        Map<String, Object> copy = new LinkedHashMap<>(contextPolicy);
+        copy.put("expectedFiles", List.copyOf(enriched));
+        return Map.copyOf(copy);
+    }
+
+    private static String sha256Hex(byte[] bytes) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hashed = digest.digest(bytes);
+            StringBuilder builder = new StringBuilder(hashed.length * 2);
+            for (byte value : hashed) {
+                builder.append(String.format("%02x", value));
+            }
+            return builder.toString();
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 unavailable", exception);
+        }
+    }
+
     private RepairExecutionResult validateRuntimeContextPreflight(
             RepairJobCommand command,
+            AgentExecutionProfileSnapshot snapshot,
             Path outputDirectory,
             Map<String, String> dockerMetadata,
             List<RepairArtifact> artifacts
@@ -601,8 +671,18 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
             String manifestJson = Files.readString(manifestPath, StandardCharsets.UTF_8);
             RuntimeContextPolicy policy = PiRequestV2Materializer.parseRuntimeContextPolicy(contextPolicyJson);
             RuntimeContextManifest manifest = PiRequestV2Materializer.parseRuntimeContextManifest(manifestJson);
+            RuntimeContextPreflightValidator.ExpectedIdentity identity =
+                    new RuntimeContextPreflightValidator.ExpectedIdentity(
+                            text(command.contextJson().get("taskId")),
+                            text(command.contextJson().get("stageRunId")),
+                            text(command.contextJson().get("agentRole")),
+                            snapshot == null ? 0 : snapshot.attemptNo(),
+                            snapshot == null ? "" : snapshot.snapshotId(),
+                            text(command.contextJson().get("inputManifestHash")),
+                            text(command.contextJson().get("contextPolicyHash"))
+                    );
             RuntimeContextPreflightValidator.ValidationResult validation =
-                    RUNTIME_CONTEXT_PREFLIGHT_VALIDATOR.validate(policy, manifest);
+                    RUNTIME_CONTEXT_PREFLIGHT_VALIDATOR.validate(policy, manifest, identity);
             if (validation.accepted()) {
                 return null;
             }

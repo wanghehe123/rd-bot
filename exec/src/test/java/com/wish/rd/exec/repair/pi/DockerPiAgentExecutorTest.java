@@ -207,13 +207,33 @@ class DockerPiAgentExecutorTest {
                 policyJson,
                 manifestJson
         );
+        // Align Host context identity with the frozen runtime-context-manifest under test.
+        Map<String, String> aligned = new java.util.LinkedHashMap<>(command.contextJson());
+        aligned.put("taskId", "task-1");
+        aligned.put("stageRunId", "stage-1");
+        aligned.put("contextPolicyHash", "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        command = new RepairJobCommand(
+                command.repairRecordId(),
+                command.taskId(),
+                command.ticketId(),
+                command.ticketTitle(),
+                command.prompt(),
+                command.repositoryUrl(),
+                command.repoOwner(),
+                command.repoName(),
+                command.baseBranch(),
+                command.workBranch(),
+                aligned,
+                command.policyJson(),
+                command.attachments()
+        );
 
         RepairExecutionResult result = executor.execute(new AgentRuntimeExecutionRequest(
                 snapshot("snapshot-v2", "stage-1", "task-1", AgentRuntimeType.PI, ""),
                 command
         ));
 
-        assertEquals(RepairExecutionStatus.SUCCESS, result.status());
+        assertEquals(RepairExecutionStatus.SUCCESS, result.status(), result.errorMessage());
         Path inputDirectory = temporaryDirectory.resolve("workspaces/task-1/input");
         JsonNode request = OBJECT_MAPPER.readTree(Files.readString(inputDirectory.resolve("request.json")));
         assertEquals("rd-pi-request/v2", request.path("protocol").asText());
