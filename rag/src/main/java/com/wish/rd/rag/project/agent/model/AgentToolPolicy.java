@@ -65,7 +65,7 @@ public record AgentToolPolicy(
     public static AgentToolPolicy defaultQaPolicy() {
         return new AgentToolPolicy(
                 "default-qa",
-                1L,
+                2L,
                 Set.of("read", "bash", "rd_submit_result"),
                 Set.of("read", "bash", "rd_submit_result"),
                 Set.of("edit", "write"),

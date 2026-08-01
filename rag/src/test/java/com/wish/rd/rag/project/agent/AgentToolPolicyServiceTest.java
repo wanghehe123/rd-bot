@@ -16,6 +16,7 @@ class AgentToolPolicyServiceTest {
     @Test
     void defaultQaPolicyDeniesWriteTools() {
         AgentToolPolicy policy = AgentToolPolicy.defaultQaPolicy();
+        assertEquals(2L, policy.version());
         assertEquals(Set.of("read", "bash", "rd_submit_result"), Set.copyOf(policy.effectiveAllow()));
         assertTrue(policy.deny().containsAll(Set.of("edit", "write")));
         assertFalse(policy.hostAllow().contains("edit"));

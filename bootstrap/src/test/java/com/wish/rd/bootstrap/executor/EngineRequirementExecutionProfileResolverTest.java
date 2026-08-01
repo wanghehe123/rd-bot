@@ -5,9 +5,12 @@ import com.wish.rd.engine.agent.model.AgentRole;
 import com.wish.rd.engine.requirement.model.RequirementExecutionProfileResolution;
 import com.wish.rd.rag.project.agent.AgentExecutionProfileService;
 import com.wish.rd.rag.project.agent.AgentExecutionProfileSnapshotService;
+import com.wish.rd.rag.project.agent.AgentToolPolicyService;
 import com.wish.rd.rag.project.agent.impl.InMemoryAgentExecutionProfileSnapshotStore;
 import com.wish.rd.rag.project.agent.impl.InMemoryAgentExecutionProfileStore;
+import com.wish.rd.rag.project.agent.impl.InMemoryAgentToolPolicyStore;
 import com.wish.rd.rag.project.agent.model.AgentExecutionProfile;
+import com.wish.rd.rag.project.agent.model.AgentToolPolicy;
 import com.wish.rd.rag.project.agent.model.AgentRuntimeType;
 import com.wish.rd.rag.runtime.model.CreateRequirementTaskCommand;
 import com.wish.rd.rag.runtime.model.RdRequirementTask;
@@ -77,11 +80,57 @@ class EngineRequirementExecutionProfileResolverTest {
         resolver.resolve(task(), AgentRole.QA_AGENT, "stage-qa", 1);
         String snapshotJson = snapshots.findByStageRunId("stage-qa").orElseThrow().snapshotJson();
         assertTrue(snapshotJson.contains("\"default-qa\""));
+        assertTrue(snapshotJson.contains("\"toolPolicyVersion\":2"));
         assertTrue(snapshotJson.contains("\"read\""));
         assertTrue(snapshotJson.contains("\"deny\""));
         assertTrue(snapshotJson.contains("\"edit\""));
         assertTrue(snapshotJson.contains("\"write\""));
+        assertTrue(snapshotJson.contains("\"effectiveAllow\":[\"bash\",\"rd_submit_result\",\"read\"]"));
         assertFalse(snapshotJson.contains("\"effectiveAllow\":[\"read\",\"bash\",\"edit\""));
+        assertFalse(snapshotJson.contains("\"effectiveAllow\":[\"bash\",\"edit\""));
+        assertFalse(snapshotJson.contains("\"effectiveAllow\":[\"write\""));
+    }
+
+    @Test
+    void shouldResolveRegisteredQaProfileWithReadOnlyToolPolicyV2() {
+        InMemoryAgentExecutionProfileStore profiles = new InMemoryAgentExecutionProfileStore();
+        AgentExecutionProfileService profileService = new AgentExecutionProfileService(profiles);
+        AgentToolPolicyService toolPolicyService = new AgentToolPolicyService(new InMemoryAgentToolPolicyStore());
+        toolPolicyService.register(AgentToolPolicy.defaultQaPolicy());
+        AgentExecutionProfile qaProfile = new AgentExecutionProfile(
+                "pi-qa-nextjs-kbr",
+                "7487468535443230720",
+                "QA_AGENT",
+                "Pi QA Next.js KBR",
+                AgentRuntimeType.PI,
+                "longcat-anthropic",
+                "",
+                "",
+                0L,
+                "default-qa",
+                2L,
+                true,
+                1L
+        );
+        profileService.register(qaProfile);
+        profileService.bindProjectDefault("7487468535443230720", "QA_AGENT", qaProfile.profileId());
+        InMemoryAgentExecutionProfileSnapshotStore snapshots = new InMemoryAgentExecutionProfileSnapshotStore();
+        EngineRequirementExecutionProfileResolver resolver = new EngineRequirementExecutionProfileResolver(
+                profileService,
+                new AgentExecutionProfileSnapshotService(snapshots),
+                snapshots,
+                false,
+                null,
+                toolPolicyService
+        );
+        resolver.resolve(qaTask(), AgentRole.QA_AGENT, "stage-qa-kbr", 1);
+        String snapshotJson = snapshots.findByStageRunId("stage-qa-kbr").orElseThrow().snapshotJson();
+        assertTrue(snapshotJson.contains("\"profileId\":\"pi-qa-nextjs-kbr\""));
+        assertTrue(snapshotJson.contains("\"toolPolicyVersion\":2"));
+        assertTrue(snapshotJson.contains("\"effectiveAllow\":[\"bash\",\"rd_submit_result\",\"read\"]"));
+        assertFalse(snapshotJson.contains("\"effectiveAllow\":[\"read\",\"bash\",\"edit\""));
+        assertFalse(snapshotJson.contains("\"effectiveAllow\":[\"bash\",\"edit\""));
+        assertFalse(snapshotJson.contains("\"effectiveAllow\":[\"write\""));
     }
 
     @Test
@@ -140,6 +189,18 @@ class EngineRequirementExecutionProfileResolverTest {
                 "task-1",
                 new CreateRequirementTaskCommand(
                         "title", "P1", "ADMIN", "", "", "project-1", "", "",
+                        "https://github.com/acme/repo.git", "acme", "repo", "main",
+                        "expected", List.of("test"), List.of(), false
+                ),
+                1L
+        );
+    }
+
+    private RdRequirementTask qaTask() {
+        return RdRequirementTask.created(
+                "task-qa-1",
+                new CreateRequirementTaskCommand(
+                        "title", "P1", "ADMIN", "", "", "7487468535443230720", "", "",
                         "https://github.com/acme/repo.git", "acme", "repo", "main",
                         "expected", List.of("test"), List.of(), false
                 ),

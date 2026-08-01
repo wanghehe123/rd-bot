@@ -203,12 +203,24 @@ VALUES (
 )
 ON CONFLICT (policy_id, version) DO NOTHING;
 
+-- default-qa@1 is legacy/contaminated in some environments (may allow edit/write); do not UPDATE.
 INSERT INTO rd_agent_tool_policies (policy_id, version, policy_json, policy_hash, enabled)
 VALUES (
     'default-qa',
     1,
     '{"hostAllow":["bash","rd_submit_result","read"],"allow":["bash","rd_submit_result","read"],"deny":["edit","write"]}',
     'default-qa-v1',
+    TRUE
+)
+ON CONFLICT (policy_id, version) DO NOTHING;
+
+-- Read-only QA policy v2: distinct hash from v1 and from legacy-host-bound coding policy.
+INSERT INTO rd_agent_tool_policies (policy_id, version, policy_json, policy_hash, enabled)
+VALUES (
+    'default-qa',
+    2,
+    '{"hostAllow":["bash","rd_submit_result","read"],"allow":["bash","rd_submit_result","read"],"deny":["edit","write"]}',
+    'default-qa-v2',
     TRUE
 )
 ON CONFLICT (policy_id, version) DO NOTHING;

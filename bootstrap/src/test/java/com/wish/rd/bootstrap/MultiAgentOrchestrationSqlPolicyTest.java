@@ -69,5 +69,21 @@ class MultiAgentOrchestrationSqlPolicyTest {
         assertTrue(content.contains("credential_environment_variable"));
         assertTrue(!content.toLowerCase().contains("api_key"));
         assertTrue(!content.toLowerCase().contains("secret_value"));
+        assertTrue(content.contains("'default-qa-v2'"));
+        assertTrue(content.contains("deny\":[\"edit\",\"write\"]"));
+    }
+
+    @Test
+    void shouldProvideDefaultQaV2GateMigration() throws Exception {
+        Path sql = Path.of(System.getProperty("user.dir"))
+                .resolve("src/main/resources/sql/postgres/p9_default_qa_v2_gate.sql");
+        String content = Files.readString(sql);
+
+        assertTrue(content.contains("'default-qa-v2'"));
+        assertTrue(content.contains("ON CONFLICT (policy_id, version) DO NOTHING"));
+        assertTrue(content.contains("profile_id = 'pi-qa-nextjs-kbr'"));
+        assertTrue(content.contains("project_id = 7487468535443230720"));
+        assertTrue(content.contains("tool_policy_version < 2"));
+        assertTrue(!content.contains("rd_agent_execution_profile_snapshots"));
     }
 }
