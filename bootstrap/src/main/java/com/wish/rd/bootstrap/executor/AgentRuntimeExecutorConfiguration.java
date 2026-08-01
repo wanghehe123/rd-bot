@@ -106,6 +106,7 @@ public class AgentRuntimeExecutorConfiguration {
                 providerProfileService,
                 toolPolicyService,
                 piProperties.getContextProtocolVersion(),
+                piProperties.getContextPolicyMode(),
                 piProperties.isDynamicStateEnabled(),
                 piProperties.getMaxInjectedStateBytes()
         );

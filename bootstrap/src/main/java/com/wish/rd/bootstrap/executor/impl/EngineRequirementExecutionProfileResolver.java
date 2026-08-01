@@ -36,6 +36,7 @@ public final class EngineRequirementExecutionProfileResolver
     private final ModelProviderProfileService providerProfileService;
     private final AgentToolPolicyService toolPolicyService;
     private final String contextProtocolVersion;
+    private final String contextPolicyMode;
     private final boolean dynamicStateEnabled;
     private final int maxInjectedStateBytes;
 
@@ -74,6 +75,7 @@ public final class EngineRequirementExecutionProfileResolver
                 providerProfileService,
                 toolPolicyService,
                 "LEGACY_ENVIRONMENT_NOTES",
+                "LEGACY_OBSERVE_ONLY",
                 false,
                 8192
         );
@@ -90,6 +92,32 @@ public final class EngineRequirementExecutionProfileResolver
             boolean dynamicStateEnabled,
             int maxInjectedStateBytes
     ) {
+        this(
+                profileService,
+                snapshotService,
+                snapshotStore,
+                openAiChatEnabled,
+                providerProfileService,
+                toolPolicyService,
+                contextProtocolVersion,
+                "LEGACY_OBSERVE_ONLY",
+                dynamicStateEnabled,
+                maxInjectedStateBytes
+        );
+    }
+
+    public EngineRequirementExecutionProfileResolver(
+            AgentExecutionProfileService profileService,
+            AgentExecutionProfileSnapshotService snapshotService,
+            AgentExecutionProfileSnapshotStore snapshotStore,
+            boolean openAiChatEnabled,
+            ModelProviderProfileService providerProfileService,
+            AgentToolPolicyService toolPolicyService,
+            String contextProtocolVersion,
+            String contextPolicyMode,
+            boolean dynamicStateEnabled,
+            int maxInjectedStateBytes
+    ) {
         this.profileService = Objects.requireNonNull(profileService, "profileService must not be null");
         this.snapshotService = Objects.requireNonNull(snapshotService, "snapshotService must not be null");
         this.snapshotStore = Objects.requireNonNull(snapshotStore, "snapshotStore must not be null");
@@ -97,6 +125,7 @@ public final class EngineRequirementExecutionProfileResolver
         this.providerProfileService = providerProfileService;
         this.toolPolicyService = toolPolicyService;
         this.contextProtocolVersion = normalizeProtocolVersion(contextProtocolVersion);
+        this.contextPolicyMode = normalizeContextPolicyMode(contextPolicyMode);
         this.dynamicStateEnabled = dynamicStateEnabled;
         this.maxInjectedStateBytes = maxInjectedStateBytes > 0 ? maxInjectedStateBytes : 8192;
     }
@@ -198,6 +227,7 @@ public final class EngineRequirementExecutionProfileResolver
         value.put("sessionPolicy", "ARCHIVE_NO_RESUME");
         value.put("resolvedFrom", profile == null ? "COMPATIBILITY_DEFAULT" : "REGISTERED_PROFILE");
         value.put("contextProtocolVersion", contextProtocolVersion);
+        value.put("contextPolicyMode", contextPolicyMode);
         value.put("agentStateSchemaVersion", "rd-agent-state/v1");
         value.put("dynamicStateEnabled", dynamicStateEnabled);
         value.put("maxInjectedStateBytes", maxInjectedStateBytes);
@@ -311,6 +341,23 @@ public final class EngineRequirementExecutionProfileResolver
     private static String normalizeProtocolVersion(String value) {
         String normalized = value == null ? "" : value.strip();
         return normalized.isBlank() ? "LEGACY_ENVIRONMENT_NOTES" : normalized;
+    }
+
+    private static String normalizeContextPolicyMode(String value) {
+        String normalized = value == null ? "" : value.strip();
+        if (normalized.isBlank()) {
+            return "LEGACY_OBSERVE_ONLY";
+        }
+        String upper = normalized.toUpperCase();
+        if ("LEGACY_OBSERVE_ONLY".equals(upper)
+                || "ROOT_ONLY".equals(upper)
+                || "ROOT_AND_ALLOWLISTED_NESTED".equals(upper)) {
+            return upper;
+        }
+        throw new IllegalArgumentException(
+                "contextPolicyMode must be LEGACY_OBSERVE_ONLY, ROOT_ONLY, or ROOT_AND_ALLOWLISTED_NESTED but was: "
+                        + value
+        );
     }
 
     private static String requireText(String value, String fieldName) {

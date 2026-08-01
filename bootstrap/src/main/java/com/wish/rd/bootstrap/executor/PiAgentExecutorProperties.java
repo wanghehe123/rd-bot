@@ -31,6 +31,7 @@ public class PiAgentExecutorProperties {
     private long bashCommandTimeoutMillis = DEFAULT_BASH_COMMAND_TIMEOUT_MILLIS;
     private long rawEventMaxBytes = 16L * 1024L * 1024L;
     private String contextProtocolVersion = "LEGACY_ENVIRONMENT_NOTES";
+    private String contextPolicyMode = "LEGACY_OBSERVE_ONLY";
     private boolean dynamicStateEnabled = false;
     private int maxInjectedStateBytes = 8192;
     private String requestProtocolVersion = "v1";
@@ -41,6 +42,14 @@ public class PiAgentExecutorProperties {
 
     public void setContextProtocolVersion(String contextProtocolVersion) {
         this.contextProtocolVersion = textOrDefault(contextProtocolVersion, "LEGACY_ENVIRONMENT_NOTES");
+    }
+
+    public String getContextPolicyMode() {
+        return contextPolicyMode;
+    }
+
+    public void setContextPolicyMode(String contextPolicyMode) {
+        this.contextPolicyMode = normalizeContextPolicyMode(contextPolicyMode);
     }
 
     public boolean isDynamicStateEnabled() {
@@ -165,6 +174,23 @@ public class PiAgentExecutorProperties {
             return lower;
         }
         throw new IllegalArgumentException("requestProtocolVersion must be v1 or v2 but was: " + value);
+    }
+
+    private static String normalizeContextPolicyMode(String value) {
+        String normalized = value == null ? "" : value.strip();
+        if (normalized.isBlank()) {
+            return "LEGACY_OBSERVE_ONLY";
+        }
+        String upper = normalized.toUpperCase(java.util.Locale.ROOT);
+        if ("LEGACY_OBSERVE_ONLY".equals(upper)
+                || "ROOT_ONLY".equals(upper)
+                || "ROOT_AND_ALLOWLISTED_NESTED".equals(upper)) {
+            return upper;
+        }
+        throw new IllegalArgumentException(
+                "contextPolicyMode must be LEGACY_OBSERVE_ONLY, ROOT_ONLY, or ROOT_AND_ALLOWLISTED_NESTED but was: "
+                        + value
+        );
     }
 
     private static long positiveTimeout(long value, long fallback) {

@@ -20,6 +20,7 @@ import com.wish.rd.rag.project.agent.model.RoleExecutionBudget;
 import com.wish.rd.rag.project.agent.model.RoleExecutionEvidenceEntry;
 import com.wish.rd.rag.project.agent.model.RoleExecutionInputManifest;
 import com.wish.rd.rag.project.agent.model.RoleExecutionPromptAudit;
+import com.wish.rd.rag.project.agent.model.RuntimeContextFileExpectation;
 import com.wish.rd.rag.project.agent.model.RuntimeContextPolicy;
 import com.wish.rd.rag.project.agent.model.RuntimeContextPolicyMode;
 import com.wish.rd.rag.project.agent.model.TaskBaselineReference;
@@ -63,22 +64,15 @@ final class RoleExecutionInputManifestBuilder {
     String semanticSignature = roleContextVersionManager == null
         ? ""
         : roleContextVersionManager.semanticSignatureOf(roleContext);
-    RuntimeContextPolicy runtimeContextPolicy = new RuntimeContextPolicy(
-        "rd-runtime-context-policy/v1",
-        AgentManifestCanonicalJson.manifestHash(Map.of(
-                "mode", RuntimeContextPolicyMode.LEGACY_OBSERVE_ONLY.name(),
-                "expectedFiles", List.of()
-        )),
-        RuntimeContextPolicyMode.LEGACY_OBSERVE_ONLY,
-        List.of()
-    );
+    RuntimeContextPolicyMode contextMode = resolveContextPolicyMode(executionProfileResolution);
+    RuntimeContextPolicy runtimeContextPolicy = buildRuntimeContextPolicy(contextMode);
     return new RoleExecutionInputManifest(
         RoleExecutionInputManifest.CURRENT_SCHEMA_VERSION,
         stage.taskId(),
         stage.stageRunId(),
         role.name(),
         stage.attemptNo(),
-        RuntimeContextPolicyMode.LEGACY_OBSERVE_ONLY,
+        contextMode,
         new RoleContractReference("inline-v1", AgentManifestCanonicalJson.contentHash(roleContractText)),
         new TaskBaselineReference(
                 roleContext.packageId(),
@@ -96,6 +90,43 @@ final class RoleExecutionInputManifestBuilder {
         roleContext.packageId(),
         stage.promptArtifactId(),
         expectedArtifactIds == null ? List.of() : List.copyOf(expectedArtifactIds)
+    );
+  }
+
+  private static RuntimeContextPolicyMode resolveContextPolicyMode(
+      RequirementExecutionProfileResolution executionProfileResolution
+  ) {
+    if (executionProfileResolution == null || executionProfileResolution.contextPolicyMode().isBlank()) {
+      return RuntimeContextPolicyMode.LEGACY_OBSERVE_ONLY;
+    }
+    try {
+      return RuntimeContextPolicyMode.valueOf(executionProfileResolution.contextPolicyMode().strip());
+    } catch (IllegalArgumentException ignored) {
+      return RuntimeContextPolicyMode.LEGACY_OBSERVE_ONLY;
+    }
+  }
+
+  private static RuntimeContextPolicy buildRuntimeContextPolicy(RuntimeContextPolicyMode mode) {
+    RuntimeContextPolicyMode resolved = mode == null
+        ? RuntimeContextPolicyMode.LEGACY_OBSERVE_ONLY
+        : mode;
+    List<RuntimeContextFileExpectation> expectedFiles = resolved == RuntimeContextPolicyMode.ROOT_ONLY
+        ? List.of(
+            new RuntimeContextFileExpectation("AGENTS.md", ""),
+            new RuntimeContextFileExpectation("CLAUDE.md", "")
+        )
+        : List.of();
+    String policyHash = AgentManifestCanonicalJson.manifestHash(Map.of(
+        "mode", resolved.name(),
+        "expectedFiles", expectedFiles.stream()
+            .map(file -> Map.of("path", file.path(), "contentHash", file.contentHash()))
+            .toList()
+    ));
+    return new RuntimeContextPolicy(
+        "rd-runtime-context-policy/v1",
+        policyHash,
+        resolved,
+        expectedFiles
     );
   }
 
