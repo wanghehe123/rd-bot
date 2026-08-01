@@ -2,9 +2,10 @@
 
 ## 状态
 
-`P3_V3_SENTINEL_PASS` — 2026-08-01 付费 ROOT_ONLY sentinel 已通过（`tmp/p3-v3-sentinel/evidence-summary.md`）。
-Host 可 opt-in 物化 `rd-pi-request/v2`；生产默认仍为 `v1`。
-未启用生产灰度，未扩大 `dynamicStateEnabled` / `FACTS_V1`。
+`P3_V3_B_AUTO_INJECTION_PASS` — 2026-08-01 付费 sentinel-b 通过（post-reload 真值 + 无 bash + SYMLINK 拒绝）。
+证据：`tmp/p3-v3-sentinel-b/evidence-summary.md`
+生产默认仍为 `v1` / `LEGACY_OBSERVE_ONLY`；**P3 Phase 3 complete / production-ready: NOT MET**。
+
 
 对应方案：`docs/superpowers/specs/2026-08-01-role-context-optimization-validation-and-improvement-plan.markdown` §P3-V2→V3。
 
