@@ -143,6 +143,159 @@ class DockerPiAgentExecutorTest {
     }
 
     @Test
+    void shouldWriteV2RequestAndMaterializeInputManifest() throws Exception {
+        CapturingRunner runner = new CapturingRunner() {
+            @Override
+            public ContainerRunResult run(ContainerRunRequest request, ContainerOutputListener listener) throws IOException {
+                Files.writeString(request.outputDirectory().resolve("runtime-context-manifest.json"), """
+                        {
+                          "schemaVersion": 1,
+                          "protocol": "rd-runtime-context-manifest/v1",
+                          "taskId": "task-1",
+                          "stageRunId": "stage-1",
+                          "role": "CODING_AGENT",
+                          "attemptNo": 1,
+                          "mode": "ROOT_ONLY",
+                          "runtime": "PI",
+                          "provider": "provider-1",
+                          "model": "gpt-test",
+                          "executionProfileSnapshotId": "snapshot-v2",
+                          "inputManifestHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                          "contextPolicyHash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                          "generatedAt": "2026-08-01T00:00:00Z",
+                          "observedFiles": [
+                            {
+                              "path": "AGENTS.md",
+                              "contentHash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                              "bytes": 12,
+                              "loadOrder": 1,
+                              "scope": "REPO",
+                              "trustDecision": "LOADED",
+                              "rejectReason": ""
+                            }
+                          ],
+                          "totalFiles": 1,
+                          "totalBytes": 12,
+                          "effectiveContextHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                          "status": "ACCEPTED"
+                        }
+                        """, StandardCharsets.UTF_8);
+                return super.run(request, listener);
+            }
+        };
+        DockerPiAgentExecutor executor = executor(
+                runner,
+                AgentExecutionEventSink.noop(),
+                ignored -> "secret",
+                v2Configuration()
+        );
+        String policyJson = """
+                {
+                  "protocol": "rd-runtime-context-policy/v1",
+                  "policyHash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "mode": "ROOT_ONLY",
+                  "expectedFiles": [
+                    {"path": "AGENTS.md", "contentHash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"}
+                  ]
+                }
+                """;
+        String manifestJson = "{\"schemaVersion\":1,\"taskId\":\"task-1\"}";
+        RepairJobCommand command = v2Command(
+                "task-1",
+                "CODING_AGENT",
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                policyJson,
+                manifestJson
+        );
+
+        RepairExecutionResult result = executor.execute(new AgentRuntimeExecutionRequest(
+                snapshot("snapshot-v2", "stage-1", "task-1", AgentRuntimeType.PI, ""),
+                command
+        ));
+
+        assertEquals(RepairExecutionStatus.SUCCESS, result.status());
+        Path inputDirectory = temporaryDirectory.resolve("workspaces/task-1/input");
+        JsonNode request = OBJECT_MAPPER.readTree(Files.readString(inputDirectory.resolve("request.json")));
+        assertEquals("rd-pi-request/v2", request.path("protocol").asText());
+        assertEquals("/work/input/role-execution-input-manifest.json", request.path("inputManifestPath").asText());
+        assertEquals("ROOT_ONLY", request.path("contextPolicy").path("mode").asText());
+        assertTrue(Files.isRegularFile(inputDirectory.resolve("role-execution-input-manifest.json")));
+    }
+
+    @Test
+    void shouldRejectV2RequestWithoutFullContextPolicy() throws Exception {
+        CapturingRunner runner = new CapturingRunner();
+        DockerPiAgentExecutor executor = executor(
+                runner,
+                AgentExecutionEventSink.noop(),
+                ignored -> "secret",
+                v2Configuration()
+        );
+        Map<String, String> context = new java.util.LinkedHashMap<>(command("task-1", "CODING_AGENT").contextJson());
+        context.put("inputManifestHash", "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+
+        RepairExecutionResult result = executor.execute(new AgentRuntimeExecutionRequest(
+                snapshot("snapshot-v2-missing-policy", "stage-1", "task-1", AgentRuntimeType.PI, ""),
+                new RepairJobCommand(
+                        "repair-task-1",
+                        "task-1",
+                        "ticket-1",
+                        "Implement Pi runtime",
+                        "Implement the requested change",
+                        "https://github.com/acme/repo.git",
+                        "acme",
+                        "repo",
+                        "main",
+                        "repair/task-1",
+                        context,
+                        Map.of("repositoryPublishRequired", "false"),
+                        List.of()
+                )
+        ));
+
+        assertEquals(RepairExecutionStatus.FAILED_VALIDATION, result.status());
+        assertEquals("PI_REQUEST_V2", result.rawResultJson().get("failureCategory"));
+    }
+
+    @Test
+    void shouldKeepV1RequestOptionalContextPolicyHashOnly() throws Exception {
+        CapturingRunner runner = new CapturingRunner();
+        DockerPiAgentExecutor executor = executor(runner, AgentExecutionEventSink.noop(), ignored -> "secret");
+        Map<String, String> context = new java.util.LinkedHashMap<>(command("task-1", "CODING_AGENT").contextJson());
+        context.put("contextPolicyHash", "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+
+        RepairExecutionResult result = executor.execute(new AgentRuntimeExecutionRequest(
+                snapshot("snapshot-v1", "stage-1", "task-1", AgentRuntimeType.PI, ""),
+                new RepairJobCommand(
+                        "repair-task-1",
+                        "task-1",
+                        "ticket-1",
+                        "Implement Pi runtime",
+                        "Implement the requested change",
+                        "https://github.com/acme/repo.git",
+                        "acme",
+                        "repo",
+                        "main",
+                        "repair/task-1",
+                        context,
+                        Map.of("repositoryPublishRequired", "false"),
+                        List.of()
+                )
+        ));
+
+        assertEquals(RepairExecutionStatus.SUCCESS, result.status());
+        JsonNode request = OBJECT_MAPPER.readTree(Files.readString(
+                temporaryDirectory.resolve("workspaces/task-1/input/request.json")
+        ));
+        assertEquals("rd-pi-request/v1", request.path("protocol").asText());
+        assertEquals(
+                "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                request.path("contextPolicy").path("policyHash").asText()
+        );
+        assertTrue(request.path("contextPolicy").path("mode").isMissingNode());
+    }
+
+    @Test
     void shouldClearStalePiOutputBeforeStartingANewAttempt() throws Exception {
         Path staleRawEvents = temporaryDirectory.resolve(
                 "workspaces/task-1/output/private/pi-raw-events.jsonl"
@@ -392,7 +545,23 @@ class DockerPiAgentExecutorTest {
                 new RepairWorkspaceFactory(temporaryDirectory.resolve("workspaces"), RESULT_SCHEMA),
                 runner,
                 eventSink,
-                authResolver
+                authResolver,
+                defaultConfiguration()
+        );
+    }
+
+    private DockerPiAgentExecutor executor(
+            StreamingContainerRunnerPort runner,
+            AgentExecutionEventSink eventSink,
+            com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor.AuthEnvironmentResolver authResolver,
+            DockerPiAgentExecutor.Configuration configuration
+    ) {
+        return executor(
+                new RepairWorkspaceFactory(temporaryDirectory.resolve("workspaces"), RESULT_SCHEMA),
+                runner,
+                eventSink,
+                authResolver,
+                configuration
         );
     }
 
@@ -402,24 +571,81 @@ class DockerPiAgentExecutorTest {
             AgentExecutionEventSink eventSink,
             com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor.AuthEnvironmentResolver authResolver
     ) {
+        return executor(workspaceFactory, runner, eventSink, authResolver, defaultConfiguration());
+    }
+
+    private DockerPiAgentExecutor executor(
+            RepairWorkspaceFactory workspaceFactory,
+            StreamingContainerRunnerPort runner,
+            AgentExecutionEventSink eventSink,
+            com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor.AuthEnvironmentResolver authResolver,
+            DockerPiAgentExecutor.Configuration configuration
+    ) {
         return new DockerPiAgentExecutor(
                 workspaceFactory,
                 runner,
                 new StructuredResultValidator(),
-                new DockerPiAgentExecutor.Configuration(
-                        "rd-bot/pi-agent:test",
-                        "rd-bot/pi-agent-qa:local",
-                        List.of("node", "/opt/rd-pi-bridge/src/rd-pi-bridge.mjs"),
-                        "bridge",
-                        true,
-                        false,
-                        60_000L
-                ),
+                configuration,
                 RepairWorkspaceRepositoryPort.noop(),
                 ExecutionAllowlistPolicy.disabled(),
                 PiResourceManifestMaterializerPort.emptyOnly(),
                 eventSink,
                 authResolver
+        );
+    }
+
+    private static DockerPiAgentExecutor.Configuration defaultConfiguration() {
+        return new DockerPiAgentExecutor.Configuration(
+                "rd-bot/pi-agent:test",
+                "rd-bot/pi-agent-qa:local",
+                List.of("node", "/opt/rd-pi-bridge/src/rd-pi-bridge.mjs"),
+                "bridge",
+                true,
+                false,
+                60_000L
+        );
+    }
+
+    private static DockerPiAgentExecutor.Configuration v2Configuration() {
+        return new DockerPiAgentExecutor.Configuration(
+                "rd-bot/pi-agent:test",
+                "rd-bot/pi-agent-qa:local",
+                List.of("node", "/opt/rd-pi-bridge/src/rd-pi-bridge.mjs"),
+                "bridge",
+                true,
+                false,
+                60_000L,
+                900_000L,
+                16L * 1024L * 1024L,
+                "v2"
+        );
+    }
+
+    private static RepairJobCommand v2Command(
+            String taskId,
+            String role,
+            String inputManifestHash,
+            String contextPolicyJson,
+            String inputManifestJson
+    ) {
+        Map<String, String> context = new java.util.LinkedHashMap<>(command(taskId, role).contextJson());
+        context.put("inputManifestHash", inputManifestHash);
+        context.put("contextPolicyJson", contextPolicyJson);
+        context.put("inputManifestJson", inputManifestJson);
+        return new RepairJobCommand(
+                "repair-" + taskId,
+                taskId,
+                "ticket-1",
+                "Implement Pi runtime",
+                "Implement the requested change",
+                "https://github.com/acme/repo.git",
+                "acme",
+                "repo",
+                "main",
+                "repair/" + taskId,
+                context,
+                Map.of("repositoryPublishRequired", "false"),
+                List.of()
         );
     }
 

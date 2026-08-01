@@ -27,4 +27,16 @@ class PiAgentExecutorPropertiesTest {
         properties.setRawEventMaxBytes(0L);
         assertEquals(1L, properties.toExecutorConfiguration().rawEventMaxBytes());
     }
+
+    @Test
+    void shouldDefaultRequestProtocolVersionToV1AndAcceptSetter() {
+        PiAgentExecutorProperties properties = new PiAgentExecutorProperties();
+
+        assertEquals("v1", properties.getRequestProtocolVersion());
+        assertEquals("v1", properties.toExecutorConfiguration().requestProtocolVersion());
+
+        properties.setRequestProtocolVersion("V2");
+        assertEquals("v2", properties.getRequestProtocolVersion());
+        assertEquals("v2", properties.toExecutorConfiguration().requestProtocolVersion());
+    }
 }

@@ -29,6 +29,7 @@ import com.wish.rd.rag.runtime.model.TaskMaterial;
 import com.wish.rd.rag.retrieval.run.model.RetrievalConsumerType;
 import com.wish.rd.rag.retrieval.run.model.RetrievalRunStatus;
 import com.wish.rd.rag.project.agent.model.ContextProtocolVersion;
+import com.wish.rd.rag.project.agent.model.AgentManifestCanonicalJson;
 import com.wish.rd.rag.project.agent.model.RoleExecutionInputManifest;
 
 import java.io.IOException;
@@ -1155,6 +1156,10 @@ public class RequirementAgentStageOrchestrator {
         String contextPolicyHash = inputManifest == null
                 ? ""
                 : inputManifest.runtimeContextPolicy().policyHash();
+        String inputManifestJson = inputManifest == null ? "" : inputManifest.canonicalJson();
+        String contextPolicyJson = inputManifest == null
+                ? ""
+                : AgentManifestCanonicalJson.canonicalJson(inputManifest.runtimeContextPolicy());
         return normalizeResult(
                 task.taskId(),
                 executor.execute(new RequirementExecutionRequest(
@@ -1169,7 +1174,9 @@ public class RequirementAgentStageOrchestrator {
                         stage.stageRunId(),
                         executionProfileSnapshotId,
                         inputManifestHash,
-                        contextPolicyHash
+                        contextPolicyHash,
+                        inputManifestJson,
+                        contextPolicyJson
                 ))
         );
     }

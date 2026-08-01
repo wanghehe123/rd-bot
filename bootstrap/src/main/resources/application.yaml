@@ -202,6 +202,7 @@ rd:
       execution-timeout-millis: ${RD_EXECUTOR_PI_EXECUTION_TIMEOUT_MILLIS:3600000}
       bash-command-timeout-millis: ${RD_EXECUTOR_PI_BASH_COMMAND_TIMEOUT_MILLIS:900000}
       raw-event-max-bytes: ${RD_EXECUTOR_PI_MAX_RAW_EVENT_BYTES:16777216}
+      # request-protocol-version: v1  # set v2 only for P3-V3 sentinel rehearsal
       resources:
         enabled: ${RD_EXECUTOR_PI_RESOURCES_ENABLED:false}
         approved-cache-root: ${RD_EXECUTOR_PI_APPROVED_CACHE_ROOT:}

@@ -470,6 +470,12 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
         if (!request.contextPolicyHash().isBlank()) {
             context.put("contextPolicyHash", request.contextPolicyHash());
         }
+        if (!request.inputManifestJson().isBlank()) {
+            context.put("inputManifestJson", request.inputManifestJson());
+        }
+        if (!request.contextPolicyJson().isBlank()) {
+            context.put("contextPolicyJson", request.contextPolicyJson());
+        }
         if (handoffPublisher != null) {
             context.put("roleHandoffMaxTokens", String.valueOf(handoffPublisher.maxTokens()));
         }

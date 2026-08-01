@@ -1,7 +1,9 @@
 package com.wish.rd.exec.repair.pi.impl;
 
 import com.wish.rd.exec.repair.pi.AgentPrivateArtifactPublisher;
+import com.wish.rd.exec.repair.pi.PiRequestV2Materializer;
 import com.wish.rd.exec.repair.pi.PiResourceManifestMaterializerPort;
+import com.wish.rd.exec.repair.pi.RuntimeContextPreflightValidator;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -38,6 +40,8 @@ import com.wish.rd.rag.project.agent.model.AgentRuntimeType;
 import com.wish.rd.rag.project.agent.model.ContextProtocolVersion;
 import com.wish.rd.rag.project.agent.model.FactFreshnessEvaluator;
 import com.wish.rd.rag.project.agent.model.ModelProviderProtocol;
+import com.wish.rd.rag.project.agent.model.RuntimeContextManifest;
+import com.wish.rd.rag.project.agent.model.RuntimeContextPolicy;
 
 import java.math.BigDecimal;
 import java.io.IOException;
@@ -84,6 +88,8 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
             "REQUIREMENT_REVIEWER", "SOLUTION_ARCHITECT", "CODING_AGENT", "QA_AGENT"
     );
     private static final AgentRoleResultValidator ROLE_RESULT_VALIDATOR = new AgentRoleResultValidator();
+    private static final RuntimeContextPreflightValidator RUNTIME_CONTEXT_PREFLIGHT_VALIDATOR =
+            new RuntimeContextPreflightValidator();
     private static final QaRepositoryProfileDetector QA_PROFILE_DETECTOR = new QaRepositoryProfileDetector();
     // QA parity with the Claude executor: the same skill document ships in the
     // skill module and is materialized into the read-only input mount for Pi.
@@ -252,6 +258,8 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                 repositoryMetadata.putAll(workspaceRepository.prepare(command, workspace).metadataJson());
                 materializeResources(snapshot, workspace.inputDirectory());
                 QaProvision qaProvision = provisionQaInputs(command, snapshot, workspace);
+                String inputManifestJson = text(command.contextJson().get("inputManifestJson"));
+                PiRequestV2Materializer.materializeInputManifest(workspace.inputDirectory(), inputManifestJson);
                 Path requestPath = workspace.inputDirectory().resolve("request.json").normalize();
                 writeRequest(requestPath, snapshot, command, snapshotJson, provider, toolPolicy);
 
@@ -301,6 +309,15 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                     eventCapture,
                     artifacts
             );
+            RepairExecutionResult preflightFailure = validateRuntimeContextPreflight(
+                    command,
+                    workspace.outputDirectory(),
+                    dockerMetadata,
+                    artifacts
+            );
+            if (preflightFailure != null) {
+                return withRepositoryMetadata(preflightFailure, repositoryMetadata);
+            }
             RepairExecutionResult result = validateResult(
                     command,
                     snapshot,
@@ -478,8 +495,9 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
             ProviderSpec provider,
             ToolPolicySpec toolPolicy
     ) throws IOException {
+        boolean v2 = PiRequestV2Materializer.isV2(configuration.requestProtocolVersion());
         Map<String, Object> request = new LinkedHashMap<>();
-        request.put("protocol", "rd-pi-request/v1");
+        request.put("protocol", v2 ? "rd-pi-request/v2" : "rd-pi-request/v1");
         request.put("snapshotId", snapshot.snapshotId());
         request.put("stageRunId", snapshot.stageRunId());
         request.put("taskId", snapshot.taskId());
@@ -505,12 +523,31 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         request.put("attemptNo", snapshot.attemptNo());
         request.put("resourceManifestPath", "/work/input/resource-manifest.json");
         String inputManifestHash = text(command.contextJson().get("inputManifestHash"));
-        if (!inputManifestHash.isBlank()) {
+        String contextPolicyJson = text(command.contextJson().get("contextPolicyJson"));
+        if (v2) {
+            if (inputManifestHash.isBlank()) {
+                throw new PiConfigurationException(
+                        "PI_REQUEST_V2",
+                        "v2 request requires non-blank inputManifestHash"
+                );
+            }
+            if (contextPolicyJson.isBlank()) {
+                throw new PiConfigurationException(
+                        "PI_REQUEST_V2",
+                        "v2 request requires non-blank contextPolicyJson with protocol, policyHash, mode, expectedFiles"
+                );
+            }
             request.put("inputManifestHash", inputManifestHash);
-        }
-        String contextPolicyHash = text(command.contextJson().get("contextPolicyHash"));
-        if (!contextPolicyHash.isBlank()) {
-            request.put("contextPolicy", Map.of("policyHash", contextPolicyHash));
+            request.put("inputManifestPath", PiRequestV2Materializer.CONTAINER_INPUT_MANIFEST_PATH);
+            request.put("contextPolicy", PiRequestV2Materializer.parseContextPolicy(contextPolicyJson));
+        } else {
+            if (!inputManifestHash.isBlank()) {
+                request.put("inputManifestHash", inputManifestHash);
+            }
+            String contextPolicyHash = text(command.contextJson().get("contextPolicyHash"));
+            if (!contextPolicyHash.isBlank()) {
+                request.put("contextPolicy", Map.of("policyHash", contextPolicyHash));
+            }
         }
         request.put("toolPolicy", Map.of(
                 "hostAllow", toolPolicy.hostAllow(),
@@ -527,6 +564,66 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                 "toolPolicyVersion", snapshotJson.path("toolPolicyVersion").asLong(0L)
         ));
         Files.writeString(requestPath, OBJECT_MAPPER.writeValueAsString(request) + "\n", StandardCharsets.UTF_8);
+    }
+
+    private RepairExecutionResult validateRuntimeContextPreflight(
+            RepairJobCommand command,
+            Path outputDirectory,
+            Map<String, String> dockerMetadata,
+            List<RepairArtifact> artifacts
+    ) {
+        if (!PiRequestV2Materializer.isV2(configuration.requestProtocolVersion())) {
+            return null;
+        }
+        String contextPolicyJson = text(command.contextJson().get("contextPolicyJson"));
+        if (contextPolicyJson.isBlank()) {
+            return failed(
+                    RepairExecutionStatus.FAILED_VALIDATION,
+                    "Pi runtime context preflight validation failed.",
+                    "PI_RUNTIME_CONTEXT_PREFLIGHT",
+                    "contextPolicyJson is missing for v2 request",
+                    dockerMetadata,
+                    artifacts
+            );
+        }
+        Path manifestPath = outputDirectory.resolve("runtime-context-manifest.json").normalize();
+        if (!Files.isRegularFile(manifestPath, LinkOption.NOFOLLOW_LINKS)) {
+            return failed(
+                    RepairExecutionStatus.FAILED_VALIDATION,
+                    "Pi runtime context preflight validation failed.",
+                    "PI_RUNTIME_CONTEXT_PREFLIGHT",
+                    "runtime-context-manifest.json is missing",
+                    dockerMetadata,
+                    artifacts
+            );
+        }
+        try {
+            String manifestJson = Files.readString(manifestPath, StandardCharsets.UTF_8);
+            RuntimeContextPolicy policy = PiRequestV2Materializer.parseRuntimeContextPolicy(contextPolicyJson);
+            RuntimeContextManifest manifest = PiRequestV2Materializer.parseRuntimeContextManifest(manifestJson);
+            RuntimeContextPreflightValidator.ValidationResult validation =
+                    RUNTIME_CONTEXT_PREFLIGHT_VALIDATOR.validate(policy, manifest);
+            if (validation.accepted()) {
+                return null;
+            }
+            return failed(
+                    RepairExecutionStatus.FAILED_VALIDATION,
+                    "Pi runtime context preflight validation failed.",
+                    "PI_RUNTIME_CONTEXT_PREFLIGHT",
+                    String.join("; ", validation.violations()),
+                    dockerMetadata,
+                    artifacts
+            );
+        } catch (IOException | IllegalArgumentException exception) {
+            return failed(
+                    RepairExecutionStatus.FAILED_VALIDATION,
+                    "Pi runtime context preflight validation failed.",
+                    "PI_RUNTIME_CONTEXT_PREFLIGHT",
+                    safeError(exception),
+                    dockerMetadata,
+                    artifacts
+            );
+        }
     }
 
     /**
@@ -1565,7 +1662,8 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
             boolean allowPrivileged,
             long executionTimeoutMillis,
             long bashCommandTimeoutMillis,
-            long rawEventMaxBytes
+            long rawEventMaxBytes,
+            String requestProtocolVersion
     ) {
 
         public Configuration {
@@ -1578,6 +1676,7 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
             bashCommandTimeoutMillis = positiveTimeout(
                     bashCommandTimeoutMillis, DEFAULT_BASH_COMMAND_TIMEOUT_MILLIS);
             rawEventMaxBytes = Math.max(1L, rawEventMaxBytes);
+            requestProtocolVersion = PiRequestV2Materializer.normalizeProtocolVersion(requestProtocolVersion);
             if (allowPrivileged) {
                 throw new IllegalArgumentException("Pi executor never permits privileged containers");
             }
@@ -1592,7 +1691,7 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                 long executionTimeoutMillis
         ) {
             this(image, "", command, networkMode, removeAfterExit, allowPrivileged, executionTimeoutMillis,
-                    DEFAULT_BASH_COMMAND_TIMEOUT_MILLIS, 16L * 1024L * 1024L);
+                    DEFAULT_BASH_COMMAND_TIMEOUT_MILLIS, 16L * 1024L * 1024L, "v1");
         }
 
         public Configuration(
@@ -1605,7 +1704,7 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                 long executionTimeoutMillis
         ) {
             this(image, qaImage, command, networkMode, removeAfterExit, allowPrivileged, executionTimeoutMillis,
-                    DEFAULT_BASH_COMMAND_TIMEOUT_MILLIS, 16L * 1024L * 1024L);
+                    DEFAULT_BASH_COMMAND_TIMEOUT_MILLIS, 16L * 1024L * 1024L, "v1");
         }
 
         public static Configuration defaultConfiguration() {
@@ -1618,7 +1717,8 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                     false,
                     DEFAULT_EXECUTION_TIMEOUT_MILLIS,
                     DEFAULT_BASH_COMMAND_TIMEOUT_MILLIS,
-                    16L * 1024L * 1024L
+                    16L * 1024L * 1024L,
+                    "v1"
             );
         }
 

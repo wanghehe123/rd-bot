@@ -33,6 +33,7 @@ public class PiAgentExecutorProperties {
     private String contextProtocolVersion = "LEGACY_ENVIRONMENT_NOTES";
     private boolean dynamicStateEnabled = false;
     private int maxInjectedStateBytes = 8192;
+    private String requestProtocolVersion = "v1";
 
     public String getContextProtocolVersion() {
         return contextProtocolVersion;
@@ -57,6 +58,15 @@ public class PiAgentExecutorProperties {
     public void setMaxInjectedStateBytes(int maxInjectedStateBytes) {
         this.maxInjectedStateBytes = maxInjectedStateBytes > 0 ? maxInjectedStateBytes : 8192;
     }
+
+    public String getRequestProtocolVersion() {
+        return requestProtocolVersion;
+    }
+
+    public void setRequestProtocolVersion(String requestProtocolVersion) {
+        this.requestProtocolVersion = normalizeRequestProtocolVersion(requestProtocolVersion);
+    }
+
     public String getImage() {
         return image;
     }
@@ -140,8 +150,21 @@ public class PiAgentExecutorProperties {
                 allowPrivileged,
                 executionTimeoutMillis,
                 bashCommandTimeoutMillis,
-                rawEventMaxBytes
+                rawEventMaxBytes,
+                requestProtocolVersion
         );
+    }
+
+    private static String normalizeRequestProtocolVersion(String value) {
+        String normalized = value == null ? "" : value.strip();
+        if (normalized.isBlank()) {
+            return "v1";
+        }
+        String lower = normalized.toLowerCase(java.util.Locale.ROOT);
+        if ("v1".equals(lower) || "v2".equals(lower)) {
+            return lower;
+        }
+        throw new IllegalArgumentException("requestProtocolVersion must be v1 or v2 but was: " + value);
     }
 
     private static long positiveTimeout(long value, long fallback) {
