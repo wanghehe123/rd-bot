@@ -12,15 +12,29 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+/**
+ * Unit tests for {@link PostgresAgentStageArtifactStore} with a mocked mapper.
+ * Concurrent race coverage simulates {@code ON CONFLICT DO NOTHING} via an in-memory row map.
+ * Real Postgres persistence is exercised indirectly by
+ * {@link com.wish.rd.bootstrap.MultiAgentRequirementDeliveryRealSmokeTest} and
+ * {@link com.wish.rd.bootstrap.ObservabilityMetricsRealSmokeTest} (rd_agent_stage_artifacts).
+ */
 class PostgresAgentStageArtifactStoreTest {
 
     private final RdAgentStageArtifactMapper mapper = mock(RdAgentStageArtifactMapper.class);
@@ -105,7 +119,8 @@ class PostgresAgentStageArtifactStoreTest {
                 "{}",
                 1_783_000_000_000L
         );
-        when(mapper.selectById(7478000000000000202L)).thenReturn(null, row(artifact));
+        when(mapper.insertStageArtifactIgnoringConflict(any(RdAgentStageArtifactRow.class))).thenReturn(1, 0);
+        when(mapper.selectById(7478000000000000202L)).thenReturn(row(artifact));
 
         store.saveImmutable(artifact);
         AgentStageArtifact again = store.saveImmutable(new AgentStageArtifact(
@@ -122,8 +137,8 @@ class PostgresAgentStageArtifactStoreTest {
                 artifact.createdAtEpochMillis()
         ));
 
-        verify(mapper).upsertStageArtifact(any(RdAgentStageArtifactRow.class));
-        verify(mapper, never()).insert(org.mockito.ArgumentMatchers.<RdAgentStageArtifactRow>any());
+        verify(mapper, times(2)).insertStageArtifactIgnoringConflict(any(RdAgentStageArtifactRow.class));
+        verify(mapper, never()).upsertStageArtifact(any(RdAgentStageArtifactRow.class));
         assertEquals(artifact.artifactId(), again.artifactId());
         assertEquals("{\"version\":1}", again.contentPreview());
     }
@@ -143,6 +158,7 @@ class PostgresAgentStageArtifactStoreTest {
                 "{}",
                 1_783_000_000_000L
         );
+        when(mapper.insertStageArtifactIgnoringConflict(any(RdAgentStageArtifactRow.class))).thenReturn(0);
         when(mapper.selectById(7478000000000000203L)).thenReturn(row(artifact));
 
         IllegalStateException error = assertThrows(IllegalStateException.class, () -> store.saveImmutable(
@@ -161,6 +177,158 @@ class PostgresAgentStageArtifactStoreTest {
                 )
         ));
         assertEquals("immutable artifact conflict: 7478000000000000203", error.getMessage());
+        verify(mapper, never()).upsertStageArtifact(any(RdAgentStageArtifactRow.class));
+    }
+
+    @Test
+    void saveImmutableConcurrentDifferentHashShouldRetainFirstWriterAndThrowSecond() throws Exception {
+        long artifactId = 7478000000000000204L;
+        AgentStageArtifact first = new AgentStageArtifact(
+                String.valueOf(artifactId),
+                "7478000000000000101",
+                "7478000000000000000",
+                AgentRole.CODING_AGENT,
+                "ROLE_EXECUTION_INPUT_MANIFEST",
+                "rd-agent-stage://7478000000000000000/7478000000000000101/manifest",
+                "manifest",
+                "{\"version\":1}",
+                "sha256:first",
+                "{}",
+                1_783_000_000_000L
+        );
+        AgentStageArtifact second = new AgentStageArtifact(
+                first.artifactId(),
+                first.stageRunId(),
+                first.taskId(),
+                first.role(),
+                first.artifactType(),
+                first.artifactUri(),
+                first.summary(),
+                "{\"version\":2}",
+                "sha256:second",
+                first.metadataJson(),
+                first.createdAtEpochMillis()
+        );
+        ConcurrentHashMap<Long, RdAgentStageArtifactRow> rows = new ConcurrentHashMap<>();
+        when(mapper.insertStageArtifactIgnoringConflict(any(RdAgentStageArtifactRow.class))).thenAnswer(invocation -> {
+            RdAgentStageArtifactRow row = invocation.getArgument(0);
+            return rows.putIfAbsent(row.id, row) == null ? 1 : 0;
+        });
+        when(mapper.selectById(artifactId)).thenAnswer(invocation -> rows.get(artifactId));
+
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        AtomicReference<AgentStageArtifact> winner = new AtomicReference<>();
+        AtomicReference<Throwable> loserError = new AtomicReference<>();
+        try (ExecutorService executor = Executors.newFixedThreadPool(2)) {
+            executor.submit(() -> runConcurrentSave(store, first, ready, start, winner, loserError));
+            executor.submit(() -> runConcurrentSave(store, second, ready, start, winner, loserError));
+            ready.await();
+            start.countDown();
+            executor.shutdown();
+            assertEquals(true, executor.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS));
+        }
+
+        assertNotNull(winner.get());
+        assertEquals("sha256:first", winner.get().contentHash());
+        assertNotNull(loserError.get());
+        assertEquals(IllegalStateException.class, loserError.get().getClass());
+        assertEquals("immutable artifact conflict: " + artifactId, loserError.get().getMessage());
+        verify(mapper, never()).upsertStageArtifact(any(RdAgentStageArtifactRow.class));
+    }
+
+    @Test
+    void saveImmutableConcurrentSameHashShouldReturnStoredContentWithoutOverwrite() throws Exception {
+        long artifactId = 7478000000000000205L;
+        AgentStageArtifact first = new AgentStageArtifact(
+                String.valueOf(artifactId),
+                "7478000000000000101",
+                "7478000000000000000",
+                AgentRole.CODING_AGENT,
+                "ROLE_EXECUTION_INPUT_MANIFEST",
+                "rd-agent-stage://7478000000000000000/7478000000000000101/manifest",
+                "manifest",
+                "{\"version\":1}",
+                "sha256:same",
+                "{}",
+                1_783_000_000_000L
+        );
+        AgentStageArtifact second = new AgentStageArtifact(
+                first.artifactId(),
+                first.stageRunId(),
+                first.taskId(),
+                first.role(),
+                first.artifactType(),
+                first.artifactUri(),
+                first.summary(),
+                "{\"version\":2}",
+                first.contentHash(),
+                first.metadataJson(),
+                first.createdAtEpochMillis()
+        );
+        ConcurrentHashMap<Long, RdAgentStageArtifactRow> rows = new ConcurrentHashMap<>();
+        when(mapper.insertStageArtifactIgnoringConflict(any(RdAgentStageArtifactRow.class))).thenAnswer(invocation -> {
+            RdAgentStageArtifactRow row = invocation.getArgument(0);
+            return rows.putIfAbsent(row.id, row) == null ? 1 : 0;
+        });
+        when(mapper.selectById(artifactId)).thenAnswer(invocation -> rows.get(artifactId));
+
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        AtomicReference<AgentStageArtifact> firstResult = new AtomicReference<>();
+        AtomicReference<AgentStageArtifact> secondResult = new AtomicReference<>();
+        AtomicReference<Throwable> error = new AtomicReference<>();
+        try (ExecutorService executor = Executors.newFixedThreadPool(2)) {
+            executor.submit(() -> runConcurrentSaveSameHash(store, first, ready, start, firstResult, error));
+            executor.submit(() -> runConcurrentSaveSameHash(store, second, ready, start, secondResult, error));
+            ready.await();
+            start.countDown();
+            executor.shutdown();
+            assertEquals(true, executor.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS));
+        }
+
+        assertEquals(null, error.get());
+        assertNotNull(firstResult.get());
+        assertNotNull(secondResult.get());
+        assertEquals(firstResult.get().contentPreview(), secondResult.get().contentPreview());
+        assertEquals("sha256:same", firstResult.get().contentHash());
+        assertEquals(firstResult.get().contentHash(), secondResult.get().contentHash());
+        verify(mapper, never()).upsertStageArtifact(any(RdAgentStageArtifactRow.class));
+    }
+
+    private static void runConcurrentSaveSameHash(
+            PostgresAgentStageArtifactStore store,
+            AgentStageArtifact artifact,
+            CountDownLatch ready,
+            CountDownLatch start,
+            AtomicReference<AgentStageArtifact> result,
+            AtomicReference<Throwable> error
+    ) {
+        ready.countDown();
+        try {
+            start.await();
+            result.set(store.saveImmutable(artifact));
+        } catch (Throwable throwable) {
+            error.compareAndSet(null, throwable);
+        }
+    }
+
+    private static void runConcurrentSave(
+            PostgresAgentStageArtifactStore store,
+            AgentStageArtifact artifact,
+            CountDownLatch ready,
+            CountDownLatch start,
+            AtomicReference<AgentStageArtifact> winner,
+            AtomicReference<Throwable> loserError
+    ) {
+        ready.countDown();
+        try {
+            start.await();
+            AgentStageArtifact saved = store.saveImmutable(artifact);
+            winner.compareAndSet(null, saved);
+        } catch (Throwable throwable) {
+            loserError.compareAndSet(null, throwable);
+        }
     }
 
     private RdAgentStageArtifactRow row(AgentStageArtifact artifact) {

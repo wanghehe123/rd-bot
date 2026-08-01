@@ -37,4 +37,23 @@ public interface RdAgentStageArtifactMapper extends BaseMapper<RdAgentStageArtif
                 metadata_json = EXCLUDED.metadata_json
             """)
     void upsertStageArtifact(RdAgentStageArtifactRow row);
+
+    /**
+     * Append-only insert for immutable artifacts. Returns 1 when inserted, 0 on id conflict.
+     *
+     * @param row stage artifact row
+     * @return affected row count
+     */
+    @Insert("""
+            INSERT INTO rd_agent_stage_artifacts (
+                id, stage_run_id, task_id, role, artifact_type, artifact_uri,
+                summary, content_preview, content_hash, metadata_json, created_at
+            )
+            VALUES (
+                #{id}, #{stageRunId}, #{taskId}, #{role}, #{artifactType}, #{artifactUri},
+                #{summary}, #{contentPreview}, #{contentHash}, #{metadataJson}::jsonb, #{createdAt}
+            )
+            ON CONFLICT (id) DO NOTHING
+            """)
+    int insertStageArtifactIgnoringConflict(RdAgentStageArtifactRow row);
 }

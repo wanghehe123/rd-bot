@@ -68,18 +68,16 @@ public final class PostgresAgentStageArtifactStore implements AgentStageArtifact
     @Override
     public AgentStageArtifact saveImmutable(AgentStageArtifact artifact) {
         RdAgentStageArtifactRow row = toRow(artifact);
+        int inserted = mapper.insertStageArtifactIgnoringConflict(row);
         RdAgentStageArtifactRow existing = mapper.selectById(row.id);
         if (existing == null) {
-            // Use the annotated upsert (#{metadataJson}::jsonb). BaseMapper#insert binds
-            // varchar without a cast and fails on PostgreSQL jsonb columns.
-            mapper.upsertStageArtifact(row);
-            if (evidenceMapper != null && isPrivateQaEvidence(artifact)) {
-                evidenceMapper.upsertEvidenceObject(toEvidenceRow(artifact));
-            }
-            return artifact;
+            throw new IllegalStateException("immutable artifact missing after insert: " + artifact.artifactId());
         }
         AgentStageArtifact existingArtifact = toArtifact(existing);
         AgentStageArtifactStore.assertImmutableCompatible(existingArtifact, artifact);
+        if (inserted > 0 && evidenceMapper != null && isPrivateQaEvidence(artifact)) {
+            evidenceMapper.upsertEvidenceObject(toEvidenceRow(artifact));
+        }
         return existingArtifact;
     }
 

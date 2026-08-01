@@ -24,9 +24,8 @@ public final class InMemoryAgentStageArtifactStore implements AgentStageArtifact
 
     @Override
     public AgentStageArtifact saveImmutable(AgentStageArtifact artifact) {
-        AgentStageArtifact existing = artifacts.get(artifact.artifactId());
+        AgentStageArtifact existing = artifacts.putIfAbsent(artifact.artifactId(), artifact);
         if (existing == null) {
-            artifacts.put(artifact.artifactId(), artifact);
             return artifact;
         }
         AgentStageArtifactStore.assertImmutableCompatible(existing, artifact);
