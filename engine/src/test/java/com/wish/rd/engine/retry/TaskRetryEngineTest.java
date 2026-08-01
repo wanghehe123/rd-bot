@@ -120,6 +120,57 @@ class TaskRetryEngineTest {
     }
 
     @Test
+    void manuallyRecoversCancelledCodingAttemptWithoutReplayingUpstreamRoles() {
+        InMemoryAgentStageRunStore stages = new InMemoryAgentStageRunStore();
+        stages.save(stage("reviewer-1", AgentRole.REQUIREMENT_REVIEWER, 1, AgentStageStatus.SUCCEEDED));
+        stages.save(stage("architect-1", AgentRole.SOLUTION_ARCHITECT, 1, AgentStageStatus.SUCCEEDED));
+        stages.save(stage("coding-3", AgentRole.CODING_AGENT, 3, AgentStageStatus.CANCELLED));
+        stages.save(stage("qa-1", AgentRole.QA_AGENT, 1, AgentStageStatus.CANCELLED));
+        FakeTaskPort tasks = new FakeTaskPort(task(RdTaskStatus.CANCELLED, "{}"));
+        List<String> dispatched = new ArrayList<>();
+        TaskRetryEngine engine = engine(
+                tasks,
+                stages,
+                new InMemoryTaskRetryCheckpointStore(),
+                dispatched,
+                new AtomicInteger()
+        );
+
+        var checkpoint = engine.retry("task-1", "USER");
+
+        assertEquals(TaskRetryCheckpointStatus.DISPATCHED, checkpoint.status());
+        assertEquals(AgentRole.CODING_AGENT, checkpoint.retryFromRole());
+        assertEquals("coding-3", checkpoint.failedStageRunId());
+        assertEquals(RdTaskStatus.RECOVERING, tasks.task.status());
+        assertEquals(List.of("task-1"), dispatched);
+        assertEquals(List.of(1), attempts(stages, AgentRole.REQUIREMENT_REVIEWER));
+        assertEquals(List.of(1), attempts(stages, AgentRole.SOLUTION_ARCHITECT));
+        assertEquals(List.of(3, 4), attempts(stages, AgentRole.CODING_AGENT));
+        assertEquals(List.of(1, 2), attempts(stages, AgentRole.QA_AGENT));
+        assertEquals(AgentStageStatus.PENDING, latestStage(stages, AgentRole.CODING_AGENT).status());
+    }
+
+    @Test
+    void rejectsAutomaticRecoveryOfCancelledTask() {
+        InMemoryAgentStageRunStore stages = new InMemoryAgentStageRunStore();
+        stages.save(stage("coding-1", AgentRole.CODING_AGENT, 1, AgentStageStatus.CANCELLED));
+        TaskRetryEngine engine = engine(
+                new FakeTaskPort(task(RdTaskStatus.CANCELLED, "{}")),
+                stages,
+                new InMemoryTaskRetryCheckpointStore(),
+                new ArrayList<>(),
+                new AtomicInteger()
+        );
+
+        IllegalStateException failure = assertThrows(
+                IllegalStateException.class,
+                () -> engine.retry("task-1", "SYSTEM")
+        );
+
+        assertEquals("cancelled task recovery requires an operator request", failure.getMessage());
+    }
+
+    @Test
     void createsNewAttemptForTerminalDownstreamRole() {
         InMemoryAgentStageRunStore stages = new InMemoryAgentStageRunStore();
         stages.save(stage("reviewer-1", AgentRole.REQUIREMENT_REVIEWER, 1, AgentStageStatus.SUCCEEDED));

@@ -92,7 +92,7 @@ public final class RdTaskTransitionPolicy {
         put(graph, RdTaskStatus.REJECTED, RdTaskStatus.RECOVERING, RdTaskStatus.DEAD_LETTERED);
         put(graph, RdTaskStatus.FAILED_RETRYABLE, RdTaskStatus.RECOVERING, RdTaskStatus.DEAD_LETTERED);
         put(graph, RdTaskStatus.FAILED_NEEDS_HUMAN, RdTaskStatus.RECOVERING, RdTaskStatus.DEAD_LETTERED);
-        put(graph, RdTaskStatus.CANCELLED, RdTaskStatus.DEAD_LETTERED);
+        put(graph, RdTaskStatus.CANCELLED, RdTaskStatus.RECOVERING, RdTaskStatus.DEAD_LETTERED);
         put(graph, RdTaskStatus.DEAD_LETTERED, RdTaskStatus.RECOVERING);
         put(graph, RdTaskStatus.RECOVERING, RdTaskStatus.MATERIAL_COLLECTING,
                 RdTaskStatus.CONTEXT_BUILDING, RdTaskStatus.WAITING_POLICY, RdTaskStatus.WAITING_APPROVAL,

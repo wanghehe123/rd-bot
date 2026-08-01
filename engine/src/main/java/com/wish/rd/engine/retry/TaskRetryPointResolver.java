@@ -109,7 +109,11 @@ public final class TaskRetryPointResolver {
     }
 
     private static boolean isRetryableFailureOrInterruptedAttempt(AgentStageRun stage) {
-        return isFailedStage(stage) || AgentStageTransitions.requiresFreshAttemptOnRecovery(stage.status());
+        // A cancelled attempt remains immutable. It is a retry point only after TaskRetryEngine has
+        // accepted an explicit USER request, which creates a fresh attempt instead of rewriting it.
+        return isFailedStage(stage)
+                || stage.status() == AgentStageStatus.CANCELLED
+                || AgentStageTransitions.requiresFreshAttemptOnRecovery(stage.status());
     }
 
     private static AiReviewRun latestFailedReview(List<AiReviewRun> runs) {
@@ -170,6 +174,7 @@ public final class TaskRetryPointResolver {
         if (status != RdTaskStatus.REJECTED
                 && status != RdTaskStatus.FAILED_RETRYABLE
                 && status != RdTaskStatus.FAILED_NEEDS_HUMAN
+                && status != RdTaskStatus.CANCELLED
                 && status != RdTaskStatus.DEAD_LETTERED) {
             throw new IllegalStateException("task status is not retryable: " + status);
         }

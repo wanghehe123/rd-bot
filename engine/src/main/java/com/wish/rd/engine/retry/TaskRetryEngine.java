@@ -16,6 +16,7 @@ import com.wish.rd.rag.retrieval.run.RetrievalRunStore;
 import com.wish.rd.rag.runtime.TaskMaterialStore;
 import com.wish.rd.rag.runtime.impl.InMemoryTaskMaterialStore;
 import com.wish.rd.rag.runtime.model.RdRequirementTask;
+import com.wish.rd.rag.runtime.model.RdTaskStatus;
 import com.wish.rd.engine.retry.model.TaskFailureRecoverySnapshot;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -196,6 +197,11 @@ public final class TaskRetryEngine {
      */
     public TaskRetryCheckpoint retry(String taskId, String trigger, TaskRetryCommand command) {
         TaskRetryCommand safeCommand = command == null ? TaskRetryCommand.empty() : command;
+        RdRequirementTask currentTask = taskPort.getRequirementTask(taskId);
+        if (currentTask.status() == RdTaskStatus.CANCELLED
+                && !"USER".equalsIgnoreCase(trigger == null ? "" : trigger.strip())) {
+            throw new IllegalStateException("cancelled task recovery requires an operator request");
+        }
         TaskRetryCheckpoint active = checkpointStore.findActiveByTask(taskId).orElse(null);
         if (active != null) {
             validateExistingCheckpoint(active, safeCommand);
