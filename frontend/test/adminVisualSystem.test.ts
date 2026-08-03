@@ -69,7 +69,7 @@ test("dashboard uses live delivery data instead of a knowledge-first inventory",
   assert.match(dashboard, /未选择项目/);
 });
 
-test("keeps the supported admin routes and removes the obsolete sample-question surface", () => {
+test("keeps the supported admin routes and removes obsolete intent/ingestion/mapping surfaces", () => {
   const app = read("../src/App.tsx");
   const layout = read("../src/components/AdminLayout.tsx");
   const legacyApi = read("../src/api.ts");
@@ -81,11 +81,8 @@ test("keeps the supported admin routes and removes the obsolete sample-question 
     "projects",
     "rd-tasks",
     "rd-tasks/:taskId",
-    "intent-tree",
-    "intent-list",
     "users",
-    "ingestion",
-    "mappings",
+    "skills",
     "traces",
     "traces/:taskId",
     "settings"
@@ -95,12 +92,16 @@ test("keeps the supported admin routes and removes the obsolete sample-question 
     assert.ok(app.includes(`path="${route}"`), `missing route: ${route}`);
   }
 
-  assert.match(layout, /label: "检索规则"/);
+  assert.doesNotMatch(app, /intent-tree|intent-list|IngestionPage|RetrievalRulesPage/);
+  assert.doesNotMatch(layout, /意图管理|数据通道|检索规则|intent-tree|intent-list|\/admin\/ingestion|\/admin\/mappings/);
   assert.match(layout, /label: "执行追踪"/);
+  assert.match(layout, /path: "\/admin\/skills"/);
+  assert.match(layout, /label: "Skill Hub"/);
+  assert.match(layout, /skills: "Skill Hub"/);
   assert.doesNotMatch(layout, /示例问题/);
   assert.doesNotMatch(app, /sample-questions|SampleQuestionPage/);
   assert.doesNotMatch(legacyApi, /listSampleQuestions|createSampleQuestion|updateSampleQuestion|deleteSampleQuestion/);
-  assert.match(app, /RetrievalRulesPage/);
+  assert.doesNotMatch(legacyApi, /listIntentTree|createIntent|listPipelines|createPipeline/);
   assert.match(app, /ExecutionTraceDetailPage/);
   assert.doesNotMatch(app, /const MappingPage|const TracePage =|const TraceDetailPage/);
 });

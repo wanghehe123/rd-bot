@@ -1,4 +1,4 @@
-import{c as Nl,K as Le,j as te,R as Ye,M as Pn,r as bs}from"./admin-knowledge.js";import{B as Ol,l as Ll}from"./admin-card.js";import{c as Rl}from"./admin-index.js";import{I as wl}from"./admin-image.js";/**
+import{c as Nl,x as Le,j as te,R as Ye,y as Pn,r as bs}from"./admin-knowledge.js";import{B as Ol,l as Ll}from"./admin-card.js";import{c as Rl}from"./admin-index.js";import{I as wl}from"./admin-checkbox.js";/**
  * @license lucide-react v0.468.0 - ISC
  *
  * This source code is licensed under the ISC license.

@@ -1,6 +1,5 @@
 import type {
   AnyRecord,
-  IntentNode,
   KnowledgeBase,
   KnowledgeChunk,
   KnowledgeDocument,
@@ -105,14 +104,6 @@ export const api = {
       body: jsonBody({ chunkIds })
     }),
 
-  listIntentTree: () => request<IntentNode[]>("/intent-tree/trees"),
-  createIntent: (payload: AnyRecord) => request<IntentNode>("/intent-tree", { method: "POST", body: jsonBody(payload) }),
-  updateIntent: (id: string, payload: AnyRecord) =>
-    request<IntentNode>(`/intent-tree/${enc(id)}`, { method: "PUT", body: jsonBody(payload) }),
-  deleteIntent: (id: string) => request<AnyRecord>(`/intent-tree/${enc(id)}`, { method: "DELETE" }),
-  batchIntent: (action: "enable" | "disable" | "delete", ids: string[]) =>
-    request<AnyRecord>(`/intent-tree/batch/${action}`, { method: "POST", body: jsonBody({ ids }) }),
-
   listUsers: (current = 1, keyword = "") =>
     request<PageResponse<ManagedUser>>(`/users?current=${current}&size=10&keyword=${enc(keyword)}`),
   createUser: (payload: AnyRecord) => request<ManagedUser>("/users", { method: "POST", body: jsonBody(payload) }),
@@ -120,17 +111,5 @@ export const api = {
     request<ManagedUser>(`/users/${enc(id)}`, { method: "PUT", body: jsonBody(payload) }),
   deleteUser: (id: string) => request<AnyRecord>(`/users/${enc(id)}`, { method: "DELETE" }),
   changePassword: (payload: AnyRecord) =>
-    request<AnyRecord>("/user/password", { method: "PUT", body: jsonBody(payload) }),
-
-  listPipelines: (keyword = "") =>
-    request<PageResponse<AnyRecord>>(`/ingestion/pipelines?pageNo=1&pageSize=20&keyword=${enc(keyword)}`),
-  createPipeline: (payload: AnyRecord) =>
-    request<AnyRecord>("/ingestion/pipelines", { method: "POST", body: jsonBody(payload) }),
-  updatePipeline: (id: string, payload: AnyRecord) =>
-    request<AnyRecord>(`/ingestion/pipelines/${enc(id)}`, { method: "PUT", body: jsonBody(payload) }),
-  deletePipeline: (id: string) => request<AnyRecord>(`/ingestion/pipelines/${enc(id)}`, { method: "DELETE" }),
-  listTasks: (status = "") =>
-    request<PageResponse<AnyRecord>>(`/ingestion/tasks?pageNo=1&pageSize=20&status=${enc(status)}`),
-  createTask: (payload: AnyRecord) => request<AnyRecord>("/ingestion/tasks", { method: "POST", body: jsonBody(payload) }),
-  listTaskNodes: (id: string) => request<AnyRecord[]>(`/ingestion/tasks/${enc(id)}/nodes`)
+    request<AnyRecord>("/user/password", { method: "PUT", body: jsonBody(payload) })
 };

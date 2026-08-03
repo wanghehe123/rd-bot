@@ -39,28 +39,18 @@ class AdminFrontendControllerTest {
     }
 
     @Test
-    void servesMigratedIntentAndUserAdminFrontendRoutes() throws Exception {
-        mockMvc.perform(get("/admin/intent-tree"))
+    void servesUserAdminFrontendRoute() throws Exception {
+        mockMvc.perform(get("/admin/users"))
                 .andExpect(status().isOk())
                 .andExpect(content().string(containsString(ADMIN_TITLE)))
                 .andExpect(content().string(containsString("id=\"root\"")))
                 .andExpect(content().string(containsString("admin-knowledge.js")));
-
-        mockMvc.perform(get("/admin/intent-list"))
-                .andExpect(status().isOk())
-                .andExpect(content().string(containsString(ADMIN_TITLE)));
-
-        mockMvc.perform(get("/admin/users"))
-                .andExpect(status().isOk())
-                .andExpect(content().string(containsString(ADMIN_TITLE)));
     }
 
     @Test
     void servesRagentStyleReactAdminRoutesAndAssets() throws Exception {
         for (String route : new String[]{
                 "/admin/dashboard",
-                "/admin/ingestion",
-                "/admin/mappings",
                 "/admin/traces",
                 "/admin/traces/trace-ticket-prompt-flow",
                 "/admin/settings"
@@ -76,6 +66,15 @@ class AdminFrontendControllerTest {
         mockMvc.perform(get("/admin/sample-questions"))
                 .andExpect(status().isNotFound());
 
+        mockMvc.perform(get("/admin/intent-tree"))
+                .andExpect(status().isNotFound());
+
+        mockMvc.perform(get("/admin/ingestion"))
+                .andExpect(status().isNotFound());
+
+        mockMvc.perform(get("/admin/mappings"))
+                .andExpect(status().isNotFound());
+
         mockMvc.perform(get("/admin/admin-knowledge.css"))
                 .andExpect(status().isOk())
                 .andExpect(content().string(containsString(".admin-layout")));
@@ -83,6 +82,16 @@ class AdminFrontendControllerTest {
         mockMvc.perform(get("/admin/admin-knowledge.js"))
                 .andExpect(status().isOk())
                 .andExpect(content().string(containsString("createRoot")));
+    }
+
+    @Test
+    void servesSkillHubFrontendRouteForBrowserNavigation() throws Exception {
+        mockMvc.perform(get("/admin/skills").accept(MediaType.TEXT_HTML))
+                .andExpect(status().isOk())
+                .andExpect(content().string(containsString(ADMIN_TITLE)))
+                .andExpect(content().string(containsString("id=\"root\"")))
+                .andExpect(content().string(containsString("admin-knowledge.css")))
+                .andExpect(content().string(containsString("admin-knowledge.js")));
     }
 
     @Test

@@ -5,20 +5,16 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
-  ClipboardList,
   Database,
   FlaskConical,
-  GitBranch,
   Github,
-  KeyRound,
-  Layers,
   LayoutDashboard,
   ListChecks,
   Menu,
   MessageSquare,
   Plus,
   Settings,
-  Upload,
+  Sparkles,
   Users,
   Workflow
 } from "lucide-react";
@@ -48,20 +44,9 @@ const menuGroups: Array<{ title: string; items: MenuItem[] }> = [
     items: [
       { path: "/admin/dashboard", label: "Dashboard", icon: LayoutDashboard },
       { path: "/admin/knowledge", label: "知识库管理", icon: Database },
-      {
-        id: "intent",
-        path: "/admin/intent-tree",
-        label: "意图管理",
-        icon: Layers,
-        children: [
-          { path: "/admin/intent-tree", label: "意图树配置", icon: GitBranch },
-          { path: "/admin/intent-list", label: "意图列表", icon: ClipboardList }
-        ]
-      },
-      { path: "/admin/ingestion", label: "数据通道", icon: Upload },
       { path: "/admin/projects", label: "项目管理", icon: Github },
       { path: "/admin/rd-tasks", label: "任务管理", icon: ListChecks },
-      { path: "/admin/mappings", label: "检索规则", icon: KeyRound },
+      { path: "/admin/skills", label: "Skill Hub", icon: Sparkles },
       { path: "/admin/traces", label: "执行追踪", icon: Workflow },
       {
         id: "evaluations",
@@ -87,12 +72,9 @@ const menuGroups: Array<{ title: string; items: MenuItem[] }> = [
 const breadcrumbMap: Record<string, string> = {
   dashboard: "Dashboard",
   knowledge: "知识库管理",
-  "intent-tree": "意图树配置",
-  "intent-list": "意图列表",
-  ingestion: "数据通道",
   projects: "项目管理",
   "rd-tasks": "任务管理",
-  mappings: "检索规则",
+  skills: "Skill Hub",
   traces: "执行追踪",
   evaluations: "评测",
   "coding-benchmarks": "编码消融评测",
@@ -117,7 +99,7 @@ export function AdminLayout() {
   const [isMobileViewport, setIsMobileViewport] = useState(() => (
     typeof window !== "undefined" && window.matchMedia("(max-width: 860px)").matches
   ));
-  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({ intent: true, evaluations: true });
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({ evaluations: true });
   const [passwordOpen, setPasswordOpen] = useState(false);
   const [passwordForm, setPasswordForm] = useState({ currentPassword: "", newPassword: "", confirmPassword: "" });
   const sidebarRef = useRef<HTMLElement>(null);
@@ -134,10 +116,7 @@ export function AdminLayout() {
     if (parts[0] !== "admin") return items;
     const section = parts[1];
     if (section) {
-      if (section === "intent-tree" || section === "intent-list") {
-        items.push({ label: "意图管理", to: "/admin/intent-tree" });
-        items.push({ label: breadcrumbMap[section] || section });
-      } else if (section === "evaluations" && parts.length > 2) {
+      if (section === "evaluations" && parts.length > 2) {
         items.push({ label: "评测", to: "/admin/evaluations" });
         items.push({ label: breadcrumbMap[parts[2]] || parts[2] });
       } else {
@@ -213,7 +192,7 @@ export function AdminLayout() {
         {...mobileSidebarInertProps}
         className={cn(
           "admin-sidebar",
-          collapsed && "admin-sidebar--collapsed",
+          collapsed && "admin-sidebar--truncated",
           mobileSidebarOpen && "admin-sidebar--mobile-open"
         )}
       >

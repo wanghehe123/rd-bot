@@ -12,11 +12,8 @@ const KnowledgeChunksPage = lazy(() => import("@/pages/admin/knowledge/Knowledge
 const ProjectListPage = lazy(() => import("@/pages/admin/project/ProjectListPage").then((module) => ({ default: module.ProjectListPage })));
 const RdTaskListPage = lazy(() => import("@/pages/admin/rdtask/RdTaskListPage").then((module) => ({ default: module.RdTaskListPage })));
 const RdTaskDetailPage = lazy(() => import("@/pages/admin/rdtask/RdTaskDetailPage").then((module) => ({ default: module.RdTaskDetailPage })));
-const IntentTreePage = lazy(() => import("./pages/IntentPages").then((module) => ({ default: module.IntentTreePage })));
-const IntentListPage = lazy(() => import("./pages/IntentPages").then((module) => ({ default: module.IntentListPage })));
 const UserListPage = lazy(() => import("./pages/AdminPages").then((module) => ({ default: module.UserListPage })));
-const IngestionPage = lazy(() => import("./pages/AdminPages").then((module) => ({ default: module.IngestionPage })));
-const RetrievalRulesPage = lazy(() => import("@/pages/admin/retrieval/RetrievalRulesPage").then((module) => ({ default: module.RetrievalRulesPage })));
+const SkillHubPage = lazy(() => import("@/pages/admin/skill/SkillHubPage").then((module) => ({ default: module.SkillHubPage })));
 const ExecutionTracePage = lazy(() => import("@/pages/admin/trace/ExecutionTracePage").then((module) => ({ default: module.ExecutionTracePage })));
 const ExecutionTraceDetailPage = lazy(() => import("@/pages/admin/trace/ExecutionTracePage").then((module) => ({ default: module.ExecutionTraceDetailPage })));
 const EvaluationPage = lazy(() => import("@/pages/admin/evaluation/EvaluationPage").then((module) => ({ default: module.EvaluationPage })));
@@ -48,11 +45,8 @@ export function App() {
             <Route path="projects" element={<ProjectListPage />} />
             <Route path="rd-tasks" element={<RdTaskListPage />} />
             <Route path="rd-tasks/:taskId" element={<RdTaskDetailPage />} />
-            <Route path="intent-tree" element={<IntentTreePage />} />
-            <Route path="intent-list" element={<IntentListPage />} />
             <Route path="users" element={<UserListPage />} />
-            <Route path="ingestion" element={<IngestionPage />} />
-            <Route path="mappings" element={<RetrievalRulesPage />} />
+            <Route path="skills" element={<SkillHubPage />} />
             <Route path="traces" element={<ExecutionTracePage />} />
             <Route path="traces/:taskId" element={<ExecutionTraceDetailPage />} />
             <Route path="evaluations" element={<EvaluationPage />} />

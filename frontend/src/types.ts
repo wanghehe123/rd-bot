@@ -54,21 +54,6 @@ export type KnowledgeChunk = {
   enabled?: boolean;
 };
 
-export type IntentNode = {
-  id: string;
-  intentCode: string;
-  name: string;
-  level?: number;
-  parentCode?: string | null;
-  description?: string;
-  kbId?: string | null;
-  examples?: string[];
-  enabled?: number | boolean;
-  sortOrder?: number;
-  children?: IntentNode[];
-  pathText?: string;
-};
-
 export type ManagedUser = {
   id: string;
   username: string;

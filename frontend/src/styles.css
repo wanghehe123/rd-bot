@@ -975,56 +975,6 @@ a {
   margin-top: 14px;
 }
 
-.intent-tree {
-  display: grid;
-  gap: 8px;
-}
-
-.intent-tree-node {
-  display: grid;
-  gap: 7px;
-}
-
-.intent-tree-row {
-  width: 100%;
-  min-height: 48px;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  background: transparent;
-  padding: 9px 11px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  text-align: left;
-}
-
-.intent-tree-row:hover,
-.intent-tree-row.is-active {
-  border-color: var(--admin-border);
-  background: #f8fafc;
-}
-
-.intent-tree-row strong,
-.intent-tree-row span {
-  display: block;
-}
-
-.intent-tree-row span {
-  color: #94a3b8;
-  font-size: 12px;
-}
-
-.intent-tree-actions {
-  padding-left: 10px;
-}
-
-.intent-tree-children {
-  margin-left: 24px;
-  padding-left: 14px;
-  border-left: 1px dashed #cbd5e1;
-}
-
 .filter-grid {
   display: grid;
   grid-template-columns: minmax(220px, 1fr) 180px 180px auto;
@@ -2746,8 +2696,6 @@ body {
   color: var(--admin-primary);
 }
 
-.intent-tree-row:hover,
-.intent-tree-row.is-active,
 .waterfall-row,
 .kv-grid > div,
 .quality-card {
@@ -3266,9 +3214,6 @@ body {
   color: #975e10;
   font-size: 13px;
 }
-.retrieval-rule-form { display: grid; gap: 14px; }
-.retrieval-rule-form > label { display: grid; gap: 7px; color: #3a525c; font-size: 13px; font-weight: 600; }
-.retrieval-project-hint { margin: -3px 0 0; color: #0d7778; font-size: 12px; }
 
 /* Task-rooted traces retain a dense, scan-friendly delivery control-room rhythm. */
 .trace-filter-strip { flex-wrap: wrap; }

@@ -41,6 +41,10 @@ export default defineConfig({
         target: backendTarget,
         bypass: (request) => isHtmlNavigation(request) ? request.url : undefined
       },
+      "/admin/skills": {
+        target: backendTarget,
+        bypass: (request) => isHtmlNavigation(request) ? request.url : undefined
+      },
       "/admin/rd-task-drafts": backendTarget,
       "/admin/rag-retrieval-runs": backendTarget,
       "/admin/ai-reviews": backendTarget,
@@ -49,11 +53,9 @@ export default defineConfig({
         bypass: (request) => isHtmlNavigation(request) ? request.url : undefined
       },
       "/admin/knowledge-base": backendTarget,
-      "/intent-tree": backendTarget,
       "/users": backendTarget,
       "/user": backendTarget,
       "/ingestion": backendTarget,
-      "/mappings": backendTarget,
       "/sample-questions": backendTarget,
       "/rag": backendTarget,
       "/conversations": backendTarget,
