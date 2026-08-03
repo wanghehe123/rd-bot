@@ -1,87 +1,158 @@
 # RD-Bot
 
-**AI 驱动的研发交付编排平台**
+**AI 驱动的研发交付编排平台**（Spring Boot 模块化单体）
 
 [![Java](https://img.shields.io/badge/Java-21-orange)](https://openjdk.org/)
 [![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.5.7-brightgreen)](https://spring.io/projects/spring-boot)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-RD-Bot 将工单或研发需求转化为**可治理的自动化交付流水线**。通过任务级 RAG 构建工程上下文，在 Docker 隔离沙箱中运行编码 Agent，自动验证结果并创建可审查 PR，同时记录完整的审计证据链。
+RD-Bot 把飞书工单 / 管理台需求转化为**可治理的多角色自动化交付流水线**：任务级 RAG 构建工程上下文，在 Docker 隔离沙箱中运行 Pi Agent，自动验证并创建可审查 PR，同时沉淀完整审计证据。
 
-> 不是"一个会修 Bug 的聊天机器人"，而是 **AI-native Software Delivery Harness（研发流程自动化控制面）**。
-
----
-
-## ✨ 核心特性
-
-### 🤖 多角色 Agent 流水线
-
-```
-需求评审 → 方案设计 → 编码执行 → QA 验证 → PR 交付
-```
-
-- **需求评审 Agent**：判断需求完整性、安全性和可执行性，不通过则阻断后续阶段
-- **方案架构 Agent**：基于 RAG 证据生成可执行开发方案
-- **编码 Agent**：在 Docker 沙箱中执行代码修改
-- **QA Agent**：验证修改正确性，失败则阻断交付
-
-### 📚 任务级 RAG 上下文构建
-
-- 多通道并行检索：向量语义、BM25 关键词、日志中心、代码仓库
-- 意图树分类锁定目标系统和知识范围
-- 结构化 `ContextPackage`：不只是文本片段，而是包含相关文件、根因假设、验证命令的工程上下文
-- 经验沉淀与复用：历史交付经验自动检索注入后续任务
-
-### 🔒 安全隔离执行
-
-- Docker 容器级隔离，Agent 不直接操作宿主机
-- 仓库/分支白名单控制
-- Secret 扫描：产物和 PR 内容自动检测敏感信息
-- Provider 密钥仅通过环境变量注入，零硬编码
-
-### 📋 PR-based 交付（非直接合并）
-
-- Agent 只提交可审查变更，**永远不直接合并主干**
-- PR body 自动包含：上下文摘要、风险评估、测试证据、产物链接
-- 交付复核通过后才允许创建 PR
-
-### 🛡️ 策略门控与治理
-
-- 高风险动作必须经过 `PolicyGate` 和人工审批
-- 完整状态机：25+ 状态覆盖正常流转、失败重试、人工恢复、死信队列
-- 告警分类：Provider 降级、阶段失败、QA 阻断、PR 发布失败等
-- 全链路审计：每个阶段都有 prompt/result/log 产物和结构化 trace
-
-### 🔄 失败恢复与运营闭环
-
-- 阶段级重试：自动创建新 attempt，保留完整失败历史
-- 租约派发：持久化 Job + 租约领取 + 恢复调度，任务不丢失
-- 人工接管：`FAILED_NEEDS_HUMAN` 状态支持运营干预后继续
-- 经验自动沉淀：成功交付自动提取可复用经验
+> 不是「会改代码的聊天机器人」，而是 **AI-native Software Delivery Harness（研发流程自动化控制面）**。
 
 ---
 
-## 🏗️ 架构概览
+## 核心特性
+
+### 多角色 Agent 流水线
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                      bootstrap (API/适配层)                   │
-│  REST API · 管理前端 · Feishu/RocketMQ/GitHub 适配器 · 持久化  │
-├─────────────────────────────────────────────────────────────┤
-│                      engine (编排控制面)                      │
-│  多角色工作流 · 状态机 · 策略门控 · 经验复用 · PR 发布          │
-├────────────────────┬────────────────────┬───────────────────┤
-│   rag (知识上下文)   │   exec (执行面)     │   skill (技能层)   │
-│ 检索·切块·意图树     │ Docker沙箱·Provider │ 可复用能力切片     │
-│ 上下文包·Trace      │ 健康治理·熔断       │ 策略判定·安装      │
-└────────────────────┴────────────────────┴───────────────────┘
+需求评审 → 方案架构 → 编码执行 → QA 验证 → PR 交付
 ```
 
-**依赖方向**：`bootstrap → engine → rag`，`bootstrap → exec → rag`，`bootstrap → skill → rag`
+| 角色 | 职责边界 |
+|------|----------|
+| `REQUIREMENT_REVIEWER` | 完整性 / 安全性 / 可执行性评审；不改代码、不创建 PR |
+| `SOLUTION_ARCHITECT` | 基于 RAG 证据输出可执行方案与 handoff |
+| `CODING_AGENT` | Docker 沙箱改代码、跑测试，准备候选 PR body |
+| `QA_AGENT` | 真实验收与回归；证据不全则阻断交付 |
+
+### 任务级 RAG 与安全沙箱
+
+- 多通道检索 → 结构化 `ContextPackage` / 角色上下文包
+- Docker 隔离：`/work/repo` · `/work/input` · `/work/output` · `/work/cache`
+- 仓库 / 分支白名单；Secret 扫描；Provider 密钥仅环境变量注入
+
+### Skill Hub 与治理
+
+- Skill 目录、角色绑定、风险门禁（LOW / MEDIUM / HIGH → `WAITING_APPROVAL`）
+- Pi 原生 Skill 显式加载：系统提示渐进披露 `description`
+- 可选「强制引导」：`forceGuide` 时在 Prompt 末尾追加用户 `guidePrompt`
+- 修复队列：Redis Stream（替代 RocketMQ）
 
 ---
 
-## 🚀 快速开始
+## 架构概览
+
+```
+ Clients / Events                Delivery
+ ┌──────────────────┐           ┌─────────────────┐
+ │ React+Vite 管理台 │           │ GitHub / Git    │
+ │ Feishu Webhook   │           │ Branches + PRs  │
+ └────────┬─────────┘           └────────▲────────┘
+          │                              │
+          ▼                              │
+ ┌────────────────────────────────────────────────────────────┐
+ │                     bootstrap（宿主）                        │
+ │  REST / 管理控制器 · Postgres+MyBatis · Redis/Redisson     │
+ │  RustFS/S3 · Docker · 外部适配器                            │
+ └───────────────────────────┬────────────────────────────────┘
+                             │
+     ┌───────────────────────┼───────────────────────┐
+     ▼                       ▼                       ▼
+ ┌─────────┐           ┌──────────┐           ┌──────────┐
+ │ engine  │           │   rag    │           │   exec   │
+ │ 编排    │──────────▶│ 知识上下文│◀──────────│ 执行面   │
+ └────┬────┘           └──────────┘           └────┬─────┘
+      │                                            │
+      │  RequirementExecutorPort                   │ AgentRuntimeRouter
+      │  （需求执行桥）                              │
+      └────────────────────┬───────────────────────┘
+                           ▼
+              DockerPiAgentExecutor（主路径）
+              DockerClaudeCodeExecutor（兼容/弃用中）
+                           ▲
+ ┌─────────────────────────┴─────────────────────────┐
+ │ skill：目录 · 角色绑定 · Manifest 校验 · 物化到     │
+ │        /work/input/skills + skill-manifest.json    │
+ └───────────────────────────────────────────────────┘
+```
+
+**依赖方向（强制）**：`bootstrap → engine|exec|skill|rag`；`engine|exec|skill → rag`。禁止反向依赖。
+
+### 需求执行桥
+
+`RequirementDeliveryEngine` / `RequirementAgentStageOrchestrator`
+→ `RequirementExecutorPort`（bootstrap 适配）
+→ `AgentRuntimeRouter`
+→ `DockerPiAgentExecutor`（主） / `DockerClaudeCodeExecutor`（兼容）
+
+每次 attempt：物化 resource / skill manifest → 写 `request.json` → Pi bridge 加载原生 Skill → 宿主 Validator 验收。
+
+### 存储分工
+
+| 层 | 职责 |
+|----|------|
+| **PostgreSQL** | 事实源：任务、状态事件、阶段 run、检索 run、配置 |
+| **Redis** | 协调：分布式锁、Redis Stream 工单队列（lease / pending claim） |
+| **RustFS / S3** | 内容：大产物、QA 证据、可选 Pi 原始事件 / session |
+| **Docker** | 隔离：每 attempt 独立 workspace |
+
+---
+
+## 显式状态机
+
+权威定义：`RdTaskTransitionPolicy` · `AgentStageTransitions` · `RetrievalRunTransitionPolicy`。
+
+### 任务级 `RdTaskStatus`（需求交付主链）
+
+```
+CREATED → MATERIAL_COLLECTING → MATERIAL_READY → CONTEXT_BUILDING → CONTEXT_READY
+  → PLAN_GENERATING → PLAN_GENERATED → WAITING_POLICY
+  → [WAITING_APPROVAL?] → EXECUTING → VERIFYING → CREATING_PR
+  → SUBMITTED → REPORTING → COMPLETED → MERGED
+```
+
+- 策略可在 `PLAN_GENERATED` 后进入 `WAITING_APPROVAL`
+- 失败态（`REJECTED` / `FAILED_RETRYABLE` / `FAILED_NEEDS_HUMAN` / `CANCELLED` / `DEAD_LETTERED`）可转入 `RECOVERING`（分支，非并行链）
+
+### Agent 阶段级 `AgentStageStatus`（含 `attemptNo`）
+
+```
+PENDING → CONTEXT_READY → DISPATCHING → RUNNING
+  → COLLECTING_RESULT → VERIFYING → SUCCEEDED
+```
+
+- `FAILED_RETRYABLE` 是**本次 attempt 终态**；重试新建 `attemptNo`
+- 另有 `FAILED_NEEDS_HUMAN` / `CANCELLED` / `SKIPPED` 等出口
+
+### 落库对照
+
+| 概念 | 主要表 / 存储 |
+|------|----------------|
+| 任务快照 | `rd_tasks` |
+| 任务时间线 | `rd_task_status_events`（append-only） |
+| Agent attempt | `rd_agent_stage_runs` · `rd_agent_stage_events` · `rd_agent_private_artifacts` |
+| 角色上下文 / 检索 | `rd_role_context_packages` · `rd_rag_retrieval_runs` |
+| 重试 / 调度 | `rd_task_retry_checkpoints` · `rd_requirement_delivery_jobs` |
+| QA / 大文件 | RustFS URI · `rd_qa_evidence_objects` |
+
+---
+
+## 模块说明
+
+| 模块 | 职责 |
+|------|------|
+| `bootstrap` | Spring Boot 宿主、REST、管理前端静态资源、Postgres/Redis/S3/Docker/飞书适配 |
+| `engine` | `RequirementDeliveryEngine`、阶段编排、修复/评测/复核、状态机与策略 |
+| `rag` | 知识库、检索、角色上下文包、任务运行时端口与 Trace |
+| `exec` | `AgentRuntimeRouter`、Pi/Claude Docker 执行器、结果 / QA Validator |
+| `skill` | Skill 目录端口、安装编排、角色白名单与风险门禁 |
+| `frontend` | React + Vite 管理台（任务 / 项目 / RAG / Skill Hub / 评测） |
+
+---
+
+## 快速开始
 
 ### 环境要求
 
@@ -89,187 +160,123 @@ RD-Bot 将工单或研发需求转化为**可治理的自动化交付流水线**
 |------|------|
 | JDK | 21+ |
 | PostgreSQL | 14+ |
-| Redis | 6+（分布式锁） |
-| Docker | 20+（执行沙箱） |
+| Redis | 6+（锁 + Redis Stream 队列） |
+| Docker | 20+ |
 | Node.js | 18+（前端开发，可选） |
 
 ### 本地启动
 
 ```bash
-# 1. 初始化数据库
+# 1. 初始化数据库（按需执行 sql/postgres 下脚本）
 docker exec -i postgres psql -U postgres -d rdbot < bootstrap/src/main/resources/sql/postgres/init.sql
 
-# 2. 构建项目
+# 2. 构建
 ./mvnw install -DskipTests
 
-# 3. 启动后端（默认端口 18080）
+# 3. 启动后端（默认 18080）
 ./mvnw -pl bootstrap spring-boot:run
 
-# 4. 访问管理前端
-open http://127.0.0.1:18080
+# 4. 管理台
+open http://127.0.0.1:18080/admin/
 ```
 
-### 前端开发（可选）
+### 前端开发
 
 ```bash
-cd frontend
-npm install
-npm run dev   # Vite 开发服务器，自动代理 /admin/* 到后端
+cd frontend && npm install && npm run dev
+# Vite :5173，代理 /admin/* → 后端 18080
 ```
 
-### 环境变量配置
-
-所有敏感配置通过环境变量注入，**零硬编码**：
+### 常用环境变量
 
 ```bash
-# 数据库
 export POSTGRES_URL="jdbc:postgresql://127.0.0.1:5432/rdbot"
 export POSTGRES_USERNAME="postgres"
 export POSTGRES_PASSWORD="your-password"
-
-# AI Provider（支持任意 Anthropic/OpenAI 兼容接口）
-export LONGCAT_API_KEY="your-api-key"
-export MINIMAX_API_KEY="your-api-key"
-
-# GitHub（PR 交付）
-export GITHUB_PAT="your-github-token"
-
-# 飞书（工单接入，可选）
-export FEISHU_APP_ID="your-app-id"
-export FEISHU_APP_SECRET="your-app-secret"
+export RD_REPAIR_QUEUE_MODE=redis-stream   # 或 memory
+export RD_EXECUTOR_AGENT_RUNTIME_ENABLED=true
+export RD_EXECUTOR_PI_IMAGE=rd-bot/pi-agent:local
+export RD_EXECUTOR_PI_QA_IMAGE=rd-bot/pi-agent-qa:local
+export GITHUB_PAT="..."
+# Provider keys：OPENCODE_API_KEY / DEEPSEEK_API_KEY / LONGCAT_API_KEY 等
 ```
 
----
-
-## 📦 模块说明
-
-| 模块 | 职责 | 关键能力 |
-|------|------|----------|
-| `rag` | 知识与上下文层 | 文档解析/切块/索引、意图树分类、多通道检索、查询重写、上下文打包、Trace |
-| `engine` | 编排控制层 | 多角色工作流、状态机流转、策略门控、经验沉淀、PR 发布、告警 |
-| `exec` | 执行层 | Docker 沙箱执行、多 Provider 适配（LongCat/MiniMax/自定义）、熔断降级 |
-| `skill` | 技能层 | 可复用能力注册、策略判定、角色/作用域权限控制 |
-| `bootstrap` | 启动与适配层 | Spring Boot 入口、REST API、外部系统适配器、PostgreSQL 持久化 |
-| `frontend` | 管理前端 | React + Vite + TailwindCSS，任务工作台、知识库管理、评估控制台 |
+改动 Pi bridge（`bootstrap/src/main/resources/executor/pi`）后需重建镜像，否则容器仍用旧规则。
 
 ---
 
-## 🔌 Provider 可替换设计
+## Skill Hub
 
-RD-Bot 不绑定任何特定 AI 模型。Provider 通过配置热插拔：
-
-```yaml
-rd:
-  executor:
-    docker:
-      providers:
-        - name: long-cat
-          protocol: anthropic-compatible
-          base-url: https://api.longcat.chat/anthropic
-          model: LongCat-2.0
-        - name: minimax
-          protocol: openai-chat-completions
-          base-url: https://api.minimaxi.com/v1
-          model: MiniMax-M3
-        # 添加任意 OpenAI/Anthropic 兼容 Provider
-        - name: your-provider
-          protocol: openai-chat-completions
-          base-url: https://your-api.com/v1
-          model: your-model
-```
-
-支持自动 fallback：首选 Provider 失败时自动切换备选。
+| 能力 | 说明 |
+|------|------|
+| 管理页 | `/admin/skills`：目录、上传、角色绑定、强制引导、HIGH 审批 |
+| API | `/admin/skills` · `/admin/skills/upload` · `/admin/skills/role-bindings/{role}` |
+| 运行时 | 按角色物化到 `/work/input/skills/{id}`；Pi `additionalSkillPaths` 显式加载（保持 `noSkills: true` 阻断仓库自动扫描） |
+| 两层启用 | ① 系统提示披露 desc；② `forceGuide` 追加 `guidePrompt` |
 
 ---
 
-## 📡 核心 API
-
-### 任务管理
+## 核心 API（节选）
 
 ```bash
-# 创建研发任务
-curl -X POST http://127.0.0.1:18080/admin/rd-tasks \
-  -H 'Content-Type: application/json' \
-  -d '{"title": "修复支付回调状态未更新", "description": "..."}'
-
-# 查询任务状态
+# 任务
+curl -X POST http://127.0.0.1:18080/admin/rd-tasks -H 'Content-Type: application/json' -d '{...}'
 curl http://127.0.0.1:18080/admin/rd-tasks/{taskId}
 
-# 查询阶段执行详情
-curl http://127.0.0.1:18080/admin/rd-tasks/{taskId}/stages
+# Skill Hub
+curl http://127.0.0.1:18080/admin/skills
+curl http://127.0.0.1:18080/admin/skills/role-bindings
 ```
 
-### 知识库管理
-
-```bash
-# 创建知识库
-curl -X POST http://127.0.0.1:18080/knowledge-base \
-  -H 'Content-Type: application/json' \
-  -d '{"name": "支付系统", "description": "支付 API 文档"}'
-
-# 写入文档（自动解析、切块、索引）
-curl -X POST http://127.0.0.1:18080/knowledge-base/{kbId}/docs/write \
-  -H 'Content-Type: application/json' \
-  -d '{"sourceName": "api.md", "content": "# 支付 API\n...", "knowledgeType": "api"}'
-
-# RAG 检索
-curl -X POST http://127.0.0.1:18080/rag/bugfix/messages \
-  -H 'Content-Type: application/json' \
-  -d '{"ticketId": "FI-001", "title": "支付回调异常", "description": "..."}'
-```
-
-### 管理前端
-
-| 路径 | 功能 |
-|------|------|
-| `/admin/knowledge` | 知识库列表、文档管理、Chunk 管理 |
-| `/admin/tasks` | 任务列表、状态追踪、阶段详情 |
-| `/admin/evaluation` | 评估数据集、质量评分、对比分析 |
+| 管理台路径 | 功能 |
+|------------|------|
+| `/admin/dashboard` | 总览 |
+| `/admin/knowledge` | 知识库 |
+| `/admin/projects` | 项目与执行配置 |
+| `/admin/rd-tasks` | 任务工作台 |
+| `/admin/skills` | Skill Hub |
+| `/admin/traces` | 执行追踪 |
+| `/admin/evaluations` | 评测 |
 
 ---
 
-## 🧪 测试
+## 测试
 
 ```bash
-# 运行全部单元测试
 ./mvnw test
+./mvnw -pl engine,exec,skill,bootstrap -am test
 
-# 运行特定模块测试
-./mvnw -pl engine test
-./mvnw -pl exec test
-
-# 集成冒烟测试（需要 PostgreSQL）
-./mvnw -pl bootstrap -Dtest=PostgresRdTaskStateAtomicRealSmokeTest test
+# Pi bridge
+cd bootstrap/src/main/resources/executor/pi && npm test
 ```
 
 ---
 
-## 🗺️ 技术栈
+## 技术栈
 
 | 层面 | 技术 |
 |------|------|
-| 语言 | Java 21（Virtual Threads） |
-| 框架 | Spring Boot 3.5 |
-| 持久化 | PostgreSQL + Redis（Redisson 分布式锁） |
-| 对象存储 | S3 兼容（RustFS/MinIO） |
-| 消息队列 | RocketMQ |
-| 执行沙箱 | Docker |
-| 前端 | React 18 + Vite + TailwindCSS + Radix UI |
-| 构建 | Maven（多模块） |
+| 语言 / 框架 | Java 21 · Spring Boot 3.5 |
+| 事实库 | PostgreSQL + MyBatis-Plus |
+| 协调 | Redis · Redisson（锁 + Redis Stream） |
+| 对象存储 | S3 兼容（RustFS / MinIO） |
+| 执行 | Docker · Pi Agent（主） |
+| 前端 | React 18 · Vite · Tailwind · Radix |
+| 构建 | Maven 多模块 |
 
 ---
 
-## 📐 设计原则
+## 设计原则
 
-1. **模型可替换**：AI Provider 是 worker，不是系统核心。任何兼容接口都可接入。
-2. **PR-based 交付**：Agent 永远不直接合并代码，所有变更必须经过人类 Review。
-3. **证据驱动**：每个阶段产出结构化产物（prompt/result/log/diff），支持完整回放。
-4. **端口-适配器架构**：Feishu、GitHub、RocketMQ、模型 SDK 全部通过端口接入，可 Mock 测试。
-5. **状态机 + 持久化事件**：跨实例共享状态不依赖 JVM 内存，支持故障恢复。
-6. **安全纵深**：Secret 扫描、仓库白名单、分支限制、Docker 网络隔离。
+1. **模型可替换**：Provider 是 worker，不是系统核心。
+2. **PR-based 交付**：Agent 永不直接合并主干。
+3. **证据驱动**：prompt / result / log / diff / QA 证据可回放。
+4. **端口-适配器**：飞书、GitHub、队列、模型 SDK 可 Mock。
+5. **显式状态机 + 持久化事件**：跨实例状态不依赖 JVM 内存。
+6. **安全纵深**：白名单、Secret 扫描、Docker 隔离、Skill 显式路径加载。
 
 ---
 
-## 📄 License
+## License
 
 [Apache License 2.0](LICENSE)

@@ -95,6 +95,18 @@ Profile snapshot 必须保存上表 **Id**，不能只存可移动 tag。
 
 ---
 
+## 4b. Host-path paid canary（付费）— 已完成 2026-08-02
+
+| 项 | 值 |
+| --- | --- |
+| Task | `7489351511848390656` **COMPLETED** |
+| Evidence | `tmp/p3-v3-host-canary/evidence-summary.md` |
+| Protocol / mode | `rd-pi-request/v2` / `ROOT_ONLY`（仅 rehearsal JVM；跑完已恢复默认 v1/LEGACY） |
+| Preflight | 四角色成功 attempt 均为 `ACCEPTED`，`totalFiles=2` |
+| Tokens Σ | in 93058 / out 55414 / cacheRead 2212608 |
+| Docker Σ | ~931s；任务墙钟 ~1079s |
+| 生产灰度 | **未开** |
+
 ## 5. 明确不做
 
 - 生产默认 `request-protocol-version=v2`
