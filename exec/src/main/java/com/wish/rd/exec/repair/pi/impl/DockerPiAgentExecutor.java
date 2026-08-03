@@ -3,6 +3,7 @@ package com.wish.rd.exec.repair.pi.impl;
 import com.wish.rd.exec.repair.pi.AgentPrivateArtifactPublisher;
 import com.wish.rd.exec.repair.pi.PiRequestV2Materializer;
 import com.wish.rd.exec.repair.pi.PiResourceManifestMaterializerPort;
+import com.wish.rd.exec.repair.pi.PiSkillMaterializerPort;
 import com.wish.rd.exec.repair.pi.RuntimeContextPreflightValidator;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -109,6 +110,7 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
     private final RepairWorkspaceRepositoryPort workspaceRepository;
     private final ExecutionAllowlistPolicy executionAllowlistPolicy;
     private final PiResourceManifestMaterializerPort resourceMaterializer;
+    private final PiSkillMaterializerPort skillMaterializer;
     private final AgentExecutionEventSink eventSink;
     private final AgentPrivateArtifactPublisher privateArtifactPublisher;
     private final com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor.AuthEnvironmentResolver authEnvironmentResolver;
@@ -127,6 +129,7 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                 RepairWorkspaceRepositoryPort.noop(),
                 ExecutionAllowlistPolicy.disabled(),
                 PiResourceManifestMaterializerPort.emptyOnly(),
+                PiSkillMaterializerPort.emptyOnly(),
                 AgentExecutionEventSink.noop(),
                 AgentPrivateArtifactPublisher.noop(),
                 com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor.AuthEnvironmentResolver.system()
@@ -152,6 +155,7 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                 workspaceRepository,
                 executionAllowlistPolicy,
                 resourceMaterializer,
+                PiSkillMaterializerPort.emptyOnly(),
                 eventSink,
                 AgentPrivateArtifactPublisher.noop(),
                 authEnvironmentResolver
@@ -170,6 +174,34 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
             AgentPrivateArtifactPublisher privateArtifactPublisher,
             com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor.AuthEnvironmentResolver authEnvironmentResolver
     ) {
+        this(
+                workspaceFactory,
+                containerRunner,
+                resultValidator,
+                configuration,
+                workspaceRepository,
+                executionAllowlistPolicy,
+                resourceMaterializer,
+                PiSkillMaterializerPort.emptyOnly(),
+                eventSink,
+                privateArtifactPublisher,
+                authEnvironmentResolver
+        );
+    }
+
+    public DockerPiAgentExecutor(
+            RepairWorkspaceFactory workspaceFactory,
+            ContainerRunnerPort containerRunner,
+            StructuredResultValidator resultValidator,
+            Configuration configuration,
+            RepairWorkspaceRepositoryPort workspaceRepository,
+            ExecutionAllowlistPolicy executionAllowlistPolicy,
+            PiResourceManifestMaterializerPort resourceMaterializer,
+            PiSkillMaterializerPort skillMaterializer,
+            AgentExecutionEventSink eventSink,
+            AgentPrivateArtifactPublisher privateArtifactPublisher,
+            com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor.AuthEnvironmentResolver authEnvironmentResolver
+    ) {
         this.workspaceFactory = require(workspaceFactory, "workspaceFactory");
         this.containerRunner = require(containerRunner, "containerRunner");
         this.resultValidator = resultValidator == null ? new StructuredResultValidator() : resultValidator;
@@ -183,6 +215,9 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         this.resourceMaterializer = resourceMaterializer == null
                 ? PiResourceManifestMaterializerPort.emptyOnly()
                 : resourceMaterializer;
+        this.skillMaterializer = skillMaterializer == null
+                ? PiSkillMaterializerPort.emptyOnly()
+                : skillMaterializer;
         this.eventSink = eventSink == null ? AgentExecutionEventSink.noop() : eventSink;
         this.privateArtifactPublisher = privateArtifactPublisher == null
                 ? AgentPrivateArtifactPublisher.noop()
@@ -257,6 +292,7 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                 cleanOutputDirectory(workspace.outputDirectory());
                 repositoryMetadata.putAll(workspaceRepository.prepare(command, workspace).metadataJson());
                 materializeResources(snapshot, workspace.inputDirectory());
+                materializeSkills(snapshot.role(), workspace.inputDirectory());
                 QaProvision qaProvision = provisionQaInputs(command, snapshot, workspace);
                 String inputManifestJson = text(command.contextJson().get("inputManifestJson"));
                 PiRequestV2Materializer.materializeInputManifest(workspace.inputDirectory(), inputManifestJson);
@@ -450,6 +486,26 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         return new ToolPolicySpec(hostAllow, allow, deny, effective);
     }
 
+    private void materializeSkills(String role, Path inputDirectory) throws IOException {
+        try {
+            skillMaterializer.materialize(role, inputDirectory);
+        } catch (IOException exception) {
+            throw new PiConfigurationException(
+                    "PI_SKILL_CONFIGURATION",
+                    "Pi skill materialization failed: " + safeError(exception),
+                    exception
+            );
+        }
+        Path manifest = inputDirectory.resolve("skill-manifest.json").normalize();
+        Path root = inputDirectory.toAbsolutePath().normalize();
+        if (!manifest.startsWith(root) || Files.isSymbolicLink(manifest) || !Files.isRegularFile(manifest)) {
+            throw new PiConfigurationException(
+                    "PI_SKILL_CONFIGURATION",
+                    "Pi skill materializer did not produce a regular skill manifest"
+            );
+        }
+    }
+
     private void materializeResources(AgentExecutionProfileSnapshot snapshot, Path inputDirectory) throws IOException {
         try {
             resourceMaterializer.materialize(snapshot, inputDirectory);
@@ -532,6 +588,7 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         request.put("toolRetryPolicyVersion", text(snapshotJson.path("toolRetryPolicyVersion")));
         request.put("attemptNo", snapshot.attemptNo());
         request.put("resourceManifestPath", "/work/input/resource-manifest.json");
+        request.put("skillManifestPath", "/work/input/skill-manifest.json");
         String inputManifestHash = text(command.contextJson().get("inputManifestHash"));
         String contextPolicyJson = text(command.contextJson().get("contextPolicyJson"));
         if (v2) {
@@ -725,7 +782,14 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                 QA_PROFILE_DETECTOR.toJson(profile),
                 StandardCharsets.UTF_8
         );
-        return new QaProvision(profile, writeQaSkillDocument(workspace.inputDirectory()));
+        Path hubSkill = workspace.inputDirectory().resolve("skills")
+                .resolve("qa-playwright-cli")
+                .resolve("SKILL.md")
+                .normalize();
+        boolean hubPresent = Files.isRegularFile(hubSkill);
+        // Prefer Skill Hub materialization under skills/; keep qa-skill/ as legacy fallback.
+        boolean legacyWritten = !hubPresent && writeQaSkillDocument(workspace.inputDirectory());
+        return new QaProvision(profile, hubPresent, legacyWritten);
     }
 
     private static boolean writeQaSkillDocument(Path inputDirectory) {
@@ -753,9 +817,13 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         }
     }
 
-    private record QaProvision(QaExecutionProfile profile, boolean skillDocumentWritten) {
+    private record QaProvision(
+            QaExecutionProfile profile,
+            boolean hubSkillPresent,
+            boolean legacySkillDocumentWritten
+    ) {
         private static QaProvision none() {
-            return new QaProvision(null, false);
+            return new QaProvision(null, false, false);
         }
     }
 
@@ -798,7 +866,9 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
             environment.put("RD_QA_STARTUP_TIMEOUT_SECONDS", QA_STARTUP_TIMEOUT_SECONDS);
             environment.put("RD_QA_COMMAND_TIMEOUT_MILLIS", String.valueOf(QA_COMMAND_TIMEOUT_MILLIS));
             environment.put("PLAYWRIGHT_MCP_OUTPUT_DIR", "/work/output/qa-work/playwright");
-            if (qaProvision.skillDocumentWritten()) {
+            if (qaProvision.hubSkillPresent()) {
+                environment.put("RD_QA_SKILL_FILE", "/work/input/skills/qa-playwright-cli/SKILL.md");
+            } else if (qaProvision.legacySkillDocumentWritten()) {
                 environment.put("RD_QA_SKILL_FILE", "/work/input/qa-skill/SKILL.md");
             }
         }

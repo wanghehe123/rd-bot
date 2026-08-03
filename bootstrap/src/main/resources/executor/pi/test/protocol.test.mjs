@@ -6,6 +6,7 @@ import {
   INPUT_MANIFEST_PATH,
   REQUEST_PROTOCOL,
   REQUEST_PROTOCOL_V2,
+  SKILL_MANIFEST_PATH,
   normalizePiEvent,
   parseJsonLine,
   redact,
@@ -37,6 +38,7 @@ const request = {
   inputPath: "/work/input",
   outputPath: "/work/output",
   resourceManifestPath: "/work/input/resource-manifest.json",
+  skillManifestPath: SKILL_MANIFEST_PATH,
   credentialEnvironmentVariable: "ANTHROPIC_API_KEY",
   toolPolicy: { allow: ["read", "bash", "edit", "write", "rd_submit_result"] },
 };
@@ -63,6 +65,13 @@ test("validates the fixed one-shot request contract", () => {
   assert.equal(validateRequest(request), request);
   assert.throws(() => validateRequest({ ...request, credentialEnvironmentVariable: "secret-value" }));
   assert.throws(() => validateRequest({ ...request, repoPath: "/tmp/repo" }));
+  assert.throws(() => validateRequest({
+    ...request,
+    skillManifestPath: "/work/input/other-skill-manifest.json",
+  }));
+  const withoutSkillManifest = { ...request };
+  delete withoutSkillManifest.skillManifestPath;
+  assert.equal(validateRequest(withoutSkillManifest), withoutSkillManifest);
 });
 
 test("validates request v2 fixed manifest path, hashes, and context policy", () => {

@@ -7,6 +7,7 @@ import com.wish.rd.exec.repair.docker.RepairWorkspaceRepositoryPort;
 import com.wish.rd.exec.repair.pi.impl.DockerPiAgentExecutor;
 import com.wish.rd.exec.repair.pi.AgentPrivateArtifactPublisher;
 import com.wish.rd.exec.repair.pi.PiResourceManifestMaterializerPort;
+import com.wish.rd.exec.repair.pi.PiSkillMaterializerPort;
 import com.wish.rd.exec.repair.runtime.AgentExecutionEventSink;
 import com.wish.rd.exec.repair.result.StructuredResultValidator;
 import com.wish.rd.exec.repair.security.model.ExecutionAllowlistPolicy;
@@ -45,6 +46,7 @@ public class AgentRuntimeExecutorConfiguration {
             PiAgentExecutorProperties properties,
             ObjectProvider<RepairWorkspaceRepositoryPort> repositoryProvider,
             ObjectProvider<PiResourceManifestMaterializerPort> resourceMaterializerProvider,
+            ObjectProvider<PiSkillMaterializerPort> skillMaterializerProvider,
             ObjectProvider<AgentExecutionEventSink> eventSinkProvider,
             ObjectProvider<AgentPrivateArtifactPublisher> privateArtifactPublisherProvider,
             ExecutionAllowlistPolicy executionAllowlistPolicy
@@ -57,6 +59,7 @@ public class AgentRuntimeExecutorConfiguration {
                 repositoryProvider.getIfAvailable(RepairWorkspaceRepositoryPort::noop),
                 executionAllowlistPolicy,
                 resourceMaterializerProvider.getIfAvailable(PiResourceManifestMaterializerPort::emptyOnly),
+                skillMaterializerProvider.getIfAvailable(PiSkillMaterializerPort::emptyOnly),
                 eventSinkProvider.getIfAvailable(AgentExecutionEventSink::noop),
                 privateArtifactPublisherProvider.getIfAvailable(AgentPrivateArtifactPublisher::noop),
                 com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor.AuthEnvironmentResolver.system()

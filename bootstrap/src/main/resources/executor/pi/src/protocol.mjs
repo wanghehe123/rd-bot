@@ -2,6 +2,8 @@ export const REQUEST_PROTOCOL = "rd-pi-request/v1";
 export const REQUEST_PROTOCOL_V2 = "rd-pi-request/v2";
 export const RUNTIME_CONTEXT_POLICY_PROTOCOL = "rd-runtime-context-policy/v1";
 export const INPUT_MANIFEST_PATH = "/work/input/role-execution-input-manifest.json";
+export const RESOURCE_MANIFEST_PATH = "/work/input/resource-manifest.json";
+export const SKILL_MANIFEST_PATH = "/work/input/skill-manifest.json";
 export const EVENT_PROTOCOL = "rd-agent-event/v1";
 export const MAX_LINE_BYTES = 256 * 1024;
 export const MAX_TEXT_BYTES = 64 * 1024;
@@ -87,8 +89,14 @@ function validateRequestForProtocol(request, expectedProtocol) {
   }
   if (request.repoPath !== "/work/repo" || request.inputPath !== "/work/input"
       || request.outputPath !== "/work/output"
-      || request.resourceManifestPath !== "/work/input/resource-manifest.json") {
+      || request.resourceManifestPath !== RESOURCE_MANIFEST_PATH) {
     throw new Error("request paths must use the fixed /work contract");
+  }
+  if (request.skillManifestPath !== undefined) {
+    requireString(request.skillManifestPath, "skillManifestPath");
+    if (request.skillManifestPath !== SKILL_MANIFEST_PATH) {
+      throw new Error("skillManifestPath must use the fixed /work contract");
+    }
   }
   if (expectedProtocol === REQUEST_PROTOCOL_V2) {
     requireString(request.inputManifestPath, "inputManifestPath");

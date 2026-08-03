@@ -36,6 +36,8 @@ import {
   contextFileMetadata,
   createApprovedResourceLoader,
   loadResourceManifest,
+  loadSkillManifest,
+  DEFAULT_SKILL_MANIFEST_PATH,
 } from "./resource-loader.mjs";
 import { validateResult, validateRoleResult, writeResultAtomically } from "./result-tool.mjs";
 import { AgentStateProjector } from "./agent-state-projector.mjs";
@@ -84,6 +86,7 @@ export async function run(options = {}) {
   let protocolSucceeded = false;
   let failure;
   let verifiedManifest;
+  let skillManifest;
   let sessionFile;
   let contextFiles = [];
   let contextDiscovery;
@@ -99,6 +102,8 @@ export async function run(options = {}) {
     });
 
     verifiedManifest = await loadResourceManifest(request.resourceManifestPath);
+    const skillManifestPath = request.skillManifestPath ?? DEFAULT_SKILL_MANIFEST_PATH;
+    skillManifest = await loadSkillManifest(skillManifestPath);
     const contextPreflightEnabled = shouldRunContextPreflight(request);
     if (contextPreflightEnabled) {
       const { discovery, validation } = await runContextPreflight(
@@ -117,7 +122,7 @@ export async function run(options = {}) {
         throw new Error(`context preflight rejected: ${validation.violations.join("; ")}`);
       }
     }
-    const settingsManager = safeSettingsManager();
+    const settingsManager = safeSettingsManager(skillManifest.skillPaths);
     const dynamicState = resolveDynamicStateConfig(request);
     if (dynamicState.enabled) {
       assertStateToolsPermitted(request.toolPolicy);
@@ -154,6 +159,7 @@ export async function run(options = {}) {
       verifiedManifest,
       settingsManager,
       extensionFactories,
+      additionalSkillPaths: skillManifest.skillPaths,
       contextPolicy: contextPreflightEnabled ? request.contextPolicy : undefined,
       contextDiscovery,
     });
@@ -171,6 +177,15 @@ export async function run(options = {}) {
       }
       throw new Error("selected Pi extension failed to load");
     }
+    const loadedSkills = typeof resourceLoader.getSkills === "function"
+      ? resourceLoader.getSkills()
+      : { skills: [] };
+    const skillNames = (loadedSkills.skills ?? [])
+      .map((skill) => skill?.name)
+      .filter((name) => typeof name === "string" && name.trim() !== "");
+    const skillCount = Array.isArray(loadedSkills.skills)
+      ? loadedSkills.skills.length
+      : skillManifest.skillPaths.length;
     contextFiles = contextFileMetadata(resourceLoader.getAgentsFiles().agentsFiles);
     if (contextPreflightEnabled) {
       const postReloadLoaded = buildDiscoveryFromContextFiles(
@@ -206,6 +221,9 @@ export async function run(options = {}) {
         extensionPaths: verifiedManifest.extensionPaths,
         contextFiles,
         extensionCount: extensionsResult.extensions.length,
+        skillPaths: skillManifest.skillPaths,
+        skillCount,
+        skillNames,
       });
       if (!postReloadValidation.accepted) {
         throw new Error(`post-reload context rejected: ${postReloadValidation.violations.join("; ")}`);
@@ -217,6 +235,9 @@ export async function run(options = {}) {
         extensionPaths: verifiedManifest.extensionPaths,
         contextFiles,
         extensionCount: extensionsResult.extensions.length,
+        skillPaths: skillManifest.skillPaths,
+        skillCount,
+        skillNames,
       });
       await writeRuntimeContextManifest({
         request,
@@ -266,7 +287,7 @@ export async function run(options = {}) {
       void sink.ingest(event);
     });
 
-    const prompt = executionPrompt(request);
+    const prompt = executionPrompt(request, skillManifest);
     await session.prompt(prompt);
     await session.waitForIdle();
     await sink.flush();
@@ -420,7 +441,7 @@ async function acceptBridgeFailureResult(paths, sink, result, onAccepted, stateP
   });
 }
 
-export function executionPrompt(request) {
+export function executionPrompt(request, skillManifest = { skills: [] }) {
   const role = request.role;
   const common = [
     "This is a one-shot RD-Bot execution.",
@@ -429,7 +450,17 @@ export function executionPrompt(request) {
     "Use SUCCESS only when the requested work and acceptance checks are complete. Use FAILED, NEED_INFO, or UNSAFE when they are not.",
   ];
   const roleInstructions = roleArtifactInstructions(role, request);
-  return `${request.prompt}\n\n` + [...common, ...roleInstructions].join("\n");
+  let prompt = `${request.prompt}\n\n` + [...common, ...roleInstructions].join("\n");
+  const forceGuides = (skillManifest?.skills ?? []).filter((skill) => (
+    skill?.forceGuide === true
+    && typeof skill.guidePrompt === "string"
+    && skill.guidePrompt.trim() !== ""
+  ));
+  if (forceGuides.length > 0) {
+    prompt += "\n\n# 强制启用的 Skill 引导\n"
+      + forceGuides.map((skill) => `- ${skill.skillId}: ${skill.guidePrompt}`).join("\n");
+  }
+  return prompt;
 }
 
 function roleArtifactInstructions(role, request = {}) {
@@ -674,7 +705,8 @@ async function readValidatedRequest(path) {
   return validateRequest(parsed);
 }
 
-function safeSettingsManager() {
+function safeSettingsManager(skillPaths = []) {
+  const paths = Array.isArray(skillPaths) ? [...skillPaths] : [];
   return SettingsManager.inMemory(
     {
       compaction: { enabled: false },
@@ -682,7 +714,7 @@ function safeSettingsManager() {
       enableAnalytics: false,
       packages: [],
       extensions: [],
-      skills: [],
+      skills: paths,
       prompts: [],
       themes: [],
     },

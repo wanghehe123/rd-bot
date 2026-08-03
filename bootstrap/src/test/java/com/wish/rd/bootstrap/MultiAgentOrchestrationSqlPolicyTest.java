@@ -86,4 +86,16 @@ class MultiAgentOrchestrationSqlPolicyTest {
         assertTrue(content.contains("tool_policy_version < 2"));
         assertTrue(!content.contains("rd_agent_execution_profile_snapshots"));
     }
+
+    @Test
+    void shouldProvideSkillHubCatalogAndRoleBindingTables() throws Exception {
+        Path sql = Path.of(System.getProperty("user.dir"))
+                .resolve("src/main/resources/sql/postgres/p10_skill_hub.sql");
+        String content = Files.readString(sql);
+
+        assertTrue(content.contains("CREATE TABLE IF NOT EXISTS rd_skill_catalog"));
+        assertTrue(content.contains("CREATE TABLE IF NOT EXISTS rd_skill_role_bindings"));
+        assertTrue(content.contains("PRIMARY KEY (role, skill_id)"));
+        assertTrue(content.contains("status IN ('ACTIVE', 'WAITING_APPROVAL', 'DISABLED', 'REJECTED')"));
+    }
 }

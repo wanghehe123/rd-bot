@@ -186,6 +186,7 @@ public class CodingBenchmarkSnapshotToRequestAdapter {
         request.put("inputPath", "/work/input");
         request.put("outputPath", "/work/output");
         request.put("resourceManifestPath", "/work/input/resource-manifest.json");
+        request.put("skillManifestPath", "/work/input/skill-manifest.json");
         request.put("patchArtifactPath", PATCH_ARTIFACT_PATH);
         request.put("maxAgentTurns", DEFAULT_MAX_AGENT_TURNS);
         request.put("maxTotalTokens", DEFAULT_MAX_TOTAL_TOKENS);

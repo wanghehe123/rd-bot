@@ -8,8 +8,11 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 export const RESOURCE_MANIFEST_PROTOCOL = "rd-agent-resource-manifest/v1";
+export const SKILL_MANIFEST_PROTOCOL = "rd-skill-manifest/v1";
 export const VERIFIED_STATUS = "VERIFIED";
 export const DEFAULT_EXTENSION_ROOT = "/work/input/extensions";
+export const DEFAULT_SKILL_ROOT = "/work/input/skills";
+export const DEFAULT_SKILL_MANIFEST_PATH = "/work/input/skill-manifest.json";
 
 export const CONTEXT_POLICY_MODES = Object.freeze({
   LEGACY_OBSERVE_ONLY: "LEGACY_OBSERVE_ONLY",
@@ -124,10 +127,68 @@ export async function loadResourceManifest(path, options = {}) {
 }
 
 /**
- * Build a Pi loader with project resources disabled by default. Explicit
- * verified extension paths remain available through additionalExtensionPaths;
- * project .pi settings, skills, prompts, themes, and extensions are not.
+ * Validate the Java-produced skill manifest. Skills are loaded separately from
+ * the extension resource manifest; only skillPaths under the skill root are
+ * accepted.
  */
+export function validateSkillManifest(manifest, options = {}) {
+  const root = resolve(options.root ?? DEFAULT_SKILL_ROOT);
+  if (!isObject(manifest)) throw new Error("skill manifest must be an object");
+  if (manifest.protocol !== SKILL_MANIFEST_PROTOCOL) {
+    throw new Error(`unsupported skill manifest protocol: ${manifest.protocol}`);
+  }
+  if (!Array.isArray(manifest.skillPaths)) {
+    throw new Error("skill manifest skillPaths must be an array");
+  }
+  if (!Array.isArray(manifest.skills)) {
+    throw new Error("skill manifest skills must be an array");
+  }
+
+  const skillPaths = [];
+  for (const skillPath of manifest.skillPaths) {
+    requireText(skillPath, "skillPaths[]");
+    const absolutePath = resolve(skillPath);
+    if (!isWithin(absolutePath, root)) {
+      throw new Error(`skill path escapes the skill root: ${skillPath}`);
+    }
+    skillPaths.push(absolutePath);
+  }
+
+  const skills = [];
+  for (const [index, skill] of manifest.skills.entries()) {
+    if (!isObject(skill)) {
+      throw new Error(`skill manifest skills[${index}] must be an object`);
+    }
+    const skillId = requireText(skill.skillId, `skills[${index}].skillId`);
+    const forceGuide = skill.forceGuide === true;
+    const guidePrompt = typeof skill.guidePrompt === "string" ? skill.guidePrompt : "";
+    skills.push(Object.freeze({
+      skillId,
+      version: typeof skill.version === "string" ? skill.version : "",
+      skillPath: typeof skill.skillPath === "string" ? skill.skillPath : "",
+      forceGuide,
+      guidePrompt,
+      description: typeof skill.description === "string" ? skill.description : "",
+    }));
+  }
+
+  return Object.freeze({
+    skillPaths: Object.freeze(skillPaths),
+    skills: Object.freeze(skills),
+  });
+}
+
+export async function loadSkillManifest(path, options = {}) {
+  const content = await readFile(path, "utf8");
+  let manifest;
+  try {
+    manifest = JSON.parse(content);
+  } catch (error) {
+    throw new Error(`invalid skill manifest JSON: ${error.message}`);
+  }
+  return validateSkillManifest(manifest, options);
+}
+
 /**
  * Discover repo context files under a frozen runtime context policy. Returns
  * deterministic load order and explicit reject decisions for audit and bridge
@@ -218,18 +279,28 @@ export async function discoverContextFiles(repoRoot, policy = {}) {
   });
 }
 
+/**
+ * Build a Pi loader with project resources disabled by default. Explicit
+ * verified extension paths remain available through additionalExtensionPaths;
+ * explicit skillPaths from the skill manifest use additionalSkillPaths while
+ * noSkills stays true (defaults and project .agents/skills stay off).
+ */
 export function createApprovedResourceLoader({
   cwd = "/work/repo",
   agentDir = "/work/pi-agent",
   verifiedManifest,
   settingsManager,
   extensionFactories = [],
+  additionalSkillPaths = [],
   contextPolicy,
   contextDiscovery,
 } = {}) {
   if (!verifiedManifest || !Array.isArray(verifiedManifest.extensionPaths)) {
     throw new Error("verified resource manifest is required");
   }
+  const skillPaths = Array.isArray(additionalSkillPaths)
+    ? [...additionalSkillPaths]
+    : [];
   const projectRoot = resolve(cwd);
   const manager = settingsManager ?? SettingsManager.inMemory(
     {
@@ -238,7 +309,7 @@ export function createApprovedResourceLoader({
       enableAnalytics: false,
       packages: [],
       extensions: [],
-      skills: [],
+      skills: skillPaths.length > 0 ? skillPaths : [],
       prompts: [],
       themes: [],
     },
@@ -254,6 +325,7 @@ export function createApprovedResourceLoader({
     noThemes: true,
     noContextFiles: false,
     additionalExtensionPaths: [...verifiedManifest.extensionPaths],
+    additionalSkillPaths: skillPaths,
     extensionFactories: [...extensionFactories],
     agentsFilesOverride: ({ agentsFiles }) => ({
       agentsFiles: resolveAgentsFilesForPolicy(
