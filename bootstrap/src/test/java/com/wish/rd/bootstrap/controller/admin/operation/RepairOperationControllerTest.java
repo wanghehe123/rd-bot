@@ -1,6 +1,6 @@
 package com.wish.rd.bootstrap.controller.admin.operation;
 
-import com.wish.rd.bootstrap.rocketmq.impl.InMemoryRepairQueueDeadLetterRepository;
+import com.wish.rd.bootstrap.queue.impl.InMemoryRepairQueueDeadLetterRepository;
 import com.wish.rd.engine.audit.RepairAuditQueryPort;
 import com.wish.rd.engine.audit.model.RepairAuditEvent;
 import com.wish.rd.engine.audit.model.RepairAuditEventType;
@@ -31,7 +31,7 @@ class RepairOperationControllerTest {
         InMemoryRepairQueueDeadLetterRepository repository = new InMemoryRepairQueueDeadLetterRepository();
         RepairQueueDeadLetter deadLetter = repository.save(message(), "retry exceeded");
         RepairOperationController controller = controller(repository, message ->
-                RepairQueuePublishResult.failure("RD_BOT_REPAIR_TICKET", message.tag(), "broker unavailable"));
+                RepairQueuePublishResult.failure("rd-bot:repair:tickets", message.tag(), "stream unavailable"));
 
         RepairOperationController.DeadLetterReplayView result = controller.replayDeadLetter(deadLetter.id());
 
@@ -44,7 +44,7 @@ class RepairOperationControllerTest {
         InMemoryRepairQueueDeadLetterRepository repository = new InMemoryRepairQueueDeadLetterRepository();
         RepairQueueDeadLetter deadLetter = repository.save(message(), "retry exceeded");
         RepairOperationController controller = controller(repository, message ->
-                RepairQueuePublishResult.success("mq-1", "RD_BOT_REPAIR_TICKET", message.tag()));
+                RepairQueuePublishResult.success("stream-1", "rd-bot:repair:tickets", message.tag()));
 
         RepairOperationController.DeadLetterReplayView result = controller.replayDeadLetter(deadLetter.id());
 
@@ -76,7 +76,7 @@ class RepairOperationControllerTest {
         };
         RepairOperationController controller = controller(
                 new InMemoryRepairQueueDeadLetterRepository(),
-                message -> RepairQueuePublishResult.success("mq-1", "RD_BOT_REPAIR_TICKET", message.tag()),
+                message -> RepairQueuePublishResult.success("stream-1", "rd-bot:repair:tickets", message.tag()),
                 queryPort);
 
         List<RepairOperationController.RepairAuditEventView> events = controller.auditEvents(null, "task-1");

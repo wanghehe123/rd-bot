@@ -402,11 +402,11 @@ class RdTaskControllerTest {
         RdProject project = projectService.create(projectCommand());
         mockMvc = MockMvcBuilders.standaloneSetup(new RdTaskController(registry, projectService)).build();
         String body = objectMapper.writeValueAsString(Map.of(
-                "title", "RocketMQ 修复任务无法重启",
-                "ticketTitle", "No route info of topic RD_BOT_REPAIR_TICKET",
+                "title", "Redis Stream 修复任务无法重启",
+                "ticketTitle", "Redis Stream rd-bot:repair:tickets 不可用",
                 "priority", "P1",
                 "projectId", project.projectId(),
-                "promptSnapshot", "现象：管理台恢复任务时报 RocketMQ topic 无路由。"
+                "promptSnapshot", "现象：管理台恢复任务时报 Redis Stream 不可用。"
         ));
 
         mockMvc.perform(post("/admin/rd-tasks")
@@ -415,7 +415,7 @@ class RdTaskControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.taskType", is("BUG_FIX")))
                 .andExpect(jsonPath("$.ticketId", startsWith("ticket-")))
-                .andExpect(jsonPath("$.ticketTitle", is("No route info of topic RD_BOT_REPAIR_TICKET")));
+                .andExpect(jsonPath("$.ticketTitle", is("Redis Stream rd-bot:repair:tickets 不可用")));
     }
 
     @Test

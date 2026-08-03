@@ -1,7 +1,6 @@
-package com.wish.rd.bootstrap.rocketmq;
+package com.wish.rd.bootstrap.queue;
 
-import com.wish.rd.bootstrap.rocketmq.impl.InMemoryRepairQueueAdapter;
-
+import com.wish.rd.bootstrap.queue.impl.InMemoryRepairQueueAdapter;
 import com.wish.rd.engine.ticket.RepairQueueConsumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -10,16 +9,23 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 /**
- * 在启动期把 {@link RepairQueueConsumer} 绑定到 {@link InMemoryRepairQueueAdapter}。
+ * Binds the local in-memory repair queue to the engine consumer when memory mode is selected.
  *
- * <p>内存模式下，发布方持有消费回调引用，使端到端流程可在单进程内完成。
+ * <p>Production Redis Stream mode owns its consumer lifecycle directly; this component exists
+ * solely to preserve deterministic single-process HTTP QA and unit-test behavior.
  */
 @Component
-@ConditionalOnProperty(name = "rd.repair.queue.mode", havingValue = "memory", matchIfMissing = true)
+@ConditionalOnProperty(name = "rd.repair.queue.mode", havingValue = "memory")
 public class RepairQueueWiring {
 
     private static final Logger log = LoggerFactory.getLogger(RepairQueueWiring.class);
 
+    /**
+     * Connects the optional engine consumer to the local adapter.
+     *
+     * @param adapter local in-memory queue adapter
+     * @param consumerProvider provider for the engine consumer
+     */
     public RepairQueueWiring(
             InMemoryRepairQueueAdapter adapter,
             ObjectProvider<RepairQueueConsumer> consumerProvider

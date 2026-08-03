@@ -71,6 +71,12 @@ public class TicketRepairExecutionConsumer implements RepairQueueConsumer {
      * @param fixEngine          BugFix 完整执行引擎
      * @param fieldMapping       工单字段映射器
      * @param autoExecuteEnabled 是否在 RAG 上下文就绪后继续触发执行器
+     * @param updatePort 工单写回端口提供器
+     * @param recordRepository 修复记录仓储提供器
+     * @param auditSinkProvider 审计写入端口提供器
+     * @param deadLetterRepositoryProvider 队列死信仓储提供器
+     * @param maxRetryAttempts Redis Stream 队列允许的最大业务尝试次数
+     * @param writeBackEnabled 是否允许回写工单状态
      */
     @Autowired
     public TicketRepairExecutionConsumer(
@@ -83,7 +89,7 @@ public class TicketRepairExecutionConsumer implements RepairQueueConsumer {
             ObjectProvider<RepairRecordRepository> recordRepository,
             ObjectProvider<RepairAuditSinkPort> auditSinkProvider,
             ObjectProvider<RepairQueueDeadLetterRepository> deadLetterRepositoryProvider,
-            @Value("${rd.rocketmq.repair.max-retry-attempts:3}") int maxRetryAttempts,
+            @Value("${rd.redis-stream.repair.max-retry-attempts:3}") int maxRetryAttempts,
             @Value("#{${rd.ticket.write-back.enabled:false} || ${rd.feishu.im.write-back.enabled:false} || "
                     + "${rd.feishu.helpdesk.write-back.enabled:false}}")
             boolean writeBackEnabled
@@ -193,7 +199,7 @@ public class TicketRepairExecutionConsumer implements RepairQueueConsumer {
                     "",
                     message.ticketId(),
                     RepairAuditEventType.QUEUE_DEAD_LETTERED,
-                    "RocketMQ",
+                    "Redis Stream",
                     "repair queue message moved to dead letter",
                     Map.of("deadLetterId", deadLetter.id(), "attempt", Integer.toString(message.attempt()))
             );

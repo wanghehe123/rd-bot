@@ -117,7 +117,7 @@ const TASK_TYPE_OPTIONS = [
   { value: "REQUIREMENT", label: "做需求" }
 ];
 
-const REPAIR_QUEUE_TOPIC = "RD_BOT_REPAIR_TICKET";
+const REPAIR_QUEUE_STREAM_KEY = "rd-bot:repair:tickets";
 
 const formatAttachmentSize = (bytes: number) => {
   if (bytes < 1024) return `${bytes} B`;
@@ -219,7 +219,7 @@ const buildBugFixPromptSnapshot = (input: BugFixPromptInput) => {
     input.affectedScope.trim() ? `## 影响范围\n${input.affectedScope.trim()}` : "",
     `## 验收标准\n${bulletLines(input.acceptanceCriteriaText)}`,
     input.extraContext.trim() ? `## 补充上下文\n${input.extraContext.trim()}` : "",
-    `## 启动依赖\n- 修复队列 Topic：${REPAIR_QUEUE_TOPIC}`
+    `## 启动依赖\n- 修复队列 Redis Stream：${REPAIR_QUEUE_STREAM_KEY}`
   ];
   return sections.filter(Boolean).join("\n\n");
 };
@@ -1161,8 +1161,8 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
                       <Terminal className="h-3.5 w-3.5" />
                       启动队列
                     </div>
-                    <div className="mt-1 truncate font-mono text-sm" title={REPAIR_QUEUE_TOPIC}>
-                      {REPAIR_QUEUE_TOPIC}
+                    <div className="mt-1 truncate font-mono text-sm" title={REPAIR_QUEUE_STREAM_KEY}>
+                      {REPAIR_QUEUE_STREAM_KEY}
                     </div>
                   </div>
                   <Button
@@ -1345,7 +1345,7 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
                 <Input
                   value={ticketTitle}
                   onChange={(event) => setTicketTitle(event.target.value)}
-                  placeholder="例如：恢复任务时报 No route info of topic RD_BOT_REPAIR_TICKET"
+                  placeholder="例如：恢复任务时报 Redis Stream rd-bot:repair:tickets 不可用"
                 />
               </div>
               <div className="grid gap-4 sm:grid-cols-2">
@@ -1387,7 +1387,7 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
                     value={bugErrorLog}
                     onChange={(event) => setBugErrorLog(event.target.value)}
                     className="min-h-[132px] resize-y font-mono text-xs"
-                    placeholder={`org.apache.rocketmq.client.exception.MQClientException: No route info of this topic: ${REPAIR_QUEUE_TOPIC}`}
+                    placeholder={`org.redisson.client.RedisException: Redis Stream unavailable: ${REPAIR_QUEUE_STREAM_KEY}`}
                   />
                 </div>
               </div>
@@ -1435,7 +1435,7 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
               <div className="flex gap-3 rounded-lg border border-amber-200 bg-amber-50/70 p-4 text-sm text-amber-800">
                 <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
                 <div>
-                  报错中出现的 {REPAIR_QUEUE_TOPIC} 无路由属于启动依赖问题；本表单会把队列、项目、分支、复现步骤与异常栈写入启动上下文。
+                  报错中出现的 {REPAIR_QUEUE_STREAM_KEY} 不可用属于启动依赖问题；本表单会把队列、项目、分支、复现步骤与异常栈写入启动上下文。
                 </div>
               </div>
             </>

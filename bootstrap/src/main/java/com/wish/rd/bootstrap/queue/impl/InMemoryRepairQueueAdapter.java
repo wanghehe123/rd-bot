@@ -1,8 +1,8 @@
-package com.wish.rd.bootstrap.rocketmq.impl;
+package com.wish.rd.bootstrap.queue.impl;
 
 import com.wish.rd.engine.ticket.RepairQueueConsumer;
-import com.wish.rd.engine.ticket.model.RepairQueuePublishResult;
 import com.wish.rd.engine.ticket.RepairQueuePublisher;
+import com.wish.rd.engine.ticket.model.RepairQueuePublishResult;
 import com.wish.rd.engine.ticket.model.RepairTicketMessage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -15,55 +15,49 @@ import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * 内存修复队列适配器：默认本地/测试实现，不依赖外部 MQ。
+ * In-memory repair-queue adapter for explicit local and test mode.
  *
- * <p>由配置 {@code rd.repair.queue.mode=memory}（{@code matchIfMissing=true}）开启。
- * 发布即同步触发消费回调，便于本地端到端联调与单测。
+ * <p>It preserves the existing synchronous test-channel behavior without requiring Redis;
+ * production uses {@code rd.repair.queue.mode=redis-stream} instead.
  */
 @Component
-@ConditionalOnProperty(name = "rd.repair.queue.mode", havingValue = "memory", matchIfMissing = true)
+@ConditionalOnProperty(name = "rd.repair.queue.mode", havingValue = "memory")
 public class InMemoryRepairQueueAdapter implements RepairQueuePublisher {
 
     private static final Logger log = LoggerFactory.getLogger(InMemoryRepairQueueAdapter.class);
-
-    private static final String TOPIC = "in-memory://RD_BOT_REPAIR_TICKET";
+    private static final String STREAM_TARGET = "in-memory://rd-bot:repair:tickets";
 
     private final List<QueuedMessage> published = new ArrayList<>();
     private final AtomicLong idSequence = new AtomicLong(0);
     private volatile RepairQueueConsumer consumer;
 
     /**
-     * 绑定消费回调（由 Spring 在启动时找到唯一的 {@link RepairQueueConsumer} bean 后注入）。
+     * Binds the queue consumer used by the local synchronous adapter.
      *
-     * @param consumer 消费回调，可为 null 表示暂不消费
+     * @param consumer consumer callback, or {@code null} to defer consumption
      */
     public void bindConsumer(RepairQueueConsumer consumer) {
         this.consumer = consumer;
     }
 
+    /**
+     * Publishes a local message and immediately invokes the bound consumer when present.
+     *
+     * @param message thin repair-ticket message
+     * @return local publish result
+     */
     @Override
     public synchronized RepairQueuePublishResult publish(RepairTicketMessage message) {
         QueuedMessage queued = publishInternal(message);
         dispatch(queued);
-        return RepairQueuePublishResult.success("mem-" + queued.id(), TOPIC, message.tag());
-    }
-
-    private QueuedMessage publishInternal(RepairTicketMessage message) {
-        long id = idSequence.incrementAndGet();
-        QueuedMessage queued = new QueuedMessage(id, message);
-        published.add(queued);
-        log.info("in-memory queue published, ticketId={}, tag={}, seq={}",
-                message.ticketId(), message.tag(), id);
-        return queued;
+        return RepairQueuePublishResult.success("mem-" + queued.id(), STREAM_TARGET, message.tag());
     }
 
     /**
-     * 触发消费已发布但未消费的消息，返回处理结果。
+     * Drains the latest unconsumed local message for a ticket.
      *
-     * <p>测试通道在调用 {@code POST /test/repair/tickets/{ticketId}/run} 时触发。
-     *
-     * @param ticketId 工单 ID
-     * @return 消费是否成功；未找到消息返回 empty
+     * @param ticketId ticket identifier
+     * @return consumption result or empty when no matching message remains
      */
     public synchronized Optional<Boolean> drainOne(String ticketId) {
         Optional<QueuedMessage> found = published.stream()
@@ -74,6 +68,35 @@ public class InMemoryRepairQueueAdapter implements RepairQueuePublisher {
             return Optional.empty();
         }
         return dispatch(found.get());
+    }
+
+    /**
+     * Publishes and synchronously drains one local message.
+     *
+     * @param message thin repair-ticket message
+     * @return whether the bound consumer completed successfully
+     */
+    public synchronized boolean publishAndDrain(RepairTicketMessage message) {
+        QueuedMessage queued = publishInternal(message);
+        return dispatch(queued).orElse(false);
+    }
+
+    /**
+     * Returns a snapshot of locally published messages for the test channel.
+     *
+     * @return immutable message snapshot
+     */
+    public synchronized List<RepairTicketMessage> snapshot() {
+        return published.stream().map(QueuedMessage::message).toList();
+    }
+
+    private QueuedMessage publishInternal(RepairTicketMessage message) {
+        long id = idSequence.incrementAndGet();
+        QueuedMessage queued = new QueuedMessage(id, message);
+        published.add(queued);
+        log.info("in-memory queue published, ticketId={}, tag={}, seq={}",
+                message.ticketId(), message.tag(), id);
+        return queued;
     }
 
     private Optional<Boolean> dispatch(QueuedMessage queued) {
@@ -93,33 +116,11 @@ public class InMemoryRepairQueueAdapter implements RepairQueuePublisher {
                         queued.message().ticketId(), queued.id());
             }
             return Optional.of(handled);
-        } catch (RuntimeException ex) {
+        } catch (RuntimeException exception) {
             log.error("in-memory queue consumer threw exception, ticketId={}, seq={}",
-                    queued.message().ticketId(), queued.id(), ex);
+                    queued.message().ticketId(), queued.id(), exception);
             return Optional.of(false);
         }
-    }
-
-    /**
-     * 同步发布并立即消费一条消息，返回消费结果。
-     *
-     * @param message 队列消息
-     * @return 消费是否成功
-     */
-    public synchronized boolean publishAndDrain(RepairTicketMessage message) {
-        QueuedMessage queued = publishInternal(message);
-        return dispatch(queued).orElse(false);
-    }
-
-    /**
-     * 快照已发布消息（测试与排查用）。
-     *
-     * @return 不可变消息列表
-     */
-    public synchronized List<RepairTicketMessage> snapshot() {
-        return published.stream()
-                .map(QueuedMessage::message)
-                .toList();
     }
 
     private static final class QueuedMessage {

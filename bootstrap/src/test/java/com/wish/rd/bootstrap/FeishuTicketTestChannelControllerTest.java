@@ -10,7 +10,7 @@ import com.wish.rd.adapter.model.TicketUpdateCommand;
 import com.wish.rd.adapter.TicketUpdatePort;
 import com.wish.rd.adapter.model.TicketUpdateResult;
 import com.wish.rd.bootstrap.controller.testchannel.FeishuTicketTestChannelController;
-import com.wish.rd.bootstrap.rocketmq.impl.InMemoryRepairQueueAdapter;
+import com.wish.rd.bootstrap.queue.impl.InMemoryRepairQueueAdapter;
 import com.wish.rd.engine.rag.ChatQueueLimiter;
 import com.wish.rd.engine.rag.RagBugFixEngine;
 import com.wish.rd.engine.ticket.TicketEventIngestionEngine;

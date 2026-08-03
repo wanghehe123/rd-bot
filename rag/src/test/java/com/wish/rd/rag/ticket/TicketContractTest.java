@@ -23,7 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 工单契约测试：验证 {@code rag} 层的标准 record 端口能正确归一 null 入参，
- * 且不依赖任何 Feishu / RocketMQ / Spring web 客户端。
+ * 且不依赖任何 Feishu / Redis Stream / Spring web 客户端。
  */
 class TicketContractTest {
 

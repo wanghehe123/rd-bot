@@ -161,8 +161,8 @@ class TicketEventIngestionEngineTest {
         public RepairQueuePublishResult publish(RepairTicketMessage message) {
             published.add(message);
             return succeed
-                    ? RepairQueuePublishResult.success("mq-id-" + published.size(), "RD_BOT_REPAIR_TICKET", message.tag())
-                    : RepairQueuePublishResult.failure("RD_BOT_REPAIR_TICKET", message.tag(), "broker unavailable");
+                    ? RepairQueuePublishResult.success("stream-id-" + published.size(), "rd-bot:repair:tickets", message.tag())
+                    : RepairQueuePublishResult.failure("rd-bot:repair:tickets", message.tag(), "stream unavailable");
         }
     }
 }

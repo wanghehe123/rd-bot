@@ -6,7 +6,7 @@ import com.wish.rd.adapter.model.TicketMessages;
 import com.wish.rd.adapter.TicketProviderPort;
 import com.wish.rd.adapter.model.TicketSnapshot;
 import com.wish.rd.bootstrap.feishu.ticket.impl.MockFeishuTicketAdapter;
-import com.wish.rd.bootstrap.rocketmq.impl.InMemoryRepairQueueAdapter;
+import com.wish.rd.bootstrap.queue.impl.InMemoryRepairQueueAdapter;
 import com.wish.rd.engine.ticket.model.RepairQueuePublishResult;
 import com.wish.rd.engine.ticket.model.RepairRecord;
 import com.wish.rd.engine.ticket.model.RepairRecordArtifact;
@@ -41,7 +41,7 @@ import java.util.UUID;
  *   <li>{@code GET /test/repair/queue}：查看内存队列快照。</li>
  * </ul>
  *
- * <p>不要求 PostgreSQL / 飞书 / RocketMQ，全部走内存实现。
+ * <p>不要求 PostgreSQL / 飞书 / Redis Stream，全部走内存实现。
  */
 @RestController
 public class FeishuTicketTestChannelController {

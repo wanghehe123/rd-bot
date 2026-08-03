@@ -9,6 +9,12 @@ import org.apache.ibatis.annotations.Update;
 @Mapper
 public interface RepairQueueDeadLetterMapper extends BaseMapper<RepairQueueDeadLetterRow> {
 
+    /**
+     * Inserts a dead letter exactly once using its deterministic primary key.
+     *
+     * @param row valid or malformed dead-letter row whose id is derived from its idempotency identity
+     * @return one when this call inserted the row, zero when an already-committed row won the race
+     */
     @Insert("""
             INSERT INTO repair_queue_dead_letters (
                 id, ticket_id, trace_id, source, event_id, event_type,
@@ -18,8 +24,9 @@ public interface RepairQueueDeadLetterMapper extends BaseMapper<RepairQueueDeadL
                 #{id}, #{ticketId}, #{traceId}, #{source}, #{eventId}, #{eventType},
                 #{originalAttempt}, #{reason}, #{messageJson}::jsonb, #{replayed}, #{createdAt}, #{replayedAt}
             )
+            ON CONFLICT (id) DO NOTHING
             """)
-    void insertDeadLetter(RepairQueueDeadLetterRow row);
+    int insertDeadLetterIfAbsent(RepairQueueDeadLetterRow row);
 
     @Update("""
             UPDATE repair_queue_dead_letters

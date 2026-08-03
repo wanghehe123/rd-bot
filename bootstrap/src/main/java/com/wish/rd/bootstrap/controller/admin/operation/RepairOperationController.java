@@ -176,7 +176,7 @@ public class RepairOperationController {
                 "",
                 deadLetter.ticketId(),
                 RepairAuditEventType.MANUAL_RECOVERY_REQUESTED,
-                "RocketMQ",
+                "Redis Stream",
                 "dead letter replay requested",
                 Map.of("deadLetterId", id, "publishSuccess", String.valueOf(publishResult.success()))
         ));

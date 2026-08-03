@@ -6,6 +6,7 @@ import com.wish.rd.rag.lock.DistributedLockExecutor;
 import org.redisson.Redisson;
 import org.redisson.api.RedissonClient;
 import org.redisson.config.Config;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
@@ -32,9 +33,17 @@ public class DistributedLockConfiguration {
         return Redisson.create(config);
     }
 
+    /**
+     * Binds the lock executor to its own qualified Redisson client.
+     *
+     * @param distributedLockRedissonClient dedicated distributed-lock client
+     * @return Redisson-backed lock executor
+     */
     @Bean
     @ConditionalOnProperty(name = "rd.distributed-lock.mode", havingValue = "redisson", matchIfMissing = true)
-    public DistributedLockExecutor redissonDistributedLockExecutor(RedissonClient distributedLockRedissonClient) {
+    public DistributedLockExecutor redissonDistributedLockExecutor(
+            @Qualifier("distributedLockRedissonClient") RedissonClient distributedLockRedissonClient
+    ) {
         return new RedissonDistributedLockExecutor(distributedLockRedissonClient);
     }
 

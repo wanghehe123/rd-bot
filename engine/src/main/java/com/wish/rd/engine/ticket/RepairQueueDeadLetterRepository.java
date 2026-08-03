@@ -1,6 +1,7 @@
 package com.wish.rd.engine.ticket;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import com.wish.rd.engine.ticket.model.RepairQueueDeadLetter;
 import com.wish.rd.engine.ticket.model.RepairTicketMessage;
@@ -18,6 +19,26 @@ public interface RepairQueueDeadLetterRepository {
      * @return 死信记录
      */
     RepairQueueDeadLetter save(RepairTicketMessage message, String reason);
+
+    /**
+     * Persists a malformed transport record without fabricating a valid ticket message.
+     *
+     * <p>The bootstrap queue adapter passes the original Redis record ID and an already
+     * safety-filtered thin-field map. Implementations that cannot persist malformed entries
+     * must fail so the transport record remains pending for later recovery.
+     *
+     * @param redisRecordId original Redis Stream record ID
+     * @param rawSafeFields allowed routing fields copied from the transport record
+     * @param reason bounded malformed-entry reason
+     * @return persisted dead-letter record
+     */
+    default RepairQueueDeadLetter saveMalformed(
+            String redisRecordId,
+            Map<String, String> rawSafeFields,
+            String reason
+    ) {
+        throw new UnsupportedOperationException("malformed repair queue dead-letter persistence is unavailable");
+    }
 
     /**
      * 查询所有死信记录。
@@ -51,6 +72,9 @@ public interface RepairQueueDeadLetterRepository {
         return Noop.INSTANCE;
     }
 
+    /**
+     * No-op repository used only when no storage adapter is configured.
+     */
     final class Noop implements RepairQueueDeadLetterRepository {
         private static final Noop INSTANCE = new Noop();
 

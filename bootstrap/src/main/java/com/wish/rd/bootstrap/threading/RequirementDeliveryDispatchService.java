@@ -82,7 +82,7 @@ public class RequirementDeliveryDispatchService {
             AsyncTaskExecutor executor,
             ObjectProvider<RequirementDeliveryJobStore> jobStoreProvider,
             ObjectProvider<SnowflakeIdGenerator> idGeneratorProvider,
-            ObjectProvider<TaskScheduler> taskSchedulerProvider,
+            @Qualifier("taskScheduler") ObjectProvider<TaskScheduler> taskSchedulerProvider,
             ObjectProvider<TaskRetryCheckpointStore> retryCheckpointStoreProvider,
             RagStreamTaskRegistry taskRegistry,
             @Value("${rd.requirement-delivery.max-attempts:3}") int maxAttempts,

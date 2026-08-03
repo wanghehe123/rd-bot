@@ -162,7 +162,7 @@ class FeishuHelpdeskWebhookControllerTest {
         @Override
         public RepairQueuePublishResult publish(RepairTicketMessage message) {
             published.add(message);
-            return RepairQueuePublishResult.success("mq-id-" + published.size(), "RD_BOT_REPAIR_TICKET", message.tag());
+            return RepairQueuePublishResult.success("stream-id-" + published.size(), "rd-bot:repair:tickets", message.tag());
         }
     }
 }

@@ -3,20 +3,20 @@ package com.wish.rd.engine.ticket.model;
 import java.time.Instant;
 
 /**
- * 工单修复队列消息：MQ 安全的瘦消息，只承载路由与去重元数据。
+ * 工单修复队列消息：传输安全的瘦消息，只承载路由与去重元数据。
  *
  * <p>关键约束：
  * <ul>
  *   <li><b>禁止</b>包含工单标题/描述/日志/原始响应/Access Token/Helpdesk Token 等敏感或大体量内容。</li>
- *   <li>消息 key = {@code ticketId}（非空），用于 RocketMQ 队列亲和与去重。</li>
- *   <li>{@code priority} 归一化为 {@code P0}/{@code P1}/{@code P2}，决定队列 tag 与处理顺序。</li>
+ *   <li>消息键 = {@code ticketId}（非空），用于队列路由与去重。</li>
+ *   <li>{@code priority} 归一化为 {@code P0}/{@code P1}/{@code P2}，作为兼容标签和处理优先级。</li>
  *   <li>{@code eventId + eventType + ticketId} 用于幂等去重判断。</li>
  * </ul>
  *
  * <p>消息体由 {@link TicketEventIngestionEngine} 组装，由 {@link RepairQueuePublisher} 发布，
  * 由 {@code TicketRepairEngine} 消费——消费端通过 {@code TicketProviderPort} 重新拉取工单明细。
  *
- * @param ticketId  工单 ID（非空，作为消息 key）
+ * @param ticketId  工单 ID（非空，作为消息键）
  * @param priority  优先级 {@code P0}/{@code P1}/{@code P2}，缺省 {@code P2}
  * @param traceId   链路追踪 ID，缺省 {@code ""}
  * @param attempt   重试次数，首次为 {@code 1}
@@ -74,7 +74,7 @@ public record RepairTicketMessage(
     }
 
     /**
-     * RocketMQ tag：{@code priority} 本身（{@code P0}/{@code P1}/{@code P2}）。
+     * 兼容优先级标签：{@code priority} 本身（{@code P0}/{@code P1}/{@code P2}）。
      *
      * @return 队列 tag
      */

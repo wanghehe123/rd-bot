@@ -175,7 +175,7 @@ class TicketRepairExecutionConsumerTest {
     }
 
     @Test
-    void mqRetryShouldReuseExistingBugFixTaskInsteadOfCreatingAnotherTask() {
+    void queueRetryShouldReuseExistingBugFixTaskInsteadOfCreatingAnotherTask() {
         ReadyProvider provider = new ReadyProvider();
         RepairRecordRepository repository = InMemoryRepairRecordRepository.inMemory();
         TicketRepairEngine ticketRepairEngine = TicketRepairEngine.forTesting(
@@ -215,7 +215,7 @@ class TicketRepairExecutionConsumerTest {
         assertEquals(
                 executor.requests.getFirst().taskId(),
                 executor.requests.get(1).taskId(),
-                "RocketMQ retry must continue the same RD task"
+                "queue retry must continue the same RD task"
         );
         assertEquals(RepairRecordStatus.COMMITTED, repository.findByTicketId("FS-READY").orElseThrow().status());
     }

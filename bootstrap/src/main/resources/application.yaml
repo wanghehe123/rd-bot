@@ -162,9 +162,20 @@ rd:
     store: ${RD_KNOWLEDGE_STORE:postgres}
   storage:
     mode: ${RD_STORAGE_MODE:s3}
+  redis-stream:
+    repair:
+      stream-key: ${RD_REDIS_STREAM_REPAIR_STREAM_KEY:rd-bot:repair:tickets}
+      consumer-group: ${RD_REDIS_STREAM_REPAIR_CONSUMER_GROUP:rd-bot-repair-workers}
+      consumer-name-base: ${RD_REDIS_STREAM_REPAIR_CONSUMER_NAME_BASE:rd-bot-repair}
+      consumer-concurrency: ${RD_REDIS_STREAM_REPAIR_CONSUMER_CONCURRENCY:2}
+      poll-timeout-millis: ${RD_REDIS_STREAM_REPAIR_POLL_TIMEOUT_MILLIS:1000}
+      batch-size: ${RD_REDIS_STREAM_REPAIR_BATCH_SIZE:10}
+      pending-claim-idle-millis: ${RD_REDIS_STREAM_REPAIR_PENDING_CLAIM_IDLE_MILLIS:60000}
+      failure-backoff-millis: ${RD_REDIS_STREAM_REPAIR_FAILURE_BACKOFF_MILLIS:1000}
+      max-retry-attempts: ${RD_REDIS_STREAM_REPAIR_MAX_RETRY_ATTEMPTS:3}
   repair:
     queue:
-      mode: ${RD_REPAIR_QUEUE_MODE:rocketmq}
+      mode: ${RD_REPAIR_QUEUE_MODE:redis-stream}
     ticket:
       provider: ${RD_REPAIR_TICKET_PROVIDER:feishu-im}
       auto-execute:
@@ -178,14 +189,6 @@ rd:
       environment-allowlist:
         - local
         - sit
-  rocketmq:
-    repair:
-      topic: RD_BOT_REPAIR_TICKET
-      consumer-group: GID_RD_BOT_REPAIR_WORKER
-      producer-group: ${ROCKETMQ_PRODUCER_GROUP:GID_RD_BOT_REPAIR_PRODUCER}
-      name-server: ${ROCKETMQ_NAME_SERVER:127.0.0.1:9876}
-      send-message-timeout-millis: 2000
-      max-retry-attempts: 3
   executor:
     agent-runtime:
       enabled: ${RD_EXECUTOR_AGENT_RUNTIME_ENABLED:false}
