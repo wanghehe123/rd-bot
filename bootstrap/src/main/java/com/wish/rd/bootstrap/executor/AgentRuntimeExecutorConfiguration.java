@@ -6,6 +6,7 @@ import com.wish.rd.exec.repair.docker.RepairWorkspaceFactory;
 import com.wish.rd.exec.repair.docker.RepairWorkspaceRepositoryPort;
 import com.wish.rd.exec.repair.pi.impl.DockerPiAgentExecutor;
 import com.wish.rd.exec.repair.pi.AgentPrivateArtifactPublisher;
+import com.wish.rd.exec.repair.pi.PiCredentialLeaseIssuer;
 import com.wish.rd.exec.repair.pi.PiResourceManifestMaterializerPort;
 import com.wish.rd.exec.repair.pi.PiSkillMaterializerPort;
 import com.wish.rd.exec.repair.runtime.AgentExecutionEventSink;
@@ -49,7 +50,8 @@ public class AgentRuntimeExecutorConfiguration {
             ObjectProvider<PiSkillMaterializerPort> skillMaterializerProvider,
             ObjectProvider<AgentExecutionEventSink> eventSinkProvider,
             ObjectProvider<AgentPrivateArtifactPublisher> privateArtifactPublisherProvider,
-            ExecutionAllowlistPolicy executionAllowlistPolicy
+            ExecutionAllowlistPolicy executionAllowlistPolicy,
+            ObjectProvider<PiCredentialLeaseIssuer> credentialLeaseIssuerProvider
     ) {
         return new DockerPiAgentExecutor(
                 workspaceFactory,
@@ -62,7 +64,8 @@ public class AgentRuntimeExecutorConfiguration {
                 skillMaterializerProvider.getIfAvailable(PiSkillMaterializerPort::emptyOnly),
                 eventSinkProvider.getIfAvailable(AgentExecutionEventSink::noop),
                 privateArtifactPublisherProvider.getIfAvailable(AgentPrivateArtifactPublisher::noop),
-                com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor.AuthEnvironmentResolver.system()
+                com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor.AuthEnvironmentResolver.system(),
+                credentialLeaseIssuerProvider.getIfAvailable()
         );
     }
 

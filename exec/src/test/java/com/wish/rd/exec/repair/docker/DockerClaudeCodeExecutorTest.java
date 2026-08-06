@@ -699,6 +699,94 @@ class DockerClaudeCodeExecutorTest {
     }
 
     @Test
+    void shouldApplyContainerSecurityPolicyAndRoleNetworkIsolation() {
+        List<String> command = COMMAND;
+        DockerClaudeCodeExecutor.Configuration bridgeConfig = new DockerClaudeCodeExecutor.Configuration(
+                "rd-bot/claude-code:test",
+                "rd-bot/claude-code-qa:test",
+                command,
+                "bridge",
+                true,
+                false,
+                List.of(ClaudeCodeModelProvider.defaultAnthropic()),
+                new DockerClaudeCodeExecutor.QaSkillConfiguration(
+                        temporaryDirectory.resolve("qa-skill").toString(),
+                        "qa-playwright-cli",
+                        "1.0.1",
+                        "sha256:abc123",
+                        "{\"allowed\":true}"
+                )
+        );
+        CapturingRunner codingRunner = CapturingRunner.withResult(validResultJson("SUCCESS"));
+        DockerClaudeCodeExecutor codingExecutor = new DockerClaudeCodeExecutor(
+                new RepairWorkspaceFactory(temporaryDirectory, RESULT_SCHEMA_JSON),
+                codingRunner,
+                new StructuredResultValidator(),
+                bridgeConfig,
+                RepairWorkspaceRepositoryPort.noop(),
+                null,
+                new ModelHealthStore(ModelCircuitBreakerPolicy.disabled()),
+                DockerExecutionRegistry.noop(),
+                ExecutionAllowlistPolicy.disabled()
+        );
+        codingExecutor.execute(command(
+                "task-coding-sec",
+                Map.of("yolo", "true"),
+                Map.of("agentRole", "CODING_AGENT")
+        ));
+        assertTrue(codingRunner.request().securityPolicy().enabled());
+        assertTrue(codingRunner.request().securityPolicy().readOnlyRootfs());
+        assertTrue(codingRunner.request().securityPolicy().capDropAll());
+        assertEquals("rdbot", codingRunner.request().securityPolicy().runAsUser());
+        assertFalse(codingRunner.request().allowPrivileged());
+        assertEquals("bridge", codingRunner.request().networkMode());
+        assertTrue(codingRunner.request().mounts().values().stream().anyMatch("/work/repo"::equals));
+        assertTrue(codingRunner.request().mounts().values().stream().anyMatch("/work/input:ro"::equals));
+
+        CapturingRunner reviewRunner = CapturingRunner.withResult(validResultJson("SUCCESS"));
+        DockerClaudeCodeExecutor reviewExecutor = new DockerClaudeCodeExecutor(
+                new RepairWorkspaceFactory(temporaryDirectory, RESULT_SCHEMA_JSON),
+                reviewRunner,
+                new StructuredResultValidator(),
+                bridgeConfig,
+                RepairWorkspaceRepositoryPort.noop(),
+                null,
+                new ModelHealthStore(ModelCircuitBreakerPolicy.disabled()),
+                DockerExecutionRegistry.noop(),
+                ExecutionAllowlistPolicy.disabled()
+        );
+        reviewExecutor.execute(command(
+                "task-review-sec",
+                Map.of("yolo", "true"),
+                Map.of("agentRole", "REQUIREMENT_REVIEWER")
+        ));
+        assertEquals("none", reviewRunner.request().networkMode());
+        assertTrue(reviewRunner.request().mounts().values().stream().anyMatch("/work/repo:ro"::equals));
+
+        CapturingRunner qaRunner = CapturingRunner.withResult(validQaResultJson("PASSED"))
+                .withQaEvidenceArtifacts();
+        DockerClaudeCodeExecutor qaExecutor = new DockerClaudeCodeExecutor(
+                new RepairWorkspaceFactory(temporaryDirectory, RESULT_SCHEMA_JSON),
+                qaRunner,
+                new StructuredResultValidator(),
+                bridgeConfig,
+                RepairWorkspaceRepositoryPort.noop(),
+                null,
+                new ModelHealthStore(ModelCircuitBreakerPolicy.disabled()),
+                DockerExecutionRegistry.noop(),
+                ExecutionAllowlistPolicy.disabled()
+        );
+        qaExecutor.execute(command(
+                "task-qa-sec",
+                Map.of("repositoryPublishRequired", "false"),
+                Map.of("agentRole", "QA_AGENT")
+        ));
+        assertEquals(1024, qaRunner.request().securityPolicy().pidsLimit());
+        assertEquals("bridge", qaRunner.request().networkMode());
+        assertTrue(qaRunner.request().mounts().values().stream().anyMatch("/work/repo:ro"::equals));
+    }
+
+    @Test
     void shouldReturnFailedValidationBeforeContainerWhenRoutedAuthTokenEnvIsMissing() {
         String missingEnvName = "RD_BOT_TEST_MISSING_AUTH_TOKEN_7476858891402350592";
         CapturingRunner runner = CapturingRunner.withResult(validResultJson("SUCCESS"));

@@ -18,6 +18,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.wish.rd.exec.repair.docker.model.ContainerRunRequest;
 import com.wish.rd.exec.repair.docker.model.ContainerRunResult;
+import com.wish.rd.exec.repair.docker.model.ContainerSecurityPolicy;
 
 class ContainerRunnerContractTest {
 
@@ -154,9 +155,54 @@ class ContainerRunnerContractTest {
         assertEquals(Map.of(outputDirectory.toString(), "/work/output"), request.mounts());
         assertEquals("/work/repo", request.workingDirectory());
         assertEquals("", request.networkMode());
+        assertFalse(request.securityPolicy().enabled());
         assertThrows(UnsupportedOperationException.class, () -> request.command().add("--blocked"));
         assertThrows(UnsupportedOperationException.class, () -> request.env().put("BLOCKED", "true"));
         assertThrows(UnsupportedOperationException.class, () -> request.mounts().put("/blocked", "/blocked"));
+    }
+
+    @Test
+    void requestRejectsInvalidOrPrivilegedSecurityPolicies() {
+        Path outputDirectory = temporaryDirectory.resolve("output");
+        assertThrows(IllegalArgumentException.class, () -> new ContainerSecurityPolicy(
+                true,
+                true,
+                true,
+                true,
+                "",
+                "4",
+                512,
+                "1000:1000",
+                Map.of("/tmp", "rw,size=1g")
+        ));
+
+        ContainerSecurityPolicy policy = new ContainerSecurityPolicy(
+                true,
+                true,
+                true,
+                true,
+                "8g",
+                "4",
+                512,
+                "1000:1000",
+                Map.of("/tmp", "rw,size=1g")
+        );
+        assertThrows(IllegalArgumentException.class, () -> new ContainerRunRequest(
+                "repair-task-1001",
+                "claude-code:local",
+                List.of("claude"),
+                Map.of(),
+                Map.of(),
+                "/work/repo",
+                "none",
+                true,
+                true,
+                outputDirectory,
+                false,
+                "",
+                60_000L,
+                policy
+        ));
     }
 
     @Test

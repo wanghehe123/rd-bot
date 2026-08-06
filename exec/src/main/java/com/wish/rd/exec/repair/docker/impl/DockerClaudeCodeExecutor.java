@@ -48,11 +48,13 @@ import java.util.stream.Stream;
 import com.wish.rd.exec.repair.docker.model.ClaudeCodeModelProvider;
 import com.wish.rd.exec.repair.docker.model.ContainerRunRequest;
 import com.wish.rd.exec.repair.docker.model.ContainerRunResult;
+import com.wish.rd.exec.repair.docker.model.ContainerSecurityPolicy;
 import com.wish.rd.exec.repair.docker.model.RepairWorkspace;
 import com.wish.rd.exec.repair.docker.usage.ClaudeTokenUsageParser;
 import com.wish.rd.exec.repair.docker.usage.model.ClaudeTokenUsageSnapshot;
 import com.wish.rd.exec.repair.docker.trace.ClaudeExecutionTraceParser;
 
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -61,7 +63,8 @@ import java.util.concurrent.TimeUnit;
 public class DockerClaudeCodeExecutor implements RepairExecutorPort {
 
     private static final String CONTAINER_REPO_DIRECTORY = "/work/repo";
-    private static final String CONTAINER_INPUT_DIRECTORY = "/work/input";
+    private static final String CONTAINER_REPO_READONLY = "/work/repo:ro";
+    private static final String CONTAINER_INPUT_DIRECTORY = "/work/input:ro";
     private static final String CONTAINER_OUTPUT_DIRECTORY = "/work/output";
     private static final String CONTAINER_CACHE_DIRECTORY = "/work/cache";
     private static final String CONTAINER_QA_SKILL_DIRECTORY = "/home/rdbot/.claude/skills/qa-playwright-cli:ro";
@@ -74,6 +77,18 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
             parseQaExecutionTimeoutMillis(System.getenv("RD_QA_EXECUTION_TIMEOUT_MILLIS"));
     private static final long MAX_TEXT_PREVIEW_BYTES = 64_000L;
     private static final long MAX_QA_MANIFEST_PREVIEW_BYTES = 1_000_000L;
+    private static final Set<String> READ_ONLY_REPO_ROLES = Set.of(
+            "REQUIREMENT_REVIEWER", "SOLUTION_ARCHITECT", "QA_AGENT"
+    );
+    private static final Set<String> NETWORK_NONE_ROLES = Set.of(
+            "REQUIREMENT_REVIEWER", "SOLUTION_ARCHITECT"
+    );
+    private static final Map<String, String> CLAUDE_TMPFS_MOUNTS = Map.of(
+            "/tmp", "rw,noexec,nosuid,size=1g",
+            "/home/rdbot/.claude/session-env", "rw,noexec,nosuid,size=64m"
+    );
+    private static final ContainerSecurityPolicy CLAUDE_SECURITY_POLICY = claudeSecurityPolicy(512);
+    private static final ContainerSecurityPolicy CLAUDE_QA_SECURITY_POLICY = claudeSecurityPolicy(1024);
     // Auto-detected start commands may include a production build (npm run build && npm run start),
     // so the startup budget must cover the build, not just the listen phase.
     private static final String QA_STARTUP_TIMEOUT_SECONDS = "300";
@@ -834,7 +849,10 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
         boolean qaExecution = "QA_AGENT".equals(role);
         boolean handoffExecution = isHandoffExecution(role);
         Map<String, String> mounts = new LinkedHashMap<>();
-        mounts.put(workspace.repoDirectory().toString(), CONTAINER_REPO_DIRECTORY);
+        mounts.put(
+                workspace.repoDirectory().toString(),
+                READ_ONLY_REPO_ROLES.contains(role) ? CONTAINER_REPO_READONLY : CONTAINER_REPO_DIRECTORY
+        );
         mounts.put(workspace.inputDirectory().toString(), CONTAINER_INPUT_DIRECTORY);
         mounts.put(workspace.outputDirectory().toString(), CONTAINER_OUTPUT_DIRECTORY);
         mounts.put(workspace.cacheDirectory().toString(), CONTAINER_CACHE_DIRECTORY);
@@ -903,13 +921,35 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
                 env,
                 mounts,
                 CONTAINER_REPO_DIRECTORY,
-                configuration.networkMode(),
+                resolveNetworkMode(role),
                 configuration.removeAfterExit(),
-                configuration.allowPrivileged(),
+                false,
                 workspace.outputDirectory(),
                 qaExecution,
                 qaExecution ? "1g" : "",
-                qaExecution ? QA_EXECUTION_TIMEOUT_MILLIS : 0L
+                qaExecution ? QA_EXECUTION_TIMEOUT_MILLIS : 0L,
+                qaExecution ? CLAUDE_QA_SECURITY_POLICY : CLAUDE_SECURITY_POLICY
+        );
+    }
+
+    private String resolveNetworkMode(String role) {
+        if (NETWORK_NONE_ROLES.contains(role == null ? "" : role)) {
+            return "none";
+        }
+        return configuration.networkMode();
+    }
+
+    private static ContainerSecurityPolicy claudeSecurityPolicy(int pidsLimit) {
+        return new ContainerSecurityPolicy(
+                true,
+                true,
+                true,
+                true,
+                "8g",
+                "4",
+                pidsLimit,
+                "rdbot",
+                CLAUDE_TMPFS_MOUNTS
         );
     }
 

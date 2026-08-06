@@ -5,6 +5,7 @@ import com.wish.rd.bootstrap.executor.impl.ProcessContainerRunner;
 import com.wish.rd.exec.repair.docker.ContainerOutputListener;
 import com.wish.rd.exec.repair.docker.model.ContainerRunRequest;
 import com.wish.rd.exec.repair.docker.model.ContainerRunResult;
+import com.wish.rd.exec.repair.docker.model.ContainerSecurityPolicy;
 import com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -122,6 +123,62 @@ class ProcessContainerRunnerTest {
         assertTrue(argv.contains("--init"));
         assertTrue(argv.contains("--shm-size=1g"));
         assertTrue(argv.indexOf("--init") < argv.indexOf("rd-bot/claude-code-qa:local"));
+    }
+
+    @Test
+    void shouldRenderHardenedContainerSecurityPolicyInStableOrder() {
+        DockerExecutorProperties properties = new DockerExecutorProperties();
+        ProcessContainerRunner runner = runner(properties,
+                (argv, environment) -> new ProcessContainerRunner.CommandResult(0, 1, "", ""));
+        ContainerSecurityPolicy policy = new ContainerSecurityPolicy(
+                true,
+                true,
+                true,
+                true,
+                "8g",
+                "4",
+                512,
+                "1000:1000",
+                Map.of(
+                        "/work/pi-agent", "rw,exec,size=256m,uid=1000,gid=1000",
+                        "/tmp", "rw,noexec,nosuid,size=1g,uid=1000,gid=1000",
+                        "/home/node", "rw,noexec,nosuid,size=256m,uid=1000,gid=1000"
+                )
+        );
+        ContainerRunRequest request = new ContainerRunRequest(
+                "repair-task-pi",
+                "rd-bot/pi-agent:local",
+                List.of("node", "bridge.mjs"),
+                Map.of(),
+                Map.of(temporaryDirectory.resolve("workspace").toString(), "/work/repo"),
+                "/work/repo",
+                "bridge",
+                true,
+                false,
+                temporaryDirectory.resolve("output"),
+                false,
+                "",
+                60_000L,
+                policy
+        );
+
+        List<String> argv = runner.buildCommand(request);
+
+        List<String> expectedSecurityPrefix = List.of(
+                "docker", "run", "--rm",
+                "--read-only",
+                "--cap-drop", "ALL",
+                "--security-opt", "no-new-privileges",
+                "--memory", "8g",
+                "--cpus", "4",
+                "--pids-limit", "512",
+                "--user", "1000:1000",
+                "--tmpfs", "/home/node:rw,noexec,nosuid,size=256m,uid=1000,gid=1000",
+                "--tmpfs", "/tmp:rw,noexec,nosuid,size=1g,uid=1000,gid=1000",
+                "--tmpfs", "/work/pi-agent:rw,exec,size=256m,uid=1000,gid=1000"
+        );
+        assertEquals(expectedSecurityPrefix, argv.subList(0, expectedSecurityPrefix.size()));
+        assertFalse(argv.contains("--privileged"));
     }
 
     @Test

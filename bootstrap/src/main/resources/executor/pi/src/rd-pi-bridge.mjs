@@ -39,7 +39,12 @@ import {
   loadSkillManifest,
   DEFAULT_SKILL_MANIFEST_PATH,
 } from "./resource-loader.mjs";
-import { validateResult, validateRoleResult, writeResultAtomically } from "./result-tool.mjs";
+import {
+  validateQaEvidenceManifest,
+  validateResult,
+  validateRoleResult,
+  writeResultAtomically,
+} from "./result-tool.mjs";
 import { AgentStateProjector } from "./agent-state-projector.mjs";
 import { createAgentStateTools, STATE_TOOL_NAMES } from "./agent-state-tools.mjs";
 import { createDynamicStateExtension } from "./context-state-injection.mjs";
@@ -248,7 +253,8 @@ export async function run(options = {}) {
       });
     }
 
-    const modelRuntime = await configureModelRuntime(request, paths.private);
+    const credential = await resolvePiCredential(request);
+    const modelRuntime = await configureModelRuntime(request, paths.private, credential);
     const resolvedModel = resolveCliModel({
       cliProvider: request.provider,
       cliModel: request.model,
@@ -260,6 +266,7 @@ export async function run(options = {}) {
     const toolNames = resolveToolNames(request.toolPolicy, dynamicState);
     const resultTool = createResultTool({
       resultPath: paths.result,
+      outputRoot: paths.output,
       sink,
       context,
       stateProjector,
@@ -722,7 +729,7 @@ function safeSettingsManager(skillPaths = []) {
   );
 }
 
-async function configureModelRuntime(request, privatePath) {
+async function configureModelRuntime(request, privatePath, credentialOverride = null) {
   const runtime = await ModelRuntime.create({
     authPath: join(privatePath, "auth.json"),
     modelsPath: null,
@@ -750,13 +757,97 @@ async function configureModelRuntime(request, privatePath) {
     });
   }
   if (request.credentialEnvironmentVariable) {
-    const value = process.env[request.credentialEnvironmentVariable];
+    const value = credentialOverride == null
+      ? process.env[request.credentialEnvironmentVariable]
+      : credentialOverride;
     if (!value) {
       throw new Error(`credential environment variable is missing: ${request.credentialEnvironmentVariable}`);
     }
     await runtime.setRuntimeApiKey(request.provider, value);
   }
   return runtime;
+}
+
+/**
+ * Redeems the short-lived Host lease carried by the Pi container environment.
+ * The returned secret is consumed only by ModelRuntime; it is never logged,
+ * emitted in lifecycle events, or sent in the redemption request.
+ */
+export async function redeemPiCredentialLease({
+  env = process.env,
+  fetchImpl = globalThis.fetch,
+} = {}) {
+  const relayUrl = relayEnvironmentValue(env, "RD_PI_CREDENTIAL_RELAY_URL");
+  const token = relayEnvironmentValue(env, "RD_PI_CREDENTIAL_LEASE");
+  const taskId = relayEnvironmentValue(env, "RD_PI_CREDENTIAL_RELAY_TASK_ID");
+  const stageRunId = relayEnvironmentValue(env, "RD_PI_CREDENTIAL_RELAY_STAGE_RUN_ID");
+  const providerId = relayEnvironmentValue(env, "RD_PI_CREDENTIAL_RELAY_PROVIDER_ID");
+  if ([relayUrl, token, taskId, stageRunId, providerId].some((value) => value === "")) {
+    throw new Error("credential relay redemption failed: lease contract is incomplete");
+  }
+  if (typeof fetchImpl !== "function") {
+    throw new Error("credential relay redemption failed: HTTP client is unavailable");
+  }
+
+  let response;
+  try {
+    response = await fetchImpl(relayUrl, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ taskId, stageRunId, providerId }),
+      signal: AbortSignal.timeout(5_000),
+    });
+  } catch {
+    throw new Error("credential relay redemption failed: request unavailable");
+  }
+  if (!response || response.ok !== true) {
+    const status = Number.isInteger(response?.status) ? response.status : 0;
+    throw new Error(`credential relay redemption failed: HTTP ${status}`);
+  }
+
+  let responseText;
+  try {
+    responseText = await response.text();
+  } catch {
+    throw new Error("credential relay redemption failed: invalid response");
+  }
+  if (Buffer.byteLength(responseText, "utf8") > 64 * 1024) {
+    throw new Error("credential relay redemption failed: response too large");
+  }
+  let payload;
+  try {
+    payload = JSON.parse(responseText);
+  } catch {
+    throw new Error("credential relay redemption failed: invalid response");
+  }
+  const credential = typeof payload?.credential === "string" ? payload.credential : "";
+  if (credential.trim() === "") {
+    throw new Error("credential relay redemption failed: credential missing");
+  }
+  return credential;
+}
+
+async function resolvePiCredential(request) {
+  if (process.env.RD_PI_CREDENTIAL_RELAY_ENABLED === "true") {
+    return redeemPiCredentialLease();
+  }
+  const environmentVariable = request?.credentialEnvironmentVariable;
+  const credential = typeof environmentVariable === "string"
+    ? process.env[environmentVariable]
+    : "";
+  if (!credential) {
+    throw new Error(`credential environment variable is missing: ${environmentVariable ?? ""}`);
+  }
+  return credential;
+}
+
+function relayEnvironmentValue(env, name) {
+  const value = env?.[name];
+  return typeof value === "string" ? value.trim() : "";
 }
 
 export function resolveDynamicStateConfig(request) {
@@ -820,7 +911,7 @@ function stringSet(value, fallback) {
   return new Set(values.filter((item) => typeof item === "string" && item.trim() !== ""));
 }
 
-function createResultTool({ resultPath, sink, context, onAccepted, stateProjector }) {
+export function createResultTool({ resultPath, outputRoot, sink, context, onAccepted, stateProjector }) {
   return defineTool({
     name: RESULT_TOOL_NAME,
     label: "Submit RD result",
@@ -834,8 +925,12 @@ function createResultTool({ resultPath, sink, context, onAccepted, stateProjecto
         // Reject protocol violations while the agent can still fix them in-session;
         // the host-side validator runs after the container exits and offers no retry.
         const roleErrors = validateRoleResult(context.role, result);
-        if (roleErrors.length > 0) {
-          throw new Error(`role protocol violations: ${roleErrors.join("; ")}. Fix every listed field and call ${RESULT_TOOL_NAME} again with the complete result.`);
+        const manifestErrors = context.role === "QA_AGENT"
+          ? await validateQaEvidenceManifest(result, outputRoot)
+          : [];
+        const protocolErrors = [...roleErrors, ...manifestErrors];
+        if (protocolErrors.length > 0) {
+          throw new Error(`role protocol violations: ${protocolErrors.join("; ")}. Fix every listed field and call ${RESULT_TOOL_NAME} again with the complete result.`);
         }
         await writeResultAtomically(resultPath, result);
         onAccepted();

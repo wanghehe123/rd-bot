@@ -21,6 +21,7 @@ import java.util.Map;
  * @param initEnabled      是否使用 Docker init 处理浏览器子进程
  * @param sharedMemorySize 容器共享内存大小，例如 {@code 1g}
  * @param executionTimeoutMillis 容器执行硬超时；{@code 0} 表示不设硬超时
+ * @param securityPolicy   Docker 安全与资源边界；禁用时保持既有行为
  */
 public record ContainerRunRequest(
         String containerName,
@@ -35,7 +36,8 @@ public record ContainerRunRequest(
         Path outputDirectory,
         boolean initEnabled,
         String sharedMemorySize,
-        long executionTimeoutMillis
+        long executionTimeoutMillis,
+        ContainerSecurityPolicy securityPolicy
 ) {
 
     public ContainerRunRequest {
@@ -48,10 +50,51 @@ public record ContainerRunRequest(
         networkMode = normalizeText(networkMode);
         sharedMemorySize = normalizeText(sharedMemorySize);
         executionTimeoutMillis = Math.max(0L, executionTimeoutMillis);
+        securityPolicy = securityPolicy == null ? ContainerSecurityPolicy.disabled() : securityPolicy;
+        if (securityPolicy.enabled() && allowPrivileged) {
+            throw new IllegalArgumentException(
+                    "allowPrivileged is incompatible with an enabled container security policy");
+        }
         if (outputDirectory == null) {
             throw new IllegalArgumentException("outputDirectory must not be null");
         }
         outputDirectory = outputDirectory.toAbsolutePath().normalize();
+    }
+
+    /**
+     * Backward-compatible request constructor without an explicit security policy.
+     */
+    public ContainerRunRequest(
+            String containerName,
+            String image,
+            List<String> command,
+            Map<String, String> env,
+            Map<String, String> mounts,
+            String workingDirectory,
+            String networkMode,
+            boolean removeAfterExit,
+            boolean allowPrivileged,
+            Path outputDirectory,
+            boolean initEnabled,
+            String sharedMemorySize,
+            long executionTimeoutMillis
+    ) {
+        this(
+                containerName,
+                image,
+                command,
+                env,
+                mounts,
+                workingDirectory,
+                networkMode,
+                removeAfterExit,
+                allowPrivileged,
+                outputDirectory,
+                initEnabled,
+                sharedMemorySize,
+                executionTimeoutMillis,
+                ContainerSecurityPolicy.disabled()
+        );
     }
 
     /**

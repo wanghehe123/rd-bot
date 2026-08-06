@@ -15,6 +15,8 @@ public class PiAgentExecutorProperties {
     public static final String DEFAULT_IMAGE = "rd-bot/pi-agent:local";
     public static final String DEFAULT_QA_IMAGE = "rd-bot/pi-agent-qa:local";
     public static final String DEFAULT_NETWORK_MODE = "bridge";
+    public static final String DEFAULT_CREDENTIAL_RELAY_URL =
+            "http://host.docker.internal:18080/internal/pi/credential-relay/redeem";
     public static final long DEFAULT_EXECUTION_TIMEOUT_MILLIS = 60L * 60L * 1000L;
     public static final long DEFAULT_BASH_COMMAND_TIMEOUT_MILLIS = 15L * 60L * 1000L;
 
@@ -35,6 +37,8 @@ public class PiAgentExecutorProperties {
     private boolean dynamicStateEnabled = false;
     private int maxInjectedStateBytes = 8192;
     private String requestProtocolVersion = "v1";
+    private boolean credentialRelayEnabled = false;
+    private String credentialRelayUrl = DEFAULT_CREDENTIAL_RELAY_URL;
 
     public String getContextProtocolVersion() {
         return contextProtocolVersion;
@@ -74,6 +78,22 @@ public class PiAgentExecutorProperties {
 
     public void setRequestProtocolVersion(String requestProtocolVersion) {
         this.requestProtocolVersion = normalizeRequestProtocolVersion(requestProtocolVersion);
+    }
+
+    public boolean isCredentialRelayEnabled() {
+        return credentialRelayEnabled;
+    }
+
+    public void setCredentialRelayEnabled(boolean credentialRelayEnabled) {
+        this.credentialRelayEnabled = credentialRelayEnabled;
+    }
+
+    public String getCredentialRelayUrl() {
+        return credentialRelayUrl;
+    }
+
+    public void setCredentialRelayUrl(String credentialRelayUrl) {
+        this.credentialRelayUrl = textOrDefault(credentialRelayUrl, DEFAULT_CREDENTIAL_RELAY_URL);
     }
 
     public String getImage() {
@@ -160,7 +180,9 @@ public class PiAgentExecutorProperties {
                 executionTimeoutMillis,
                 bashCommandTimeoutMillis,
                 rawEventMaxBytes,
-                requestProtocolVersion
+                requestProtocolVersion,
+                credentialRelayEnabled,
+                credentialRelayUrl
         );
     }
 

@@ -205,6 +205,7 @@ public class ProcessContainerRunner implements ContainerRunnerPort, com.wish.rd.
         if (request.removeAfterExit()) {
             argv.add("--rm");
         }
+        appendSecurityPolicy(argv, request);
         if (request.initEnabled()) {
             argv.add("--init");
         }
@@ -234,6 +235,38 @@ public class ProcessContainerRunner implements ContainerRunnerPort, com.wish.rd.
         argv.add(request.image());
         argv.addAll(request.command());
         return List.copyOf(argv);
+    }
+
+    private static void appendSecurityPolicy(List<String> argv, ContainerRunRequest request) {
+        var policy = request.securityPolicy();
+        if (!policy.enabled()) {
+            return;
+        }
+        if (policy.readOnlyRootfs()) {
+            argv.add("--read-only");
+        }
+        if (policy.capDropAll()) {
+            argv.add("--cap-drop");
+            argv.add("ALL");
+        }
+        if (policy.noNewPrivileges()) {
+            argv.add("--security-opt");
+            argv.add("no-new-privileges");
+        }
+        argv.add("--memory");
+        argv.add(policy.memoryLimit());
+        argv.add("--cpus");
+        argv.add(policy.cpuLimit());
+        argv.add("--pids-limit");
+        argv.add(String.valueOf(policy.pidsLimit()));
+        argv.add("--user");
+        argv.add(policy.runAsUser());
+        policy.tmpfsMounts().entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .forEach(entry -> {
+                    argv.add("--tmpfs");
+                    argv.add(entry.getKey() + ":" + entry.getValue());
+                });
     }
 
     private CommandResult launch(
@@ -515,6 +548,7 @@ public class ProcessContainerRunner implements ContainerRunnerPort, com.wish.rd.
         metadata.put("workingDirectory", request.workingDirectory());
         metadata.put("networkMode", request.networkMode());
         metadata.put("removeAfterExit", request.removeAfterExit());
+        metadata.put("securityPolicy", securityMetadata(request));
         metadata.put("exitCode", commandResult.exitCode());
         metadata.put("durationMillis", commandResult.durationMillis());
         metadata.put("timedOut", commandResult.timedOut());
@@ -531,11 +565,30 @@ public class ProcessContainerRunner implements ContainerRunnerPort, com.wish.rd.
         metadata.put("image", request.image());
         metadata.put("networkMode", request.networkMode());
         metadata.put("removeAfterExit", String.valueOf(request.removeAfterExit()));
+        metadata.put("securityPolicyEnabled", String.valueOf(request.securityPolicy().enabled()));
+        metadata.put("securityMemoryLimit", request.securityPolicy().memoryLimit());
+        metadata.put("securityCpuLimit", request.securityPolicy().cpuLimit());
+        metadata.put("securityPidsLimit", String.valueOf(request.securityPolicy().pidsLimit()));
+        metadata.put("securityRunAsUser", request.securityPolicy().runAsUser());
         metadata.put("argv", String.join(" ", sanitizedArgv(argv)));
         metadata.put("exitCode", String.valueOf(commandResult.exitCode()));
         metadata.put("durationMillis", String.valueOf(commandResult.durationMillis()));
         metadata.put("timedOut", String.valueOf(commandResult.timedOut()));
         metadata.put("workspaceRoot", properties.getWorkspaceRoot().toString());
+        return Map.copyOf(metadata);
+    }
+
+    private static Map<String, Object> securityMetadata(ContainerRunRequest request) {
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("enabled", request.securityPolicy().enabled());
+        metadata.put("readOnlyRootfs", request.securityPolicy().readOnlyRootfs());
+        metadata.put("capDropAll", request.securityPolicy().capDropAll());
+        metadata.put("noNewPrivileges", request.securityPolicy().noNewPrivileges());
+        metadata.put("memoryLimit", request.securityPolicy().memoryLimit());
+        metadata.put("cpuLimit", request.securityPolicy().cpuLimit());
+        metadata.put("pidsLimit", request.securityPolicy().pidsLimit());
+        metadata.put("runAsUser", request.securityPolicy().runAsUser());
+        metadata.put("tmpfsTargets", request.securityPolicy().tmpfsMounts().keySet().stream().sorted().toList());
         return Map.copyOf(metadata);
     }
 

@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 
 import { EventNormalizer } from "../src/event-normalizer.mjs";
 import {
@@ -15,15 +16,17 @@ import {
   validateRequestV2,
 } from "../src/protocol.mjs";
 import { validateResult, validateRoleResult } from "../src/result-tool.mjs";
+import * as resultTool from "../src/result-tool.mjs";
 import {
   hashResourcePath,
   validateResourceManifest,
 } from "../src/resource-loader.mjs";
 import { EventSink, createObservabilityExtension, executionPrompt, writeRuntimeContextManifest } from "../src/rd-pi-bridge.mjs";
+import * as bridge from "../src/rd-pi-bridge.mjs";
 
-import { mkdtemp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 const request = {
   protocol: "rd-pi-request/v1",
@@ -120,6 +123,66 @@ test("uses patchArtifactPath in coding prompt when provided", () => {
     patchArtifactPath: "/work/output/candidate.patch",
   });
   assert.match(coding, /candidate\.patch/);
+});
+
+test("fails closed when the credential relay rejects lease redemption", async () => {
+  assert.equal(typeof bridge.redeemPiCredentialLease, "function");
+  let error;
+  try {
+    await bridge.redeemPiCredentialLease({
+      env: {
+        RD_PI_CREDENTIAL_RELAY_URL: "http://host.test/internal/pi/credential-relay/redeem",
+        RD_PI_CREDENTIAL_LEASE: "pcl_test",
+        RD_PI_CREDENTIAL_RELAY_TASK_ID: "task-1",
+        RD_PI_CREDENTIAL_RELAY_STAGE_RUN_ID: "stage-1",
+        RD_PI_CREDENTIAL_RELAY_PROVIDER_ID: "provider-1",
+      },
+      fetchImpl: async () => ({
+        ok: false,
+        status: 401,
+        text: async () => JSON.stringify({ credential: "super-secret" }),
+      }),
+    });
+  } catch (caught) {
+    error = caught;
+  }
+  assert.ok(error instanceof Error);
+  assert.match(error.message, /credential relay redemption failed/);
+  assert.doesNotMatch(error.message, /super-secret/);
+});
+
+test("redeems a bound lease through the configured relay without sending the credential", async () => {
+  let requestUrl;
+  let requestInit;
+  const credential = await bridge.redeemPiCredentialLease({
+    env: {
+      RD_PI_CREDENTIAL_RELAY_URL: "http://host.test/internal/pi/credential-relay/redeem",
+      RD_PI_CREDENTIAL_LEASE: "pcl_test",
+      RD_PI_CREDENTIAL_RELAY_TASK_ID: "task-1",
+      RD_PI_CREDENTIAL_RELAY_STAGE_RUN_ID: "stage-1",
+      RD_PI_CREDENTIAL_RELAY_PROVIDER_ID: "provider-1",
+    },
+    fetchImpl: async (url, init) => {
+      requestUrl = url;
+      requestInit = init;
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ credential: "super-secret" }),
+      };
+    },
+  });
+
+  assert.equal(credential, "super-secret");
+  assert.equal(requestUrl, "http://host.test/internal/pi/credential-relay/redeem");
+  assert.equal(requestInit.method, "POST");
+  assert.equal(requestInit.headers.Authorization, "Bearer pcl_test");
+  assert.deepEqual(JSON.parse(requestInit.body), {
+    taskId: "task-1",
+    stageRunId: "stage-1",
+    providerId: "provider-1",
+  });
+  assert.doesNotMatch(JSON.stringify({ requestUrl, requestInit }), /super-secret/);
 });
 
 test("tailors the execution prompt to each delivery role", () => {
@@ -346,6 +409,34 @@ test("accepts a complete QA report and enforces cross-field consistency", () => 
       .some((error) => error.includes("requires all acceptanceResults")));
 });
 
+test("validates optional host assertion bundle fields without requiring a bundle", () => {
+  const report = completeQaReport("qa-evidence/commands/current.log");
+  assert.deepEqual(validateRoleResult("QA_AGENT", report), []);
+
+  const withBundle = {
+    ...report,
+    hostAssertionBundle: {
+      contentHash: `sha256:${"a".repeat(64)}`,
+      specs: [{
+        id: "json-1",
+        assertionType: "HTTP_JSONPATH",
+        target: "$.ok",
+        operator: "eq",
+        expected: "true",
+      }],
+    },
+  };
+  assert.deepEqual(validateRoleResult("QA_AGENT", withBundle), []);
+
+  const malformed = {
+    ...withBundle,
+    hostAssertionBundle: { specs: "not-an-array" },
+  };
+  const errors = validateRoleResult("QA_AGENT", malformed);
+  assert.ok(errors.some((error) => error.includes("contentHash")));
+  assert.ok(errors.some((error) => error.includes("specs must be an array")));
+});
+
 test("rejects browser QA that collects but does not reference console and network evidence", () => {
   const report = {
     status: "PASSED",
@@ -448,6 +539,173 @@ test("does not require browser evidence references when browser validation was n
   const errors = validateRoleResult("QA_AGENT", report);
   assert.ok(!errors.some((error) => error.includes("browser validation requires acceptanceResults")));
 });
+
+test("accepts a QA manifest that covers every evidence file with matching integrity metadata", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rd-pi-qa-manifest-"));
+  const evidencePath = "qa-evidence/commands/current.log";
+  const content = Buffer.from("command=npm test\nexitCode=0\n", "utf8");
+  await writeQaEvidenceFile(root, evidencePath, content);
+  await writeQaManifest(root, {
+    version: 1,
+    artifacts: [manifestEntry(evidencePath, content)],
+  });
+
+  const errors = await resultTool.validateQaEvidenceManifest(
+    { evidenceManifestArtifactId: "qa-evidence/manifest.json" },
+    root,
+  );
+
+  assert.deepEqual(errors, []);
+});
+
+test("rejects QA manifest hash mismatches and uncovered evidence files before submission", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rd-pi-qa-manifest-"));
+  const listedPath = "qa-evidence/commands/current.log";
+  const uncoveredPath = "qa-evidence/console/browser.log";
+  const content = Buffer.from("command=npm test\nexitCode=0\n", "utf8");
+  await writeQaEvidenceFile(root, listedPath, content);
+  await writeQaEvidenceFile(root, uncoveredPath, Buffer.from("console clean\n", "utf8"));
+  await writeQaManifest(root, {
+    version: 1,
+    artifacts: [{
+      ...manifestEntry(listedPath, content),
+      sha256: "0".repeat(64),
+    }],
+  });
+
+  const errors = await resultTool.validateQaEvidenceManifest(
+    { evidenceManifestArtifactId: "qa-evidence/manifest.json" },
+    root,
+  );
+
+  assert.ok(errors.some((error) => error.includes("sha256 does not match collected artifact")));
+  assert.ok(errors.some((error) => error.includes(`does not cover collected artifact: ${uncoveredPath}`)));
+});
+
+test("rejects duplicate, self-referencing, and symlinked QA manifest entries", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rd-pi-qa-manifest-"));
+  const realPath = "qa-evidence/commands/current.log";
+  const symlinkPath = "qa-evidence/commands/linked.log";
+  const symlinkedDirectoryPath = "qa-evidence/linked-dir/outside.log";
+  const content = Buffer.from("command=npm test\nexitCode=0\n", "utf8");
+  await writeQaEvidenceFile(root, realPath, content);
+  await symlink("current.log", join(root, symlinkPath));
+  const outsideDirectory = join(root, "outside");
+  await mkdir(outsideDirectory, { recursive: true });
+  await writeFile(join(outsideDirectory, "outside.log"), content);
+  await symlink(outsideDirectory, join(root, "qa-evidence/linked-dir"));
+  await writeQaManifest(root, {
+    schema: "qa-evidence/v1",
+    artifacts: [
+      manifestEntry(realPath, content),
+      manifestEntry(realPath, content),
+      manifestEntry("qa-evidence/manifest.json", content),
+      manifestEntry(symlinkPath, content),
+      manifestEntry(symlinkedDirectoryPath, content),
+    ],
+  });
+
+  const errors = await resultTool.validateQaEvidenceManifest(
+    { evidenceManifestArtifactId: "qa-evidence/manifest.json" },
+    root,
+  );
+
+  assert.ok(errors.some((error) => error.includes(`duplicate artifact path: ${realPath}`)));
+  assert.ok(errors.some((error) => error.includes("has an invalid evidence path: qa-evidence/manifest.json")));
+  assert.ok(errors.some((error) => error.includes(`has an invalid evidence path: ${symlinkPath}`)));
+  assert.ok(errors.some((error) => error.includes(`has an invalid evidence path: ${symlinkedDirectoryPath}`)));
+  assert.ok(!errors.some((error) => error.includes("must contain version 1")));
+});
+
+test("rejects an invalid QA manifest through rd_submit_result before accepting the result", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rd-pi-qa-submit-"));
+  const evidencePath = "qa-evidence/commands/current.log";
+  const content = Buffer.from("command=npm test\nexitCode=0\n", "utf8");
+  await writeQaEvidenceFile(root, evidencePath, content);
+  await writeQaManifest(root, {
+    version: 1,
+    artifacts: [{
+      ...manifestEntry(evidencePath, content),
+      sha256: "0".repeat(64),
+    }],
+  });
+  let accepted = false;
+  const lifecycleEvents = [];
+  const tool = bridge.createResultTool({
+    resultPath: join(root, "result.json"),
+    outputRoot: root,
+    sink: {
+      async lifecycle(eventType, payload) {
+        lifecycleEvents.push({ eventType, payload });
+      },
+    },
+    context: { role: "QA_AGENT" },
+    onAccepted() {
+      accepted = true;
+    },
+  });
+
+  await assert.rejects(
+    tool.execute("call-1", { result: completeQaReport(evidencePath) }),
+    /sha256 does not match collected artifact/,
+  );
+  assert.equal(accepted, false);
+  assert.equal(lifecycleEvents.at(-1).eventType, "RESULT_REJECTED");
+});
+
+function manifestEntry(path, content) {
+  return {
+    path,
+    bytes: content.length,
+    sha256: createHash("sha256").update(content).digest("hex"),
+  };
+}
+
+async function writeQaEvidenceFile(root, relativePath, content) {
+  const absolutePath = join(root, relativePath);
+  await mkdir(dirname(absolutePath), { recursive: true });
+  await writeFile(absolutePath, content);
+}
+
+async function writeQaManifest(root, manifest) {
+  await writeQaEvidenceFile(
+    root,
+    "qa-evidence/manifest.json",
+    Buffer.from(`${JSON.stringify(manifest)}\n`, "utf8"),
+  );
+}
+
+function completeQaReport(evidencePath) {
+  const acceptanceResult = (criteria, scope) => ({
+    criteria,
+    scope,
+    command: "npm test",
+    status: "PASSED",
+    exitCode: 0,
+    durationMillis: 100,
+    logArtifactId: evidencePath,
+    evidenceArtifactIds: [evidencePath],
+  });
+  return {
+    status: "PASSED",
+    summary: "all required checks passed",
+    failureCategory: "NONE",
+    retryRecommendation: "NONE",
+    evidenceManifestArtifactId: "qa-evidence/manifest.json",
+    browserValidation: {
+      required: false,
+      performed: false,
+      decisionSource: "NOT_APPLICABLE",
+      baseUrl: "",
+      browser: "",
+      viewports: [],
+    },
+    acceptanceResults: [
+      acceptanceResult("feature works", "CURRENT"),
+      acceptanceResult("regression stays green", "REGRESSION"),
+    ],
+  };
+}
 
 test("requires LOW budget confidence without historical samples for the reviewer", () => {
   const review = {

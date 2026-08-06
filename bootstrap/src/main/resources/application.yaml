@@ -202,6 +202,10 @@ rd:
       network-mode: ${RD_EXECUTOR_PI_NETWORK_MODE:bridge}
       remove-after-exit: ${RD_EXECUTOR_PI_REMOVE_AFTER_EXIT:true}
       allow-privileged: ${RD_EXECUTOR_PI_ALLOW_PRIVILEGED:false}
+      # Relay remains opt-in; relay-enabled Pi uses network=none until a reachable controlled relay
+      # path passes an end-to-end Docker test.
+      credential-relay-enabled: ${RD_EXECUTOR_PI_CREDENTIAL_RELAY_ENABLED:false}
+      credential-relay-url: ${RD_EXECUTOR_PI_CREDENTIAL_RELAY_URL:http://host.docker.internal:18080/internal/pi/credential-relay/redeem}
       execution-timeout-millis: ${RD_EXECUTOR_PI_EXECUTION_TIMEOUT_MILLIS:3600000}
       bash-command-timeout-millis: ${RD_EXECUTOR_PI_BASH_COMMAND_TIMEOUT_MILLIS:900000}
       raw-event-max-bytes: ${RD_EXECUTOR_PI_MAX_RAW_EVENT_BYTES:16777216}

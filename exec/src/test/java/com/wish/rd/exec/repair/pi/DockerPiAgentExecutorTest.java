@@ -1,6 +1,7 @@
 package com.wish.rd.exec.repair.pi;
 
 import com.wish.rd.exec.repair.pi.impl.DockerPiAgentExecutor;
+import com.wish.rd.exec.repair.pi.impl.InMemoryPiCredentialLeaseIssuer;
 import com.wish.rd.exec.repair.runtime.model.AgentRuntimeExecutionRequest;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -29,6 +30,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -69,6 +71,10 @@ class DockerPiAgentExecutorTest {
         assertEquals("/work/input:ro", runner.request.mounts().get(
                 temporaryDirectory.resolve("workspaces/task-1/input").toString()
         ));
+        assertEquals("/work/repo", runner.request.mounts().get(
+                temporaryDirectory.resolve("workspaces/task-1/repo").toString()
+        ));
+        assertEquals("/work/repo", runner.request.workingDirectory());
         assertEquals("provider-1", OBJECT_MAPPER.readTree(
                 Files.readString(temporaryDirectory.resolve("workspaces/task-1/input/request.json"))
         ).path("provider").asText());
@@ -80,6 +86,16 @@ class DockerPiAgentExecutorTest {
         assertEquals("/work/cache/yarn", runner.request.env().get("YARN_CACHE_FOLDER"));
         assertEquals("16777216", runner.request.env().get("RD_PI_MAX_RAW_EVENT_BYTES"));
         assertEquals("900000", runner.request.env().get("RD_PI_BASH_COMMAND_TIMEOUT_MILLIS"));
+        assertTrue(runner.request.securityPolicy().enabled());
+        assertTrue(runner.request.securityPolicy().readOnlyRootfs());
+        assertTrue(runner.request.securityPolicy().capDropAll());
+        assertTrue(runner.request.securityPolicy().noNewPrivileges());
+        assertEquals("8g", runner.request.securityPolicy().memoryLimit());
+        assertEquals("4", runner.request.securityPolicy().cpuLimit());
+        assertEquals(512, runner.request.securityPolicy().pidsLimit());
+        assertEquals("1000:1000", runner.request.securityPolicy().runAsUser());
+        assertTrue(runner.request.securityPolicy().tmpfsMounts().containsKey("/work/pi-agent"));
+        assertFalse(runner.request.initEnabled());
         assertFalse(result.dockerMetadataJson().containsValue("test-provider-secret"));
         assertEquals("snapshot-1", result.dockerMetadataJson().get("executionProfileSnapshotId"));
     }
@@ -447,6 +463,123 @@ class DockerPiAgentExecutorTest {
 
         // The QA role must select the dedicated QA image, not the base Pi image.
         assertEquals("rd-bot/pi-agent-qa:local", runner.request.image());
+        assertTrue(runner.request.securityPolicy().enabled());
+        assertEquals(1024, runner.request.securityPolicy().pidsLimit());
+        assertTrue(runner.request.initEnabled());
+        assertEquals("1g", runner.request.sharedMemorySize());
+        assertEquals("/work/repo:ro", runner.request.mounts().get(
+                temporaryDirectory.resolve("workspaces/task-qa2/repo").toString()
+        ));
+    }
+
+    @Test
+    void shouldMountRepoReadOnlyForReviewArchitectAndQaRoles() throws Exception {
+        CapturingRunner runner = new CapturingRunner();
+        DockerPiAgentExecutor executor = executor(runner, AgentExecutionEventSink.noop(), ignored -> "secret");
+
+        executor.execute(new AgentRuntimeExecutionRequest(
+                snapshot("snapshot-review", "stage-review", "task-review", AgentRuntimeType.PI, "", "REQUIREMENT_REVIEWER"),
+                command("task-review", "REQUIREMENT_REVIEWER")
+        ));
+        assertEquals("/work/repo:ro", runner.request.mounts().get(
+                temporaryDirectory.resolve("workspaces/task-review/repo").toString()
+        ));
+        assertEquals("/work/repo", runner.request.workingDirectory());
+
+        executor.execute(new AgentRuntimeExecutionRequest(
+                snapshot("snapshot-architect", "stage-architect", "task-architect", AgentRuntimeType.PI, "", "SOLUTION_ARCHITECT"),
+                command("task-architect", "SOLUTION_ARCHITECT")
+        ));
+        assertEquals("/work/repo:ro", runner.request.mounts().get(
+                temporaryDirectory.resolve("workspaces/task-architect/repo").toString()
+        ));
+
+        // QA still shares the task workspace layout today; independence means it must
+        // not rewrite the candidate patch via a writable repo mount. A separate checkout
+        // remains a follow-up slice.
+        executor.execute(new AgentRuntimeExecutionRequest(
+                snapshot("snapshot-qa-ro", "stage-qa-ro", "task-qa-ro", AgentRuntimeType.PI, "", "QA_AGENT"),
+                command("task-qa-ro", "QA_AGENT")
+        ));
+        assertEquals("/work/repo:ro", runner.request.mounts().get(
+                temporaryDirectory.resolve("workspaces/task-qa-ro/repo").toString()
+        ));
+        assertTrue(Files.isDirectory(temporaryDirectory.resolve("workspaces/task-qa-ro/repo")));
+    }
+
+    @Test
+    void shouldUseNetworkNoneForReviewAndArchitectRoles() throws Exception {
+        CapturingRunner runner = new CapturingRunner();
+        DockerPiAgentExecutor executor = executor(runner, AgentExecutionEventSink.noop(), ignored -> "secret");
+
+        executor.execute(new AgentRuntimeExecutionRequest(
+                snapshot("snapshot-review-net", "stage-review-net", "task-review-net", AgentRuntimeType.PI, "",
+                        "REQUIREMENT_REVIEWER"),
+                command("task-review-net", "REQUIREMENT_REVIEWER")
+        ));
+        assertEquals("none", runner.request.networkMode());
+
+        executor.execute(new AgentRuntimeExecutionRequest(
+                snapshot("snapshot-architect-net", "stage-architect-net", "task-architect-net", AgentRuntimeType.PI, "",
+                        "SOLUTION_ARCHITECT"),
+                command("task-architect-net", "SOLUTION_ARCHITECT")
+        ));
+        assertEquals("none", runner.request.networkMode());
+
+        executor.execute(new AgentRuntimeExecutionRequest(
+                snapshot("snapshot-coding-net", "stage-coding-net", "task-coding-net", AgentRuntimeType.PI, "",
+                        "CODING_AGENT"),
+                command("task-coding-net", "CODING_AGENT")
+        ));
+        assertEquals("bridge", runner.request.networkMode());
+
+        executor.execute(new AgentRuntimeExecutionRequest(
+                snapshot("snapshot-qa-net", "stage-qa-net", "task-qa-net", AgentRuntimeType.PI, "", "QA_AGENT"),
+                command("task-qa-net", "QA_AGENT")
+        ));
+        assertEquals("bridge", runner.request.networkMode());
+    }
+
+    @Test
+    void shouldForceNetworkNoneForCodingWhenCredentialRelayEnabled() throws Exception {
+        CapturingRunner runner = new CapturingRunner();
+        InMemoryPiCredentialLeaseIssuer issuer = new InMemoryPiCredentialLeaseIssuer();
+        DockerPiAgentExecutor.Configuration relayOn = new DockerPiAgentExecutor.Configuration(
+                "rd-bot/pi-agent:test",
+                "rd-bot/pi-agent-qa:local",
+                List.of("node", "/opt/rd-pi-bridge/src/rd-pi-bridge.mjs"),
+                "bridge",
+                true,
+                false,
+                60_000L,
+                900_000L,
+                16L * 1024L * 1024L,
+                "v1",
+                true
+        );
+        DockerPiAgentExecutor executor = new DockerPiAgentExecutor(
+                new RepairWorkspaceFactory(temporaryDirectory.resolve("workspaces"), RESULT_SCHEMA),
+                runner,
+                new StructuredResultValidator(),
+                relayOn,
+                RepairWorkspaceRepositoryPort.noop(),
+                ExecutionAllowlistPolicy.disabled(),
+                PiResourceManifestMaterializerPort.emptyOnly(),
+                PiSkillMaterializerPort.emptyOnly(),
+                AgentExecutionEventSink.noop(),
+                AgentPrivateArtifactPublisher.noop(),
+                ignored -> "secret",
+                issuer
+        );
+
+        executor.execute(new AgentRuntimeExecutionRequest(
+                snapshot("snapshot-coding-relay-net", "stage-coding-relay-net", "task-coding-relay-net",
+                        AgentRuntimeType.PI, "", "CODING_AGENT"),
+                command("task-coding-relay-net", "CODING_AGENT")
+        ));
+
+        assertEquals("none", runner.request.networkMode());
+        assertFalse(runner.request.env().containsKey("PI_TEST_API_KEY"));
     }
 
     @Test
@@ -519,6 +652,109 @@ class DockerPiAgentExecutorTest {
         assertEquals(RepairExecutionStatus.FAILED_VALIDATION, result.status());
         assertEquals("PI_PROVIDER_CONFIGURATION", result.rawResultJson().get("failureCategory"));
         assertEquals(0, calls.get());
+    }
+
+    @Test
+    void shouldInjectProviderCredentialWhenCredentialRelayDisabledByDefault() throws Exception {
+        CapturingRunner runner = new CapturingRunner();
+        DockerPiAgentExecutor executor = executor(runner, AgentExecutionEventSink.noop(), ignored -> "secret-key");
+
+        executor.execute(new com.wish.rd.exec.repair.runtime.model.AgentRuntimeExecutionRequest(
+                snapshot("snapshot-cred-off", "stage-cred-off", "task-cred-off", AgentRuntimeType.PI, ""),
+                command("task-cred-off", "CODING_AGENT")
+        ));
+
+        assertFalse(defaultConfiguration().credentialRelayEnabled());
+        assertEquals("secret-key", runner.request.env().get("PI_TEST_API_KEY"));
+    }
+
+    @Test
+    void shouldFailClosedWhenCredentialRelayEnabledButNotImplemented() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        CapturingRunner runner = new CapturingRunner() {
+            @Override
+            public ContainerRunResult run(ContainerRunRequest request, ContainerOutputListener listener) {
+                calls.incrementAndGet();
+                return null;
+            }
+        };
+        DockerPiAgentExecutor.Configuration relayOn = new DockerPiAgentExecutor.Configuration(
+                "rd-bot/pi-agent:test",
+                "rd-bot/pi-agent-qa:local",
+                List.of("node", "/opt/rd-pi-bridge/src/rd-pi-bridge.mjs"),
+                "bridge",
+                true,
+                false,
+                60_000L,
+                900_000L,
+                16L * 1024L * 1024L,
+                "v1",
+                true
+        );
+        DockerPiAgentExecutor executor = executor(runner, AgentExecutionEventSink.noop(), ignored -> "secret", relayOn);
+
+        RepairExecutionResult result = executor.execute(new com.wish.rd.exec.repair.runtime.model.AgentRuntimeExecutionRequest(
+                snapshot("snapshot-relay", "stage-relay", "task-relay", AgentRuntimeType.PI, ""),
+                command("task-relay", "CODING_AGENT")
+        ));
+
+        assertEquals(RepairExecutionStatus.FAILED_VALIDATION, result.status());
+        assertEquals("PI_PROVIDER_CONFIGURATION", result.rawResultJson().get("failureCategory"));
+        assertTrue(result.errorMessage().contains("credential relay")
+                || result.errorMessage().contains("PiCredentialLeaseIssuer"));
+        assertEquals(0, calls.get());
+    }
+
+    @Test
+    void shouldInjectOpaqueLeaseInsteadOfRawSecretWhenRelayEnabled() throws Exception {
+        CapturingRunner runner = new CapturingRunner();
+        InMemoryPiCredentialLeaseIssuer issuer = new InMemoryPiCredentialLeaseIssuer();
+        DockerPiAgentExecutor.Configuration relayOn = new DockerPiAgentExecutor.Configuration(
+                "rd-bot/pi-agent:test",
+                "rd-bot/pi-agent-qa:local",
+                List.of("node", "/opt/rd-pi-bridge/src/rd-pi-bridge.mjs"),
+                "bridge",
+                true,
+                false,
+                60_000L,
+                900_000L,
+                16L * 1024L * 1024L,
+                "v1",
+                true
+        );
+        DockerPiAgentExecutor executor = new DockerPiAgentExecutor(
+                new RepairWorkspaceFactory(temporaryDirectory.resolve("workspaces"), RESULT_SCHEMA),
+                runner,
+                new StructuredResultValidator(),
+                relayOn,
+                RepairWorkspaceRepositoryPort.noop(),
+                ExecutionAllowlistPolicy.disabled(),
+                PiResourceManifestMaterializerPort.emptyOnly(),
+                PiSkillMaterializerPort.emptyOnly(),
+                AgentExecutionEventSink.noop(),
+                AgentPrivateArtifactPublisher.noop(),
+                ignored -> "super-secret-key",
+                issuer
+        );
+
+        executor.execute(new com.wish.rd.exec.repair.runtime.model.AgentRuntimeExecutionRequest(
+                snapshot("snapshot-lease", "stage-lease", "task-lease", AgentRuntimeType.PI, ""),
+                command("task-lease", "CODING_AGENT")
+        ));
+
+        Map<String, String> env = runner.request.env();
+        assertEquals("true", env.get("RD_PI_CREDENTIAL_RELAY_ENABLED"));
+        assertTrue(env.get("RD_PI_CREDENTIAL_LEASE").startsWith("pcl_"));
+        assertEquals(
+                "http://host.docker.internal:18080/internal/pi/credential-relay/redeem",
+                env.get("RD_PI_CREDENTIAL_RELAY_URL")
+        );
+        assertEquals("task-lease", env.get("RD_PI_CREDENTIAL_RELAY_TASK_ID"));
+        assertEquals("stage-lease", env.get("RD_PI_CREDENTIAL_RELAY_STAGE_RUN_ID"));
+        assertEquals("provider-1", env.get("RD_PI_CREDENTIAL_RELAY_PROVIDER_ID"));
+        assertFalse(env.containsKey("PI_TEST_API_KEY"));
+        assertFalse(env.values().stream().anyMatch(value -> value != null && value.contains("super-secret")));
+        assertEquals(Optional.of("super-secret-key"), issuer.redeem(env.get("RD_PI_CREDENTIAL_LEASE")));
     }
 
     @Test
