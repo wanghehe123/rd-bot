@@ -5,6 +5,15 @@ import com.wish.rd.bootstrap.executor.impl.ObjectStorageQaEvidencePublisher;
 import com.wish.rd.bootstrap.executor.impl.ObjectStorageRoleHandoffPublisher;
 import com.wish.rd.bootstrap.executor.impl.RoleHandoffAttachmentResolver;
 import com.wish.rd.bootstrap.executor.impl.RoleHandoffProperties;
+import com.wish.rd.bootstrap.oracle.HostOwnedAssertionGate;
+import com.wish.rd.bootstrap.oracle.HttpJsonPathAssertionRunner;
+import com.wish.rd.bootstrap.oracle.HttpStatusAssertionRunner;
+import com.wish.rd.engine.oracle.AssertionSpecBundle;
+import com.wish.rd.engine.oracle.AssertionSpecHasher;
+import com.wish.rd.engine.oracle.FileAssertionRunner;
+import com.wish.rd.engine.oracle.HostAssertionOracle;
+import com.wish.rd.engine.oracle.model.AssertionSpec;
+import com.wish.rd.engine.oracle.model.AssertionType;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -318,6 +327,130 @@ class EngineRequirementExecutorAdapterTest {
         );
 
         assertTrue(result.success(), result::errorMessage);
+    }
+
+    @Test
+    void shouldRejectQaWhenHostAssertionHashIsTampered() {
+        String hash = AssertionSpecHasher.hashBundle(List.of(fileExistsSpec("ok.txt")));
+        String agentJson = strictQaResultJsonWithHostBundle(hash + "dead", "ok.txt", "FILE_EXISTS");
+        RepairExecutorPort repairExecutor = ignored -> new RepairExecutionResult(
+                RepairExecutionStatus.SUCCESS,
+                "QA current and regression checks passed",
+                "",
+                qaArtifacts(),
+                Map.of("__agentResultJson", agentJson),
+                Map.of("provider", "long-cat"),
+                Map.of(),
+                Map.of(),
+                Map.of(),
+                ""
+        );
+
+        RequirementExecutionResult result = new EngineRequirementExecutorAdapter(repairExecutor).execute(qaRequest());
+
+        assertFalse(result.success());
+        assertTrue(result.errorMessage().contains("Host-owned assertion failed"));
+        assertTrue(result.errorMessage().toLowerCase().contains("integrity")
+                || result.errorMessage().contains("hash"));
+    }
+
+    @Test
+    void shouldFailQaWhenInjectedHttpStatusAssertionFails(@TempDir Path workspace) throws Exception {
+        Files.writeString(workspace.resolve("ok.txt"), "x");
+        AssertionSpec httpSpec = new AssertionSpec(
+                "http-1",
+                "c-http",
+                List.of(),
+                "",
+                "",
+                AssertionType.HTTP_STATUS,
+                "/health",
+                "eq",
+                "200",
+                "",
+                List.of(),
+                1_000L,
+                ""
+        );
+        AssertionSpecBundle bundle = AssertionSpecBundle.freeze(List.of(httpSpec));
+        String agentJson = strictQaResultJsonWithHttpBundle(
+                bundle.contentHash(),
+                workspace.toAbsolutePath().toString(),
+                "http://127.0.0.1:9"
+        );
+        HostOwnedAssertionGate gate = new HostOwnedAssertionGate(new HostAssertionOracle(Map.of(
+                AssertionType.HTTP_STATUS, new HttpStatusAssertionRunner((uri, timeout) -> 503),
+                AssertionType.FILE_EXISTS, new FileAssertionRunner(),
+                AssertionType.FILE_FORBIDDEN, new FileAssertionRunner()
+        )));
+        RepairExecutorPort repairExecutor = ignored -> new RepairExecutionResult(
+                RepairExecutionStatus.SUCCESS,
+                "QA current and regression checks passed",
+                "",
+                qaArtifacts(),
+                Map.of("__agentResultJson", agentJson),
+                Map.of("provider", "long-cat"),
+                Map.of(),
+                Map.of(),
+                Map.of(),
+                ""
+        );
+
+        RequirementExecutionResult result = new EngineRequirementExecutorAdapter(repairExecutor, gate)
+                .execute(qaRequest());
+
+        assertFalse(result.success());
+        assertTrue(result.errorMessage().contains("Host-owned assertion failed"), result::errorMessage);
+    }
+
+    @Test
+    void shouldFailGreenQaWhenInjectedHttpJsonPathAssertionFails() {
+        AssertionSpec jsonPathSpec = new AssertionSpec(
+                "json-1",
+                "c-json",
+                List.of(),
+                "",
+                "GET /health",
+                AssertionType.HTTP_JSONPATH,
+                "$.ok",
+                "eq",
+                "true",
+                "",
+                List.of(),
+                1_000L,
+                ""
+        );
+        AssertionSpecBundle bundle = AssertionSpecBundle.freeze(List.of(jsonPathSpec));
+        String agentJson = strictQaResultJsonWithHttpJsonPathBundle(
+                bundle.contentHash(),
+                tempDirectory.toAbsolutePath().toString(),
+                "http://127.0.0.1:9"
+        );
+        HostOwnedAssertionGate gate = new HostOwnedAssertionGate(new HostAssertionOracle(Map.of(
+                AssertionType.HTTP_JSONPATH,
+                new HttpJsonPathAssertionRunner((uri, timeout) -> "{\"ok\":false}"),
+                AssertionType.FILE_EXISTS, new FileAssertionRunner(),
+                AssertionType.FILE_FORBIDDEN, new FileAssertionRunner()
+        )));
+        RepairExecutorPort repairExecutor = ignored -> new RepairExecutionResult(
+                RepairExecutionStatus.SUCCESS,
+                "QA current and regression checks passed",
+                "",
+                qaArtifacts(),
+                Map.of("__agentResultJson", agentJson),
+                Map.of("provider", "long-cat", "exitCode", "0"),
+                Map.of(),
+                Map.of(),
+                Map.of(),
+                ""
+        );
+
+        RequirementExecutionResult result = new EngineRequirementExecutorAdapter(repairExecutor, gate)
+                .execute(qaRequest());
+
+        assertFalse(result.success());
+        assertTrue(result.errorMessage().contains("Host-owned assertion failed"), result::errorMessage);
+        assertTrue(result.errorMessage().contains("JSONPath"), result::errorMessage);
     }
 
     @Test
@@ -975,6 +1108,99 @@ class EngineRequirementExecutorAdapterTest {
                   "evidenceManifestArtifactId": "qa-evidence/manifest.json"
                 }
                 """;
+    }
+
+    private static AssertionSpec fileExistsSpec(String path) {
+        return new AssertionSpec(
+                "f1",
+                "c1",
+                List.of(),
+                "",
+                "",
+                AssertionType.FILE_EXISTS,
+                path,
+                "exists",
+                "",
+                "",
+                List.of(),
+                1_000L,
+                ""
+        );
+    }
+
+    private static String strictQaResultJsonWithHostBundle(String contentHash, String target, String assertionType) {
+        String base = strictQaResultJson().strip();
+        String suffix = """
+                  ,
+                  "hostAssertionBundle": {
+                    "contentHash": "%s",
+                    "specs": [{
+                      "id": "f1",
+                      "sourceCriteriaId": "c1",
+                      "assertionType": "%s",
+                      "target": "%s",
+                      "operator": "exists",
+                      "timeoutMillis": 1000
+                    }]
+                  }
+                }
+                """.formatted(contentHash, assertionType, target);
+        return base.substring(0, base.length() - 1) + suffix;
+    }
+
+    private static String strictQaResultJsonWithHttpBundle(
+            String contentHash,
+            String workspace,
+            String baseUrl
+    ) {
+        String base = strictQaResultJson().strip();
+        String suffix = """
+                  ,
+                  "hostAssertionWorkspace": "%s",
+                  "hostAssertionBaseUrl": "%s",
+                  "hostAssertionBundle": {
+                    "contentHash": "%s",
+                    "specs": [{
+                      "id": "http-1",
+                      "sourceCriteriaId": "c-http",
+                      "assertionType": "HTTP_STATUS",
+                      "target": "/health",
+                      "operator": "eq",
+                      "expected": "200",
+                      "timeoutMillis": 1000
+                    }]
+                  }
+                }
+                """.formatted(workspace, baseUrl, contentHash);
+        return base.substring(0, base.length() - 1) + suffix;
+    }
+
+    private static String strictQaResultJsonWithHttpJsonPathBundle(
+            String contentHash,
+            String workspace,
+            String baseUrl
+    ) {
+        String base = strictQaResultJson().strip();
+        String suffix = """
+                  ,
+                  "hostAssertionWorkspace": "%s",
+                  "hostAssertionBaseUrl": "%s",
+                  "hostAssertionBundle": {
+                    "contentHash": "%s",
+                    "specs": [{
+                      "id": "json-1",
+                      "sourceCriteriaId": "c-json",
+                      "action": "GET /health",
+                      "assertionType": "HTTP_JSONPATH",
+                      "target": "$.ok",
+                      "operator": "eq",
+                      "expected": "true",
+                      "timeoutMillis": 1000
+                    }]
+                  }
+                }
+                """.formatted(workspace, baseUrl, contentHash);
+        return base.substring(0, base.length() - 1) + suffix;
     }
 
     private static String strictFailedQaResultJson() {

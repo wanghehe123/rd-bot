@@ -2,6 +2,7 @@ package com.wish.rd.bootstrap.executor;
 
 import com.wish.rd.bootstrap.executor.impl.EngineRequirementBranchPublisherAdapter;
 import com.wish.rd.bootstrap.executor.impl.EngineRequirementExecutorAdapter;
+import com.wish.rd.bootstrap.executor.impl.EngineRequirementPublicationReconcileAdapter;
 import com.wish.rd.bootstrap.executor.impl.EngineRequirementPullRequestPublisherAdapter;
 import com.wish.rd.bootstrap.executor.impl.ObjectStorageQaEvidencePublisher;
 import com.wish.rd.bootstrap.executor.impl.ObjectStorageRoleHandoffPublisher;
@@ -11,6 +12,7 @@ import com.wish.rd.bootstrap.threading.RdBotThreadPoolConfiguration;
 import com.wish.rd.engine.requirement.RequirementBranchPublisherPort;
 import com.wish.rd.engine.requirement.RequirementExecutorPort;
 import com.wish.rd.engine.requirement.RequirementPullRequestPublisherPort;
+import com.wish.rd.engine.requirement.publication.RequirementPublicationReconcilePort;
 import com.wish.rd.exec.repair.code.CodePlatformPort;
 import com.wish.rd.exec.repair.docker.RepairWorkspaceFactory;
 import com.wish.rd.exec.repair.docker.RepairWorkspaceRepositoryPort;
@@ -56,6 +58,8 @@ public class EngineRequirementExecutorConfiguration {
                         .getBeanProvider(AgentRuntimeRouter.class),
                 new org.springframework.beans.factory.support.StaticListableBeanFactory()
                         .getBeanProvider(AgentExecutionProfileSnapshotStore.class),
+                new org.springframework.beans.factory.support.StaticListableBeanFactory()
+                        .getBeanProvider(com.wish.rd.bootstrap.oracle.HostOwnedAssertionGate.class),
                 new AgentRuntimeProperties(),
                 executorIoTaskExecutor
         );
@@ -80,6 +84,7 @@ public class EngineRequirementExecutorConfiguration {
             ObjectProvider<RoleHandoffAttachmentResolver> handoffAttachmentResolverProvider,
             ObjectProvider<AgentRuntimeRouter> agentRuntimeRouterProvider,
             ObjectProvider<AgentExecutionProfileSnapshotStore> snapshotStoreProvider,
+            ObjectProvider<com.wish.rd.bootstrap.oracle.HostOwnedAssertionGate> hostOwnedAssertionGateProvider,
             AgentRuntimeProperties agentRuntimeProperties,
             @Qualifier(RdBotThreadPoolConfiguration.EXECUTOR_IO_EXECUTOR_BEAN)
             AsyncTaskExecutor executorIoTaskExecutor
@@ -111,7 +116,8 @@ public class EngineRequirementExecutorConfiguration {
                 runtimeProfileServiceProvider.getIfAvailable(),
                 handoffPublisherProvider.getIfAvailable(),
                 handoffAttachmentResolverProvider.getIfAvailable(),
-                agentRuntimeConfiguration
+                agentRuntimeConfiguration,
+                hostOwnedAssertionGateProvider.getIfAvailable()
         );
     }
 
@@ -131,6 +137,30 @@ public class EngineRequirementExecutorConfiguration {
             return RequirementPullRequestPublisherPort.unavailable();
         }
         return new EngineRequirementPullRequestPublisherAdapter(codePlatform);
+    }
+
+    /**
+     * Resolves UNKNOWN_REMOTE_RESULT by matching open PRs before decideReplay blocks.
+     * Absent when no code platform is available (ledger stays WAIT_RECONCILE).
+     *
+     * @param codePlatformProvider code platform port
+     * @return reconcile port or null when unavailable
+     */
+    @Bean
+    @ConditionalOnMissingBean(RequirementPublicationReconcilePort.class)
+    public RequirementPublicationReconcilePort requirementPublicationReconciler(
+            ObjectProvider<CodePlatformPort> codePlatformProvider
+    ) {
+        CodePlatformPort codePlatform = codePlatformProvider.getIfAvailable();
+        if (codePlatform == null) {
+            return new RequirementPublicationReconcilePort() {
+                @Override
+                public java.util.Optional<MatchedOpenPullRequest> findMatchingOpenPullRequest(ReconcileQuery query) {
+                    return java.util.Optional.empty();
+                }
+            };
+        }
+        return new EngineRequirementPublicationReconcileAdapter(codePlatform);
     }
 
     /**

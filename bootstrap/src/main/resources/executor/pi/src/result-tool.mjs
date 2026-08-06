@@ -1,5 +1,7 @@
-import { mkdir, rename, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { lstat, mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
+import { dirname, relative, resolve, sep } from "node:path";
 
 // SUCCESS/FAILED/NEED_INFO/UNSAFE are the coding structured-result statuses.
 // PASSED/SKIPPED are accepted for the QA_AGENT role protocol, whose report status
@@ -25,6 +27,7 @@ const QA_SCOPES = new Set(["CURRENT", "REGRESSION"]);
 const QA_DECISION_SOURCES = new Set([
   "TASK_OVERRIDE", "PROJECT_PROFILE", "REPOSITORY_CONFIG", "AUTO_DETECTION", "NOT_APPLICABLE",
 ]);
+const ASSERTION_CONTENT_HASH = /^sha256:[0-9a-f]{64}$/i;
 
 export const CONTEXT_PROTOCOL_VERSION = {
   LEGACY_ENVIRONMENT_NOTES: "LEGACY_ENVIRONMENT_NOTES",
@@ -355,6 +358,7 @@ function validateQaReport(result) {
   if (browser && browser.required === true && browser.performed === true) {
     checkBrowserEvidenceReferences(acceptance, errors);
   }
+  errors.push(...validateHostAssertionBundle(result));
   if (result.status === "PASSED" && nonPassedCount > 0) {
     errors.push("status PASSED requires all acceptanceResults to be PASSED");
   }
@@ -373,6 +377,39 @@ function validateQaReport(result) {
   if (result.status === "FAILED" && result.retryRecommendation === "NONE") {
     errors.push("status FAILED requires a retryRecommendation");
   }
+  return errors;
+}
+
+function validateHostAssertionBundle(result) {
+  const bundle = result?.hostAssertionBundle;
+  if (bundle == null) {
+    return [];
+  }
+  if (typeof bundle !== "object" || Array.isArray(bundle)) {
+    return ["hostAssertionBundle must be an object"];
+  }
+
+  const errors = [];
+  if (typeof bundle.contentHash !== "string" || bundle.contentHash.trim() === "") {
+    errors.push("hostAssertionBundle.contentHash must be a non-blank string");
+  } else if (!ASSERTION_CONTENT_HASH.test(bundle.contentHash.trim())) {
+    errors.push("hostAssertionBundle.contentHash must be a sha256: hex digest");
+  }
+  if (!Array.isArray(bundle.specs)) {
+    errors.push("hostAssertionBundle.specs must be an array");
+    return errors;
+  }
+  bundle.specs.forEach((spec, index) => {
+    const prefix = `hostAssertionBundle.specs[${index}]`;
+    if (!spec || typeof spec !== "object" || Array.isArray(spec)) {
+      errors.push(`${prefix} must be an object`);
+      return;
+    }
+    checkNonBlankString(spec, "id", `${prefix}.id`, errors);
+    checkNonBlankString(spec, "assertionType", `${prefix}.assertionType`, errors);
+    checkNonBlankString(spec, "target", `${prefix}.target`, errors);
+    checkNonBlankString(spec, "operator", `${prefix}.operator`, errors);
+  });
   return errors;
 }
 
@@ -417,6 +454,174 @@ function normalizeEvidencePath(reference) {
     normalized = normalized.slice(2);
   }
   return normalized;
+}
+
+/**
+ * Mirrors the host QA evidence manifest integrity checks while the container is
+ * still alive, so the agent can repair the complete bundle before submission.
+ */
+export async function validateQaEvidenceManifest(result, outputRoot) {
+  const manifestReference = normalizeManifestPath(result?.evidenceManifestArtifactId);
+  if (!manifestReference) {
+    return [];
+  }
+
+  const errors = [];
+  const root = resolve(String(outputRoot ?? ""));
+  const manifestPath = resolveEvidencePath(root, manifestReference);
+  if (!safeEvidencePath(manifestReference)
+      || manifestPath == null
+      || !await isRegularEvidenceFile(root, manifestReference)) {
+    errors.push(`evidenceManifestArtifactId does not resolve to a collected artifact: ${manifestReference}`);
+    return errors;
+  }
+
+  let manifest;
+  try {
+    manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  } catch {
+    errors.push("QA evidence manifest is not valid JSON");
+    return errors;
+  }
+
+  const validVersion = manifest?.version === 1
+      || (typeof manifest?.schema === "string" && manifest.schema.toLowerCase().includes("v1"));
+  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)
+      || !validVersion || !Array.isArray(manifest.artifacts)) {
+    errors.push("QA evidence manifest must contain version 1 and an artifacts array");
+    return errors;
+  }
+
+  const manifestPaths = new Set();
+  for (const [index, entry] of manifest.artifacts.entries()) {
+    const field = `QA evidence manifest artifacts[${index}]`;
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      errors.push(`${field} must be an object`);
+      continue;
+    }
+
+    const rawPath = typeof entry.path === "string" ? entry.path.trim() : "";
+    const path = normalizeManifestPath(rawPath);
+    const artifactPath = resolveEvidencePath(root, path);
+    if (!safeEvidencePath(path)
+        || path === manifestReference
+        || artifactPath == null
+        || !await isRegularEvidenceFile(root, path)) {
+      errors.push(`${field} has an invalid evidence path: ${rawPath}`);
+      continue;
+    }
+    if (manifestPaths.has(path)) {
+      errors.push(`QA evidence manifest contains duplicate artifact path: ${path}`);
+      continue;
+    }
+    manifestPaths.add(path);
+
+    const metadata = await lstat(artifactPath);
+    if (!Number.isSafeInteger(entry.bytes) || entry.bytes !== metadata.size) {
+      errors.push(`QA evidence manifest byte count does not match collected artifact: ${path}`);
+    }
+    const actualHash = await sha256File(artifactPath);
+    if (!validSha256(entry.sha256) || actualHash.toLowerCase() !== entry.sha256.toLowerCase()) {
+      errors.push(`QA evidence manifest sha256 does not match collected artifact: ${path}`);
+    }
+  }
+
+  const collectedPaths = await listRegularEvidenceFiles(root);
+  collectedPaths
+      .filter((path) => path !== manifestReference)
+      .filter((path) => !manifestPaths.has(path))
+      .forEach((path) => errors.push(
+        `QA evidence manifest does not cover collected artifact: ${path}`,
+      ));
+  return errors;
+}
+
+function normalizeManifestPath(reference) {
+  let normalized = String(reference ?? "").trim().replace(/\\/g, "/");
+  while (normalized.startsWith("./")) {
+    normalized = normalized.slice(2);
+  }
+  return normalized;
+}
+
+function safeEvidencePath(path) {
+  return path.startsWith("qa-evidence/")
+      && !path.startsWith("/")
+      && !path.includes("/../")
+      && !path.endsWith("/..")
+      && !path.includes("//");
+}
+
+function resolveEvidencePath(outputRoot, path) {
+  const evidenceRoot = resolve(outputRoot, "qa-evidence");
+  const candidate = resolve(outputRoot, path);
+  return candidate.startsWith(`${evidenceRoot}${sep}`) ? candidate : null;
+}
+
+async function isRegularEvidenceFile(outputRoot, path) {
+  const evidenceRoot = resolve(outputRoot, "qa-evidence");
+  const artifactPath = resolveEvidencePath(outputRoot, path);
+  if (artifactPath == null) {
+    return false;
+  }
+  const segments = relative(evidenceRoot, artifactPath).split(sep).filter(Boolean);
+  let current = evidenceRoot;
+  try {
+    const evidenceRootMetadata = await lstat(evidenceRoot);
+    if (!evidenceRootMetadata.isDirectory() || evidenceRootMetadata.isSymbolicLink()) {
+      return false;
+    }
+    for (const [index, segment] of segments.entries()) {
+      current = resolve(current, segment);
+      const metadata = await lstat(current);
+      if (metadata.isSymbolicLink()) {
+        return false;
+      }
+      const isLast = index === segments.length - 1;
+      if ((!isLast && !metadata.isDirectory()) || (isLast && !metadata.isFile())) {
+        return false;
+      }
+    }
+    return segments.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+async function listRegularEvidenceFiles(outputRoot) {
+  const evidenceRoot = resolve(outputRoot, "qa-evidence");
+  const paths = [];
+  await collectRegularFiles(evidenceRoot, outputRoot, paths);
+  return paths.sort();
+}
+
+async function collectRegularFiles(directory, outputRoot, paths) {
+  let entries;
+  try {
+    entries = await readdir(directory, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    const path = resolve(directory, entry.name);
+    if (entry.isDirectory()) {
+      await collectRegularFiles(path, outputRoot, paths);
+    } else if (entry.isFile() && !entry.isSymbolicLink()) {
+      paths.push(relative(outputRoot, path).split(sep).join("/"));
+    }
+  }
+}
+
+function validSha256(value) {
+  return typeof value === "string" && /^[0-9a-f]{64}$/i.test(value);
+}
+
+async function sha256File(path) {
+  const digest = createHash("sha256");
+  for await (const chunk of createReadStream(path)) {
+    digest.update(chunk);
+  }
+  return digest.digest("hex");
 }
 
 function checkEnum(node, field, allowed, errors, label = field) {

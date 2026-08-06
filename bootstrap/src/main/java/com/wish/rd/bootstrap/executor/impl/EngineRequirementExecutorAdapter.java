@@ -15,6 +15,11 @@ import com.wish.rd.exec.repair.execution.RepairExecutorPort;
 import com.wish.rd.exec.repair.execution.model.RepairJobCommand;
 import com.wish.rd.exec.repair.runtime.model.AgentRuntimeExecutionRequest;
 import com.wish.rd.exec.repair.runtime.AgentRuntimeRouter;
+import com.wish.rd.bootstrap.oracle.HostOwnedAssertionGate;
+import com.wish.rd.engine.oracle.AssertionEvaluationContext;
+import com.wish.rd.engine.oracle.FileAssertionRunner;
+import com.wish.rd.engine.oracle.HostAssertionOracle;
+import com.wish.rd.engine.oracle.model.AssertionType;
 import com.wish.rd.exec.repair.result.AgentRoleResultValidator;
 import com.wish.rd.exec.repair.result.QaEvidenceBundleValidator;
 import com.wish.rd.exec.repair.result.model.AgentRoleResultValidation;
@@ -30,6 +35,7 @@ import org.springframework.core.task.TaskRejectedException;
 
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -49,6 +55,12 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
     static final String AGENT_RESULT_JSON_FIELD = "__agentResultJson";
     private static final AgentRoleResultValidator AGENT_ROLE_RESULT_VALIDATOR = new AgentRoleResultValidator();
     private static final QaEvidenceBundleValidator QA_EVIDENCE_BUNDLE_VALIDATOR = new QaEvidenceBundleValidator();
+    private static final HostOwnedAssertionGate DEFAULT_HOST_ASSERTION_GATE = new HostOwnedAssertionGate(
+            new HostAssertionOracle(Map.of(
+                    AssertionType.FILE_EXISTS, new FileAssertionRunner(),
+                    AssertionType.FILE_FORBIDDEN, new FileAssertionRunner()
+            ))
+    );
 
     private final RepairExecutorPort repairExecutor;
     private final AsyncTaskExecutor executorIoTaskExecutor;
@@ -59,6 +71,7 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
     private final ObjectStorageRoleHandoffPublisher handoffPublisher;
     private final RoleHandoffAttachmentResolver handoffAttachmentResolver;
     private final AgentRuntimeConfiguration agentRuntimeConfiguration;
+    private final HostOwnedAssertionGate hostOwnedAssertionGate;
 
     public EngineRequirementExecutorAdapter(RepairExecutorPort repairExecutor) {
         this(repairExecutor, null, null, null, null, null, null, null, AgentRuntimeConfiguration.disabled());
@@ -166,6 +179,32 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
             RoleHandoffAttachmentResolver handoffAttachmentResolver,
             AgentRuntimeConfiguration agentRuntimeConfiguration
     ) {
+        this(
+                repairExecutor,
+                executorIoTaskExecutor,
+                attachmentResolver,
+                qaValidationProfileService,
+                qaEvidencePublisher,
+                runtimeProfileService,
+                handoffPublisher,
+                handoffAttachmentResolver,
+                agentRuntimeConfiguration,
+                null
+        );
+    }
+
+    public EngineRequirementExecutorAdapter(
+            RepairExecutorPort repairExecutor,
+            AsyncTaskExecutor executorIoTaskExecutor,
+            TaskMaterialAttachmentResolver attachmentResolver,
+            QaValidationProfileService qaValidationProfileService,
+            ObjectStorageQaEvidencePublisher qaEvidencePublisher,
+            ProjectRuntimeProfileService runtimeProfileService,
+            ObjectStorageRoleHandoffPublisher handoffPublisher,
+            RoleHandoffAttachmentResolver handoffAttachmentResolver,
+            AgentRuntimeConfiguration agentRuntimeConfiguration,
+            HostOwnedAssertionGate hostOwnedAssertionGate
+    ) {
         this.repairExecutor = Objects.requireNonNull(repairExecutor, "repairExecutor must not be null");
         this.executorIoTaskExecutor = executorIoTaskExecutor;
         this.attachmentResolver = attachmentResolver;
@@ -177,6 +216,30 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
         this.agentRuntimeConfiguration = agentRuntimeConfiguration == null
                 ? AgentRuntimeConfiguration.disabled()
                 : agentRuntimeConfiguration;
+        this.hostOwnedAssertionGate = hostOwnedAssertionGate == null
+                ? DEFAULT_HOST_ASSERTION_GATE
+                : hostOwnedAssertionGate;
+    }
+
+    /**
+     * Test/helper constructor that injects a Host-owned assertion gate while keeping other deps null.
+     */
+    public EngineRequirementExecutorAdapter(
+            RepairExecutorPort repairExecutor,
+            HostOwnedAssertionGate hostOwnedAssertionGate
+    ) {
+        this(
+                repairExecutor,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                AgentRuntimeConfiguration.disabled(),
+                hostOwnedAssertionGate
+        );
     }
 
     public EngineRequirementExecutorAdapter(
@@ -972,12 +1035,29 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
                     repairResult.artifacts(),
                     acceptanceCriteria(request.task())
             );
-            return evidenceValidation.valid()
+            if (!evidenceValidation.valid()) {
+                return "QA evidence bundle invalid: " + String.join("; ", evidenceValidation.errors());
+            }
+            Map<String, Object> expanded = expandedAgentResult(repairResult.rawResultJson());
+            List<String> hostAssertionErrors = hostOwnedAssertionGate.validate(
+                    json,
+                    hostAssertionContext(expanded)
+            );
+            return hostAssertionErrors.isEmpty()
                     ? ""
-                    : "QA evidence bundle invalid: " + String.join("; ", evidenceValidation.errors());
+                    : "Host-owned assertion failed: " + String.join("; ", hostAssertionErrors);
         } catch (JsonProcessingException exception) {
             return "QA evidence protocol invalid: result cannot be serialized";
         }
+    }
+
+    private AssertionEvaluationContext hostAssertionContext(Map<String, Object> expanded) {
+        String workspace = text(expanded.get("hostAssertionWorkspace"));
+        String baseUrl = text(expanded.get("hostAssertionBaseUrl"));
+        Path root = workspace.isBlank()
+                ? Path.of(System.getProperty("java.io.tmpdir", ".")).toAbsolutePath().normalize()
+                : Path.of(workspace).toAbsolutePath().normalize();
+        return new AssertionEvaluationContext(root, baseUrl, Map.of());
     }
 
     private String qaFailureReason(RepairExecutionResult repairResult) {
