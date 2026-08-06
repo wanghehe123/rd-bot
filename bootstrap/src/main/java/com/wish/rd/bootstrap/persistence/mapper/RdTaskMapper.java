@@ -78,19 +78,13 @@ public interface RdTaskMapper extends BaseMapper<RdTaskRow> {
     @Update("""
             UPDATE rd_tasks
                SET status = #{newStatus},
-                   error_message = COALESCE(#{errorMessage}, error_message),
-                   execution_result_json = CASE
-                       WHEN #{executionResultJson} IS NULL THEN execution_result_json
-                       ELSE CAST(#{executionResultJson} AS jsonb)
-                   END,
-                   pull_request_url = CASE
-                       WHEN #{pullRequestUrl} IS NULL THEN pull_request_url
-                       ELSE #{pullRequestUrl}
-                   END,
-                   prompt_snapshot = CASE
-                       WHEN #{promptSnapshot} IS NULL THEN prompt_snapshot
-                       ELSE #{promptSnapshot}
-                   END,
+                   error_message = COALESCE(CAST(#{errorMessage} AS text), error_message),
+                   execution_result_json = COALESCE(
+                       CAST(#{executionResultJson} AS jsonb),
+                       execution_result_json
+                   ),
+                   pull_request_url = COALESCE(CAST(#{pullRequestUrl} AS text), pull_request_url),
+                   prompt_snapshot = COALESCE(CAST(#{promptSnapshot} AS text), prompt_snapshot),
                    version = version + 1,
                    updated_at = #{updatedAt}
              WHERE id = #{id}
