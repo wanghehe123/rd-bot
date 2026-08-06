@@ -89,13 +89,11 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
             "REQUIREMENT_REVIEWER", "SOLUTION_ARCHITECT", "QA_AGENT"
     );
     /**
-     * Roles that must not reach the public internet from the container. Coding/QA keep the
-     * configured mode only when credential relay is off; with relay enabled they also use
-     * {@code none} until a controlled relay/egress network is wired.
+     * When credential relay is enabled, all Pi roles use {@code network=none} until a
+     * controlled host proxy/sidecar provides LLM egress. With relay off (default), every
+     * role uses {@link Configuration#networkMode()} so provider API calls can succeed;
+     * Reviewer/Architect still mount the repo read-only.
      */
-    private static final Set<String> NETWORK_NONE_ROLES = Set.of(
-            "REQUIREMENT_REVIEWER", "SOLUTION_ARCHITECT"
-    );
     private static final long DEFAULT_EXECUTION_TIMEOUT_MILLIS = 60L * 60L * 1000L;
     private static final long DEFAULT_BASH_COMMAND_TIMEOUT_MILLIS = 15L * 60L * 1000L;
     private static final String DEFAULT_CREDENTIAL_RELAY_URL =
@@ -1030,12 +1028,9 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
     }
 
     private String resolveNetworkMode(String role) {
-        if (NETWORK_NONE_ROLES.contains(role == null ? "" : role)) {
-            return "none";
-        }
         if (configuration.credentialRelayEnabled()) {
             // Fail closed on arbitrary egress while host relay holds provider secrets.
-            // A future controlled relay network can replace this once sidecar + allowlist land.
+            // A future controlled relay/proxy network can replace this once sidecar + allowlist land.
             return "none";
         }
         return configuration.networkMode();

@@ -508,7 +508,7 @@ class DockerPiAgentExecutorTest {
     }
 
     @Test
-    void shouldUseNetworkNoneForReviewAndArchitectRoles() throws Exception {
+    void shouldUseConfiguredNetworkForAllRolesWhenRelayDisabled() throws Exception {
         CapturingRunner runner = new CapturingRunner();
         DockerPiAgentExecutor executor = executor(runner, AgentExecutionEventSink.noop(), ignored -> "secret");
 
@@ -517,14 +517,14 @@ class DockerPiAgentExecutorTest {
                         "REQUIREMENT_REVIEWER"),
                 command("task-review-net", "REQUIREMENT_REVIEWER")
         ));
-        assertEquals("none", runner.request.networkMode());
+        assertEquals("bridge", runner.request.networkMode());
 
         executor.execute(new AgentRuntimeExecutionRequest(
                 snapshot("snapshot-architect-net", "stage-architect-net", "task-architect-net", AgentRuntimeType.PI, "",
                         "SOLUTION_ARCHITECT"),
                 command("task-architect-net", "SOLUTION_ARCHITECT")
         ));
-        assertEquals("none", runner.request.networkMode());
+        assertEquals("bridge", runner.request.networkMode());
 
         executor.execute(new AgentRuntimeExecutionRequest(
                 snapshot("snapshot-coding-net", "stage-coding-net", "task-coding-net", AgentRuntimeType.PI, "",
@@ -538,6 +538,46 @@ class DockerPiAgentExecutorTest {
                 command("task-qa-net", "QA_AGENT")
         ));
         assertEquals("bridge", runner.request.networkMode());
+    }
+
+    @Test
+    void shouldForceNetworkNoneForReviewRolesWhenCredentialRelayEnabled() throws Exception {
+        CapturingRunner runner = new CapturingRunner();
+        InMemoryPiCredentialLeaseIssuer issuer = new InMemoryPiCredentialLeaseIssuer();
+        DockerPiAgentExecutor.Configuration relayOn = new DockerPiAgentExecutor.Configuration(
+                "rd-bot/pi-agent:test",
+                "rd-bot/pi-agent-qa:local",
+                List.of("node", "/opt/rd-pi-bridge/src/rd-pi-bridge.mjs"),
+                "bridge",
+                true,
+                false,
+                60_000L,
+                900_000L,
+                16L * 1024L * 1024L,
+                "v1",
+                true
+        );
+        DockerPiAgentExecutor executor = new DockerPiAgentExecutor(
+                new RepairWorkspaceFactory(temporaryDirectory.resolve("workspaces"), RESULT_SCHEMA),
+                runner,
+                new StructuredResultValidator(),
+                relayOn,
+                RepairWorkspaceRepositoryPort.noop(),
+                ExecutionAllowlistPolicy.disabled(),
+                PiResourceManifestMaterializerPort.emptyOnly(),
+                PiSkillMaterializerPort.emptyOnly(),
+                AgentExecutionEventSink.noop(),
+                AgentPrivateArtifactPublisher.noop(),
+                ignored -> "secret",
+                issuer
+        );
+
+        executor.execute(new AgentRuntimeExecutionRequest(
+                snapshot("snapshot-review-relay-net", "stage-review-relay-net", "task-review-relay-net",
+                        AgentRuntimeType.PI, "", "REQUIREMENT_REVIEWER"),
+                command("task-review-relay-net", "REQUIREMENT_REVIEWER")
+        ));
+        assertEquals("none", runner.request.networkMode());
     }
 
     @Test
