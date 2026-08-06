@@ -91,6 +91,22 @@ class InMemoryRequirementDeliveryJobStoreTest {
     }
 
     @Test
+    void listInFlightIncludesOnlyNonExpiredRunningJobs() {
+        InMemoryRequirementDeliveryJobStore store = new InMemoryRequirementDeliveryJobStore();
+        long now = 10_000L;
+        store.enqueue(RequirementDeliveryJob.pending("j1", "t1", 3, 1_000L));
+        store.claim("t1", "worker-a", now, 60_000L).orElseThrow();
+        store.enqueue(RequirementDeliveryJob.pending("j2", "t2", 3, 1_100L));
+        store.claim("t2", "worker-b", now - 5_000L, 1_000L).orElseThrow();
+        store.enqueue(RequirementDeliveryJob.pending("j3", "t3", 3, 1_200L));
+
+        assertEquals(1, store.listInFlight(now).size());
+        assertEquals("t1", store.listInFlight(now).getFirst().taskId());
+        assertTrue(store.listInFlight(now).stream().noneMatch(job -> job.taskId().equals("t2")));
+        assertTrue(store.listInFlight(now).stream().noneMatch(job -> job.taskId().equals("t3")));
+    }
+
+    @Test
     void shouldRequeueDeadLetteredDispatchForManualReplay() {
         InMemoryRequirementDeliveryJobStore store = new InMemoryRequirementDeliveryJobStore();
         store.enqueue(RequirementDeliveryJob.pending("job-1", "task-1", 1, 100L));

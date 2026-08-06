@@ -11,6 +11,8 @@ import com.wish.rd.engine.retry.TaskRetryCheckpointStore;
 import com.wish.rd.engine.retry.model.TaskRetryCheckpoint;
 import com.wish.rd.engine.retry.model.TaskRetryCheckpointStatus;
 import com.wish.rd.engine.retry.model.TaskFailurePhase;
+import com.wish.rd.engine.scheduling.FairRequirementDeliveryClaimPlanner;
+import com.wish.rd.engine.scheduling.FairScheduleLimits;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
 import com.wish.rd.rag.runtime.model.RdTaskStatus;
@@ -29,6 +31,8 @@ import org.springframework.scheduling.TaskScheduler;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -58,6 +62,8 @@ public class RequirementDeliveryDispatchService {
     private final long leaseMillis;
     private final TaskScheduler heartbeatScheduler;
     private final TaskRetryCheckpointStore retryCheckpointStore;
+    private final FairRequirementDeliveryClaimPlanner claimPlanner = new FairRequirementDeliveryClaimPlanner();
+    private final FairScheduleLimits fairScheduleLimits = FairScheduleLimits.defaults();
 
     /**
      * Creates the requirement delivery dispatcher.
@@ -180,17 +186,43 @@ public class RequirementDeliveryDispatchService {
     @Scheduled(fixedDelayString = "${rd.requirement-delivery.recovery-interval-millis:30000}")
     public void recover() {
         long now = System.currentTimeMillis();
+        List<RequirementDeliveryJob> claimable = new ArrayList<>();
         for (RequirementDeliveryJob job : jobStore.recoverable(now)) {
             if (job.isExpiredRunning(now) && job.isAttemptBudgetExhausted()) {
                 jobStore.deadLetterExpiredExhausted(job.taskId(), now, "lease expired at max attempts")
                         .ifPresent(dead -> markTaskDeadLettered(dead.taskId(), dead.errorMessage()));
                 continue;
             }
+            claimable.add(job);
+        }
+        List<RequirementDeliveryJob> planned = claimPlanner.plan(
+                claimable,
+                jobStore.listInFlight(now),
+                this::projectIdForTask,
+                fairScheduleLimits,
+                now
+        );
+        for (RequirementDeliveryJob job : planned) {
             try {
                 executor.execute(() -> runClaimed(job.taskId(), new CompletableFuture<>()));
             } catch (TaskRejectedException exception) {
                 log.warn("requirement delivery recovery queue rejected taskId={}", job.taskId());
             }
+        }
+    }
+
+    private String projectIdForTask(String taskId) {
+        if (taskRegistry == null || taskId == null || taskId.isBlank()) {
+            return "_default";
+        }
+        try {
+            RdRequirementTask task = taskRegistry.getRequirementTask(taskId);
+            if (task.projectId() == null || task.projectId().isBlank()) {
+                return "_default";
+            }
+            return task.projectId();
+        } catch (RuntimeException exception) {
+            return "_default";
         }
     }
 

@@ -68,6 +68,11 @@ public final class PostgresRequirementDeliveryJobStore implements RequirementDel
     }
 
     @Override
+    public List<RequirementDeliveryJob> listInFlight(long now) {
+        return mapper.listInFlight(PostgresPersistenceSupport.toDateTime(now)).stream().map(this::toJob).toList();
+    }
+
+    @Override
     public Optional<RequirementDeliveryJob> cancelByTask(String taskId, String reason, long now) {
         return Optional.ofNullable(mapper.cancelByTask(
                 PostgresPersistenceSupport.parseId(taskId),

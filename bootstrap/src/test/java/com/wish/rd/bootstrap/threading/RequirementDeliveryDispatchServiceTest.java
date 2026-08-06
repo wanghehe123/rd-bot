@@ -132,6 +132,55 @@ class RequirementDeliveryDispatchServiceTest {
     }
 
     @Test
+    void recoverSkipsProjectWhenInFlightAlreadyAtCap() {
+        RequirementDeliveryEngine engine = mock(RequirementDeliveryEngine.class);
+        when(engine.submit(any())).thenAnswer(invocation -> {
+            String taskId = invocation.getArgument(0);
+            return new RequirementDeliveryResult(taskId, RdTaskStatus.COMPLETED, "", "{}", "");
+        });
+        InMemoryRdTaskStore taskStore = new InMemoryRdTaskStore();
+        // FairScheduleLimits.defaults().maxPerProject() == 2
+        taskStore.saveRequirementTask(requirementTask("t-a0", "proj-a", RdTaskStatus.EXECUTING));
+        taskStore.saveRequirementTask(requirementTask("t-a1", "proj-a", RdTaskStatus.EXECUTING));
+        taskStore.saveRequirementTask(requirementTask("t-a2", "proj-a", RdTaskStatus.CREATED));
+        taskStore.saveRequirementTask(requirementTask("t-b1", "proj-b", RdTaskStatus.CREATED));
+        AtomicLong idsClock = new AtomicLong(1_784_300_000_000L);
+        SnowflakeIdGenerator ids = new SnowflakeIdGenerator(1, 1, idsClock::getAndIncrement);
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                taskStore, new InMemoryRdTaskStatusEventStore(), ids);
+        InMemoryRequirementDeliveryJobStore jobs = new InMemoryRequirementDeliveryJobStore();
+        long leaseNow = System.currentTimeMillis();
+        jobs.enqueue(RequirementDeliveryJob.pending("j-a0", "t-a0", 3, leaseNow));
+        jobs.claim("t-a0", "worker-live", leaseNow, 3_600_000L).orElseThrow();
+        jobs.enqueue(RequirementDeliveryJob.pending("j-a1", "t-a1", 3, leaseNow + 1));
+        jobs.claim("t-a1", "worker-live", leaseNow + 1, 3_600_000L).orElseThrow();
+        jobs.enqueue(RequirementDeliveryJob.pending("j-a2", "t-a2", 3, leaseNow + 2));
+        jobs.enqueue(RequirementDeliveryJob.pending("j-b1", "t-b1", 3, leaseNow + 3));
+        RequirementDeliveryDispatchService dispatcher = new RequirementDeliveryDispatchService(
+                engine,
+                new TaskExecutorAdapter(new SyncTaskExecutor()),
+                jobs,
+                ids,
+                registry,
+                "test-worker",
+                3,
+                600_000L
+        );
+
+        dispatcher.recover();
+
+        org.mockito.Mockito.verify(engine, org.mockito.Mockito.times(1)).submit("t-b1");
+        org.mockito.Mockito.verify(engine, org.mockito.Mockito.never()).submit("t-a2");
+        org.mockito.Mockito.verify(engine, org.mockito.Mockito.never()).submit("t-a0");
+        org.mockito.Mockito.verify(engine, org.mockito.Mockito.never()).submit("t-a1");
+        assertEquals(RequirementDeliveryJobStatus.RUNNING, jobs.findByTask("t-a0").orElseThrow().status());
+        assertEquals(RequirementDeliveryJobStatus.RUNNING, jobs.findByTask("t-a1").orElseThrow().status());
+        assertEquals(RequirementDeliveryJobStatus.PENDING, jobs.findByTask("t-a2").orElseThrow().status());
+        assertEquals(RequirementDeliveryJobStatus.SUCCEEDED, jobs.findByTask("t-b1").orElseThrow().status());
+        assertEquals(2, jobs.listInFlight(System.currentTimeMillis()).size());
+    }
+
+    @Test
     void shouldCompleteActiveRetryCheckpointWithDeliveryOutcome() {
         RequirementDeliveryEngine engine = mock(RequirementDeliveryEngine.class);
         when(engine.submit("task-retry")).thenReturn(new RequirementDeliveryResult(
@@ -206,9 +255,13 @@ class RequirementDeliveryDispatchServiceTest {
     }
 
     private static RdRequirementTask requirementTask(String taskId, RdTaskStatus status) {
+        return requirementTask(taskId, "project-1", status);
+    }
+
+    private static RdRequirementTask requirementTask(String taskId, String projectId, RdTaskStatus status) {
         return new RdRequirementTask(
                 taskId, "REQUIREMENT", "ADMIN", "source", "", "P1", status,
-                "订单状态筛选", "project-1", "waimai", "外卖项目", "https://github.com/acme/waimai",
+                "订单状态筛选", projectId, "waimai", "外卖项目", "https://github.com/acme/waimai",
                 "acme", "waimai", "main", "feature/status", "支持状态筛选", "[\"筛选正确\"]",
                 "prompt", "{}", "", "", 10L, 20L, false);
     }

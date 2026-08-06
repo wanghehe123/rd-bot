@@ -16,6 +16,12 @@ import com.wish.rd.engine.requirement.review.AiReviewRunStore;
 import com.wish.rd.engine.requirement.review.impl.InMemoryAiReviewRunStore;
 import com.wish.rd.engine.retry.TaskRetryCheckpointStore;
 import com.wish.rd.engine.retry.impl.InMemoryTaskRetryCheckpointStore;
+import com.wish.rd.engine.requirement.publication.RequirementPublicationLedger;
+import com.wish.rd.engine.requirement.publication.RequirementPublicationReconcilePort;
+import com.wish.rd.engine.requirement.publication.RequirementPublicationReconciliationService;
+import com.wish.rd.engine.requirement.publication.RequirementPublicationStore;
+import com.wish.rd.engine.requirement.publication.impl.InMemoryRequirementPublicationStore;
+import org.springframework.beans.factory.ObjectProvider;
 import com.wish.rd.engine.agent.WorkflowExperienceStore;
 import com.wish.rd.rag.qa.QaValidationProfileService;
 import com.wish.rd.rag.qa.QaValidationProfileStore;
@@ -62,6 +68,27 @@ public class InMemoryAgentObservabilityConfiguration {
     @ConditionalOnMissingBean(TaskRetryCheckpointStore.class)
     TaskRetryCheckpointStore taskRetryCheckpointStore() {
         return new InMemoryTaskRetryCheckpointStore();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(RequirementPublicationStore.class)
+    RequirementPublicationStore requirementPublicationStore() {
+        return new InMemoryRequirementPublicationStore();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(RequirementPublicationLedger.class)
+    RequirementPublicationLedger requirementPublicationLedger(RequirementPublicationStore store) {
+        return new RequirementPublicationLedger(store);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(RequirementPublicationReconciliationService.class)
+    RequirementPublicationReconciliationService requirementPublicationReconciliationService(
+            RequirementPublicationLedger ledger,
+            ObjectProvider<RequirementPublicationReconcilePort> reconcilerProvider
+    ) {
+        return new RequirementPublicationReconciliationService(ledger, reconcilerProvider.getIfAvailable());
     }
 
     @Bean

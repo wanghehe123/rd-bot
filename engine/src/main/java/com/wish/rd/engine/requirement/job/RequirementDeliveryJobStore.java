@@ -23,6 +23,15 @@ public interface RequirementDeliveryJobStore {
     List<RequirementDeliveryJob> recoverable(long now);
 
     /**
+     * Returns non-expired RUNNING jobs used for fair-schedule in-flight accounting.
+     * Expired leases are excluded (they appear in {@link #recoverable(long)} instead).
+     *
+     * @param now epoch millis
+     * @return active in-flight jobs
+     */
+    List<RequirementDeliveryJob> listInFlight(long now);
+
+    /**
      * Cancels a non-terminal job for operator stop, regardless of lease owner.
      *
      * @param taskId task id

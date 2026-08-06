@@ -83,6 +83,14 @@ public final class InMemoryRequirementDeliveryJobStore implements RequirementDel
     }
 
     @Override
+    public synchronized List<RequirementDeliveryJob> listInFlight(long now) {
+        return jobsById.values().stream()
+                .filter(job -> job.status() == RequirementDeliveryJobStatus.RUNNING)
+                .filter(job -> !job.isExpiredRunning(now))
+                .toList();
+    }
+
+    @Override
     public synchronized Optional<RequirementDeliveryJob> cancelByTask(String taskId, String reason, long now) {
         RequirementDeliveryJob current = findByTask(taskId).orElse(null);
         if (current == null || !cancellable(current.status())) {

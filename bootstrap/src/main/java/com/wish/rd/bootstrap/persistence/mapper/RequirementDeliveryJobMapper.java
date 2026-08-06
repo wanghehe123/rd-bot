@@ -95,6 +95,14 @@ public interface RequirementDeliveryJobMapper extends BaseMapper<RequirementDeli
     List<RequirementDeliveryJobRow> recoverable(@Param("now") OffsetDateTime now);
 
     @Select("""
+            SELECT * FROM rd_requirement_delivery_jobs
+            WHERE status = 'RUNNING'
+              AND lease_until > #{now}
+            ORDER BY updated_at, id
+            """)
+    List<RequirementDeliveryJobRow> listInFlight(@Param("now") OffsetDateTime now);
+
+    @Select("""
             UPDATE rd_requirement_delivery_jobs
             SET status = 'CANCELLED', lease_owner = '', lease_until = NULL,
                 error_message = #{errorMessage}, updated_at = #{now}

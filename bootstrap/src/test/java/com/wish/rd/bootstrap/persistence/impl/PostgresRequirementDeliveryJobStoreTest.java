@@ -31,6 +31,20 @@ class PostgresRequirementDeliveryJobStoreTest {
         verify(mapper).claim(any(), any(), any(), any());
     }
 
+    @Test
+    void shouldMapListInFlightQuery() {
+        RequirementDeliveryJobMapper mapper = mock(RequirementDeliveryJobMapper.class);
+        RequirementDeliveryJobRow row = row("RUNNING", 1, "worker-a");
+        when(mapper.listInFlight(any())).thenReturn(java.util.List.of(row));
+        PostgresRequirementDeliveryJobStore store = new PostgresRequirementDeliveryJobStore(mapper);
+
+        java.util.List<RequirementDeliveryJob> inFlight = store.listInFlight(1_000L);
+
+        assertEquals(1, inFlight.size());
+        assertEquals(RequirementDeliveryJobStatus.RUNNING, inFlight.getFirst().status());
+        verify(mapper).listInFlight(any());
+    }
+
     private RequirementDeliveryJobRow row(String status, int attemptNo, String owner) {
         RequirementDeliveryJobRow row = new RequirementDeliveryJobRow();
         row.id = 101L;
