@@ -1,0 +1,9 @@
+{
+  "runId": "pilot-layout-001",
+  "status": "layout-verified",
+  "sampleN": 0,
+  "datasetVersion": "v0",
+  "gitCommit": null,
+  "configHash": null,
+  "note": "Layout-only pilot; no numeric resume claims."
+}

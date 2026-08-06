@@ -1,0 +1,8 @@
+{"caseId":"Q1-publication-crash","questionId":"Q1","faultIds":["F-PUB-02","F-PUB-03","F-PUB-05"],"claimStatus":"partial","notes":"Ledger + UNKNOWN reconcile covered; attach raw runs before resume % claims"}
+{"caseId":"Q2-credential-egress","questionId":"Q2","faultIds":["F-SEC-01"],"claimStatus":"partial","notes":"Opaque lease + network=none when relay on; sidecar egress still pending"}
+{"caseId":"Q3-host-oracle","questionId":"Q3","faultIds":["F-ORACLE-01"],"claimStatus":"partial","notes":"HostAssertionOracle wired on QA path; HTTP/SQL runners present"}
+{"caseId":"Q4-task-cas","questionId":"Q4","faultIds":["F-CAS-01"],"claimStatus":"partial","notes":"cancel uses CAS fencing; other status transitions still blind upsert"}
+{"caseId":"Q5-provider-fallback","questionId":"Q5","faultIds":["F-PROV-01"],"claimStatus":"partial","notes":"Host gate rejects unsafe silent fallback post-attempt; Redis half-open TBD"}
+{"caseId":"Q6-fair-schedule","questionId":"Q6","faultIds":["F-SCHED-01"],"claimStatus":"partial","notes":"recover() fair claim uses listInFlight project caps; stage-command split still TBD"}
+{"caseId":"Q7-iterative-rag","questionId":"Q7","faultIds":["F-RAG-01"],"claimStatus":"partial","notes":"IterativeRetrievalStopGate domain only; multi-round DeepRetrieval pending"}
+{"caseId":"Q8-metrics-package","questionId":"Q8","faultIds":[],"claimStatus":"skeleton","notes":"This package; no raw runs yet — numeric resume claims must stay 待复现"}

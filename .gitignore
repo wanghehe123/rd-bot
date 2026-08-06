@@ -44,6 +44,8 @@ docs/qa/*
 docs/superpowers/*
 !docs/superpowers/plans/
 !docs/superpowers/plans/*.md
+!docs/superpowers/qa/
+!docs/superpowers/qa/*.md
 !docs/superpowers/specs/
 docs/superpowers/specs/*
 !docs/superpowers/specs/2026-07-10-rd-task-control-plane-enhancements-design.md

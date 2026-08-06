@@ -1,0 +1,34 @@
+{
+  "packageVersion": "v0",
+  "updatedAt": "2026-08-04",
+  "rules": {
+    "pilotMaxSamplesForFourOfFour": 4,
+    "requireRawRunForNumericClaim": true,
+    "unreproducedLabel": "待复现"
+  },
+  "claims": [
+    {
+      "claimId": "pilot-4-of-4",
+      "statement": "0/4 -> 4/4 may only be described as a 4-sample pilot",
+      "status": "rule",
+      "sampleSize": 4,
+      "rawRunId": null,
+      "reportPath": null
+    },
+    {
+      "claimId": "resume-9-of-15",
+      "statement": "9/15 -> 15/15 (or equivalent miss-rate / latency gains)",
+      "status": "待复现",
+      "sampleSize": null,
+      "baseline": null,
+      "model": null,
+      "temperature": null,
+      "budget": null,
+      "runCount": null,
+      "successDefinition": null,
+      "confidenceInterval": null,
+      "rawRunId": null,
+      "reportPath": null
+    }
+  ]
+}
