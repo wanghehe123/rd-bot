@@ -3,6 +3,10 @@ package com.wish.rd.engine.retrieval;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wish.rd.engine.agent.model.AgentRole;
+import com.wish.rd.engine.retrieval.iterative.IterativeRetrievalLoop;
+import com.wish.rd.engine.retrieval.iterative.RetrievalIterationLimits;
+import com.wish.rd.engine.retrieval.iterative.RetrievalIterationState;
+import com.wish.rd.engine.retrieval.iterative.RetrievalStopReason;
 import com.wish.rd.engine.retrieval.model.ChannelAudit;
 import com.wish.rd.engine.retrieval.model.RetrievalOutcome;
 import com.wish.rd.engine.retrieval.model.RetrievalScope;
@@ -28,6 +32,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 
 /**
  * Runs one project-scoped requirement retrieval attempt and applies deterministic role evidence gates.
@@ -60,6 +66,70 @@ public final class DeepRetrievalOrchestrator {
     }
 
     public RetrievalOutcome retrieve(
+            RdRequirementTask task,
+            List<TaskMaterial> materials,
+            RetrievalConsumerType consumerType,
+            AgentRole role,
+            String stageRunId,
+            String upstreamClues,
+            int topK
+    ) {
+        return retrieveOnce(task, materials, consumerType, role, stageRunId, upstreamClues, topK);
+    }
+
+    /**
+     * Multi-round retrieval bounded by {@link RetrievalIterationLimits} and
+     * {@link com.wish.rd.engine.retrieval.iterative.IterativeRetrievalStopGate}.
+     * Each round runs a full single-shot retrieval; missing evidence types refine the next query clues.
+     * Default callers remain on {@link #retrieve} (single shot).
+     */
+    public RetrievalOutcome retrieveIterative(
+            RdRequirementTask task,
+            List<TaskMaterial> materials,
+            RetrievalConsumerType consumerType,
+            AgentRole role,
+            String stageRunId,
+            String upstreamClues,
+            int topK,
+            RetrievalIterationLimits limits
+    ) {
+        RetrievalIterationLimits bound = limits == null ? RetrievalIterationLimits.defaults() : limits;
+        AtomicReference<String> clues = new AtomicReference<>(safe(upstreamClues));
+        AtomicReference<RetrievalOutcome> last = new AtomicReference<>();
+        long startedAt = System.currentTimeMillis();
+        RetrievalStopReason stop = new IterativeRetrievalLoop().run(bound, startedAt, before -> {
+            RetrievalOutcome outcome = retrieveOnce(
+                    task, materials, consumerType, role, stageRunId, clues.get(), topK
+            );
+            last.set(outcome);
+            Set<String> selectedIds = outcome.selectedEvidence().stream()
+                    .map(RoleContextEvidence::evidenceId)
+                    .filter(id -> id != null && !id.isBlank())
+                    .collect(Collectors.toCollection(LinkedHashSet::new));
+            boolean gateSatisfied = outcome.succeeded();
+            // DeepRetrieval NEED_INPUT means rewrite/search again, not hard user clarification.
+            boolean needsClarification = false;
+            long tokens = Math.max(1L, selectedIds.size() * 32L);
+            RetrievalIterationState assessed = before.withAssess(
+                    gateSatisfied,
+                    needsClarification,
+                    selectedIds,
+                    tokens,
+                    Math.max(0L, System.currentTimeMillis() - startedAt)
+            );
+            if (!gateSatisfied && !outcome.missingEvidenceTypes().isEmpty()) {
+                clues.set(refineClues(clues.get(), outcome.missingEvidenceTypes()));
+            }
+            return assessed;
+        });
+        RetrievalOutcome outcome = last.get();
+        if (outcome == null) {
+            throw new IllegalStateException("iterative retrieval produced no outcome");
+        }
+        return withStopReason(outcome, stop.name());
+    }
+
+    private RetrievalOutcome retrieveOnce(
             RdRequirementTask task,
             List<TaskMaterial> materials,
             RetrievalConsumerType consumerType,
@@ -645,6 +715,35 @@ public final class DeepRetrievalOrchestrator {
             }
         }
         return "";
+    }
+
+    private static RetrievalOutcome withStopReason(RetrievalOutcome outcome, String stopReason) {
+        return new RetrievalOutcome(
+                outcome.runId(),
+                outcome.status(),
+                outcome.consumerType(),
+                outcome.role(),
+                outcome.stageRunId(),
+                outcome.selectedEvidence(),
+                outcome.qualityDecision(),
+                outcome.qualityReportArtifactId(),
+                outcome.missingEvidenceTypes(),
+                outcome.omittedEvidenceIds(),
+                stopReason == null || stopReason.isBlank() ? outcome.stopReason() : stopReason.strip()
+        );
+    }
+
+    private static String refineClues(String clues, List<String> missingEvidenceTypes) {
+        String base = clues == null ? "" : clues.strip();
+        if (missingEvidenceTypes == null || missingEvidenceTypes.isEmpty()) {
+            return base;
+        }
+        String missing = String.join(",", missingEvidenceTypes);
+        String suffix = "missingEvidenceTypes=" + missing;
+        if (base.contains(suffix)) {
+            return base;
+        }
+        return base.isBlank() ? suffix : base + "; " + suffix;
     }
 
     private String safe(String value) {

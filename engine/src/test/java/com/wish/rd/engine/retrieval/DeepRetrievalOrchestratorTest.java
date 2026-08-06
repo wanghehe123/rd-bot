@@ -317,6 +317,52 @@ class DeepRetrievalOrchestratorTest {
         assertFalse(outcome.succeeded());
     }
 
+    @Test
+    void iterativeRetrievalStopsAtMaxRoundsWhenGateNeverSatisfied() {
+        InMemoryRetrievalRunStore store = new InMemoryRetrievalRunStore();
+        AtomicInteger ids = new AtomicInteger();
+        AtomicInteger searches = new AtomicInteger();
+        RequirementKnowledgeSearchPort searchPort = new RequirementKnowledgeSearchPort() {
+            @Override
+            public RetrievalScope resolveScope(RdRequirementTask task) {
+                return new RetrievalScope(List.of(), "github.com/example/waimai", true,
+                        "project has no knowledge-base binding");
+            }
+
+            @Override
+            public SearchResult search(
+                    RdRequirementTask task,
+                    AgentRole role,
+                    String query,
+                    RetrievalScope scope,
+                    int topK
+            ) {
+                searches.incrementAndGet();
+                return SearchResult.empty();
+            }
+        };
+        DeepRetrievalOrchestrator orchestrator = new DeepRetrievalOrchestrator(
+                new RetrievalRunLifecycle(store, () -> "id-" + ids.incrementAndGet(), () -> 100L),
+                searchPort
+        );
+        RdRequirementTask task = requirementTask();
+
+        RetrievalOutcome outcome = orchestrator.retrieveIterative(
+                task,
+                List.of(requirementMaterial(task.taskId())),
+                RetrievalConsumerType.AGENT_ROLE,
+                AgentRole.CODING_AGENT,
+                "stage-code-1",
+                "",
+                8,
+                new com.wish.rd.engine.retrieval.iterative.RetrievalIterationLimits(3, 50_000L, 60_000L, 5)
+        );
+
+        assertEquals(RetrievalRunStatus.WAITING_INPUT, outcome.status());
+        assertEquals("MAX_ROUNDS", outcome.stopReason());
+        assertEquals(3, searches.get());
+    }
+
     private static RoleContextEvidence evidence(
             String id,
             String sourceType,
