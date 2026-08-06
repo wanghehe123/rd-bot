@@ -83,7 +83,8 @@ public final class RdTaskTransitionPolicy {
                 RdTaskStatus.FAILED_RETRYABLE, RdTaskStatus.FAILED_NEEDS_HUMAN,
                 RdTaskStatus.CANCELLED, RdTaskStatus.DEAD_LETTERED);
         put(graph, RdTaskStatus.PR_CREATING, RdTaskStatus.COMMITTED, RdTaskStatus.REJECTED,
-                RdTaskStatus.FAILED_RETRYABLE, RdTaskStatus.CANCELLED, RdTaskStatus.DEAD_LETTERED);
+                RdTaskStatus.FAILED_RETRYABLE, RdTaskStatus.FAILED_NEEDS_HUMAN,
+                RdTaskStatus.CANCELLED, RdTaskStatus.DEAD_LETTERED);
         put(graph, RdTaskStatus.COMMITTED, RdTaskStatus.MERGED, RdTaskStatus.REPORTING,
                 RdTaskStatus.COMPLETED, RdTaskStatus.REJECTED, RdTaskStatus.CANCELLED);
         put(graph, RdTaskStatus.REPORTING, RdTaskStatus.COMPLETED, RdTaskStatus.FAILED_RETRYABLE,

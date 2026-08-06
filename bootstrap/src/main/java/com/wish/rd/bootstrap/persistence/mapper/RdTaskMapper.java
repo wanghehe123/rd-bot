@@ -4,6 +4,10 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.wish.rd.bootstrap.persistence.entity.RdTaskRow;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Update;
+
+import java.time.OffsetDateTime;
 
 /**
  * RD 任务 MyBatis-Plus mapper。
@@ -24,14 +28,15 @@ public interface RdTaskMapper extends BaseMapper<RdTaskRow> {
                 message_id, title, prompt_snapshot, execution_result_json,
                 pull_request_url, error_message, paused, source_type, source_id, source_url,
                 project_id, project_key, project_name, repository_url, repo_owner, repo_name, base_branch, work_branch,
-                expected_result, acceptance_criteria_json, token_budget_override, created_at, updated_at
+                expected_result, acceptance_criteria_json, token_budget_override, version, created_at, updated_at
             )
             VALUES (
                 #{id}, #{taskType}, #{ticketId}, #{ticketTitle}, #{priority}, #{status},
                 #{messageId}, #{title}, #{promptSnapshot}, #{executionResultJson}::jsonb,
                 #{pullRequestUrl}, #{errorMessage}, COALESCE(#{paused}, FALSE), #{sourceType}, #{sourceId}, #{sourceUrl},
                 #{projectId}, #{projectKey}, #{projectName}, #{repositoryUrl}, #{repoOwner}, #{repoName}, #{baseBranch}, #{workBranch},
-                #{expectedResult}, #{acceptanceCriteriaJson}::jsonb, COALESCE(#{tokenBudgetOverride}, 0), #{createdAt}, #{updatedAt}
+                #{expectedResult}, #{acceptanceCriteriaJson}::jsonb, COALESCE(#{tokenBudgetOverride}, 0),
+                COALESCE(#{version}, 0), #{createdAt}, #{updatedAt}
             )
             ON CONFLICT (id) DO UPDATE SET
                 task_type = EXCLUDED.task_type,
@@ -63,4 +68,44 @@ public interface RdTaskMapper extends BaseMapper<RdTaskRow> {
                 updated_at = EXCLUDED.updated_at
             """)
     void upsertTask(RdTaskRow row);
+
+    /**
+     * Advances status only when {@code id}, {@code version}, and {@code status} all match.
+     * Increments {@code version} on success. Blind upserts must not use this path for correctness.
+     *
+     * @return number of rows updated (0 = stale / mismatch)
+     */
+    @Update("""
+            UPDATE rd_tasks
+               SET status = #{newStatus},
+                   error_message = COALESCE(#{errorMessage}, error_message),
+                   execution_result_json = CASE
+                       WHEN #{executionResultJson} IS NULL THEN execution_result_json
+                       ELSE CAST(#{executionResultJson} AS jsonb)
+                   END,
+                   pull_request_url = CASE
+                       WHEN #{pullRequestUrl} IS NULL THEN pull_request_url
+                       ELSE #{pullRequestUrl}
+                   END,
+                   prompt_snapshot = CASE
+                       WHEN #{promptSnapshot} IS NULL THEN prompt_snapshot
+                       ELSE #{promptSnapshot}
+                   END,
+                   version = version + 1,
+                   updated_at = #{updatedAt}
+             WHERE id = #{id}
+               AND version = #{expectedVersion}
+               AND status = #{expectedStatus}
+            """)
+    int advanceStatusWithExpectedVersion(
+            @Param("id") long id,
+            @Param("expectedVersion") long expectedVersion,
+            @Param("expectedStatus") String expectedStatus,
+            @Param("newStatus") String newStatus,
+            @Param("errorMessage") String errorMessage,
+            @Param("executionResultJson") String executionResultJson,
+            @Param("pullRequestUrl") String pullRequestUrl,
+            @Param("promptSnapshot") String promptSnapshot,
+            @Param("updatedAt") OffsetDateTime updatedAt
+    );
 }

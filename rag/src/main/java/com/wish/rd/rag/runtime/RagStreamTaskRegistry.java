@@ -472,15 +472,74 @@ public final class RagStreamTaskRegistry {
         });
     }
 
-    /** 将任意可取消任务推进到 CANCELLED；重复取消幂等。 */
+    /** 将任意可取消任务推进到 CANCELLED；重复取消幂等。使用 store CAS 拒绝过期写者。 */
     public RdTask cancelTask(String taskId, String reason) {
         return withTaskLock(taskId, () -> {
             RdTask existing = getTask(taskId);
             if (existing.status() == RdTaskStatus.CANCELLED) {
                 return existing;
             }
-            return transitionTask(existing, RdTaskStatus.CANCELLED, reason);
+            return casTransition(existing, RdTaskStatus.CANCELLED, reason, null, null);
         });
+    }
+
+    /**
+     * Fenced status advance: validates transition graph, CAS-writes store, records timeline event.
+     * When CAS loses to a peer that already reached {@code targetStatus}, returns the peer snapshot.
+     */
+    private RdTask casTransition(
+            RdTask existing,
+            RdTaskStatus targetStatus,
+            String reason,
+            String executionResultJson,
+            String pullRequestUrl
+    ) {
+        return casTransition(existing, targetStatus, reason, executionResultJson, pullRequestUrl, null);
+    }
+
+    /**
+     * Fenced status advance: validates transition graph, CAS-writes store, records timeline event.
+     * When CAS loses to a peer that already reached {@code targetStatus}, returns the peer snapshot.
+     */
+    private RdTask casTransition(
+            RdTask existing,
+            RdTaskStatus targetStatus,
+            String reason,
+            String executionResultJson,
+            String pullRequestUrl,
+            String promptSnapshot
+    ) {
+        String safeReason = reason == null ? "" : reason.strip();
+        RdTaskType taskType = RdTaskType.parse(existing.taskType(), RdTaskType.REQUIREMENT);
+        RdTaskTransitionPolicy.ensureTransition(taskType, existing.status(), targetStatus);
+        long expectedVersion = taskStore.findVersion(existing.taskId()).orElse(0L);
+        try {
+            taskStore.advanceStatusWithExpectedVersion(
+                    existing.taskId(),
+                    expectedVersion,
+                    existing.status(),
+                    targetStatus,
+                    safeReason,
+                    executionResultJson,
+                    pullRequestUrl,
+                    promptSnapshot
+            );
+        } catch (IllegalStateException stale) {
+            RdTask latest = getTask(existing.taskId());
+            if (latest.status() == targetStatus) {
+                return latest;
+            }
+            throw stale;
+        }
+        RdTask updated = getTask(existing.taskId());
+        recordEvent(
+                updated,
+                targetStatus.name(),
+                updated.title(),
+                safeReason,
+                RdTaskEventTrigger.SYSTEM
+        );
+        return updated;
     }
 
     /** 将失败任务推进到任务级 RECOVERING；阶段重试仍创建新 attempt。 */
@@ -494,14 +553,14 @@ public final class RagStreamTaskRegistry {
         });
     }
 
-    /** 将派发超过重试上限的任务推进到 DEAD_LETTERED；重复调用幂等。 */
+    /** 将派发超过重试上限的任务推进到 DEAD_LETTERED；重复调用幂等。使用 store CAS。 */
     public RdTask markDeadLettered(String taskId, String reason) {
         return withTaskLock(taskId, () -> {
             RdTask existing = getTask(taskId);
             if (existing.status() == RdTaskStatus.DEAD_LETTERED) {
                 return existing;
             }
-            return transitionTask(existing, RdTaskStatus.DEAD_LETTERED, reason);
+            return casTransition(existing, RdTaskStatus.DEAD_LETTERED, reason, null, null);
         });
     }
 
@@ -761,7 +820,17 @@ public final class RagStreamTaskRegistry {
     public RdRequirementTask markRequirementExecuting(String taskId, String promptSnapshot) {
         return withTaskLock(taskId, () -> {
             RdRequirementTask existing = getRequirementTask(taskId);
-            return transitionAndSave(existing, RdTaskStatus.EXECUTING, promptSnapshot, "", "", "");
+            if (existing.status() == RdTaskStatus.EXECUTING) {
+                return existing;
+            }
+            return (RdRequirementTask) casTransition(
+                    existing,
+                    RdTaskStatus.EXECUTING,
+                    "",
+                    null,
+                    null,
+                    promptSnapshot == null ? "" : promptSnapshot
+            );
         });
     }
 
@@ -775,7 +844,16 @@ public final class RagStreamTaskRegistry {
     public RdRequirementTask markRequirementValidating(String taskId, String validationJson) {
         return withTaskLock(taskId, () -> {
             RdRequirementTask existing = getRequirementTask(taskId);
-            return transitionAndSave(existing, RdTaskStatus.VALIDATING, "", validationJson, "", "");
+            if (existing.status() == RdTaskStatus.VALIDATING) {
+                return existing;
+            }
+            return (RdRequirementTask) casTransition(
+                    existing,
+                    RdTaskStatus.VALIDATING,
+                    "",
+                    validationJson,
+                    null
+            );
         });
     }
 
@@ -789,7 +867,16 @@ public final class RagStreamTaskRegistry {
     public RdRequirementTask markRequirementPrCreating(String taskId, String reviewedResultJson) {
         return withTaskLock(taskId, () -> {
             RdRequirementTask existing = getRequirementTask(taskId);
-            return transitionAndSave(existing, RdTaskStatus.PR_CREATING, "", reviewedResultJson, "", "");
+            if (existing.status() == RdTaskStatus.PR_CREATING) {
+                return existing;
+            }
+            return (RdRequirementTask) casTransition(
+                    existing,
+                    RdTaskStatus.PR_CREATING,
+                    "",
+                    reviewedResultJson,
+                    null
+            );
         });
     }
 
@@ -808,7 +895,16 @@ public final class RagStreamTaskRegistry {
     ) {
         return withTaskLock(taskId, () -> {
             RdRequirementTask existing = getRequirementTask(taskId);
-            return transitionAndSave(existing, RdTaskStatus.COMMITTED, "", executionResultJson, pullRequestUrl, "");
+            if (existing.status() == RdTaskStatus.COMMITTED) {
+                return existing;
+            }
+            return (RdRequirementTask) casTransition(
+                    existing,
+                    RdTaskStatus.COMMITTED,
+                    "",
+                    executionResultJson,
+                    pullRequestUrl
+            );
         });
     }
 
@@ -822,7 +918,16 @@ public final class RagStreamTaskRegistry {
     public RdRequirementTask markRequirementReporting(String taskId, String deliveryReportJson) {
         return withTaskLock(taskId, () -> {
             RdRequirementTask existing = getRequirementTask(taskId);
-            return transitionAndSave(existing, RdTaskStatus.REPORTING, "", deliveryReportJson, "", "");
+            if (existing.status() == RdTaskStatus.REPORTING) {
+                return existing;
+            }
+            return (RdRequirementTask) casTransition(
+                    existing,
+                    RdTaskStatus.REPORTING,
+                    "",
+                    deliveryReportJson,
+                    null
+            );
         });
     }
 
@@ -841,7 +946,16 @@ public final class RagStreamTaskRegistry {
     ) {
         return withTaskLock(taskId, () -> {
             RdRequirementTask existing = getRequirementTask(taskId);
-            return transitionAndSave(existing, RdTaskStatus.COMPLETED, "", executionResultJson, pullRequestUrl, "");
+            if (existing.status() == RdTaskStatus.COMPLETED) {
+                return existing;
+            }
+            return (RdRequirementTask) casTransition(
+                    existing,
+                    RdTaskStatus.COMPLETED,
+                    "",
+                    executionResultJson,
+                    pullRequestUrl
+            );
         });
     }
 
@@ -873,7 +987,16 @@ public final class RagStreamTaskRegistry {
     ) {
         return withTaskLock(taskId, () -> {
             RdRequirementTask existing = getRequirementTask(taskId);
-            return transitionAndSave(existing, RdTaskStatus.REJECTED, "", executionResultJson, "", errorMessage);
+            if (existing.status() == RdTaskStatus.REJECTED) {
+                return existing;
+            }
+            return (RdRequirementTask) casTransition(
+                    existing,
+                    RdTaskStatus.REJECTED,
+                    errorMessage,
+                    executionResultJson,
+                    null
+            );
         });
     }
 
@@ -892,7 +1015,16 @@ public final class RagStreamTaskRegistry {
     ) {
         return withTaskLock(taskId, () -> {
             RdRequirementTask existing = getRequirementTask(taskId);
-            return transitionAndSave(existing, RdTaskStatus.FAILED_NEEDS_HUMAN, "", executionResultJson, "", errorMessage);
+            if (existing.status() == RdTaskStatus.FAILED_NEEDS_HUMAN) {
+                return existing;
+            }
+            return (RdRequirementTask) casTransition(
+                    existing,
+                    RdTaskStatus.FAILED_NEEDS_HUMAN,
+                    errorMessage,
+                    executionResultJson,
+                    null
+            );
         });
     }
 
@@ -911,8 +1043,16 @@ public final class RagStreamTaskRegistry {
     ) {
         return withTaskLock(taskId, () -> {
             RdRequirementTask existing = getRequirementTask(taskId);
-            return transitionAndSave(existing, RdTaskStatus.FAILED_RETRYABLE,
-                    "", executionResultJson, "", errorMessage);
+            if (existing.status() == RdTaskStatus.FAILED_RETRYABLE) {
+                return existing;
+            }
+            return (RdRequirementTask) casTransition(
+                    existing,
+                    RdTaskStatus.FAILED_RETRYABLE,
+                    errorMessage,
+                    executionResultJson,
+                    null
+            );
         });
     }
 

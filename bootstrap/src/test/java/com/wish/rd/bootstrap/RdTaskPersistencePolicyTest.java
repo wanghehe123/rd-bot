@@ -30,6 +30,14 @@ class RdTaskPersistencePolicyTest {
                 "bootstrap/src/main/java/com/wish/rd/bootstrap/persistence/mapper/RdTaskMaterialMapper.java")));
         assertTrue(sql.contains("CREATE TABLE IF NOT EXISTS rd_tasks"));
         assertTrue(sql.contains("CREATE TABLE IF NOT EXISTS rd_task_materials"));
+        assertTrue(sql.contains("CREATE TABLE IF NOT EXISTS rd_requirement_publications"));
+        assertTrue(sql.contains("uk_rd_requirement_publications_operation"));
+        assertTrue(sql.contains("candidate_patch_sha256"));
+        assertTrue(sql.contains("next_reconcile_at"));
+        assertTrue(Files.exists(PROJECT_ROOT.resolve(
+                "bootstrap/src/main/java/com/wish/rd/bootstrap/persistence/impl/PostgresRequirementPublicationStore.java")));
+        assertTrue(Files.exists(PROJECT_ROOT.resolve(
+                "bootstrap/src/main/java/com/wish/rd/bootstrap/persistence/mapper/RequirementPublicationMapper.java")));
         assertTrue(sql.contains("id                 BIGINT PRIMARY KEY"));
         assertTrue(sql.contains("task_type          VARCHAR(64) NOT NULL"));
         assertTrue(sql.contains("execution_result_json JSONB NOT NULL DEFAULT '{}'::jsonb"));
@@ -41,6 +49,13 @@ class RdTaskPersistencePolicyTest {
         assertTrue(sql.contains("ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS base_branch VARCHAR(256) NOT NULL DEFAULT ''"));
         assertTrue(sql.contains("ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS expected_result TEXT NOT NULL DEFAULT ''"));
         assertTrue(sql.contains("ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS acceptance_criteria_json JSONB NOT NULL DEFAULT '[]'::jsonb"));
+        assertTrue(sql.contains("ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS version BIGINT NOT NULL DEFAULT 0"));
+        assertTrue(sql.contains("ck_rd_tasks_version_non_negative"));
+        String mapper = Files.readString(PROJECT_ROOT.resolve(
+                "bootstrap/src/main/java/com/wish/rd/bootstrap/persistence/mapper/RdTaskMapper.java"));
+        assertTrue(mapper.contains("advanceStatusWithExpectedVersion"));
+        assertTrue(mapper.contains("AND version = #{expectedVersion}"));
+        assertTrue(mapper.contains("AND status = #{expectedStatus}"));
         assertTrue(sql.contains("content_hash"));
         assertTrue(sql.contains("VARCHAR(128) NOT NULL DEFAULT ''"));
         assertTrue(sql.contains("metadata_json         JSONB NOT NULL DEFAULT '{}'::jsonb"));

@@ -97,6 +97,66 @@ public final class PostgresRdTaskStore implements RdTaskStore {
                 .toList();
     }
 
+    @Override
+    public void advanceStatusWithExpectedVersion(
+            String taskId,
+            long expectedVersion,
+            RdTaskStatus expectedStatus,
+            RdTaskStatus newStatus,
+            String errorMessage
+    ) {
+        advanceStatusWithExpectedVersion(
+                taskId, expectedVersion, expectedStatus, newStatus, errorMessage, null, null
+        );
+    }
+
+    @Override
+    public void advanceStatusWithExpectedVersion(
+            String taskId,
+            long expectedVersion,
+            RdTaskStatus expectedStatus,
+            RdTaskStatus newStatus,
+            String errorMessage,
+            String executionResultJson,
+            String pullRequestUrl,
+            String promptSnapshot
+    ) {
+        if (expectedStatus == null || newStatus == null) {
+            throw new IllegalArgumentException("expectedStatus and newStatus must not be null");
+        }
+        long id = PostgresPersistenceSupport.parseId(taskId);
+        int updated = taskMapper.advanceStatusWithExpectedVersion(
+                id,
+                expectedVersion,
+                expectedStatus.name(),
+                newStatus.name(),
+                errorMessage,
+                executionResultJson,
+                pullRequestUrl,
+                promptSnapshot,
+                PostgresPersistenceSupport.toDateTime(System.currentTimeMillis())
+        );
+        if (updated != 1) {
+            throw new IllegalStateException(
+                    "stale or mismatched rd_tasks CAS for id=" + taskId
+                            + " expectedVersion=" + expectedVersion
+                            + " expectedStatus=" + expectedStatus
+            );
+        }
+    }
+
+    /**
+     * Reads the optimistic concurrency version for fencing callers.
+     *
+     * @param taskId task id
+     * @return stored version, or empty when the row is missing
+     */
+    @Override
+    public Optional<Long> findVersion(String taskId) {
+        return Optional.ofNullable(taskMapper.selectById(PostgresPersistenceSupport.parseId(taskId)))
+                .map(row -> row.version == null ? 0L : row.version);
+    }
+
     private RdTaskRow toRow(RdBugFixTask task) {
         RdTaskRow row = new RdTaskRow();
         row.id = PostgresPersistenceSupport.parseId(task.taskId());
@@ -125,6 +185,7 @@ public final class PostgresRdTaskStore implements RdTaskStore {
         row.expectedResult = "";
         row.acceptanceCriteriaJson = "[]";
         row.tokenBudgetOverride = 0L;
+        row.version = 0L;
         row.createdAt = PostgresPersistenceSupport.toDateTime(task.createTimeEpochMillis());
         row.updatedAt = PostgresPersistenceSupport.toDateTime(task.updateTimeEpochMillis());
         row.paused = task.paused();
@@ -159,6 +220,7 @@ public final class PostgresRdTaskStore implements RdTaskStore {
         row.expectedResult = task.expectedResult();
         row.acceptanceCriteriaJson = task.acceptanceCriteriaJson().isBlank() ? "[]" : task.acceptanceCriteriaJson();
         row.tokenBudgetOverride = task.tokenBudgetOverride();
+        row.version = 0L;
         row.createdAt = PostgresPersistenceSupport.toDateTime(task.createTimeEpochMillis());
         row.updatedAt = PostgresPersistenceSupport.toDateTime(task.updateTimeEpochMillis());
         row.paused = task.paused();

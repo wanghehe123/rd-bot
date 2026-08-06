@@ -112,4 +112,78 @@ public interface RdTaskStore {
         tasks.addAll(listRequirementTasks());
         return List.copyOf(tasks);
     }
+
+    /**
+     * Optimistic concurrency version for fencing status writers.
+     *
+     * @param taskId task id
+     * @return stored version, or empty when the row/snapshot is missing
+     */
+    default Optional<Long> findVersion(String taskId) {
+        return Optional.empty();
+    }
+
+    /**
+     * Advances status only when stored {@code version} and {@code status} match; increments version.
+     * Cancel / pause / worker completion races must use this instead of blind {@code save*Task}.
+     *
+     * @param taskId          task id
+     * @param expectedVersion expected optimistic version
+     * @param expectedStatus  expected current status
+     * @param newStatus       status to write
+     * @param errorMessage    optional error / cancel reason (null keeps existing where supported)
+     * @throws IllegalStateException when zero rows match (stale writer / status race)
+     */
+    default void advanceStatusWithExpectedVersion(
+            String taskId,
+            long expectedVersion,
+            RdTaskStatus expectedStatus,
+            RdTaskStatus newStatus,
+            String errorMessage
+    ) {
+        advanceStatusWithExpectedVersion(
+                taskId, expectedVersion, expectedStatus, newStatus, errorMessage, null, null
+        );
+    }
+
+    /**
+     * CAS status advance with optional delivery payload fields for COMPLETED / COMMITTED.
+     * {@code null} payload fields leave the stored column unchanged; non-null values replace it.
+     */
+    default void advanceStatusWithExpectedVersion(
+            String taskId,
+            long expectedVersion,
+            RdTaskStatus expectedStatus,
+            RdTaskStatus newStatus,
+            String errorMessage,
+            String executionResultJson,
+            String pullRequestUrl
+    ) {
+        advanceStatusWithExpectedVersion(
+                taskId,
+                expectedVersion,
+                expectedStatus,
+                newStatus,
+                errorMessage,
+                executionResultJson,
+                pullRequestUrl,
+                null
+        );
+    }
+
+    /**
+     * CAS status advance including optional {@code promptSnapshot} for EXECUTING transitions.
+     */
+    default void advanceStatusWithExpectedVersion(
+            String taskId,
+            long expectedVersion,
+            RdTaskStatus expectedStatus,
+            RdTaskStatus newStatus,
+            String errorMessage,
+            String executionResultJson,
+            String pullRequestUrl,
+            String promptSnapshot
+    ) {
+        throw new UnsupportedOperationException("CAS status advance is unavailable for this RdTaskStore");
+    }
 }

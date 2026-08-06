@@ -42,6 +42,8 @@ public class RdTaskRow {
     public String expectedResult;
     public String acceptanceCriteriaJson;
     public Long tokenBudgetOverride;
+    /** Optimistic concurrency token; advanced by CAS status writers. */
+    public Long version;
     public OffsetDateTime createdAt;
     public OffsetDateTime updatedAt;
 }
