@@ -183,6 +183,73 @@ class RequirementAgentStageOrchestratorTest {
         }
     }
 
+    @Test
+    void host_rejects_coding_fallback_onto_generation_only_provider() {
+        AgentWorkflowPlan plan = AgentWorkflowPlan.codingBenchmark(CodingBenchmarkArm.A);
+        OrchestratorTestHarness harness = new OrchestratorTestHarness()
+                .prestageRoles(plan.roles())
+                .prestageRoleContexts(plan.roles());
+        harness.executor.codingResultOverride = """
+                {"role":"CODING_AGENT","status":"SUCCEEDED","provider":"weak-gen",
+                "providerAttempts":[
+                  {"provider":"openai","status":"503"},
+                  {"provider":"weak-gen","status":"SUCCESS"}
+                ],
+                "budgetEstimate":{"initialTokens":1024,"retryReserveTokens":128,
+                "estimatedTotalTokens":1152,"confidence":"LOW","basis":"heuristic","historicalSamples":[]},
+                "tokenBudgetEstimate":{"tokens":256}}
+                """.strip();
+
+        RequirementExecutionResult result = harness.orchestrator.run(
+                plan, harness.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION, null);
+
+        assertFalse(result.success());
+        assertTrue(result.errorMessage().contains("host rejected provider fallback"));
+        assertTrue(result.errorMessage().contains("WAITING_POLICY")
+                || result.resultJson().contains("WAITING_POLICY"));
+        assertTrue(harness.alertSink instanceof RecordingAlertSink recording
+                && recording.alerts.stream().anyMatch(alert ->
+                alert.type() == AgentWorkflowAlertType.PROVIDER_FALLBACK
+                        && alert.metadata().getOrDefault("hostDecision", "").equals("WAITING_POLICY")));
+    }
+
+    @Test
+    void host_blocks_coding_fallback_when_side_effect_state_is_unknown() {
+        AgentWorkflowPlan plan = AgentWorkflowPlan.codingBenchmark(CodingBenchmarkArm.A);
+        OrchestratorTestHarness harness = new OrchestratorTestHarness()
+                .prestageRoles(plan.roles())
+                .prestageRoleContexts(plan.roles());
+        harness.executor.codingResultOverride = """
+                {"role":"CODING_AGENT","status":"SUCCEEDED","provider":"anthropic",
+                "providerAttempts":[
+                  {"provider":"openai","status":"TIMEOUT"},
+                  {"provider":"anthropic","status":"SUCCESS"}
+                ],
+                "providerFallbackSafety":{
+                  "state":"UNKNOWN",
+                  "reason":"publication status is UNKNOWN_REMOTE_RESULT"
+                },
+                "budgetEstimate":{"initialTokens":1024,"retryReserveTokens":128,
+                "estimatedTotalTokens":1152,"confidence":"LOW","basis":"heuristic","historicalSamples":[]},
+                "tokenBudgetEstimate":{"tokens":256}}
+                """.strip();
+
+        RequirementExecutionResult result = harness.orchestrator.run(
+                plan, harness.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION, null);
+
+        assertFalse(result.success());
+        assertTrue(result.errorMessage().contains("UNKNOWN_REMOTE_RESULT"));
+        assertTrue(result.resultJson().contains("\"status\":\"WAITING_POLICY\"")
+                || result.resultJson().contains("\"status\":\"NEEDS_HUMAN\""));
+        assertFalse(result.resultJson().contains("\"status\":\"REJECTED\""));
+        assertTrue(harness.alertSink instanceof RecordingAlertSink recording
+                && recording.alerts.stream().anyMatch(alert ->
+                alert.type() == AgentWorkflowAlertType.PROVIDER_FALLBACK
+                        && alert.metadata().getOrDefault("hostDecision", "").equals("WAITING_POLICY")
+                        && alert.metadata().getOrDefault("decisionReason", "")
+                        .contains("UNKNOWN_REMOTE_RESULT")));
+    }
+
     // ---------- (g) orchestrator_invokes_executor_for_each_role_in_plan_order ----------
     @Test
     void orchestrator_invokes_executor_for_each_role_in_plan_order() {
@@ -684,6 +751,7 @@ class RequirementAgentStageOrchestratorTest {
         final Map<AgentRole, AtomicInteger> executedRoleCounts = new LinkedHashMap<>();
         final Map<AgentRole, String> lastPromptByRole = new LinkedHashMap<>();
         boolean qaAgentFailsWithRemediation = false;
+        String codingResultOverride = null;
 
         @Override
         public RequirementExecutionResult execute(RequirementExecutionRequest request) {
@@ -695,6 +763,14 @@ class RequirementAgentStageOrchestratorTest {
                         request.taskId(),
                         "QA agent failure",
                         "{\"status\":\"FAILED\",\"retryRecommendation\":\"CODING_REMEDIATION\"}"
+                );
+            }
+            if (request.role() == AgentRole.CODING_AGENT && codingResultOverride != null && !codingResultOverride.isBlank()) {
+                return RequirementExecutionResult.success(
+                        request.taskId(),
+                        request.role().name() + " 完成",
+                        "",
+                        codingResultOverride
                 );
             }
             String resultJson = switch (request.role()) {

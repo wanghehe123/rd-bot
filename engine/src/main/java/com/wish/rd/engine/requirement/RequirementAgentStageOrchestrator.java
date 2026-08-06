@@ -44,6 +44,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -56,6 +57,10 @@ import com.wish.rd.engine.requirement.model.RequirementPlan;
 import com.wish.rd.engine.requirement.model.RequirementPolicyDecision;
 import com.wish.rd.engine.retry.model.TaskFailurePhase;
 import com.wish.rd.engine.retry.model.TaskRetryCheckpoint;
+import com.wish.rd.engine.provider.ProviderFallbackDecision;
+import com.wish.rd.engine.provider.ProviderFallbackEvaluation;
+import com.wish.rd.engine.provider.ProviderFallbackPolicyEnforcer;
+import com.wish.rd.engine.provider.ProviderFallbackSideEffectSafety;
 
 /**
  * 需求交付 Agent 阶段编排器（独立）。
@@ -117,6 +122,7 @@ public class RequirementAgentStageOrchestrator {
     private final RagStreamTaskRegistry taskRegistry;
     private final RequirementExecutorPort executor;
     private final SnowflakeIdGenerator idGenerator;
+    private final ProviderFallbackPolicyEnforcer providerFallbackPolicy;
 
     public RequirementAgentStageOrchestrator(
             AgentStageRunStore stageRunStore,
@@ -144,6 +150,7 @@ public class RequirementAgentStageOrchestrator {
         this.taskRegistry = taskRegistry == null ? RagStreamTaskRegistry.inMemory() : taskRegistry;
         this.executor = executor == null ? RequirementExecutorPort.unavailable() : executor;
         this.idGenerator = idGenerator == null ? SnowflakeIdGenerator.defaultGenerator() : idGenerator;
+        this.providerFallbackPolicy = new ProviderFallbackPolicyEnforcer();
     }
 
     /**
@@ -364,9 +371,37 @@ public class RequirementAgentStageOrchestrator {
                         aggregateAgentResultsJson("FAILED", pullRequestUrl, stageResults)
                 );
             }
-            // 结果产出：保存角色产物并补齐 provider 元数据，进入 RESULT_COLLECTING。
+            // 结果产出：保存角色产物并补齐 provider 元数据；Host 门控拒绝不安全静默降级。
             stage = captureResultArtifact(stage, roleResult);
             stage = recordProviderMetadata(stage, roleResult);
+            Optional<ProviderFallbackEvaluation> rejectedFallback =
+                    rejectUnsafeProviderFallback(stage, role, roleResult);
+            if (rejectedFallback.isPresent()) {
+                ProviderFallbackEvaluation evaluation = rejectedFallback.get();
+                ProviderFallbackDecision decision = evaluation.decision();
+                String reason = "host rejected provider fallback: " + decision.name()
+                        + " (" + evaluation.reason() + ")";
+                AgentStageRun failedStage = transitionStage(
+                        stage,
+                        AgentStageStatus.FAILED_NEEDS_HUMAN,
+                        "PROVIDER_FALLBACK_POLICY",
+                        reason
+                );
+                publishStageAlert(
+                        failedStage,
+                        AgentWorkflowAlertType.STAGE_FAILED_NEEDS_HUMAN,
+                        reason
+                );
+                stageResults.add(stageResultJson(role, roleResult));
+                String aggregateStatus = decision == ProviderFallbackDecision.WAITING_POLICY
+                        ? "WAITING_POLICY"
+                        : "NEEDS_HUMAN";
+                return RequirementExecutionResult.failure(
+                        task.taskId(),
+                        reason,
+                        aggregateAgentResultsJson(aggregateStatus, pullRequestUrl, stageResults)
+                );
+            }
             stage = transitionStage(stage, AgentStageStatus.RESULT_COLLECTING, "", "");
             if (!roleResult.pullRequestUrl().isBlank()) {
                 // 所有角色禁止在角色阶段直接返回 PR 地址：RESULT_COLLECTING -> FAILED_NEEDS_HUMAN（强制交由交付复核阶段）。
@@ -851,7 +886,13 @@ public class RequirementAgentStageOrchestrator {
                     text(root.path("providerAttemptsJson")),
                     arrayJson(root.path("providerAttempts"))
             );
-            return new ProviderMetadata(providerName, providerAttemptsJson);
+            SafetyMetadata safetyMetadata = providerFallbackSafetyMetadata(root, dockerMetadata);
+            return new ProviderMetadata(
+                    providerName,
+                    providerAttemptsJson,
+                    safetyMetadata.safety(),
+                    safetyMetadata.declared()
+            );
         } catch (JsonProcessingException exception) {
             return ProviderMetadata.empty();
         }
@@ -862,23 +903,139 @@ public class RequirementAgentStageOrchestrator {
         if (fallback.isEmpty()) {
             return;
         }
+        ProviderFallbackEvaluation evaluation = providerFallbackPolicy.evaluateWithReason(
+                stage.role(),
+                fallback.failedProvider(),
+                fallback.failedStatus(),
+                fallback.activeProvider(),
+                providerFallbackSafety(stage, metadata)
+        );
         alertSink.publish(new AgentWorkflowAlert(
                 stage.taskId(),
                 stage.stageRunId(),
                 AgentWorkflowAlertType.PROVIDER_FALLBACK,
                 "provider fallback: " + fallback.failedProvider()
                         + " " + fallback.failedStatus()
-                        + " -> " + fallback.activeProvider(),
+                        + " -> " + fallback.activeProvider()
+                        + " decision=" + evaluation.decision().name()
+                        + " reason=" + evaluation.reason(),
                 Map.of(
                         "role", stage.role().name(),
                         "status", stage.status().name(),
                         "attemptNo", Integer.toString(stage.attemptNo()),
                         "failedProvider", fallback.failedProvider(),
                         "failedStatus", fallback.failedStatus(),
-                        "activeProvider", fallback.activeProvider()
+                        "activeProvider", fallback.activeProvider(),
+                        "hostDecision", evaluation.decision().name(),
+                        "decisionReason", evaluation.reason(),
+                        "safetyState", providerFallbackSafety(stage, metadata).state().name()
                 ),
                 System.currentTimeMillis()
         ));
+    }
+
+    /**
+     * When the executor already switched providers, Host re-validates capability/risk.
+     * Unsafe silent degradation is rejected (WAITING_POLICY / NEEDS_HUMAN).
+     */
+    private Optional<ProviderFallbackEvaluation> rejectUnsafeProviderFallback(
+            AgentStageRun stage,
+            AgentRole role,
+            RequirementExecutionResult result
+    ) {
+        ProviderMetadata metadata = providerMetadata(result == null ? "" : result.resultJson());
+        ProviderFallbackEvidence fallback = providerFallbackEvidence(metadata);
+        if (fallback.isEmpty()) {
+            return Optional.empty();
+        }
+        ProviderFallbackEvaluation evaluation = providerFallbackPolicy.evaluateWithReason(
+                role,
+                fallback.failedProvider(),
+                fallback.failedStatus(),
+                fallback.activeProvider(),
+                providerFallbackSafety(stage, metadata)
+        );
+        if (evaluation.allowed()) {
+            return Optional.empty();
+        }
+        return Optional.of(evaluation);
+    }
+
+    /**
+     * Resolves host-owned side-effect evidence for a stage provider switch.
+     *
+     * <p>An explicit non-safe declaration always wins and fails closed. When no
+     * declaration is present, the persisted stage idempotency key and positive
+     * attempt number form the bounded clean-attempt invariant used by the
+     * existing delivery executor path.
+     *
+     * @param stage    current stage attempt
+     * @param metadata provider result metadata
+     * @return side-effect safety evidence
+     */
+    private ProviderFallbackSideEffectSafety providerFallbackSafety(
+            AgentStageRun stage,
+            ProviderMetadata metadata
+    ) {
+        if (metadata != null && metadata.sideEffectSafetyDeclared()) {
+            return metadata.sideEffectSafety();
+        }
+        if (stage != null
+                && stage.attemptNo() > 0
+                && !stage.idempotencyKey().isBlank()
+                && !stage.stageRunId().isBlank()) {
+            return ProviderFallbackSideEffectSafety.explicitCleanAttempt(
+                    stage.idempotencyKey(),
+                    stage.stageRunId() + "#attempt-" + stage.attemptNo()
+            );
+        }
+        return ProviderFallbackSideEffectSafety.unknown(
+                "stage attempt marker is missing; provider switch safety cannot be established"
+        );
+    }
+
+    private SafetyMetadata providerFallbackSafetyMetadata(JsonNode root, JsonNode dockerMetadata) {
+        JsonNode safetyNode = firstObject(
+                root.path("providerFallbackSafety"),
+                dockerMetadata.path("providerFallbackSafety"),
+                root.path("sideEffectSafety"),
+                dockerMetadata.path("sideEffectSafety")
+        );
+        if (safetyNode == null) {
+            return SafetyMetadata.undeclared();
+        }
+        ProviderFallbackSideEffectSafety.State state =
+                ProviderFallbackSideEffectSafety.parseState(text(safetyNode.path("state")));
+        String reason = firstNonBlank(
+                text(safetyNode.path("reason")),
+                "provider result declared side-effect fallback state " + state.name()
+        );
+        ProviderFallbackSideEffectSafety safety = new ProviderFallbackSideEffectSafety(
+                state,
+                firstNonBlank(
+                        text(safetyNode.path("operationId")),
+                        text(safetyNode.path("operation"))
+                ),
+                firstNonBlank(
+                        text(safetyNode.path("attemptId")),
+                        text(safetyNode.path("attemptMarker"))
+                ),
+                safetyNode.path("outputReset").asBoolean(false),
+                reason
+        );
+        return new SafetyMetadata(safety, true);
+    }
+
+    private JsonNode firstObject(JsonNode... candidates) {
+        if (candidates == null) {
+            return null;
+        }
+        for (JsonNode candidate : candidates) {
+            if (candidate != null && candidate.isObject()) {
+                return candidate;
+            }
+        }
+        return null;
     }
 
     private ProviderFallbackEvidence providerFallbackEvidence(ProviderMetadata metadata) {
@@ -3022,21 +3179,60 @@ public class RequirementAgentStageOrchestrator {
         return value == null ? "" : value.strip();
     }
 
-    private record ProviderMetadata(String providerName, String providerAttemptsJson) {
+    private record ProviderMetadata(
+            String providerName,
+            String providerAttemptsJson,
+            ProviderFallbackSideEffectSafety sideEffectSafety,
+            boolean sideEffectSafetyDeclared
+    ) {
 
         private ProviderMetadata {
             providerName = safe(providerName);
             providerAttemptsJson = providerAttemptsJson == null || providerAttemptsJson.isBlank()
                     ? "[]"
                     : providerAttemptsJson.strip();
+            sideEffectSafety = sideEffectSafety == null
+                    ? ProviderFallbackSideEffectSafety.unknown(
+                            "provider result did not declare side-effect safety"
+                    )
+                    : sideEffectSafety;
         }
 
         private static ProviderMetadata empty() {
-            return new ProviderMetadata("", "[]");
+            return new ProviderMetadata(
+                    "",
+                    "[]",
+                    ProviderFallbackSideEffectSafety.unknown(
+                            "provider result did not declare side-effect safety"
+                    ),
+                    false
+            );
         }
 
         private boolean isEmpty() {
             return providerName.isBlank() && "[]".equals(providerAttemptsJson);
+        }
+    }
+
+    private record SafetyMetadata(
+            ProviderFallbackSideEffectSafety safety,
+            boolean declared
+    ) {
+        private SafetyMetadata {
+            safety = safety == null
+                    ? ProviderFallbackSideEffectSafety.unknown(
+                            "provider result did not declare side-effect safety"
+                    )
+                    : safety;
+        }
+
+        private static SafetyMetadata undeclared() {
+            return new SafetyMetadata(
+                    ProviderFallbackSideEffectSafety.unknown(
+                            "provider result did not declare side-effect safety"
+                    ),
+                    false
+            );
         }
     }
 
