@@ -19,9 +19,33 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.wish.rd.exec.repair.code.model.CreatePullRequestCommand;
+import com.wish.rd.exec.repair.code.model.FindBranchHeadCommand;
+import com.wish.rd.exec.repair.code.model.FindOpenPullRequestCommand;
 import com.wish.rd.exec.repair.code.model.PullRequestResult;
 
 class CodePlatformPortContractTest {
+
+    @Test
+    void shouldRejectBlankRequiredFindOpenPullRequestFields() {
+        assertThrows(IllegalArgumentException.class, () ->
+                new FindOpenPullRequestCommand(" ", "order", "main", "requirement/task-1"));
+        assertThrows(IllegalArgumentException.class, () ->
+                new FindOpenPullRequestCommand("acme", "", "main", "requirement/task-1"));
+        assertThrows(IllegalArgumentException.class, () ->
+                new FindOpenPullRequestCommand("acme", "order", null, "requirement/task-1"));
+        assertThrows(IllegalArgumentException.class, () ->
+                new FindOpenPullRequestCommand("acme", "order", "main", "\t"));
+    }
+
+    @Test
+    void shouldRejectBlankRequiredFindBranchHeadFields() {
+        assertThrows(IllegalArgumentException.class, () ->
+                new FindBranchHeadCommand(" ", "order", "requirement/task-1"));
+        assertThrows(IllegalArgumentException.class, () ->
+                new FindBranchHeadCommand("acme", "", "requirement/task-1"));
+        assertThrows(IllegalArgumentException.class, () ->
+                new FindBranchHeadCommand("acme", "order", null));
+    }
 
     @Test
     void shouldRejectBlankRequiredCommandFields() {

@@ -3,7 +3,10 @@ package com.wish.rd.bootstrap.github.impl;
 import com.wish.rd.bootstrap.github.GitHubCodePlatformProperties;
 
 import com.wish.rd.exec.repair.code.CodePlatformPort;
+import com.wish.rd.exec.repair.code.model.BranchHeadResult;
 import com.wish.rd.exec.repair.code.model.CreatePullRequestCommand;
+import com.wish.rd.exec.repair.code.model.FindBranchHeadCommand;
+import com.wish.rd.exec.repair.code.model.FindOpenPullRequestCommand;
 import com.wish.rd.exec.repair.code.model.PullRequestResult;
 import com.wish.rd.engine.merge.model.PullRequestMergeStatus;
 import com.wish.rd.engine.merge.PullRequestMergeStatusPort;
@@ -11,6 +14,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * 默认 GitHub mock 适配器，供本地和测试环境在无 GitHub 凭据时保持可启动。
@@ -50,6 +54,22 @@ public class MockGitHubCodePlatformAdapter implements CodePlatformPort, PullRequ
                         "repository", repository
                 )
         );
+    }
+
+    @Override
+    public Optional<PullRequestResult> findOpenPullRequest(FindOpenPullRequestCommand command) {
+        if (command == null) {
+            throw new IllegalArgumentException("command must not be null");
+        }
+        return Optional.empty();
+    }
+
+    @Override
+    public Optional<BranchHeadResult> findBranchHead(FindBranchHeadCommand command) {
+        if (command == null) {
+            throw new IllegalArgumentException("command must not be null");
+        }
+        return Optional.empty();
     }
 
     @Override

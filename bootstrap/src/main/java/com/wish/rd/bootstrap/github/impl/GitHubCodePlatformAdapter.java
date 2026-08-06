@@ -8,7 +8,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wish.rd.engine.merge.model.PullRequestMergeStatus;
 import com.wish.rd.engine.merge.PullRequestMergeStatusPort;
 import com.wish.rd.exec.repair.code.CodePlatformPort;
+import com.wish.rd.exec.repair.code.model.BranchHeadResult;
 import com.wish.rd.exec.repair.code.model.CreatePullRequestCommand;
+import com.wish.rd.exec.repair.code.model.FindBranchHeadCommand;
+import com.wish.rd.exec.repair.code.model.FindOpenPullRequestCommand;
 import com.wish.rd.exec.repair.code.model.PullRequestResult;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -34,6 +37,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -151,6 +155,53 @@ public class GitHubCodePlatformAdapter implements CodePlatformPort, PullRequestM
             throw new IllegalStateException("GitHub get pull request failed with status " + response.statusCode());
         }
         return toPullRequestMergeStatus(pullRequestUrl, parsed, response.body());
+    }
+
+    @Override
+    public Optional<PullRequestResult> findOpenPullRequest(FindOpenPullRequestCommand command) {
+        if (command == null) {
+            throw new IllegalArgumentException("command must not be null");
+        }
+        if (!properties.isRepositoryAllowed(command.repoOwner(), command.repoName())) {
+            throw new IllegalArgumentException(
+                    "repository is not allowlisted: " + command.repoOwner() + "/" + command.repoName());
+        }
+        properties.validateForRealAdapter();
+        if (properties.getAuthMode() == GitHubCodePlatformProperties.AuthMode.GH_CLI_LOCAL_SMOKE) {
+            return findOpenPullRequestWithGhCli(command);
+        }
+        GitHubHttpRequest request = findOpenPullRequestHttpRequest(command, authorizationHeader());
+        GitHubHttpResponse response = sender.send(request);
+        if (response.statusCode() < 200 || response.statusCode() >= 300) {
+            throw new IllegalStateException(
+                    "GitHub list open pull requests failed with status " + response.statusCode());
+        }
+        return toOpenPullRequestResult(command, response.body());
+    }
+
+    @Override
+    public Optional<BranchHeadResult> findBranchHead(FindBranchHeadCommand command) {
+        if (command == null) {
+            throw new IllegalArgumentException("command must not be null");
+        }
+        if (!properties.isRepositoryAllowed(command.repoOwner(), command.repoName())) {
+            throw new IllegalArgumentException(
+                    "repository is not allowlisted: " + command.repoOwner() + "/" + command.repoName());
+        }
+        properties.validateForRealAdapter();
+        if (properties.getAuthMode() == GitHubCodePlatformProperties.AuthMode.GH_CLI_LOCAL_SMOKE) {
+            return findBranchHeadWithGhCli(command);
+        }
+        GitHubHttpRequest request = findBranchHeadHttpRequest(command, authorizationHeader());
+        GitHubHttpResponse response = sender.send(request);
+        if (response.statusCode() == 404) {
+            return Optional.empty();
+        }
+        if (response.statusCode() < 200 || response.statusCode() >= 300) {
+            throw new IllegalStateException(
+                    "GitHub get branch head failed with status " + response.statusCode());
+        }
+        return toBranchHeadResult(command, response.body());
     }
 
     private GitHubHttpRequest createPullRequestHttpRequest(CreatePullRequestCommand command, String authorizationHeader) {
@@ -276,6 +327,137 @@ public class GitHubCodePlatformAdapter implements CodePlatformPort, PullRequestM
             throw new IllegalStateException("GitHub App privateKeyRef resolved to unsupported private key format");
         }
         return KeyFactory.getInstance("RSA").generatePrivate(new PKCS8EncodedKeySpec(privateKeyDer));
+    }
+
+    private GitHubHttpRequest findOpenPullRequestHttpRequest(
+            FindOpenPullRequestCommand command,
+            String authorizationHeader
+    ) {
+        String head = command.repoOwner() + ":" + command.workBranch();
+        String query = "state=open"
+                + "&head=" + URLEncoder.encode(head, StandardCharsets.UTF_8)
+                + "&base=" + URLEncoder.encode(command.baseBranch(), StandardCharsets.UTF_8)
+                + "&per_page=5";
+        return new GitHubHttpRequest(
+                "GET",
+                apiUrl("/repos/%s/%s/pulls?%s".formatted(
+                        path(command.repoOwner()),
+                        path(command.repoName()),
+                        query
+                )),
+                headers(authorizationHeader),
+                ""
+        );
+    }
+
+    private Optional<PullRequestResult> findOpenPullRequestWithGhCli(FindOpenPullRequestCommand command) {
+        String head = command.repoOwner() + ":" + command.workBranch();
+        GitHubCliResult result = cliRunner.run(List.of(
+                properties.getGhCliCommand(),
+                "api",
+                "repos/%s/%s/pulls?state=open&head=%s&base=%s&per_page=5".formatted(
+                        command.repoOwner(),
+                        command.repoName(),
+                        head,
+                        command.baseBranch()
+                ),
+                "--method",
+                "GET"
+        ));
+        ensureSuccessfulCliResult("list open pulls", result);
+        return toOpenPullRequestResult(command, result.stdout());
+    }
+
+    private GitHubHttpRequest findBranchHeadHttpRequest(
+            FindBranchHeadCommand command,
+            String authorizationHeader
+    ) {
+        // path() percent-encodes slashes so feature/x becomes feature%2Fx in the URL path.
+        return new GitHubHttpRequest(
+                "GET",
+                apiUrl("/repos/%s/%s/git/ref/heads/%s".formatted(
+                        path(command.repoOwner()),
+                        path(command.repoName()),
+                        path(command.branch())
+                )),
+                headers(authorizationHeader),
+                ""
+        );
+    }
+
+    private Optional<BranchHeadResult> findBranchHeadWithGhCli(FindBranchHeadCommand command) {
+        String encodedBranch = path(command.branch());
+        GitHubCliResult result = cliRunner.run(List.of(
+                properties.getGhCliCommand(),
+                "api",
+                "repos/%s/%s/git/ref/heads/%s".formatted(
+                        command.repoOwner(),
+                        command.repoName(),
+                        encodedBranch
+                ),
+                "--method",
+                "GET"
+        ));
+        if (result.exitCode() != 0) {
+            String stderr = result.stderr() == null ? "" : result.stderr().toLowerCase();
+            if (stderr.contains("404") || stderr.contains("not found")) {
+                return Optional.empty();
+            }
+            ensureSuccessfulCliResult("get branch head", result);
+        }
+        return toBranchHeadResult(command, result.stdout());
+    }
+
+    private Optional<BranchHeadResult> toBranchHeadResult(FindBranchHeadCommand command, String body) {
+        try {
+            JsonNode root = objectMapper.readTree(body == null || body.isBlank() ? "{}" : body);
+            String sha = root.path("object").path("sha").asText("");
+            if (sha.isBlank()) {
+                return Optional.empty();
+            }
+            return Optional.of(new BranchHeadResult(
+                    sha,
+                    Map.of(
+                            "provider", "github",
+                            "repository", command.repoOwner() + "/" + command.repoName(),
+                            "branch", command.branch(),
+                            "ref", root.path("ref").asText(""),
+                            "source", "branch-head-lookup"
+                    )
+            ));
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("failed to parse GitHub branch head response", exception);
+        }
+    }
+
+    private Optional<PullRequestResult> toOpenPullRequestResult(FindOpenPullRequestCommand command, String body) {
+        try {
+            JsonNode root = objectMapper.readTree(body == null || body.isBlank() ? "[]" : body);
+            if (!root.isArray() || root.isEmpty()) {
+                return Optional.empty();
+            }
+            JsonNode first = root.get(0);
+            String url = first.path("html_url").asText("");
+            String number = first.path("number").asText("");
+            if (url.isBlank() || number.isBlank()) {
+                return Optional.empty();
+            }
+            String headSha = first.path("head").path("sha").asText("");
+            String prBody = first.path("body").asText("");
+            return Optional.of(new PullRequestResult(
+                    url,
+                    number,
+                    Map.of(
+                            "provider", "github",
+                            "repository", command.repoOwner() + "/" + command.repoName(),
+                            "headSha", headSha,
+                            "body", prBody,
+                            "source", "open-pull-lookup"
+                    )
+                ));
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("failed to parse GitHub open pull request list response", exception);
+        }
     }
 
     private PullRequestResult toPullRequestResult(CreatePullRequestCommand command, String body) {

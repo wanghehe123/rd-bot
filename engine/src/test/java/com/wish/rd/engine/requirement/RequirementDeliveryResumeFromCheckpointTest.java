@@ -9,9 +9,20 @@ import com.wish.rd.engine.agent.model.AgentRole;
 import com.wish.rd.engine.agent.model.AgentStageArtifact;
 import com.wish.rd.engine.agent.model.AgentStageRun;
 import com.wish.rd.engine.agent.model.AgentStageStatus;
+import com.wish.rd.engine.requirement.model.RequirementBranchPublication;
 import com.wish.rd.engine.requirement.model.RequirementDeliveryResult;
 import com.wish.rd.engine.requirement.model.RequirementDeliveryReviewResult;
 import com.wish.rd.engine.requirement.model.RequirementPullRequestPublication;
+import com.wish.rd.engine.requirement.publication.RequirementOperationId;
+import com.wish.rd.engine.requirement.publication.RequirementPublicationLedger;
+import com.wish.rd.engine.requirement.publication.RequirementPublicationPrepareCommand;
+import com.wish.rd.engine.requirement.publication.RequirementPublicationReconcilePort;
+import com.wish.rd.engine.requirement.publication.RequirementPublicationReconcilePort.BranchHeadQuery;
+import com.wish.rd.engine.requirement.publication.RequirementPublicationReconcilePort.MatchedOpenPullRequest;
+import com.wish.rd.engine.requirement.publication.RequirementPublicationReconcilePort.ReconcileQuery;
+import com.wish.rd.engine.requirement.publication.impl.InMemoryRequirementPublicationStore;
+import com.wish.rd.engine.requirement.publication.model.RequirementPublication;
+import com.wish.rd.engine.requirement.publication.model.RequirementPublicationStatus;
 import com.wish.rd.engine.requirement.review.AiDeliveryReviewEngine;
 import com.wish.rd.engine.requirement.review.AiReviewModelPort;
 import com.wish.rd.engine.requirement.review.AiReviewResultValidator;
@@ -41,6 +52,7 @@ import org.junit.jupiter.api.Test;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.List;
+import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -182,6 +194,541 @@ class RequirementDeliveryResumeFromCheckpointTest {
                 "repeated PR retry must replace the old publication snapshot instead of duplicating JSON keys");
     }
 
+    @Test
+    void resumePullRequestPublicationReusesExistingPreparedPublication() {
+        AtomicLong now = new AtomicLong(1_784_000_000_000L);
+        SnowflakeIdGenerator ids = new SnowflakeIdGenerator(1, 1, now::getAndIncrement);
+        InMemoryRdTaskStore taskStore = new InMemoryRdTaskStore();
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                taskStore, new InMemoryRdTaskStatusEventStore(), ids);
+        InMemoryTaskMaterialStore materials = new InMemoryTaskMaterialStore();
+        String patchSha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        RdRequirementTask task = recoveringTaskWithCandidatePatch(patchSha);
+        taskStore.saveRequirementTask(task);
+        materials.save(material(task.taskId()));
+        String workBranch = "requirement/" + task.taskId();
+        String operationId = RequirementOperationId.of(task.taskId(), task.baseBranch(), workBranch, patchSha);
+        InMemoryRequirementPublicationStore publicationStore = new InMemoryRequirementPublicationStore();
+        RequirementPublicationLedger ledger = new RequirementPublicationLedger(publicationStore);
+        RequirementPublication seeded = ledger.prepare(new RequirementPublicationPrepareCommand(
+                operationId, task.taskId(), "stage-seed", task.baseBranch(), workBranch, patchSha));
+        AtomicInteger publisherCalls = new AtomicInteger();
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry, materials,
+                request -> {
+                    throw new AssertionError("role executor must not run during PR-only retry");
+                },
+                new RequirementContextBuilder(), new RequirementPlanGenerator(),
+                new RuleBasedRequirementPolicyGate(), new AgentStagePlanner(ids::nextIdString),
+                new InMemoryAgentStageRunStore(), new InMemoryAgentStageArtifactStore(), new RoleContextBuilder(),
+                new InMemoryRoleContextPackageStore(), AgentWorkflowAlertSinkPort.noop(),
+                WorkflowExperienceStore.noop(), new RequirementDeliveryReviewer(), command -> {
+                    publisherCalls.incrementAndGet();
+                    return RequirementPullRequestPublication.success(
+                            task.taskId(), "https://github.com/acme/waimai/pull/42", "42", "{}");
+                });
+        InMemoryTaskRetryCheckpointStore checkpoints = new InMemoryTaskRetryCheckpointStore();
+        TaskRetryPoint point = new TaskRetryPoint(task.taskId(), TaskFailurePhase.PR_PUBLICATION,
+                null, "", "", "", "GitHub temporarily unavailable", task.updateTimeEpochMillis());
+        TaskRetryCheckpoint checkpoint = checkpoints.createOrGet(TaskRetryCheckpoint.created(
+                "checkpoint-1", point, 1, "task-1:1:PR_PUBLICATION:", RdTaskStatus.REJECTED, 100L
+        )).checkpoint();
+        checkpoints.transition(checkpoint.checkpointId(), TaskRetryCheckpointStatus.CREATED,
+                TaskRetryCheckpointStatus.DISPATCHED, "", 110L);
+        engine.setTaskRetryCheckpointStore(checkpoints);
+        engine.setPublicationLedger(ledger);
+
+        RequirementDeliveryResult result = engine.submit(task.taskId());
+
+        assertEquals(RdTaskStatus.COMPLETED, result.status());
+        assertEquals(1, publisherCalls.get());
+        RequirementPublication after = publicationStore.findByOperationId(operationId).orElseThrow();
+        assertEquals(seeded.id(), after.id());
+        assertEquals(1, after.version());
+        assertEquals(RequirementPublicationStatus.PREPARED, after.status());
+    }
+
+    @Test
+    void resumePullRequestPublicationReusesConfirmedPullRequestWithoutReplay() {
+        AtomicLong now = new AtomicLong(1_784_000_000_000L);
+        SnowflakeIdGenerator ids = new SnowflakeIdGenerator(1, 1, now::getAndIncrement);
+        InMemoryRdTaskStore taskStore = new InMemoryRdTaskStore();
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                taskStore, new InMemoryRdTaskStatusEventStore(), ids);
+        InMemoryTaskMaterialStore materials = new InMemoryTaskMaterialStore();
+        String patchSha = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+        RdRequirementTask task = recoveringTaskWithCandidatePatch(patchSha);
+        taskStore.saveRequirementTask(task);
+        materials.save(material(task.taskId()));
+        String workBranch = "requirement/" + task.taskId();
+        String operationId = RequirementOperationId.of(task.taskId(), task.baseBranch(), workBranch, patchSha);
+        InMemoryRequirementPublicationStore publicationStore = new InMemoryRequirementPublicationStore();
+        RequirementPublicationLedger ledger = new RequirementPublicationLedger(publicationStore);
+        ledger.prepare(new RequirementPublicationPrepareCommand(
+                operationId, task.taskId(), "stage-seed", task.baseBranch(), workBranch, patchSha));
+        ledger.markBranchConfirmed(operationId, "deadbeef");
+        ledger.markPullRequestConfirmed(operationId, "https://github.com/acme/waimai/pull/77", 77);
+        AtomicInteger publisherCalls = new AtomicInteger();
+        AtomicInteger branchCalls = new AtomicInteger();
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry, materials,
+                request -> {
+                    throw new AssertionError("role executor must not run during PR-only retry");
+                },
+                new RequirementContextBuilder(), new RequirementPlanGenerator(),
+                new RuleBasedRequirementPolicyGate(), new AgentStagePlanner(ids::nextIdString),
+                new InMemoryAgentStageRunStore(), new InMemoryAgentStageArtifactStore(), new RoleContextBuilder(),
+                new InMemoryRoleContextPackageStore(), AgentWorkflowAlertSinkPort.noop(),
+                WorkflowExperienceStore.noop(), new RequirementDeliveryReviewer(), command -> {
+                    publisherCalls.incrementAndGet();
+                    throw new AssertionError("PR publisher must not rerun when ledger already confirmed PR");
+                });
+        engine.setBranchPublisher(command -> {
+            branchCalls.incrementAndGet();
+            throw new AssertionError("branch push must not rerun when ledger already confirmed PR");
+        });
+        InMemoryTaskRetryCheckpointStore checkpoints = new InMemoryTaskRetryCheckpointStore();
+        TaskRetryPoint point = new TaskRetryPoint(task.taskId(), TaskFailurePhase.PR_PUBLICATION,
+                null, "", "", "", "process crashed after PR create", task.updateTimeEpochMillis());
+        TaskRetryCheckpoint checkpoint = checkpoints.createOrGet(TaskRetryCheckpoint.created(
+                "checkpoint-reuse", point, 1, "task-1:1:PR_PUBLICATION:", RdTaskStatus.REJECTED, 100L
+        )).checkpoint();
+        checkpoints.transition(checkpoint.checkpointId(), TaskRetryCheckpointStatus.CREATED,
+                TaskRetryCheckpointStatus.DISPATCHED, "", 110L);
+        engine.setTaskRetryCheckpointStore(checkpoints);
+        engine.setPublicationLedger(ledger);
+
+        RequirementDeliveryResult result = engine.submit(task.taskId());
+
+        assertEquals(RdTaskStatus.COMPLETED, result.status());
+        assertEquals("https://github.com/acme/waimai/pull/77", result.pullRequestUrl());
+        assertEquals(0, publisherCalls.get());
+        assertEquals(0, branchCalls.get());
+        assertEquals(RequirementPublicationStatus.COMMITTED,
+                publicationStore.findByOperationId(operationId).orElseThrow().status());
+        assertTrue(result.resultJson().contains("reusedFromPublicationLedger"));
+    }
+
+    @Test
+    void resumePullRequestPublicationSkipsBranchPushWhenBranchAlreadyConfirmed() {
+        AtomicLong now = new AtomicLong(1_784_000_000_000L);
+        SnowflakeIdGenerator ids = new SnowflakeIdGenerator(1, 1, now::getAndIncrement);
+        InMemoryRdTaskStore taskStore = new InMemoryRdTaskStore();
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                taskStore, new InMemoryRdTaskStatusEventStore(), ids);
+        InMemoryTaskMaterialStore materials = new InMemoryTaskMaterialStore();
+        String patchSha = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+        RdRequirementTask task = recoveringTaskWithCandidatePatch(patchSha);
+        taskStore.saveRequirementTask(task);
+        materials.save(material(task.taskId()));
+        String workBranch = "requirement/" + task.taskId();
+        String operationId = RequirementOperationId.of(task.taskId(), task.baseBranch(), workBranch, patchSha);
+        InMemoryRequirementPublicationStore publicationStore = new InMemoryRequirementPublicationStore();
+        RequirementPublicationLedger ledger = new RequirementPublicationLedger(publicationStore);
+        ledger.prepare(new RequirementPublicationPrepareCommand(
+                operationId, task.taskId(), "stage-seed", task.baseBranch(), workBranch, patchSha));
+        ledger.markBranchConfirmed(operationId, "branch-sha-1");
+        AtomicInteger publisherCalls = new AtomicInteger();
+        AtomicInteger branchCalls = new AtomicInteger();
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry, materials,
+                request -> {
+                    throw new AssertionError("role executor must not run during PR-only retry");
+                },
+                new RequirementContextBuilder(), new RequirementPlanGenerator(),
+                new RuleBasedRequirementPolicyGate(), new AgentStagePlanner(ids::nextIdString),
+                new InMemoryAgentStageRunStore(), new InMemoryAgentStageArtifactStore(), new RoleContextBuilder(),
+                new InMemoryRoleContextPackageStore(), AgentWorkflowAlertSinkPort.noop(),
+                WorkflowExperienceStore.noop(), new RequirementDeliveryReviewer(), command -> {
+                    publisherCalls.incrementAndGet();
+                    return RequirementPullRequestPublication.success(
+                            task.taskId(), "https://github.com/acme/waimai/pull/88", "88", "{}");
+                });
+        engine.setBranchPublisher(command -> {
+            branchCalls.incrementAndGet();
+            throw new AssertionError("branch push must be skipped when BRANCH_CONFIRMED");
+        });
+        InMemoryTaskRetryCheckpointStore checkpoints = new InMemoryTaskRetryCheckpointStore();
+        TaskRetryPoint point = new TaskRetryPoint(task.taskId(), TaskFailurePhase.PR_PUBLICATION,
+                null, "", "", "", "crash after branch push", task.updateTimeEpochMillis());
+        TaskRetryCheckpoint checkpoint = checkpoints.createOrGet(TaskRetryCheckpoint.created(
+                "checkpoint-branch", point, 1, "task-1:1:PR_PUBLICATION:", RdTaskStatus.REJECTED, 100L
+        )).checkpoint();
+        checkpoints.transition(checkpoint.checkpointId(), TaskRetryCheckpointStatus.CREATED,
+                TaskRetryCheckpointStatus.DISPATCHED, "", 110L);
+        engine.setTaskRetryCheckpointStore(checkpoints);
+        engine.setPublicationLedger(ledger);
+
+        RequirementDeliveryResult result = engine.submit(task.taskId());
+
+        assertEquals(RdTaskStatus.COMPLETED, result.status());
+        assertEquals(0, branchCalls.get());
+        assertEquals(1, publisherCalls.get());
+        assertEquals("https://github.com/acme/waimai/pull/88", result.pullRequestUrl());
+        assertEquals(RequirementPublicationStatus.COMMITTED,
+                publicationStore.findByOperationId(operationId).orElseThrow().status());
+    }
+
+    @Test
+    void resumePullRequestPublicationQueriesPreparedRemoteBranchBeforeReapplyingCandidate() {
+        AtomicLong now = new AtomicLong(1_784_000_000_000L);
+        SnowflakeIdGenerator ids = new SnowflakeIdGenerator(1, 1, now::getAndIncrement);
+        InMemoryRdTaskStore taskStore = new InMemoryRdTaskStore();
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                taskStore, new InMemoryRdTaskStatusEventStore(), ids);
+        InMemoryTaskMaterialStore materials = new InMemoryTaskMaterialStore();
+        String patchSha = "1212121212121212121212121212121212121212121212121212121212121212";
+        RdRequirementTask task = recoveringTaskWithCandidatePatch(patchSha);
+        taskStore.saveRequirementTask(task);
+        materials.save(material(task.taskId()));
+        String workBranch = "requirement/" + task.taskId();
+        String operationId = RequirementOperationId.of(task.taskId(), task.baseBranch(), workBranch, patchSha);
+        InMemoryRequirementPublicationStore publicationStore = new InMemoryRequirementPublicationStore();
+        RequirementPublicationLedger ledger = new RequirementPublicationLedger(publicationStore);
+        ledger.prepare(new RequirementPublicationPrepareCommand(
+                operationId, task.taskId(), "stage-seed", task.baseBranch(), workBranch, patchSha));
+        AtomicInteger publisherCalls = new AtomicInteger();
+        AtomicInteger branchCalls = new AtomicInteger();
+        AtomicInteger branchHeadCalls = new AtomicInteger();
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry, materials,
+                request -> {
+                    throw new AssertionError("role executor must not run during PR-only retry");
+                },
+                new RequirementContextBuilder(), new RequirementPlanGenerator(),
+                new RuleBasedRequirementPolicyGate(), new AgentStagePlanner(ids::nextIdString),
+                new InMemoryAgentStageRunStore(), new InMemoryAgentStageArtifactStore(), new RoleContextBuilder(),
+                new InMemoryRoleContextPackageStore(), AgentWorkflowAlertSinkPort.noop(),
+                WorkflowExperienceStore.noop(), new RequirementDeliveryReviewer(), command -> {
+                    publisherCalls.incrementAndGet();
+                    return RequirementPullRequestPublication.success(
+                            task.taskId(), "https://github.com/acme/waimai/pull/121", "121", "{}");
+                });
+        engine.setBranchPublisher(command -> {
+            branchCalls.incrementAndGet();
+            throw new AssertionError("branch push must not replay after prepared remote branch reconcile");
+        });
+        engine.setPublicationReconciler(new RequirementPublicationReconcilePort() {
+            @Override
+            public Optional<MatchedOpenPullRequest> findMatchingOpenPullRequest(ReconcileQuery query) {
+                return Optional.empty();
+            }
+
+            @Override
+            public RequirementPublicationReconcilePort.RemoteBranchHead resolveRemoteBranchHead(
+                    BranchHeadQuery query
+            ) {
+                branchHeadCalls.incrementAndGet();
+                assertEquals(workBranch, query.workBranch());
+                return new RequirementPublicationReconcilePort.RemoteBranchHead.Present("remote-head-121");
+            }
+        });
+        InMemoryTaskRetryCheckpointStore checkpoints = new InMemoryTaskRetryCheckpointStore();
+        TaskRetryPoint point = new TaskRetryPoint(task.taskId(), TaskFailurePhase.PR_PUBLICATION,
+                null, "", "", "", "crash before publication confirmation", task.updateTimeEpochMillis());
+        TaskRetryCheckpoint checkpoint = checkpoints.createOrGet(TaskRetryCheckpoint.created(
+                "checkpoint-prepared-branch", point, 1, "task-1:1:PR_PUBLICATION:",
+                RdTaskStatus.REJECTED, 100L)).checkpoint();
+        checkpoints.transition(checkpoint.checkpointId(), TaskRetryCheckpointStatus.CREATED,
+                TaskRetryCheckpointStatus.DISPATCHED, "", 110L);
+        engine.setTaskRetryCheckpointStore(checkpoints);
+        engine.setPublicationLedger(ledger);
+
+        RequirementDeliveryResult result = engine.submit(task.taskId());
+
+        assertEquals(RdTaskStatus.COMPLETED, result.status());
+        assertEquals(1, branchHeadCalls.get());
+        assertEquals(0, branchCalls.get());
+        assertEquals(1, publisherCalls.get());
+        assertEquals("https://github.com/acme/waimai/pull/121", result.pullRequestUrl());
+        assertEquals(RequirementPublicationStatus.COMMITTED,
+                publicationStore.findByOperationId(operationId).orElseThrow().status());
+    }
+
+    @Test
+    void resumePullRequestPublicationBlocksWhenWaitingForRemoteReconcile() {
+        AtomicLong now = new AtomicLong(1_784_000_000_000L);
+        SnowflakeIdGenerator ids = new SnowflakeIdGenerator(1, 1, now::getAndIncrement);
+        InMemoryRdTaskStore taskStore = new InMemoryRdTaskStore();
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                taskStore, new InMemoryRdTaskStatusEventStore(), ids);
+        InMemoryTaskMaterialStore materials = new InMemoryTaskMaterialStore();
+        String patchSha = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+        RdRequirementTask task = recoveringTaskWithCandidatePatch(patchSha);
+        taskStore.saveRequirementTask(task);
+        materials.save(material(task.taskId()));
+        String workBranch = "requirement/" + task.taskId();
+        String operationId = RequirementOperationId.of(task.taskId(), task.baseBranch(), workBranch, patchSha);
+        InMemoryRequirementPublicationStore publicationStore = new InMemoryRequirementPublicationStore();
+        RequirementPublicationLedger ledger = new RequirementPublicationLedger(publicationStore);
+        ledger.prepare(new RequirementPublicationPrepareCommand(
+                operationId, task.taskId(), "stage-seed", task.baseBranch(), workBranch, patchSha));
+        ledger.markUnknownRemoteResult(operationId, "GitHub POST timed out");
+        AtomicInteger publisherCalls = new AtomicInteger();
+        AtomicInteger branchCalls = new AtomicInteger();
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry, materials,
+                request -> {
+                    throw new AssertionError("role executor must not run during PR-only retry");
+                },
+                new RequirementContextBuilder(), new RequirementPlanGenerator(),
+                new RuleBasedRequirementPolicyGate(), new AgentStagePlanner(ids::nextIdString),
+                new InMemoryAgentStageRunStore(), new InMemoryAgentStageArtifactStore(), new RoleContextBuilder(),
+                new InMemoryRoleContextPackageStore(), AgentWorkflowAlertSinkPort.noop(),
+                WorkflowExperienceStore.noop(), new RequirementDeliveryReviewer(), command -> {
+                    publisherCalls.incrementAndGet();
+                    throw new AssertionError("PR must not replay while WAIT_RECONCILE");
+                });
+        engine.setBranchPublisher(command -> {
+            branchCalls.incrementAndGet();
+            throw new AssertionError("branch push must not replay while WAIT_RECONCILE");
+        });
+        InMemoryTaskRetryCheckpointStore checkpoints = new InMemoryTaskRetryCheckpointStore();
+        TaskRetryPoint point = new TaskRetryPoint(task.taskId(), TaskFailurePhase.PR_PUBLICATION,
+                null, "", "", "", "GitHub POST timed out", task.updateTimeEpochMillis());
+        TaskRetryCheckpoint checkpoint = checkpoints.createOrGet(TaskRetryCheckpoint.created(
+                "checkpoint-wait", point, 1, "task-1:1:PR_PUBLICATION:", RdTaskStatus.REJECTED, 100L
+        )).checkpoint();
+        checkpoints.transition(checkpoint.checkpointId(), TaskRetryCheckpointStatus.CREATED,
+                TaskRetryCheckpointStatus.DISPATCHED, "", 110L);
+        engine.setTaskRetryCheckpointStore(checkpoints);
+        engine.setPublicationLedger(ledger);
+
+        RequirementDeliveryResult result = engine.submit(task.taskId());
+
+        assertEquals(RdTaskStatus.REJECTED, result.status());
+        assertTrue(result.errorMessage().contains("waiting for remote reconciliation"));
+        assertEquals(0, branchCalls.get());
+        assertEquals(0, publisherCalls.get());
+        assertEquals(RequirementPublicationStatus.UNKNOWN_REMOTE_RESULT,
+                publicationStore.findByOperationId(operationId).orElseThrow().status());
+    }
+
+    @Test
+    void resumePullRequestPublicationReconcilesUnknownWhenOpenPrMatches() {
+        AtomicLong now = new AtomicLong(1_784_000_000_000L);
+        SnowflakeIdGenerator ids = new SnowflakeIdGenerator(1, 1, now::getAndIncrement);
+        InMemoryRdTaskStore taskStore = new InMemoryRdTaskStore();
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                taskStore, new InMemoryRdTaskStatusEventStore(), ids);
+        InMemoryTaskMaterialStore materials = new InMemoryTaskMaterialStore();
+        String patchSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        RdRequirementTask task = recoveringTaskWithCandidatePatch(patchSha);
+        taskStore.saveRequirementTask(task);
+        materials.save(material(task.taskId()));
+        String workBranch = "requirement/" + task.taskId();
+        String operationId = RequirementOperationId.of(task.taskId(), task.baseBranch(), workBranch, patchSha);
+        InMemoryRequirementPublicationStore publicationStore = new InMemoryRequirementPublicationStore();
+        RequirementPublicationLedger ledger = new RequirementPublicationLedger(publicationStore);
+        ledger.prepare(new RequirementPublicationPrepareCommand(
+                operationId, task.taskId(), "stage-seed", task.baseBranch(), workBranch, patchSha));
+        ledger.markBranchConfirmed(operationId, "deadbeef");
+        ledger.markUnknownRemoteResult(operationId, "GitHub POST timed out");
+        AtomicInteger publisherCalls = new AtomicInteger();
+        AtomicInteger branchCalls = new AtomicInteger();
+        AtomicInteger reconcileCalls = new AtomicInteger();
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry, materials,
+                request -> {
+                    throw new AssertionError("role executor must not run during PR-only retry");
+                },
+                new RequirementContextBuilder(), new RequirementPlanGenerator(),
+                new RuleBasedRequirementPolicyGate(), new AgentStagePlanner(ids::nextIdString),
+                new InMemoryAgentStageRunStore(), new InMemoryAgentStageArtifactStore(), new RoleContextBuilder(),
+                new InMemoryRoleContextPackageStore(), AgentWorkflowAlertSinkPort.noop(),
+                WorkflowExperienceStore.noop(), new RequirementDeliveryReviewer(), command -> {
+                    publisherCalls.incrementAndGet();
+                    throw new AssertionError("PR must not replay after reconcile reuse");
+                });
+        engine.setBranchPublisher(command -> {
+            branchCalls.incrementAndGet();
+            throw new AssertionError("branch push must not replay after reconcile");
+        });
+        engine.setPublicationReconciler(new RequirementPublicationReconcilePort() {
+            @Override
+            public Optional<MatchedOpenPullRequest> findMatchingOpenPullRequest(ReconcileQuery query) {
+                reconcileCalls.incrementAndGet();
+                assertEquals(task.taskId(), query.taskId());
+                assertEquals(operationId, query.operationId());
+                return Optional.of(new MatchedOpenPullRequest(
+                        "https://github.com/acme/waimai/pull/91", 91));
+            }
+        });
+        InMemoryTaskRetryCheckpointStore checkpoints = new InMemoryTaskRetryCheckpointStore();
+        TaskRetryPoint point = new TaskRetryPoint(task.taskId(), TaskFailurePhase.PR_PUBLICATION,
+                null, "", "", "", "GitHub POST timed out", task.updateTimeEpochMillis());
+        TaskRetryCheckpoint checkpoint = checkpoints.createOrGet(TaskRetryCheckpoint.created(
+                "checkpoint-reconcile", point, 1, "task-1:1:PR_PUBLICATION:", RdTaskStatus.REJECTED, 100L
+        )).checkpoint();
+        checkpoints.transition(checkpoint.checkpointId(), TaskRetryCheckpointStatus.CREATED,
+                TaskRetryCheckpointStatus.DISPATCHED, "", 110L);
+        engine.setTaskRetryCheckpointStore(checkpoints);
+        engine.setPublicationLedger(ledger);
+
+        RequirementDeliveryResult result = engine.submit(task.taskId());
+
+        assertEquals(RdTaskStatus.COMPLETED, result.status());
+        assertEquals("https://github.com/acme/waimai/pull/91", result.pullRequestUrl());
+        assertEquals(1, reconcileCalls.get());
+        assertEquals(0, branchCalls.get());
+        assertEquals(0, publisherCalls.get());
+        assertEquals(RequirementPublicationStatus.COMMITTED,
+                publicationStore.findByOperationId(operationId).orElseThrow().status());
+        assertTrue(result.resultJson().contains("reusedFromPublicationLedger"));
+    }
+
+    @Test
+    void resumePullRequestPublicationReconcilesUnknownBranchThenCreatesPullRequest() {
+        AtomicLong now = new AtomicLong(1_784_000_000_000L);
+        SnowflakeIdGenerator ids = new SnowflakeIdGenerator(1, 1, now::getAndIncrement);
+        InMemoryRdTaskStore taskStore = new InMemoryRdTaskStore();
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                taskStore, new InMemoryRdTaskStatusEventStore(), ids);
+        InMemoryTaskMaterialStore materials = new InMemoryTaskMaterialStore();
+        String patchSha = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+        RdRequirementTask task = recoveringTaskWithCandidatePatch(patchSha);
+        taskStore.saveRequirementTask(task);
+        materials.save(material(task.taskId()));
+        String workBranch = "requirement/" + task.taskId();
+        String operationId = RequirementOperationId.of(task.taskId(), task.baseBranch(), workBranch, patchSha);
+        InMemoryRequirementPublicationStore publicationStore = new InMemoryRequirementPublicationStore();
+        RequirementPublicationLedger ledger = new RequirementPublicationLedger(publicationStore);
+        ledger.prepare(new RequirementPublicationPrepareCommand(
+                operationId, task.taskId(), "stage-seed", task.baseBranch(), workBranch, patchSha));
+        ledger.markUnknownRemoteResult(operationId, "GitHub push timed out");
+        AtomicInteger publisherCalls = new AtomicInteger();
+        AtomicInteger branchCalls = new AtomicInteger();
+        AtomicInteger branchHeadCalls = new AtomicInteger();
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry, materials,
+                request -> {
+                    throw new AssertionError("role executor must not run during PR-only retry");
+                },
+                new RequirementContextBuilder(), new RequirementPlanGenerator(),
+                new RuleBasedRequirementPolicyGate(), new AgentStagePlanner(ids::nextIdString),
+                new InMemoryAgentStageRunStore(), new InMemoryAgentStageArtifactStore(), new RoleContextBuilder(),
+                new InMemoryRoleContextPackageStore(), AgentWorkflowAlertSinkPort.noop(),
+                WorkflowExperienceStore.noop(), new RequirementDeliveryReviewer(), command -> {
+                    publisherCalls.incrementAndGet();
+                    return RequirementPullRequestPublication.success(
+                            task.taskId(), "https://github.com/acme/waimai/pull/92", "92", "{}");
+                });
+        engine.setBranchPublisher(command -> {
+            branchCalls.incrementAndGet();
+            throw new AssertionError("branch push must not replay after branch-head reconcile");
+        });
+        engine.setPublicationReconciler(new RequirementPublicationReconcilePort() {
+            @Override
+            public Optional<MatchedOpenPullRequest> findMatchingOpenPullRequest(ReconcileQuery query) {
+                return Optional.empty();
+            }
+
+            @Override
+            public Optional<String> findRemoteBranchHead(BranchHeadQuery query) {
+                branchHeadCalls.incrementAndGet();
+                assertEquals(workBranch, query.workBranch());
+                return Optional.of("cafebabe");
+            }
+        });
+        InMemoryTaskRetryCheckpointStore checkpoints = new InMemoryTaskRetryCheckpointStore();
+        TaskRetryPoint point = new TaskRetryPoint(task.taskId(), TaskFailurePhase.PR_PUBLICATION,
+                null, "", "", "", "GitHub push timed out", task.updateTimeEpochMillis());
+        TaskRetryCheckpoint checkpoint = checkpoints.createOrGet(TaskRetryCheckpoint.created(
+                "checkpoint-branch-reconcile", point, 1, "task-1:1:PR_PUBLICATION:", RdTaskStatus.REJECTED, 100L
+        )).checkpoint();
+        checkpoints.transition(checkpoint.checkpointId(), TaskRetryCheckpointStatus.CREATED,
+                TaskRetryCheckpointStatus.DISPATCHED, "", 110L);
+        engine.setTaskRetryCheckpointStore(checkpoints);
+        engine.setPublicationLedger(ledger);
+
+        RequirementDeliveryResult result = engine.submit(task.taskId());
+
+        assertEquals(RdTaskStatus.COMPLETED, result.status());
+        assertEquals("https://github.com/acme/waimai/pull/92", result.pullRequestUrl());
+        assertEquals(1, branchHeadCalls.get());
+        assertEquals(0, branchCalls.get());
+        assertEquals(1, publisherCalls.get());
+        assertEquals(RequirementPublicationStatus.COMMITTED,
+                publicationStore.findByOperationId(operationId).orElseThrow().status());
+    }
+
+    @Test
+    void resumePullRequestPublicationRetriesPushAfterUnknownResetToPrepared() {
+        AtomicLong now = new AtomicLong(1_784_000_000_000L);
+        SnowflakeIdGenerator ids = new SnowflakeIdGenerator(1, 1, now::getAndIncrement);
+        InMemoryRdTaskStore taskStore = new InMemoryRdTaskStore();
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                taskStore, new InMemoryRdTaskStatusEventStore(), ids);
+        InMemoryTaskMaterialStore materials = new InMemoryTaskMaterialStore();
+        String patchSha = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+        RdRequirementTask task = recoveringTaskWithCandidatePatch(patchSha);
+        taskStore.saveRequirementTask(task);
+        materials.save(material(task.taskId()));
+        String workBranch = "requirement/" + task.taskId();
+        String operationId = RequirementOperationId.of(task.taskId(), task.baseBranch(), workBranch, patchSha);
+        InMemoryRequirementPublicationStore publicationStore = new InMemoryRequirementPublicationStore();
+        RequirementPublicationLedger ledger = new RequirementPublicationLedger(publicationStore);
+        ledger.prepare(new RequirementPublicationPrepareCommand(
+                operationId, task.taskId(), "stage-seed", task.baseBranch(), workBranch, patchSha));
+        ledger.markUnknownRemoteResult(operationId, "GitHub push timed out");
+        AtomicInteger publisherCalls = new AtomicInteger();
+        AtomicInteger branchCalls = new AtomicInteger();
+        AtomicInteger branchResolveCalls = new AtomicInteger();
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry, materials,
+                request -> {
+                    throw new AssertionError("role executor must not run during PR-only retry");
+                },
+                new RequirementContextBuilder(), new RequirementPlanGenerator(),
+                new RuleBasedRequirementPolicyGate(), new AgentStagePlanner(ids::nextIdString),
+                new InMemoryAgentStageRunStore(), new InMemoryAgentStageArtifactStore(), new RoleContextBuilder(),
+                new InMemoryRoleContextPackageStore(), AgentWorkflowAlertSinkPort.noop(),
+                WorkflowExperienceStore.noop(), new RequirementDeliveryReviewer(), command -> {
+                    publisherCalls.incrementAndGet();
+                    return RequirementPullRequestPublication.success(
+                            task.taskId(), "https://github.com/acme/waimai/pull/93", "93", "{}");
+                });
+        engine.setBranchPublisher(command -> {
+            branchCalls.incrementAndGet();
+            return RequirementBranchPublication.success(
+                    task.taskId(), "deadbeef", "{}");
+        });
+        engine.setPublicationReconciler(new RequirementPublicationReconcilePort() {
+            @Override
+            public Optional<MatchedOpenPullRequest> findMatchingOpenPullRequest(ReconcileQuery query) {
+                return Optional.empty();
+            }
+
+            @Override
+            public RequirementPublicationReconcilePort.RemoteBranchHead resolveRemoteBranchHead(
+                    BranchHeadQuery query
+            ) {
+                branchResolveCalls.incrementAndGet();
+                return new RequirementPublicationReconcilePort.RemoteBranchHead.Absent();
+            }
+        });
+        InMemoryTaskRetryCheckpointStore checkpoints = new InMemoryTaskRetryCheckpointStore();
+        TaskRetryPoint point = new TaskRetryPoint(task.taskId(), TaskFailurePhase.PR_PUBLICATION,
+                null, "", "", "", "GitHub push timed out", task.updateTimeEpochMillis());
+        TaskRetryCheckpoint checkpoint = checkpoints.createOrGet(TaskRetryCheckpoint.created(
+                "checkpoint-reset-prepared", point, 1, "task-1:1:PR_PUBLICATION:", RdTaskStatus.REJECTED, 100L
+        )).checkpoint();
+        checkpoints.transition(checkpoint.checkpointId(), TaskRetryCheckpointStatus.CREATED,
+                TaskRetryCheckpointStatus.DISPATCHED, "", 110L);
+        engine.setTaskRetryCheckpointStore(checkpoints);
+        engine.setPublicationLedger(ledger);
+
+        RequirementDeliveryResult result = engine.submit(task.taskId());
+
+        assertEquals(RdTaskStatus.COMPLETED, result.status());
+        assertEquals("https://github.com/acme/waimai/pull/93", result.pullRequestUrl());
+        assertEquals(1, branchResolveCalls.get());
+        assertEquals(1, branchCalls.get());
+        assertEquals(1, publisherCalls.get());
+        assertEquals(RequirementPublicationStatus.COMMITTED,
+                publicationStore.findByOperationId(operationId).orElseThrow().status());
+    }
+
     private static RdRequirementTask recoveringTask() {
         return new RdRequirementTask(
                 "task-1", "REQUIREMENT", "ADMIN", "source", "", "P1", RdTaskStatus.RECOVERING,
@@ -193,6 +740,32 @@ class RequirementDeliveryResumeFromCheckpointTest {
                          "deliveryReview":{"approved":true},
                          "pullRequestPublication":{"success":false,"errorMessage":"temporary"}}
                         """,
+                "", "GitHub temporarily unavailable", 10L, 20L, false);
+    }
+
+    private static RdRequirementTask recoveringTaskWithCandidatePatch(String patchSha) {
+        return new RdRequirementTask(
+                "task-1", "REQUIREMENT", "ADMIN", "source", "", "P1", RdTaskStatus.RECOVERING,
+                "订单状态筛选", "project-1", "waimai", "外卖项目",
+                "https://github.com/acme/waimai", "acme", "waimai", "main", "feature/status",
+                "支持状态筛选", "[\"筛选正确\"]", "prompt",
+                """
+                        {"status":"SUCCESS",
+                         "multiAgentStages":[{
+                           "role":"CODING_AGENT",
+                           "success":true,
+                           "candidatePatch":{
+                             "sourceRole":"CODING_AGENT",
+                             "targetRole":"QA_AGENT",
+                             "artifactName":"patch.diff",
+                             "artifactUri":"s3://rd-role-handoffs/private-candidate.patch",
+                             "sha256":"%s",
+                             "bytes":321
+                           }
+                         },{"role":"QA_AGENT","success":true}],
+                         "deliveryReview":{"approved":true},
+                         "pullRequestPublication":{"success":false,"errorMessage":"temporary"}}
+                        """.formatted(patchSha),
                 "", "GitHub temporarily unavailable", 10L, 20L, false);
     }
 

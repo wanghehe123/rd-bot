@@ -279,6 +279,11 @@ ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS token_budget_override BIGINT NOT N
 ALTER TABLE rd_tasks DROP CONSTRAINT IF EXISTS ck_rd_tasks_token_budget_override_non_negative;
 ALTER TABLE rd_tasks ADD CONSTRAINT ck_rd_tasks_token_budget_override_non_negative
     CHECK (token_budget_override >= 0);
+-- WP-4: optimistic concurrency fencing for task status writes (writers not yet fully CAS-wired).
+ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS version BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE rd_tasks DROP CONSTRAINT IF EXISTS ck_rd_tasks_version_non_negative;
+ALTER TABLE rd_tasks ADD CONSTRAINT ck_rd_tasks_version_non_negative
+    CHECK (version >= 0);
 CREATE INDEX IF NOT EXISTS idx_rd_tasks_project ON rd_tasks (project_id, task_type, updated_at);
 
 -- 任务管理：状态事件 append-only 表，承载全链路时间线（含耗时与触发来源）。
@@ -534,3 +539,32 @@ INSERT INTO rd_query_term_mappings (
     (7482000000000000301, NULL, 'GLOBAL', '下单', 'POST /api/orders', 10, TRUE, 'default payment api', now(), now()),
     (7482000000000000302, NULL, 'GLOBAL', '金额', 'orders.amount', 9, TRUE, 'default payment amount field', now(), now())
 ON CONFLICT (id) DO NOTHING;
+
+-- External publication ledger: durable intents for Git branch/PR side effects.
+CREATE TABLE IF NOT EXISTS rd_requirement_publications (
+    id                      VARCHAR(64) PRIMARY KEY,
+    operation_id            VARCHAR(128) NOT NULL,
+    task_id                 BIGINT NOT NULL,
+    stage_run_id            VARCHAR(64) NOT NULL DEFAULT '',
+    status                  VARCHAR(64) NOT NULL,
+    base_branch             VARCHAR(256) NOT NULL,
+    work_branch             VARCHAR(256) NOT NULL,
+    candidate_patch_sha256  VARCHAR(128) NOT NULL,
+    remote_head_sha         VARCHAR(128) NOT NULL DEFAULT '',
+    pull_request_url        TEXT NOT NULL DEFAULT '',
+    pull_request_number     INTEGER NOT NULL DEFAULT 0,
+    version                 INTEGER NOT NULL DEFAULT 1,
+    last_error              TEXT NOT NULL DEFAULT '',
+    next_reconcile_at       TIMESTAMPTZ NULL,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uk_rd_requirement_publications_operation
+    ON rd_requirement_publications (operation_id);
+CREATE INDEX IF NOT EXISTS idx_rd_requirement_publications_task_status
+    ON rd_requirement_publications (task_id, status);
+CREATE INDEX IF NOT EXISTS idx_rd_requirement_publications_reconcile
+    ON rd_requirement_publications (next_reconcile_at)
+    WHERE status = 'UNKNOWN_REMOTE_RESULT';
+

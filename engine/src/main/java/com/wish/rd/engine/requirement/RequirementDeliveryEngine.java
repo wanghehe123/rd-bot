@@ -79,6 +79,15 @@ import com.wish.rd.engine.retry.TaskRetryCheckpointStore;
 import com.wish.rd.engine.retry.model.TaskFailurePhase;
 import com.wish.rd.engine.retry.model.TaskRetryCheckpoint;
 import com.wish.rd.engine.retry.model.TaskRetryCheckpointStatus;
+import com.wish.rd.engine.requirement.publication.RequirementOperationId;
+import com.wish.rd.engine.requirement.publication.RequirementPublicationIntentFactory;
+import com.wish.rd.engine.requirement.publication.RequirementPublicationLedger;
+import com.wish.rd.engine.requirement.publication.RequirementPublicationPrepareCommand;
+import com.wish.rd.engine.requirement.publication.RequirementPublicationReconcilePort;
+import com.wish.rd.engine.requirement.publication.RequirementPublicationReconciliationService;
+import com.wish.rd.engine.requirement.publication.model.RequirementPublication;
+import com.wish.rd.engine.requirement.publication.model.RequirementPublicationReplayDecision;
+import com.wish.rd.engine.requirement.publication.model.RequirementPublicationStatus;
 
 /**
  * 需求交付编排引擎。
@@ -127,6 +136,9 @@ public class RequirementDeliveryEngine {
     private RequirementContextRetrievalRecorder retrievalRecorder;
     private AiDeliveryReviewEngine aiDeliveryReviewEngine;
     private TaskRetryCheckpointStore taskRetryCheckpointStore;
+    private RequirementPublicationLedger publicationLedger;
+    private RequirementPublicationReconcilePort publicationReconciler;
+    private RequirementPublicationReconciliationService publicationReconciliationService;
     private RdProjectTokenBudgetService projectTokenBudgetService;
     private RequirementExecutionProfileResolverPort executionProfileResolver =
             RequirementExecutionProfileResolverPort.unavailable();
@@ -152,6 +164,37 @@ public class RequirementDeliveryEngine {
     @Autowired(required = false)
     void setTaskRetryCheckpointStore(TaskRetryCheckpointStore taskRetryCheckpointStore) {
         this.taskRetryCheckpointStore = taskRetryCheckpointStore;
+    }
+
+    /**
+     * Optional publication ledger. When absent, remote publish behavior is unchanged;
+     * when present, PREPARED intents are recorded before branch/PR side effects.
+     */
+    @Autowired(required = false)
+    public void setPublicationLedger(RequirementPublicationLedger publicationLedger) {
+        this.publicationLedger = publicationLedger;
+        rebuildPublicationReconciliationService();
+    }
+
+    /**
+     * Optional UNKNOWN_REMOTE_RESULT reconciler. When absent, WAIT_RECONCILE remains
+     * a hard block until an operator or later adapter advances the ledger.
+     */
+    @Autowired(required = false)
+    public void setPublicationReconciler(RequirementPublicationReconcilePort publicationReconciler) {
+        this.publicationReconciler = publicationReconciler;
+        rebuildPublicationReconciliationService();
+    }
+
+    private void rebuildPublicationReconciliationService() {
+        if (publicationLedger == null) {
+            this.publicationReconciliationService = null;
+            return;
+        }
+        this.publicationReconciliationService = new RequirementPublicationReconciliationService(
+                publicationLedger,
+                publicationReconciler
+        );
     }
 
     @Autowired(required = false)
@@ -737,7 +780,8 @@ public class RequirementDeliveryEngine {
         // RECOVERING -> WAITING_APPROVAL（恢复后再入审批，依赖状态机边，禁止裸抛）
         // EXECUTING -> FAILED_NEEDS_HUMAN、EXECUTING -> REJECTED
         // VALIDATING -> REJECTED
-        // PR_CREATING -> REJECTED
+        // PR_CREATING -> COMMITTED、PR_CREATING -> REJECTED、PR_CREATING -> FAILED_NEEDS_HUMAN
+        // （远端冲突/marker 不匹配升人工，超时/5xx 仍走 REJECTED+UNKNOWN ledger）
         if (requirementTask.status().name().equals("CREATED")) {
             // CREATED -> MATERIAL_COLLECTING：材料采集阶段开始。
             requirementTask = taskRegistry.markRequirementMaterialCollecting(requirementTask.taskId(), "收集需求材料");
@@ -943,46 +987,45 @@ public class RequirementDeliveryEngine {
         // 补丁即交付（SWE-bench 类）：验收标准明确禁止创建 PR，跳过发布器；
         // 空 PR URL 会让 RepairTaskMergeSyncEngine 静默跳过，不产生同步告警噪音。
         boolean patchOnlyDelivery = isPatchOnlyDelivery(requirementTask);
-        // 复核通过后、建 PR 前，先把已复核补丁提交并推送到工作分支；分支未推送直接建 PR 会 422。
-        if (!patchOnlyDelivery) {
-            String branchError = pushReviewedBranch(requirementTask, reviewedResultJson);
-            if (!branchError.isEmpty()) {
-                publishPullRequestPublicationAlert(requirementTask.taskId(), branchError);
-                RdRequirementTask rejected = taskRegistry.markRequirementRejected(
-                        requirementTask.taskId(),
-                        "pull request publication failed: " + branchError,
-                        reviewedResultJson
-                );
-                return new RequirementDeliveryResult(
-                        rejected.taskId(),
-                        rejected.status(),
-                        "",
-                        rejected.executionResultJson(),
-                        rejected.errorMessage()
-                );
+        RequirementPullRequestPublication publication;
+        if (patchOnlyDelivery) {
+            publication = RequirementPullRequestPublication.success(requirementTask.taskId(), "", "", "{}");
+        } else {
+            preparePublicationIntent(requirementTask, reviewedResultJson);
+            PublicationRemotePlan plan = resolvePublicationRemotePlan(requirementTask, reviewedResultJson);
+            if (plan.blockedReason() != null) {
+                return blockPublication(requirementTask, reviewedResultJson, plan.blockedReason(), plan.needsHuman());
+            }
+            if (plan.reusedPublication() != null) {
+                publication = plan.reusedPublication();
+            } else {
+                if (plan.pushBranch()) {
+                    String branchError = pushReviewedBranch(requirementTask, reviewedResultJson);
+                    if (!branchError.isEmpty()) {
+                        return failPublicationAfterRemoteWrite(
+                                requirementTask,
+                                reviewedResultJson,
+                                branchError,
+                                null
+                        );
+                    }
+                }
+                publication = publishPullRequest(requirementTask, reviewedResultJson);
             }
         }
-        RequirementPullRequestPublication publication = patchOnlyDelivery
-                ? RequirementPullRequestPublication.success(requirementTask.taskId(), "", "", "{}")
-                : publishPullRequest(requirementTask, reviewedResultJson);
         if (!publication.success() || (!patchOnlyDelivery && publication.pullRequestUrl().isBlank())) {
             String reason = publication.errorMessage().isBlank()
                     ? "pull request publication failed"
                     : publication.errorMessage();
-            publishPullRequestPublicationAlert(requirementTask.taskId(), reason);
-            // PR_CREATING -> REJECTED：PR 创建失败则写入拒绝态并回传错误。
-            RdRequirementTask rejected = taskRegistry.markRequirementRejected(
-                    requirementTask.taskId(),
-                    "pull request publication failed: " + reason,
-                    withPullRequestPublicationJson(reviewedResultJson, publication)
+            return failPublicationAfterRemoteWrite(
+                    requirementTask,
+                    reviewedResultJson,
+                    reason,
+                    publication
             );
-            return new RequirementDeliveryResult(
-                    rejected.taskId(),
-                    rejected.status(),
-                    "",
-                    rejected.executionResultJson(),
-                    rejected.errorMessage()
-            );
+        }
+        if (!patchOnlyDelivery) {
+            confirmPublicationPullRequest(requirementTask, reviewedResultJson, publication);
         }
         RequirementExecutionResult reviewedExecutionResult = RequirementExecutionResult.success(
                 executionResult.taskId(),
@@ -996,6 +1039,9 @@ public class RequirementDeliveryEngine {
                 reviewedExecutionResult.pullRequestUrl(),
                 reviewedExecutionResult.resultJson()
         );
+        if (!patchOnlyDelivery) {
+            confirmPublicationCommitted(requirementTask, reviewedResultJson);
+        }
         // COMMITTED -> REPORTING：进入沉淀报告阶段，准备交付经验与归档产物。
         requirementTask = taskRegistry.markRequirementReporting(
                 requirementTask.taskId(),
@@ -1108,35 +1154,46 @@ public class RequirementDeliveryEngine {
         RdRequirementTask publishing = taskRegistry.markRequirementPrCreating(task.taskId(), reviewedResultJson);
         // 补丁即交付：与首次发布同样跳过 PR 发布器（历史 REJECTED 任务 retry 也要能走到完成）
         boolean patchOnlyDelivery = isPatchOnlyDelivery(publishing);
-        // 与首次发布一致：建 PR 前先推送已复核的工作分支（历史 REJECTED 任务 retry 也要能补推）。
-        if (!patchOnlyDelivery) {
-            String branchError = pushReviewedBranch(publishing, reviewedResultJson);
-            if (!branchError.isEmpty()) {
-                publishPullRequestPublicationAlert(task.taskId(), branchError);
-                RdRequirementTask rejected = taskRegistry.markRequirementRejected(
-                        task.taskId(), "pull request publication failed: " + branchError,
-                        reviewedResultJson);
-                return currentResult(rejected);
+        RequirementPullRequestPublication publication;
+        if (patchOnlyDelivery) {
+            publication = RequirementPullRequestPublication.success(publishing.taskId(), "", "", "{}");
+        } else {
+            preparePublicationIntent(publishing, reviewedResultJson);
+            PublicationRemotePlan plan = resolvePublicationRemotePlan(publishing, reviewedResultJson);
+            if (plan.blockedReason() != null) {
+                return blockPublication(publishing, reviewedResultJson, plan.blockedReason(), plan.needsHuman());
+            }
+            if (plan.reusedPublication() != null) {
+                publication = plan.reusedPublication();
+            } else {
+                if (plan.pushBranch()) {
+                    String branchError = pushReviewedBranch(publishing, reviewedResultJson);
+                    if (!branchError.isEmpty()) {
+                        return failPublicationAfterRemoteWrite(
+                                publishing, reviewedResultJson, branchError, null);
+                    }
+                }
+                publication = publishPullRequest(publishing, reviewedResultJson);
             }
         }
-        RequirementPullRequestPublication publication = patchOnlyDelivery
-                ? RequirementPullRequestPublication.success(publishing.taskId(), "", "", "{}")
-                : publishPullRequest(publishing, reviewedResultJson);
         if (!publication.success() || (!patchOnlyDelivery && publication.pullRequestUrl().isBlank())) {
             String reason = publication.errorMessage().isBlank()
                     ? "pull request publication failed"
                     : publication.errorMessage();
-            publishPullRequestPublicationAlert(task.taskId(), reason);
-            RdRequirementTask rejected = taskRegistry.markRequirementRejected(
-                    task.taskId(), "pull request publication failed: " + reason,
-                    withPullRequestPublicationJson(reviewedResultJson, publication));
-            return currentResult(rejected);
+            return failPublicationAfterRemoteWrite(
+                    publishing, reviewedResultJson, reason, publication);
+        }
+        if (!patchOnlyDelivery) {
+            confirmPublicationPullRequest(publishing, reviewedResultJson, publication);
         }
         RequirementExecutionResult published = RequirementExecutionResult.success(
                 task.taskId(), "PR publication retry succeeded", publication.pullRequestUrl(),
                 withPullRequestPublicationJson(reviewedResultJson, publication));
         RdRequirementTask committed = taskRegistry.markRequirementCommitted(
                 task.taskId(), published.pullRequestUrl(), published.resultJson());
+        if (!patchOnlyDelivery) {
+            confirmPublicationCommitted(committed, reviewedResultJson);
+        }
         RdRequirementTask reporting = taskRegistry.markRequirementReporting(
                 committed.taskId(), published.resultJson());
         captureDeliveryExperience(reporting.taskId(), published);
@@ -1600,7 +1657,9 @@ public class RequirementDeliveryEngine {
 
     private boolean needsHumanInterventionResult(RequirementExecutionResult result) {
         String status = aggregateStatus(result == null ? "" : result.resultJson());
-        return "NEEDS_HUMAN".equals(status) || "FAILED_NEEDS_HUMAN".equals(status);
+        return "NEEDS_HUMAN".equals(status)
+                || "FAILED_NEEDS_HUMAN".equals(status)
+                || "WAITING_POLICY".equals(status);
     }
 
     private boolean profileResolutionFailureIsRetryable(RuntimeException exception) {
@@ -1669,13 +1728,428 @@ public class RequirementDeliveryEngine {
                     task.repoName(),
                     task.baseBranch(),
                     workBranch(task),
-                    reviewedResultJson
+                    reviewedResultJson,
+                    publicationOperationId(task, reviewedResultJson)
             ));
         } catch (RuntimeException exception) {
             return RequirementPullRequestPublication.failure(
                     task.taskId(),
                     "pull request publisher exception: " + safe(exception.getMessage())
             );
+        }
+    }
+
+    /**
+     * Records a PREPARED publication intent before any remote branch/PR write.
+     * Missing ledger or missing candidate-patch identity is a no-op so Slice-1
+     * never blocks delivery when the optional ledger is absent.
+     */
+    private void preparePublicationIntent(RdRequirementTask task, String reviewedResultJson) {
+        String operationId = publicationOperationId(task, reviewedResultJson);
+        if (publicationLedger == null || operationId.isBlank()) {
+            return;
+        }
+        String candidatePatchSha256 = RequirementPublicationIntentFactory.candidatePatchSha256(reviewedResultJson);
+        publicationLedger.prepare(new RequirementPublicationPrepareCommand(
+                operationId,
+                task.taskId(),
+                "",
+                task.baseBranch(),
+                workBranch(task),
+                candidatePatchSha256
+        ));
+    }
+
+    /**
+     * Uses the ledger replay decision to skip already-confirmed remote writes,
+     * reuse an existing PR, or block when reconciliation / human review is required.
+     * When the ledger is absent or the operation is unknown, defaults to push+PR.
+     */
+    private PublicationRemotePlan resolvePublicationRemotePlan(RdRequirementTask task, String reviewedResultJson) {
+        String operationId = publicationOperationId(task, reviewedResultJson);
+        if (publicationLedger == null || operationId.isBlank()) {
+            return PublicationRemotePlan.pushThenCreatePullRequest();
+        }
+        boolean preparedBeforeReconcile = publicationLedger.findByOperationId(operationId)
+                .map(snapshot -> snapshot.status() == RequirementPublicationStatus.PREPARED)
+                .orElse(false);
+        maybeReconcileUnknownPublication(task, operationId);
+        if (preparedBeforeReconcile) {
+            String preparedPreflightBlock = preflightPreparedRemoteBranch(task, operationId);
+            if (!preparedPreflightBlock.isBlank()) {
+                return PublicationRemotePlan.block(preparedPreflightBlock, false);
+            }
+        }
+        RequirementPublicationReplayDecision decision = publicationLedger.decideReplay(operationId);
+        return switch (decision) {
+            case ALLOW_PUSH, REUSE_BRANCH -> PublicationRemotePlan.pushThenCreatePullRequest();
+            case ALLOW_CREATE_PULL_REQUEST -> PublicationRemotePlan.createPullRequestOnly();
+            case REUSE_PULL_REQUEST -> {
+                RequirementPublication snapshot = publicationLedger.findByOperationId(operationId).orElse(null);
+                if (snapshot == null || snapshot.pullRequestUrl().isBlank() || snapshot.pullRequestNumber() <= 0) {
+                    yield PublicationRemotePlan.createPullRequestOnly();
+                }
+                yield PublicationRemotePlan.reuse(RequirementPullRequestPublication.success(
+                        task.taskId(),
+                        snapshot.pullRequestUrl(),
+                        Integer.toString(snapshot.pullRequestNumber()),
+                        "{\"reusedFromPublicationLedger\":true}"
+                ));
+            }
+            case WAIT_RECONCILE -> PublicationRemotePlan.block(
+                    "publication is waiting for remote reconciliation; do not replay push/PR",
+                    false
+            );
+            case NEEDS_HUMAN -> PublicationRemotePlan.block(
+                    "publication requires human review before remote replay",
+                    true
+            );
+        };
+    }
+
+    /**
+     * Checks a prepared publication's remote branch before allowing the candidate
+     * patch to be applied again.
+     *
+     * <p>A present remote head is recorded as the existing operation's branch
+     * confirmation and the branch publisher is skipped. The current branch-head
+     * port proves remote branch existence and its tip, but does not prove that
+     * the tip is an exact hash of the candidate patch; that limitation remains
+     * explicit until a provider supplies a stronger operation marker.
+     *
+     * @param task        requirement task being published
+     * @param operationId publication operation identity
+     * @return a reconciliation block reason, or blank when publication may continue
+     */
+    private String preflightPreparedRemoteBranch(RdRequirementTask task, String operationId) {
+        if (publicationReconciler == null) {
+            return "";
+        }
+        RequirementPublication snapshot = publicationLedger.findByOperationId(operationId).orElse(null);
+        if (snapshot == null || snapshot.status() != RequirementPublicationStatus.PREPARED) {
+            return "";
+        }
+        RequirementPublicationReconcilePort.RemoteBranchHead remoteHead;
+        try {
+            remoteHead = publicationReconciler.resolveRemoteBranchHead(
+                    new RequirementPublicationReconcilePort.BranchHeadQuery(
+                            task.repoOwner(),
+                            task.repoName(),
+                            snapshot.workBranch()
+                    )
+            );
+        } catch (RuntimeException exception) {
+            return markPreparedPublicationUnknown(
+                    operationId,
+                    "remote branch preflight failed: " + safe(exception.getMessage())
+            );
+        }
+        if (remoteHead instanceof RequirementPublicationReconcilePort.RemoteBranchHead.Present present
+                && !present.commitSha().isBlank()) {
+            publicationLedger.markBranchConfirmed(operationId, present.commitSha());
+            return "";
+        }
+        if (remoteHead instanceof RequirementPublicationReconcilePort.RemoteBranchHead.Absent) {
+            return "";
+        }
+        return markPreparedPublicationUnknown(
+                operationId,
+                "remote branch preflight could not prove branch presence or absence"
+        );
+    }
+
+    private String markPreparedPublicationUnknown(String operationId, String reason) {
+        try {
+            publicationLedger.markUnknownRemoteResult(operationId, reason);
+        } catch (RuntimeException ignored) {
+            // A concurrent publisher may have already advanced the same operation.
+            RequirementPublication current = publicationLedger.findByOperationId(operationId).orElse(null);
+            if (current != null && current.status() != RequirementPublicationStatus.PREPARED) {
+                return "";
+            }
+        }
+        return "publication is waiting for remote reconciliation; do not replay push/PR";
+    }
+
+    /**
+     * Best-effort recovery for UNKNOWN after ambiguous push/PR via shared reconciliation service.
+     */
+    private void maybeReconcileUnknownPublication(RdRequirementTask task, String operationId) {
+        if (publicationReconciliationService == null) {
+            return;
+        }
+        publicationReconciliationService.reconcileUnknown(
+                operationId,
+                task.taskId(),
+                task.repoOwner(),
+                task.repoName()
+        );
+    }
+
+    private RequirementDeliveryResult blockPublication(
+            RdRequirementTask task,
+            String reviewedResultJson,
+            String reason,
+            boolean needsHuman
+    ) {
+        publishPullRequestPublicationAlert(task.taskId(), reason);
+        if (needsHuman) {
+            RdRequirementTask failed = taskRegistry.markRequirementFailedNeedsHuman(
+                    task.taskId(), reason, reviewedResultJson);
+            return new RequirementDeliveryResult(
+                    failed.taskId(),
+                    failed.status(),
+                    "",
+                    failed.executionResultJson(),
+                    failed.errorMessage()
+            );
+        }
+        RdRequirementTask rejected = taskRegistry.markRequirementRejected(
+                task.taskId(),
+                "pull request publication failed: " + reason,
+                reviewedResultJson
+        );
+        return new RequirementDeliveryResult(
+                rejected.taskId(),
+                rejected.status(),
+                "",
+                rejected.executionResultJson(),
+                rejected.errorMessage()
+        );
+    }
+
+    /**
+     * After an ambiguous remote write (timeout/5xx), mark UNKNOWN_REMOTE_RESULT so
+     * retries wait for reconciliation instead of replaying push/PR.
+     * Marker/identity conflicts escalate to NEEDS_HUMAN instead of blind UNKNOWN.
+     */
+    private RequirementDeliveryResult failPublicationAfterRemoteWrite(
+            RdRequirementTask task,
+            String reviewedResultJson,
+            String reason,
+            RequirementPullRequestPublication publication
+    ) {
+        publishPullRequestPublicationAlert(task.taskId(), reason);
+        String persisted = publication == null
+                ? reviewedResultJson
+                : withPullRequestPublicationJson(reviewedResultJson, publication);
+        if (isPublicationConflictNeedsHuman(reason)) {
+            markPublicationNeedsHuman(task, reviewedResultJson, reason);
+            RdRequirementTask failed = taskRegistry.markRequirementFailedNeedsHuman(
+                    task.taskId(),
+                    "pull request publication failed: " + reason,
+                    persisted
+            );
+            return new RequirementDeliveryResult(
+                    failed.taskId(),
+                    failed.status(),
+                    "",
+                    failed.executionResultJson(),
+                    failed.errorMessage()
+            );
+        }
+        if (isAmbiguousRemoteFailure(reason)) {
+            markPublicationUnknownRemoteResult(task, reviewedResultJson, reason);
+        }
+        RdRequirementTask rejected = taskRegistry.markRequirementRejected(
+                task.taskId(),
+                "pull request publication failed: " + reason,
+                persisted
+        );
+        return new RequirementDeliveryResult(
+                rejected.taskId(),
+                rejected.status(),
+                "",
+                rejected.executionResultJson(),
+                rejected.errorMessage()
+        );
+    }
+
+    private void markPublicationNeedsHuman(
+            RdRequirementTask task,
+            String reviewedResultJson,
+            String reason
+    ) {
+        if (publicationLedger == null) {
+            return;
+        }
+        String operationId = publicationOperationId(task, reviewedResultJson);
+        if (operationId.isBlank()) {
+            return;
+        }
+        try {
+            publicationLedger.markNeedsHuman(operationId, reason);
+        } catch (RuntimeException ignored) {
+            // Optional ledger must never hide the original remote failure.
+        }
+    }
+
+    private void markPublicationUnknownRemoteResult(
+            RdRequirementTask task,
+            String reviewedResultJson,
+            String reason
+    ) {
+        if (publicationLedger == null) {
+            return;
+        }
+        String operationId = publicationOperationId(task, reviewedResultJson);
+        if (operationId.isBlank()) {
+            return;
+        }
+        try {
+            publicationLedger.markUnknownRemoteResult(operationId, reason);
+        } catch (RuntimeException ignored) {
+            // Optional ledger must never hide the original remote failure.
+        }
+    }
+
+    private static boolean isPublicationConflictNeedsHuman(String reason) {
+        String normalized = safe(reason).toLowerCase(Locale.ROOT);
+        return normalized.contains("markers do not match")
+                || normalized.contains("conflicting open pull request")
+                || normalized.contains("multiple open pull requests");
+    }
+
+    private static boolean isAmbiguousRemoteFailure(String reason) {
+        String normalized = safe(reason).toLowerCase(Locale.ROOT);
+        if (normalized.isBlank()) {
+            return false;
+        }
+        return normalized.contains("timeout")
+                || normalized.contains("timed out")
+                || normalized.contains("connection reset")
+                || normalized.contains("connection refused")
+                || normalized.contains("temporarily unavailable")
+                || normalized.contains("503")
+                || normalized.contains("502")
+                || normalized.contains("504")
+                || normalized.contains("500 ")
+                || normalized.endsWith(" 500")
+                || normalized.contains("status 5");
+    }
+
+    /**
+     * Advances PREPARED → BRANCH_CONFIRMED after a successful non-skipped push.
+     * Skipped publishers and blank commit SHAs leave the ledger untouched.
+     */
+    private void confirmPublicationBranch(
+            RdRequirementTask task,
+            String reviewedResultJson,
+            RequirementBranchPublication branch
+    ) {
+        if (publicationLedger == null || branch == null || branch.skipped() || branch.commitSha().isBlank()) {
+            return;
+        }
+        String operationId = publicationOperationId(task, reviewedResultJson);
+        if (operationId.isBlank()) {
+            return;
+        }
+        publicationLedger.markBranchConfirmed(operationId, branch.commitSha());
+    }
+
+    private String publicationOperationId(RdRequirementTask task, String reviewedResultJson) {
+        if (task == null) {
+            return "";
+        }
+        String candidatePatchSha256 = RequirementPublicationIntentFactory.candidatePatchSha256(reviewedResultJson);
+        if (candidatePatchSha256.isBlank()) {
+            return "";
+        }
+        return RequirementOperationId.of(
+                task.taskId(),
+                task.baseBranch(),
+                workBranch(task),
+                candidatePatchSha256
+        );
+    }
+
+    /**
+     * Advances BRANCH_CONFIRMED → PR_CONFIRMED after a successful PR create.
+     * Leaves PREPARED alone when branch push was skipped (no remote head), so
+     * the optional ledger never blocks delivery.
+     */
+    private void confirmPublicationPullRequest(
+            RdRequirementTask task,
+            String reviewedResultJson,
+            RequirementPullRequestPublication publication
+    ) {
+        if (publicationLedger == null || publication == null || publication.pullRequestUrl().isBlank()) {
+            return;
+        }
+        String operationId = publicationOperationId(task, reviewedResultJson);
+        if (operationId.isBlank()) {
+            return;
+        }
+        int pullRequestNumber = parsePullRequestNumber(publication.pullRequestNumber());
+        if (pullRequestNumber <= 0) {
+            return;
+        }
+        boolean branchConfirmed = publicationLedger.findByOperationId(operationId)
+                .map(snapshot -> snapshot.status() == RequirementPublicationStatus.BRANCH_CONFIRMED)
+                .orElse(false);
+        if (!branchConfirmed) {
+            return;
+        }
+        publicationLedger.markPullRequestConfirmed(
+                operationId,
+                publication.pullRequestUrl(),
+                pullRequestNumber
+        );
+    }
+
+    /**
+     * Advances PR_CONFIRMED → COMMITTED after the task snapshot records the PR.
+     * No-ops unless the ledger already confirmed the pull request.
+     */
+    private void confirmPublicationCommitted(RdRequirementTask task, String reviewedResultJson) {
+        if (publicationLedger == null) {
+            return;
+        }
+        String operationId = publicationOperationId(task, reviewedResultJson);
+        if (operationId.isBlank()) {
+            return;
+        }
+        boolean prConfirmed = publicationLedger.findByOperationId(operationId)
+                .map(snapshot -> snapshot.status() == RequirementPublicationStatus.PR_CONFIRMED)
+                .orElse(false);
+        if (!prConfirmed) {
+            return;
+        }
+        publicationLedger.markCommitted(operationId);
+    }
+
+    private static int parsePullRequestNumber(String pullRequestNumber) {
+        String normalized = safe(pullRequestNumber);
+        if (normalized.isBlank()) {
+            return 0;
+        }
+        try {
+            return Integer.parseInt(normalized);
+        } catch (NumberFormatException ignored) {
+            return 0;
+        }
+    }
+
+    private record PublicationRemotePlan(
+            boolean pushBranch,
+            RequirementPullRequestPublication reusedPublication,
+            String blockedReason,
+            boolean needsHuman
+    ) {
+        private static PublicationRemotePlan pushThenCreatePullRequest() {
+            return new PublicationRemotePlan(true, null, null, false);
+        }
+
+        private static PublicationRemotePlan createPullRequestOnly() {
+            return new PublicationRemotePlan(false, null, null, false);
+        }
+
+        private static PublicationRemotePlan reuse(RequirementPullRequestPublication publication) {
+            return new PublicationRemotePlan(false, publication, null, false);
+        }
+
+        private static PublicationRemotePlan block(String reason, boolean needsHuman) {
+            return new PublicationRemotePlan(false, null, reason, needsHuman);
         }
     }
 
@@ -1702,6 +2176,7 @@ public class RequirementDeliveryEngine {
             if (!branch.success()) {
                 return branch.errorMessage().isBlank() ? "work branch push failed" : branch.errorMessage();
             }
+            confirmPublicationBranch(task, reviewedResultJson, branch);
             return "";
         } catch (RuntimeException exception) {
             return "work branch push exception: " + safe(exception.getMessage());
@@ -2742,6 +3217,7 @@ public class RequirementDeliveryEngine {
                     - manifest.json 的 artifact path 只能以 "qa-evidence/" 开头；不要在 manifest 中列出 patch.diff、test.log 或任何 qa-evidence/ 以外的文件。
                     - PRODUCT_DEFECT 或 REGRESSION 失败必须建议退回 CODING_AGENT；环境、鉴权、QA 基础设施、需求歧义或 flaky 问题建议 HUMAN。
                     - 最后生成完整性 manifest，再把严格协议写入 /work/output/result.json。
+                    - hostAssertionBundle 是可选字段：只有输入上下文明确要求并提供断言时才回传；若回传，必须包含 `contentHash`（`sha256:` 加 64 位十六进制）和 `specs` 数组，且每个 spec 至少包含 `id`、`assertionType`、`target`、`operator`。Host 会独立校验 hash 并执行当前已注册的断言器；当前版本尚未把 agent 返回的 specs 绑定到 Host 编译/冻结规范，不要声称已经完成 Host 编译。
                     """.strip();
             default -> throw new IllegalArgumentException("unsupported requirement role: " + role);
         };
@@ -2835,7 +3311,21 @@ public class RequirementDeliveryEngine {
                           "evidenceArtifactIds": ["qa-evidence/ 下的真实证据相对路径"]
                         }
                       ],
-                      "evidenceManifestArtifactId": "qa-evidence/manifest.json"
+                      "evidenceManifestArtifactId": "qa-evidence/manifest.json",
+                      "hostAssertionBundle": {
+                        "contentHash": "sha256:<64 位十六进制摘要>",
+                        "specs": [{
+                          "id": "稳定断言 ID",
+                          "sourceCriteriaId": "对应验收标准 ID（可选）",
+                          "action": "GET /相对路径（HTTP_JSONPATH 时）",
+                          "assertionType": "HTTP_STATUS 或 HTTP_JSONPATH 或当前已注册的其他类型",
+                          "target": "断言目标或 JSONPath",
+                          "operator": "eq",
+                          "expected": "期望值",
+                          "timeoutMillis": 1000,
+                          "evidenceRequired": []
+                        }]
+                      }
                     }
                     """.strip();
             default -> throw new IllegalArgumentException("unsupported requirement role: " + role);

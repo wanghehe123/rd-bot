@@ -56,6 +56,14 @@ import com.wish.rd.engine.requirement.model.RequirementPullRequestPublication;
 import com.wish.rd.engine.requirement.model.RequirementPullRequestPublishCommand;
 import com.wish.rd.engine.requirement.model.RequirementBranchPublication;
 import com.wish.rd.engine.requirement.model.RequirementBranchPublishCommand;
+import com.wish.rd.engine.requirement.publication.RequirementOperationId;
+import com.wish.rd.engine.requirement.publication.RequirementPublicationIntentFactory;
+import com.wish.rd.engine.requirement.publication.RequirementPublicationLedger;
+import com.wish.rd.engine.requirement.publication.impl.InMemoryRequirementPublicationStore;
+import com.wish.rd.engine.requirement.publication.model.RequirementPublication;
+import com.wish.rd.engine.requirement.publication.model.RequirementPublicationStatus;
+
+import java.util.concurrent.atomic.AtomicReference;
 
 class RequirementDeliveryEngineTest {
 
@@ -272,6 +280,60 @@ class RequirementDeliveryEngineTest {
     }
 
     @Test
+    void shouldCreatePreparedPublicationBeforeBranchPush() {
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(), new InMemoryRdTaskStatusEventStore(), generator());
+        InMemoryTaskMaterialStore materialStore = new InMemoryTaskMaterialStore();
+        RdRequirementTask task = createRequirementTask(
+                registry,
+                materialStore,
+                "publication-ledger-material",
+                "发布账本意图测试",
+                "推分支前必须先写入 PREPARED",
+                "验证 publication ledger 在远端写之前落库意图。"
+        );
+        List<String> publishOrder = new CopyOnWriteArrayList<>();
+        AgentStageRunStore stageRunStore = new InMemoryAgentStageRunStore();
+        OrderRecordingPullRequestPublisher pullRequestPublisher =
+                new OrderRecordingPullRequestPublisher(publishOrder);
+        RequirementDeliveryEngine engine = happyPathEngineWithCandidatePatch(
+                registry, materialStore, stageRunStore, pullRequestPublisher);
+        InMemoryRequirementPublicationStore publicationStore = new InMemoryRequirementPublicationStore();
+        AtomicReference<RequirementPublicationStatus> statusAtBranchPush = new AtomicReference<>();
+        AtomicReference<String> operationIdAtBranchPush = new AtomicReference<>();
+        engine.setPublicationLedger(new RequirementPublicationLedger(publicationStore));
+        engine.setBranchPublisher(command -> {
+            String patchSha = RequirementPublicationIntentFactory.candidatePatchSha256(command.deliveryResultJson());
+            String operationId = RequirementOperationId.of(
+                    command.taskId(), command.baseBranch(), command.workBranch(), patchSha);
+            RequirementPublication prepared = publicationStore.findByOperationId(operationId).orElseThrow();
+            statusAtBranchPush.set(prepared.status());
+            operationIdAtBranchPush.set(prepared.operationId());
+            publishOrder.add("branch");
+            return RequirementBranchPublication.success(
+                    command.taskId(), "abc123", "{\"provider\":\"recording-branch\"}");
+        });
+
+        RequirementDeliveryResult result = engine.submit(task.taskId());
+
+        assertEquals(RdTaskStatus.COMPLETED, result.status());
+        assertEquals(RequirementPublicationStatus.PREPARED, statusAtBranchPush.get());
+        assertEquals(List.of("branch", "pull-request"), publishOrder);
+        RequirementPublication stored = publicationStore.findByOperationId(operationIdAtBranchPush.get()).orElseThrow();
+        assertEquals(task.taskId(), stored.taskId());
+        assertEquals("main", stored.baseBranch());
+        assertEquals("requirement/" + task.taskId(), stored.workBranch());
+        assertEquals(
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                stored.candidatePatchSha256());
+        assertEquals(RequirementPublicationStatus.COMMITTED, stored.status());
+        assertEquals("abc123", stored.remoteHeadSha());
+        assertEquals("https://github.com/example/waimai/pull/99", stored.pullRequestUrl());
+        assertEquals(99, stored.pullRequestNumber());
+        assertEquals(4, stored.version());
+    }
+
+    @Test
     void shouldRejectRequirementWhenReviewedBranchPushFails() {
         RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
                 new InMemoryRdTaskStore(), new InMemoryRdTaskStatusEventStore(), generator());
@@ -303,11 +365,112 @@ class RequirementDeliveryEngineTest {
         assertEquals(RdTaskStatus.REJECTED, registry.getTask(task.taskId()).status());
     }
 
+    @Test
+    void shouldMarkUnknownRemoteResultWhenBranchPushTimesOut() {
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(), new InMemoryRdTaskStatusEventStore(), generator());
+        InMemoryTaskMaterialStore materialStore = new InMemoryTaskMaterialStore();
+        RdRequirementTask task = createRequirementTask(
+                registry,
+                materialStore,
+                "branch-push-timeout-material",
+                "分支推送超时测试",
+                "远端写超时必须落 UNKNOWN_REMOTE_RESULT",
+                "验证 push timeout 后 ledger 进入 UNKNOWN，避免盲重放。"
+        );
+        List<String> publishOrder = new CopyOnWriteArrayList<>();
+        AgentStageRunStore stageRunStore = new InMemoryAgentStageRunStore();
+        OrderRecordingPullRequestPublisher pullRequestPublisher =
+                new OrderRecordingPullRequestPublisher(publishOrder);
+        RequirementDeliveryEngine engine = happyPathEngineWithCandidatePatch(
+                registry, materialStore, stageRunStore, pullRequestPublisher);
+        InMemoryRequirementPublicationStore publicationStore = new InMemoryRequirementPublicationStore();
+        engine.setPublicationLedger(new RequirementPublicationLedger(publicationStore));
+        engine.setBranchPublisher(new RecordingRequirementBranchPublisher(
+                publishOrder, true, "GitHub push timed out after 30s"));
+
+        RequirementDeliveryResult result = engine.submit(task.taskId());
+
+        assertEquals(RdTaskStatus.REJECTED, result.status());
+        assertTrue(result.errorMessage().contains("timed out"));
+        assertFalse(pullRequestPublisher.invoked(), "超时后不得创建 PR");
+        String patchSha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        String operationId = RequirementOperationId.of(
+                task.taskId(), "main", "requirement/" + task.taskId(), patchSha);
+        RequirementPublication stored = publicationStore.findByOperationId(operationId).orElseThrow();
+        assertEquals(RequirementPublicationStatus.UNKNOWN_REMOTE_RESULT, stored.status());
+        assertTrue(stored.lastError().contains("timed out"));
+    }
+
+    @Test
+    void shouldEscalateNeedsHumanWhenOpenPullRequestMarkersConflict() {
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(), new InMemoryRdTaskStatusEventStore(), generator());
+        InMemoryTaskMaterialStore materialStore = new InMemoryTaskMaterialStore();
+        RdRequirementTask task = createRequirementTask(
+                registry,
+                materialStore,
+                "pr-marker-conflict-material",
+                "PR marker 冲突测试",
+                "冲突 open PR 必须升 NEEDS_HUMAN",
+                "验证 markers mismatch 时任务与 ledger 都进入人工处理，而不是 UNKNOWN 盲等。"
+        );
+        List<String> publishOrder = new CopyOnWriteArrayList<>();
+        AgentStageRunStore stageRunStore = new InMemoryAgentStageRunStore();
+        RequirementPullRequestPublisherPort conflictingPublisher = command -> {
+            publishOrder.add("pull-request");
+            return RequirementPullRequestPublication.failure(
+                    command.taskId(),
+                    "open pull request exists for head/base but taskId/operationId markers do not match"
+            );
+        };
+        RequirementDeliveryEngine engine = happyPathEngineWithCandidatePatch(
+                registry, materialStore, stageRunStore, conflictingPublisher);
+        InMemoryRequirementPublicationStore publicationStore = new InMemoryRequirementPublicationStore();
+        engine.setPublicationLedger(new RequirementPublicationLedger(publicationStore));
+        engine.setBranchPublisher(command -> {
+            publishOrder.add("branch");
+            return RequirementBranchPublication.success(
+                    command.taskId(), "abc123", "{\"provider\":\"recording-branch\"}");
+        });
+
+        RequirementDeliveryResult result = engine.submit(task.taskId());
+
+        assertEquals(RdTaskStatus.FAILED_NEEDS_HUMAN, result.status());
+        assertTrue(result.errorMessage().contains("markers do not match"));
+        assertEquals(List.of("branch", "pull-request"), publishOrder);
+        String patchSha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        String operationId = RequirementOperationId.of(
+                task.taskId(), "main", "requirement/" + task.taskId(), patchSha);
+        RequirementPublication stored = publicationStore.findByOperationId(operationId).orElseThrow();
+        assertEquals(RequirementPublicationStatus.NEEDS_HUMAN, stored.status());
+        assertTrue(stored.lastError().contains("markers do not match"));
+    }
+
     private RequirementDeliveryEngine happyPathEngine(
             RagStreamTaskRegistry registry,
             InMemoryTaskMaterialStore materialStore,
             AgentStageRunStore stageRunStore,
             RequirementPullRequestPublisherPort pullRequestPublisher
+    ) {
+        return happyPathEngine(registry, materialStore, stageRunStore, pullRequestPublisher, false);
+    }
+
+    private RequirementDeliveryEngine happyPathEngineWithCandidatePatch(
+            RagStreamTaskRegistry registry,
+            InMemoryTaskMaterialStore materialStore,
+            AgentStageRunStore stageRunStore,
+            RequirementPullRequestPublisherPort pullRequestPublisher
+    ) {
+        return happyPathEngine(registry, materialStore, stageRunStore, pullRequestPublisher, true);
+    }
+
+    private RequirementDeliveryEngine happyPathEngine(
+            RagStreamTaskRegistry registry,
+            InMemoryTaskMaterialStore materialStore,
+            AgentStageRunStore stageRunStore,
+            RequirementPullRequestPublisherPort pullRequestPublisher,
+            boolean codingWithCandidatePatch
     ) {
         RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
                 registry,
@@ -315,7 +478,12 @@ class RequirementDeliveryEngineTest {
                 request -> {
                     if (request.role() == AgentRole.CODING_AGENT) {
                         return RequirementExecutionResult.success(
-                                request.taskId(), "实现完成", "", codingResultJson(request.role()));
+                                request.taskId(),
+                                "实现完成",
+                                "",
+                                codingWithCandidatePatch
+                                        ? codingResultWithCandidatePatchJson()
+                                        : codingResultJson(request.role()));
                     }
                     return RequirementExecutionResult.success(
                             request.taskId(), request.role().name() + " 完成", "", roleResultJson(request.role()));

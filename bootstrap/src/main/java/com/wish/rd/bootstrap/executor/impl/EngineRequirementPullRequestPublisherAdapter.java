@@ -8,6 +8,7 @@ import com.wish.rd.engine.requirement.model.RequirementPullRequestPublication;
 import com.wish.rd.engine.requirement.RequirementPullRequestPublisherPort;
 import com.wish.rd.exec.repair.code.CodePlatformPort;
 import com.wish.rd.exec.repair.code.model.CreatePullRequestCommand;
+import com.wish.rd.exec.repair.code.model.FindOpenPullRequestCommand;
 import com.wish.rd.exec.repair.code.model.PullRequestResult;
 
 import java.net.URI;
@@ -18,6 +19,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -45,8 +47,34 @@ public final class EngineRequirementPullRequestPublisherAdapter implements Requi
             return RequirementPullRequestPublication.failure("", "publish command must not be null");
         }
         RepositoryParts repository = repositoryParts(command);
-        String prBody = pullRequestBody(command);
-        Map<String, String> requestMetadata = metadata(command, prBody);
+        String operationId = command.operationId();
+        String prBody = pullRequestBody(command, operationId);
+        Map<String, String> requestMetadata = metadata(command, prBody, operationId);
+        Optional<PullRequestResult> existing = codePlatform.findOpenPullRequest(new FindOpenPullRequestCommand(
+                repository.owner(),
+                repository.name(),
+                command.baseBranch(),
+                command.workBranch()
+        ));
+        if (existing.isPresent()) {
+            PullRequestResult openPull = existing.get();
+            String openBody = safe(openPull.metadata().get("body"));
+            if (markersMatch(openBody, command.taskId(), operationId)) {
+                Map<String, String> reused = new LinkedHashMap<>(requestMetadata);
+                reused.put("reusedOpenPullRequest", "true");
+                openPull.metadata().forEach(reused::putIfAbsent);
+                return RequirementPullRequestPublication.success(
+                        command.taskId(),
+                        openPull.pullRequestUrl(),
+                        openPull.pullRequestNumber(),
+                        metadataJson(reused)
+                );
+            }
+            return RequirementPullRequestPublication.failure(
+                    command.taskId(),
+                    "open pull request exists for head/base but taskId/operationId markers do not match"
+            );
+        }
         PullRequestResult result = codePlatform.createPullRequest(new CreatePullRequestCommand(
                 repository.owner(),
                 repository.name(),
@@ -68,9 +96,14 @@ public final class EngineRequirementPullRequestPublisherAdapter implements Requi
         );
     }
 
-    private Map<String, String> metadata(RequirementPullRequestPublishCommand command, String prBody) {
+    private Map<String, String> metadata(
+            RequirementPullRequestPublishCommand command,
+            String prBody,
+            String operationId
+    ) {
         Map<String, String> metadata = new LinkedHashMap<>();
         metadata.put("taskId", command.taskId());
+        metadata.put("operationId", operationId);
         metadata.put("taskType", "REQUIREMENT");
         metadata.put("targetBranch", command.baseBranch());
         metadata.put("workBranch", command.workBranch());
@@ -89,6 +122,10 @@ public final class EngineRequirementPullRequestPublisherAdapter implements Requi
                 Boolean.toString(!command.taskId().isBlank() && safe(prBody).contains(command.taskId()))
         );
         metadata.put(
+                "prBodyContainsOperationId",
+                Boolean.toString(!operationId.isBlank() && safe(prBody).contains(operationId))
+        );
+        metadata.put(
                 "prBodyContainsArtifactLink",
                 Boolean.toString(containsArtifactLink(prBody))
         );
@@ -101,6 +138,17 @@ public final class EngineRequirementPullRequestPublisherAdapter implements Requi
                         && containsArtifactLink(prBody))
         );
         return Map.copyOf(metadata);
+    }
+
+    private boolean markersMatch(String prBody, String taskId, String operationId) {
+        String body = safe(prBody);
+        if (taskId.isBlank() || !body.contains("taskId: " + taskId)) {
+            return false;
+        }
+        if (operationId.isBlank()) {
+            return true;
+        }
+        return body.contains("operationId: " + operationId);
     }
 
     private Map<String, String> publicationMetadata(
@@ -125,7 +173,7 @@ public final class EngineRequirementPullRequestPublisherAdapter implements Requi
         }
     }
 
-    private String pullRequestBody(RequirementPullRequestPublishCommand command) {
+    private String pullRequestBody(RequirementPullRequestPublishCommand command, String operationId) {
         String deliveryResultJson = command.deliveryResultJson();
         JsonNode root;
         try {
@@ -157,6 +205,7 @@ public final class EngineRequirementPullRequestPublisherAdapter implements Requi
 
                 ## Evidence
                 - taskId: %s
+                - operationId: %s
                 - changedFiles: %s
                 - testSummary: %s
 
@@ -168,6 +217,7 @@ public final class EngineRequirementPullRequestPublisherAdapter implements Requi
                 qaEvidence.summary().isBlank() ? "not reported" : qaEvidence.summary(),
                 qaEvidence.acceptanceResultCount(),
                 command.taskId(),
+                operationId.isBlank() ? "not-reported" : operationId,
                 changedFiles.isBlank() ? "not reported" : changedFiles,
                 testSummary.isBlank() ? "not reported" : testSummary,
                 artifactLinkSummary(artifactLinks)
