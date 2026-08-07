@@ -102,6 +102,17 @@ class QaEvidenceBundleValidatorTest {
     }
 
     @Test
+    void shouldAcceptTaskCriteriaWhenQaPrefixesAcLabels() {
+        AgentRoleResultValidation validation = validator.validate(
+                strictQaResultWithPrefixedCriteria(),
+                browserArtifacts(),
+                List.of("current feature", "critical regression")
+        );
+
+        assertTrue(validation.valid(), () -> String.join(", ", validation.errors()));
+    }
+
+    @Test
     void shouldRejectPassedBrowserCommandLogContainingPlaywrightErrors() {
         List<RepairArtifact> evidence = browserEvidenceArtifacts().stream()
                 .map(existing -> existing.name().equals("qa-evidence/commands/current.log")
@@ -246,5 +257,11 @@ class QaEvidenceBundleValidatorTest {
                   "evidenceManifestArtifactId": "qa-evidence/manifest.json"
                 }
                 """;
+    }
+
+    private static String strictQaResultWithPrefixedCriteria() {
+        return strictQaResult()
+                .replace("\"criteria\": \"current feature\"", "\"criteria\": \"AC1: current feature\"")
+                .replace("\"criteria\": \"critical regression\"", "\"criteria\": \"AC2: critical regression\"");
     }
 }

@@ -122,7 +122,7 @@ public final class QaEvidenceBundleValidator {
                     .map(String::strip)
                     .filter(criterion -> !criterion.isBlank())
                     .distinct()
-                    .filter(criterion -> !currentCriteria.contains(criterion))
+                    .filter(criterion -> !coversAcceptanceCriterion(currentCriteria, criterion))
                     .forEach(criterion -> errors.add(
                             "evidence is missing task acceptance criterion: " + criterion));
         }
@@ -154,6 +154,25 @@ public final class QaEvidenceBundleValidator {
             requireReferencedScreenshot("mobile", "mobile-390x844", referencedArtifacts, artifactsByName, errors);
         }
         return new AgentRoleResultValidation(errors.isEmpty(), List.copyOf(errors));
+    }
+
+    /**
+     * Agents often label CURRENT rows as {@code AC1: <criterion>}. Accept exact match,
+     * or a reported CURRENT/REGRESSION criteria string that contains the required criterion.
+     */
+    private static boolean coversAcceptanceCriterion(Set<String> reportedCriteria, String required) {
+        if (reportedCriteria.contains(required)) {
+            return true;
+        }
+        for (String reported : reportedCriteria) {
+            String normalized = reported.replaceFirst("(?i)^AC\\d+\\s*[:：]\\s*", "").strip();
+            if (normalized.equals(required)
+                    || reported.contains(required)
+                    || normalized.contains(required)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static void validatePassedBrowserLog(
