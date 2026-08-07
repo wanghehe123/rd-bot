@@ -641,6 +641,35 @@ class DockerPiAgentExecutorTest {
     }
 
     @Test
+    void shouldNotCollectTransientQaWorkFilesAsDeliveryArtifacts() throws Exception {
+        CapturingRunner runner = new CapturingRunner() {
+            @Override
+            public ContainerRunResult run(ContainerRunRequest request, ContainerOutputListener listener) throws IOException {
+                ContainerRunResult result = super.run(request, listener);
+                Path qaWork = request.outputDirectory().resolve("qa-work/node_modules/pkg");
+                Files.createDirectories(qaWork);
+                Files.writeString(qaWork.resolve("index.js"), "module.exports = {};\n", StandardCharsets.UTF_8);
+                Path evidence = request.outputDirectory().resolve("qa-evidence/commands");
+                Files.createDirectories(evidence);
+                Files.writeString(evidence.resolve("current.log"), "ok\n", StandardCharsets.UTF_8);
+                return result;
+            }
+        };
+        DockerPiAgentExecutor executor = executor(runner, AgentExecutionEventSink.noop(), ignored -> "secret");
+
+        RepairExecutionResult result = executor.execute(new com.wish.rd.exec.repair.runtime.model.AgentRuntimeExecutionRequest(
+                snapshot("snapshot-qa-work", "stage-1", "task-1", AgentRuntimeType.PI, ""),
+                command("task-1", "CODING_AGENT")
+        ));
+
+        assertEquals(RepairExecutionStatus.SUCCESS, result.status(), result.errorMessage());
+        assertFalse(result.artifacts().stream()
+                .anyMatch(artifact -> artifact.name().startsWith("qa-work/")));
+        assertTrue(result.artifacts().stream()
+                .anyMatch(artifact -> artifact.name().equals("qa-evidence/commands/current.log")));
+    }
+
+    @Test
     void shouldKeepIntegrityMetadataForBinaryQaEvidenceArtifacts() throws Exception {
         byte[] fakePng = new byte[]{(byte) 0x89, 'P', 'N', 'G', (byte) 0xFF, (byte) 0xFE, 0x00, 0x01};
         CapturingRunner runner = new CapturingRunner() {

@@ -1336,7 +1336,13 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         try (Stream<Path> paths = Files.walk(outputDirectory)) {
             return paths
                     .filter(path -> Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS))
-                    .filter(path -> !outputDirectory.relativize(path).toString().replace('\\', '/').startsWith("private/"))
+                    // Mirror DockerClaudeCodeExecutor: qa-work/ is ephemeral workspace
+                    // (install trees, Playwright temp). Ingesting it bloated QA resultJson
+                    // past Jackson's default 20MiB string limit and broke delivery review.
+                    .filter(path -> {
+                        String name = artifactName(outputDirectory, path);
+                        return !name.startsWith("private/") && !name.startsWith("qa-work/");
+                    })
                     .sorted(Comparator.comparing(path -> artifactName(outputDirectory, path)))
                     .map(path -> toArtifact(outputDirectory, path))
                     .toList();
