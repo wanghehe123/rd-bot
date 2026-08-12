@@ -45,6 +45,9 @@ const ROLES = new Set([
   "QA_AGENT",
 ]);
 
+const HOST_ASSERTION_SCOPES = new Set(["CURRENT", "REGRESSION"]);
+const HOST_ASSERTION_CONTRACT_FIELDS = new Set(["scope", "contentHash", "version"]);
+
 const CONTEXT_POLICY_MODES = new Set([
   "LEGACY_OBSERVE_ONLY",
   "ROOT_ONLY",
@@ -86,6 +89,12 @@ function validateRequestForProtocol(request, expectedProtocol) {
   }
   if (!ROLES.has(request.role)) {
     throw new Error(`unsupported role: ${request.role}`);
+  }
+  if (request.hostAssertionContracts !== undefined) {
+    if (request.role !== "QA_AGENT") {
+      throw new Error("hostAssertionContracts are only valid for QA_AGENT requests");
+    }
+    validateHostAssertionContracts(request.hostAssertionContracts);
   }
   if (request.repoPath !== "/work/repo" || request.inputPath !== "/work/input"
       || request.outputPath !== "/work/output"
@@ -165,6 +174,41 @@ function validateRequestForProtocol(request, expectedProtocol) {
     }
   }
   return request;
+}
+
+/** Validates the opaque Host-frozen QA assertion contract carried into Pi. */
+export function validateHostAssertionContracts(contracts) {
+  if (!Array.isArray(contracts) || contracts.length !== 2) {
+    throw new Error("hostAssertionContracts must contain CURRENT and REGRESSION contracts");
+  }
+  const scopes = new Set();
+  contracts.forEach((contract, index) => {
+    const prefix = `hostAssertionContracts[${index}]`;
+    if (!isObject(contract)) {
+      throw new Error(`${prefix} must be an object`);
+    }
+    for (const field of Object.keys(contract)) {
+      if (!HOST_ASSERTION_CONTRACT_FIELDS.has(field)) {
+        throw new Error(`${prefix} may contain only scope, contentHash, and version`);
+      }
+    }
+    requireString(contract.scope, `${prefix}.scope`);
+    if (!HOST_ASSERTION_SCOPES.has(contract.scope)) {
+      throw new Error(`${prefix}.scope must be CURRENT or REGRESSION`);
+    }
+    if (scopes.has(contract.scope)) {
+      throw new Error(`hostAssertionContracts contains duplicate ${contract.scope} scope`);
+    }
+    scopes.add(contract.scope);
+    requireSha256Hash(contract.contentHash, `${prefix}.contentHash`);
+    if (!Number.isInteger(contract.version) || contract.version < 1) {
+      throw new Error(`${prefix}.version must be a positive integer`);
+    }
+  });
+  if (!scopes.has("CURRENT") || !scopes.has("REGRESSION")) {
+    throw new Error("hostAssertionContracts must contain CURRENT and REGRESSION contracts");
+  }
+  return contracts;
 }
 
 export function validateContextPolicy(contextPolicy) {

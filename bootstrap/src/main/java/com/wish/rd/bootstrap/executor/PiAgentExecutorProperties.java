@@ -16,7 +16,7 @@ public class PiAgentExecutorProperties {
     public static final String DEFAULT_QA_IMAGE = "rd-bot/pi-agent-qa:local";
     public static final String DEFAULT_NETWORK_MODE = "bridge";
     public static final String DEFAULT_CREDENTIAL_RELAY_URL =
-            "http://host.docker.internal:18080/internal/pi/credential-relay/redeem";
+            "http://host.docker.internal:18080/internal/pi/credential-relay/proxy";
     public static final long DEFAULT_EXECUTION_TIMEOUT_MILLIS = 60L * 60L * 1000L;
     public static final long DEFAULT_BASH_COMMAND_TIMEOUT_MILLIS = 15L * 60L * 1000L;
 
@@ -37,7 +37,8 @@ public class PiAgentExecutorProperties {
     private boolean dynamicStateEnabled = false;
     private int maxInjectedStateBytes = 8192;
     private String requestProtocolVersion = "v1";
-    private boolean credentialRelayEnabled = false;
+    /** Credentialed Pi requests must use the Host-owned relay by default. */
+    private boolean credentialRelayEnabled = true;
     private String credentialRelayUrl = DEFAULT_CREDENTIAL_RELAY_URL;
 
     public String getContextProtocolVersion() {

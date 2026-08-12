@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { lstat, mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { dirname, relative, resolve, sep } from "node:path";
+import { classifyDocsOnlyChange, DOCS_ONLY_DECISION } from "./docs-only.mjs";
 
 // SUCCESS/FAILED/NEED_INFO/UNSAFE are the coding structured-result statuses.
 // PASSED/SKIPPED are accepted for the QA_AGENT role protocol, whose report status
@@ -25,7 +26,7 @@ const QA_FAILURE_CATEGORIES = new Set([
 const QA_RETRY_RECOMMENDATIONS = new Set(["NONE", "CODING_AGENT", "HUMAN"]);
 const QA_SCOPES = new Set(["CURRENT", "REGRESSION"]);
 const QA_DECISION_SOURCES = new Set([
-  "TASK_OVERRIDE", "PROJECT_PROFILE", "REPOSITORY_CONFIG", "AUTO_DETECTION", "NOT_APPLICABLE",
+  "TASK_OVERRIDE", "PROJECT_PROFILE", "REPOSITORY_CONFIG", "AUTO_DETECTION", "NOT_APPLICABLE", "DOCS_ONLY",
 ]);
 const ASSERTION_CONTENT_HASH = /^sha256:[0-9a-f]{64}$/i;
 
@@ -198,7 +199,14 @@ export function validateResult(result) {
  * time. Returns the full error list so the agent can repair every violation
  * with a single follow-up rd_submit_result call.
  */
-export function validateRoleResult(role, result, protocolVersion = CONTEXT_PROTOCOL_VERSION.LEGACY_ENVIRONMENT_NOTES, freshnessContext = {}) {
+export function validateRoleResult(
+  role,
+  result,
+  protocolVersion = CONTEXT_PROTOCOL_VERSION.LEGACY_ENVIRONMENT_NOTES,
+  freshnessContext = {},
+  hostAssertionContracts = [],
+  candidateChangedFiles = undefined,
+) {
   if (!result || typeof result !== "object" || Array.isArray(result)) {
     return ["result must be a JSON object"];
   }
@@ -211,7 +219,7 @@ export function validateRoleResult(role, result, protocolVersion = CONTEXT_PROTO
       case "CODING_AGENT":
         return validateCodingResult(result);
       case "QA_AGENT":
-        return validateQaReport(result);
+        return validateQaReport(result, hostAssertionContracts, candidateChangedFiles);
       default:
         return [];
     }
@@ -293,7 +301,7 @@ function validateCodingResult(result) {
   return errors;
 }
 
-function validateQaReport(result) {
+function validateQaReport(result, hostAssertionContracts = [], candidateChangedFiles = undefined) {
   const errors = [];
   checkEnum(result, "status", QA_STATUSES, errors);
   checkNonBlankString(result, "summary", "summary", errors);
@@ -355,10 +363,22 @@ function validateQaReport(result) {
   });
   if (!currentPresent) errors.push("acceptanceResults must include CURRENT scope evidence");
   if (!regressionPresent) errors.push("acceptanceResults must include REGRESSION scope evidence");
-  if (browser && browser.required === true && browser.performed === true) {
+  // Mirror host QaEvidenceBundleValidator: docs-only is decided from the real changed-file set,
+  // never from the task description. Ambiguity fails closed to the full browser evidence rules.
+  const docsOnlyDecision = browser && browser.decisionSource === "DOCS_ONLY";
+  if (docsOnlyDecision) {
+    const classification = classifyDocsOnlyChange(candidateChangedFiles);
+    if (classification === DOCS_ONLY_DECISION.UNDETERMINABLE) {
+      errors.push("docs-only QA requires a determinable candidate changed-file set; undeterminable changes keep the full browser profile");
+    } else if (classification !== DOCS_ONLY_DECISION.DOCS_ONLY) {
+      errors.push("docs-only QA claim rejected because candidate changes are not docs-only; full browser evidence is required");
+    } else if (browser.required === true || browser.performed === true) {
+      errors.push("docs-only QA requires browserValidation.required=false and performed=false");
+    }
+  } else if (browser && browser.required === true && browser.performed === true) {
     checkBrowserEvidenceReferences(acceptance, errors);
   }
-  errors.push(...validateHostAssertionBundle(result));
+  errors.push(...validateHostAssertionResults(result, hostAssertionContracts, acceptance));
   if (result.status === "PASSED" && nonPassedCount > 0) {
     errors.push("status PASSED requires all acceptanceResults to be PASSED");
   }
@@ -380,37 +400,104 @@ function validateQaReport(result) {
   return errors;
 }
 
-function validateHostAssertionBundle(result) {
-  const bundle = result?.hostAssertionBundle;
-  if (bundle == null) {
-    return [];
-  }
-  if (typeof bundle !== "object" || Array.isArray(bundle)) {
-    return ["hostAssertionBundle must be an object"];
+function validateHostAssertionResults(result, contracts, acceptance) {
+  const errors = [];
+  for (const field of [
+    "hostAssertionBundle",
+    "hostAssertionWorkspace",
+    "hostAssertionBaseUrl",
+    "hostAssertionContext",
+  ]) {
+    if (Object.hasOwn(result, field)) {
+      errors.push(`${field} is not accepted; agents must not control Host assertion execution`);
+    }
   }
 
-  const errors = [];
-  if (typeof bundle.contentHash !== "string" || bundle.contentHash.trim() === "") {
-    errors.push("hostAssertionBundle.contentHash must be a non-blank string");
-  } else if (!ASSERTION_CONTENT_HASH.test(bundle.contentHash.trim())) {
-    errors.push("hostAssertionBundle.contentHash must be a sha256: hex digest");
-  }
-  if (!Array.isArray(bundle.specs)) {
-    errors.push("hostAssertionBundle.specs must be an array");
+  const expected = Array.isArray(contracts) ? contracts : [];
+  const echoes = result?.hostAssertionResults;
+  if (expected.length === 0) {
+    if (Object.hasOwn(result, "hostAssertionResults")) {
+      errors.push("hostAssertionResults is unexpected because no Host assertion contract is present");
+    }
     return errors;
   }
-  bundle.specs.forEach((spec, index) => {
-    const prefix = `hostAssertionBundle.specs[${index}]`;
-    if (!spec || typeof spec !== "object" || Array.isArray(spec)) {
+  if (!Array.isArray(echoes) || echoes.length === 0) {
+    errors.push("hostAssertionResults is required when Host assertion contracts are present");
+    return errors;
+  }
+
+  const expectedByScope = new Map(expected.map((contract) => [contract.scope, contract]));
+  const echoesByScope = new Map();
+  echoes.forEach((echo, index) => {
+    const prefix = `hostAssertionResults[${index}]`;
+    if (!echo || typeof echo !== "object" || Array.isArray(echo)) {
       errors.push(`${prefix} must be an object`);
       return;
     }
-    checkNonBlankString(spec, "id", `${prefix}.id`, errors);
-    checkNonBlankString(spec, "assertionType", `${prefix}.assertionType`, errors);
-    checkNonBlankString(spec, "target", `${prefix}.target`, errors);
-    checkNonBlankString(spec, "operator", `${prefix}.operator`, errors);
+    for (const field of Object.keys(echo)) {
+      if (!["scope", "contentHash", "evidenceArtifactIds"].includes(field)) {
+        errors.push(`${prefix} may contain only scope, contentHash, and evidenceArtifactIds`);
+      }
+    }
+    checkEnum(echo, "scope", QA_SCOPES, errors, `${prefix}.scope`);
+    const scope = typeof echo.scope === "string" ? echo.scope.trim() : "";
+    if (QA_SCOPES.has(scope) && echoesByScope.has(scope)) {
+      errors.push(`hostAssertionResults contains duplicate ${scope} scope`);
+    }
+    if (typeof echo.contentHash !== "string" || !ASSERTION_CONTENT_HASH.test(echo.contentHash.trim())) {
+      errors.push(`${prefix}.contentHash must be a sha256: hash`);
+    }
+    if (!Array.isArray(echo.evidenceArtifactIds) || echo.evidenceArtifactIds.length === 0
+        || echo.evidenceArtifactIds.some((id) => typeof id !== "string" || id.trim() === "")) {
+      errors.push(`${prefix}.evidenceArtifactIds must be a non-empty array of non-blank strings`);
+    }
+    if (QA_SCOPES.has(scope) && !echoesByScope.has(scope)) {
+      echoesByScope.set(scope, echo);
+    }
   });
+
+  for (const [scope, contract] of expectedByScope) {
+    const echo = echoesByScope.get(scope);
+    if (!echo) {
+      errors.push(`hostAssertionResults is missing ${scope} Host contract echo`);
+      continue;
+    }
+    if (echo.contentHash !== contract.contentHash) {
+      errors.push(`hostAssertionResults[${scope}].contentHash does not match the frozen Host contract`);
+    }
+    const scopeEvidence = acceptanceEvidenceForScope(acceptance, scope);
+    if (scopeEvidence.size === 0) {
+      errors.push(`acceptanceResults has no evidence references for Host assertion scope ${scope}`);
+      continue;
+    }
+    for (const evidenceId of echo.evidenceArtifactIds ?? []) {
+      if (!scopeEvidence.has(evidenceId)) {
+        errors.push(`hostAssertionResults[${scope}] evidence '${evidenceId}' is not referenced by ${scope} acceptanceResults`);
+      }
+    }
+  }
+  for (const scope of echoesByScope.keys()) {
+    if (!expectedByScope.has(scope)) {
+      errors.push(`hostAssertionResults contains an unexpected ${scope} scope`);
+    }
+  }
   return errors;
+}
+
+function acceptanceEvidenceForScope(acceptance, scope) {
+  const evidence = new Set();
+  for (const item of acceptance ?? []) {
+    if (!item || item.scope !== scope) continue;
+    if (typeof item.logArtifactId === "string" && item.logArtifactId.trim() !== "") {
+      evidence.add(item.logArtifactId);
+    }
+    if (Array.isArray(item.evidenceArtifactIds)) {
+      for (const id of item.evidenceArtifactIds) {
+        if (typeof id === "string" && id.trim() !== "") evidence.add(id);
+      }
+    }
+  }
+  return evidence;
 }
 
 // Mirrors the host QaEvidenceBundleValidator: browser validation is only accepted

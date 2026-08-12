@@ -48,6 +48,7 @@ import {
 import { AgentStateProjector } from "./agent-state-projector.mjs";
 import { createAgentStateTools, STATE_TOOL_NAMES } from "./agent-state-tools.mjs";
 import { createDynamicStateExtension } from "./context-state-injection.mjs";
+import { runHostBrowserProbe } from "./host-browser-probe.mjs";
 
 const RESULT_TOOL_NAME = "rd_submit_result";
 const DEFAULT_OUTPUT_PATH = "/work/output";
@@ -73,6 +74,9 @@ export async function run(options = {}) {
   await mkdir(paths.output, { recursive: true });
   await mkdir(paths.private, { recursive: true, mode: 0o700 });
   await mkdir(paths.session, { recursive: true, mode: 0o700 });
+  // Host-authored qa-profile.json carries the real candidate changed-file set used for
+  // the docs-only exception; never trust agent prose for that decision.
+  const candidateChangedFiles = await loadCandidateChangedFilesFromQaProfile();
   const context = {
     stageRunId: request.stageRunId,
     taskId: request.taskId,
@@ -81,6 +85,8 @@ export async function run(options = {}) {
     snapshotId: request.snapshotId,
     provider: request.provider,
     model: request.model,
+    hostAssertionContracts: request.hostAssertionContracts ?? [],
+    candidateChangedFiles,
   };
   const sink = new EventSink(paths, context, maxRawEventBytes());
   const startedAt = new Date().toISOString();
@@ -253,8 +259,8 @@ export async function run(options = {}) {
       });
     }
 
-    const credential = await resolvePiCredential(request);
-    const modelRuntime = await configureModelRuntime(request, paths.private, credential);
+    const runtimeCredential = resolvePiProviderCredential(request);
+    const modelRuntime = await configureModelRuntime(request, paths.private, runtimeCredential);
     const resolvedModel = resolveCliModel({
       cliProvider: request.provider,
       cliModel: request.model,
@@ -493,10 +499,29 @@ function roleArtifactInstructions(role, request = {}) {
         "Run the acceptance and regression checks yourself and record real evidence; do not fabricate test output.",
         "Your submitted result JSON must satisfy the QA_AGENT role protocol: include the QA report fields and one evidence entry per acceptance criterion at the top level of the result object alongside status and summary.",
         "For QA the result status MUST be one of PASSED, FAILED, or SKIPPED (not SUCCESS): use PASSED when every acceptance criterion is verified, FAILED otherwise, SKIPPED only when validation cannot run.",
+        ...hostAssertionContractInstructions(request),
       ];
     default:
       return [];
   }
+}
+
+function hostAssertionContractInstructions(request) {
+  const contracts = Array.isArray(request?.hostAssertionContracts)
+    ? request.hostAssertionContracts
+    : [];
+  if (contracts.length === 0) {
+    return [];
+  }
+  const summary = contracts
+    .map((contract) => `${contract.scope}=${contract.contentHash} (v${contract.version})`)
+    .join(", ");
+  return [
+    `The Host froze QA assertion contracts: ${summary}.`,
+    "Echo exactly one hostAssertionResults item for CURRENT and REGRESSION with only scope, contentHash, and evidenceArtifactIds.",
+    "Each echo must use the supplied hash and reference non-empty evidence from acceptanceResults of the same scope.",
+    "Never submit hostAssertionBundle, hostAssertionWorkspace, hostAssertionBaseUrl, or hostAssertionContext; the Host owns executable assertions and verifier location.",
+  ];
 }
 
 const execFileAsync = promisify(execFile);
@@ -739,22 +764,7 @@ async function configureModelRuntime(request, privatePath, credentialOverride = 
     if (!request.baseUrl || !request.api) {
       throw new Error("custom Pi provider requires both api and baseUrl");
     }
-    runtime.registerProvider(request.provider, {
-      name: request.provider,
-      baseUrl: request.baseUrl,
-      api: request.api,
-      // Bearer-style gateways reject the default x-api-key header; opt in per provider profile.
-      authHeader: request.authHeader === true,
-      models: [{
-        id: request.model,
-        name: request.model,
-        reasoning: request.reasoning !== false,
-        input: ["text"],
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: positiveNumber(request.contextWindow, 200000),
-        maxTokens: positiveNumber(request.maxTokens, 16384),
-      }],
-    });
+    runtime.registerProvider(request.provider, buildCustomProviderRegistration(request));
   }
   if (request.credentialEnvironmentVariable) {
     const value = credentialOverride == null
@@ -769,75 +779,79 @@ async function configureModelRuntime(request, privatePath, credentialOverride = 
 }
 
 /**
- * Redeems the short-lived Host lease carried by the Pi container environment.
- * The returned secret is consumed only by ModelRuntime; it is never logged,
- * emitted in lifecycle events, or sent in the redemption request.
+ * Returns the value supplied to ModelRuntime. In relay mode that value is only an
+ * opaque lease token: the task-local sidecar relays the provider request and the
+ * Host adds the actual provider credential after validating its lease binding.
  */
-export async function redeemPiCredentialLease({
-  env = process.env,
-  fetchImpl = globalThis.fetch,
-} = {}) {
-  const relayUrl = relayEnvironmentValue(env, "RD_PI_CREDENTIAL_RELAY_URL");
-  const token = relayEnvironmentValue(env, "RD_PI_CREDENTIAL_LEASE");
-  const taskId = relayEnvironmentValue(env, "RD_PI_CREDENTIAL_RELAY_TASK_ID");
-  const stageRunId = relayEnvironmentValue(env, "RD_PI_CREDENTIAL_RELAY_STAGE_RUN_ID");
-  const providerId = relayEnvironmentValue(env, "RD_PI_CREDENTIAL_RELAY_PROVIDER_ID");
-  if ([relayUrl, token, taskId, stageRunId, providerId].some((value) => value === "")) {
-    throw new Error("credential relay redemption failed: lease contract is incomplete");
+/**
+ * Builds the Pi custom-provider registration for Host-frozen openai-completions
+ * gateways. OpenCode Go / DeepSeek reject OpenAI's `developer` role, so RD-Bot
+ * always opts out of developer-role and reasoning_effort quirks for that API.
+ *
+ * @param {object} request validated Pi request
+ * @returns {object} provider registration passed to ModelRuntime.registerProvider
+ */
+export function buildCustomProviderRegistration(request) {
+  if (request == null || typeof request !== "object") {
+    throw new Error("custom Pi provider registration requires a request object");
   }
-  if (typeof fetchImpl !== "function") {
-    throw new Error("credential relay redemption failed: HTTP client is unavailable");
+  // Pi's applyExtension path spreads model definitions but does NOT merge
+  // provider-level `compat` onto models. openai-completions.js reads
+  // model.compat.supportsDeveloperRole (via getCompat), so the override must
+  // live on the model entry. Provider-level compat is kept for models.json
+  // composition, which does merge it.
+  const compat = openaiCompletionsCompat(request.api);
+  const model = {
+    id: request.model,
+    name: request.model,
+    reasoning: request.reasoning !== false,
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: positiveNumber(request.contextWindow, 200000),
+    maxTokens: positiveNumber(request.maxTokens, 16384),
+  };
+  if (compat) {
+    model.compat = compat;
   }
-
-  let response;
-  try {
-    response = await fetchImpl(relayUrl, {
-      method: "POST",
-      headers: {
-        Accept: "application/json",
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ taskId, stageRunId, providerId }),
-      signal: AbortSignal.timeout(5_000),
-    });
-  } catch {
-    throw new Error("credential relay redemption failed: request unavailable");
+  const registration = {
+    name: request.provider,
+    baseUrl: request.baseUrl,
+    api: request.api,
+    // Bearer-style gateways reject the default x-api-key header; opt in per provider profile.
+    authHeader: request.authHeader === true,
+    models: [model],
+  };
+  if (compat) {
+    registration.compat = compat;
   }
-  if (!response || response.ok !== true) {
-    const status = Number.isInteger(response?.status) ? response.status : 0;
-    throw new Error(`credential relay redemption failed: HTTP ${status}`);
-  }
-
-  let responseText;
-  try {
-    responseText = await response.text();
-  } catch {
-    throw new Error("credential relay redemption failed: invalid response");
-  }
-  if (Buffer.byteLength(responseText, "utf8") > 64 * 1024) {
-    throw new Error("credential relay redemption failed: response too large");
-  }
-  let payload;
-  try {
-    payload = JSON.parse(responseText);
-  } catch {
-    throw new Error("credential relay redemption failed: invalid response");
-  }
-  const credential = typeof payload?.credential === "string" ? payload.credential : "";
-  if (credential.trim() === "") {
-    throw new Error("credential relay redemption failed: credential missing");
-  }
-  return credential;
+  return registration;
 }
 
-async function resolvePiCredential(request) {
-  if (process.env.RD_PI_CREDENTIAL_RELAY_ENABLED === "true") {
-    return redeemPiCredentialLease();
+/**
+ * Compatibility overrides for OpenAI-completions proxies that are not api.openai.com.
+ * Relay mode hides the real upstream URL behind the sidecar, so this cannot be inferred
+ * from baseUrl and must be applied for the openai-completions API itself.
+ *
+ * @param {string} api Pi API identifier
+ * @returns {{ supportsDeveloperRole: false, supportsReasoningEffort: false } | null}
+ */
+export function openaiCompletionsCompat(api) {
+  return api === "openai-completions"
+    ? { supportsDeveloperRole: false, supportsReasoningEffort: false }
+    : null;
+}
+
+export function resolvePiProviderCredential(request, env = process.env) {
+  if (relayEnvironmentValue(env, "RD_PI_CREDENTIAL_RELAY_ENABLED") === "true") {
+    const token = relayEnvironmentValue(env, "RD_PI_CREDENTIAL_LEASE");
+    if (!token) {
+      throw new Error("credential relay requires an opaque lease");
+    }
+    return token;
   }
   const environmentVariable = request?.credentialEnvironmentVariable;
   const credential = typeof environmentVariable === "string"
-    ? process.env[environmentVariable]
+    ? env?.[environmentVariable]
     : "";
   if (!credential) {
     throw new Error(`credential environment variable is missing: ${environmentVariable ?? ""}`);
@@ -924,7 +938,14 @@ export function createResultTool({ resultPath, outputRoot, sink, context, onAcce
         const result = validateResult(params?.result);
         // Reject protocol violations while the agent can still fix them in-session;
         // the host-side validator runs after the container exits and offers no retry.
-        const roleErrors = validateRoleResult(context.role, result);
+        const roleErrors = validateRoleResult(
+          context.role,
+          result,
+          undefined,
+          {},
+          context.hostAssertionContracts ?? [],
+          context.candidateChangedFiles,
+        );
         const manifestErrors = context.role === "QA_AGENT"
           ? await validateQaEvidenceManifest(result, outputRoot)
           : [];
@@ -1187,8 +1208,21 @@ function positiveSafeInteger(value, fallback) {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+async function loadCandidateChangedFilesFromQaProfile() {
+  const profilePath = process.env.RD_QA_PROFILE_FILE || "/work/input/qa-profile.json";
+  try {
+    const profile = JSON.parse(await readFile(profilePath, "utf8"));
+    return Array.isArray(profile?.candidateChangedFiles) ? profile.candidateChangedFiles : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  run().then((exitCode) => {
+  const execute = process.argv[2] === "host-browser-probe"
+    ? () => runHostBrowserProbe(process.argv.slice(3))
+    : () => run();
+  execute().then((exitCode) => {
     process.exitCode = exitCode;
   }).catch((error) => {
     console.error(`[rd-pi-bridge] fatal error: ${safeError(error)}`);

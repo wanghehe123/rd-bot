@@ -17,6 +17,7 @@ import {
 } from "../src/protocol.mjs";
 import { validateResult, validateRoleResult } from "../src/result-tool.mjs";
 import * as resultTool from "../src/result-tool.mjs";
+import { classifyDocsOnlyChange, DOCS_ONLY_DECISION } from "../src/docs-only.mjs";
 import {
   hashResourcePath,
   validateResourceManifest,
@@ -125,64 +126,29 @@ test("uses patchArtifactPath in coding prompt when provided", () => {
   assert.match(coding, /candidate\.patch/);
 });
 
-test("fails closed when the credential relay rejects lease redemption", async () => {
-  assert.equal(typeof bridge.redeemPiCredentialLease, "function");
-  let error;
-  try {
-    await bridge.redeemPiCredentialLease({
-      env: {
-        RD_PI_CREDENTIAL_RELAY_URL: "http://host.test/internal/pi/credential-relay/redeem",
-        RD_PI_CREDENTIAL_LEASE: "pcl_test",
-        RD_PI_CREDENTIAL_RELAY_TASK_ID: "task-1",
-        RD_PI_CREDENTIAL_RELAY_STAGE_RUN_ID: "stage-1",
-        RD_PI_CREDENTIAL_RELAY_PROVIDER_ID: "provider-1",
-      },
-      fetchImpl: async () => ({
-        ok: false,
-        status: 401,
-        text: async () => JSON.stringify({ credential: "super-secret" }),
-      }),
-    });
-  } catch (caught) {
-    error = caught;
-  }
-  assert.ok(error instanceof Error);
-  assert.match(error.message, /credential relay redemption failed/);
-  assert.doesNotMatch(error.message, /super-secret/);
+test("uses an opaque lease as the Pi runtime credential without redeeming a provider secret", () => {
+  assert.equal(typeof bridge.redeemPiCredentialLease, "undefined");
+  assert.equal(typeof bridge.resolvePiProviderCredential, "function");
+
+  const credential = bridge.resolvePiProviderCredential(request, {
+    RD_PI_CREDENTIAL_RELAY_ENABLED: "true",
+    RD_PI_CREDENTIAL_LEASE: "pcl_test",
+    ANTHROPIC_API_KEY: "super-secret",
+  });
+
+  assert.equal(credential, "pcl_test");
+  assert.notEqual(credential, "super-secret");
+  assert.doesNotMatch(JSON.stringify({ credential }), /super-secret/);
 });
 
-test("redeems a bound lease through the configured relay without sending the credential", async () => {
-  let requestUrl;
-  let requestInit;
-  const credential = await bridge.redeemPiCredentialLease({
-    env: {
-      RD_PI_CREDENTIAL_RELAY_URL: "http://host.test/internal/pi/credential-relay/redeem",
-      RD_PI_CREDENTIAL_LEASE: "pcl_test",
-      RD_PI_CREDENTIAL_RELAY_TASK_ID: "task-1",
-      RD_PI_CREDENTIAL_RELAY_STAGE_RUN_ID: "stage-1",
-      RD_PI_CREDENTIAL_RELAY_PROVIDER_ID: "provider-1",
-    },
-    fetchImpl: async (url, init) => {
-      requestUrl = url;
-      requestInit = init;
-      return {
-        ok: true,
-        status: 200,
-        text: async () => JSON.stringify({ credential: "super-secret" }),
-      };
-    },
-  });
-
-  assert.equal(credential, "super-secret");
-  assert.equal(requestUrl, "http://host.test/internal/pi/credential-relay/redeem");
-  assert.equal(requestInit.method, "POST");
-  assert.equal(requestInit.headers.Authorization, "Bearer pcl_test");
-  assert.deepEqual(JSON.parse(requestInit.body), {
-    taskId: "task-1",
-    stageRunId: "stage-1",
-    providerId: "provider-1",
-  });
-  assert.doesNotMatch(JSON.stringify({ requestUrl, requestInit }), /super-secret/);
+test("fails closed when relay mode has no opaque lease", () => {
+  assert.throws(
+    () => bridge.resolvePiProviderCredential(request, {
+      RD_PI_CREDENTIAL_RELAY_ENABLED: "true",
+      ANTHROPIC_API_KEY: "super-secret",
+    }),
+    /opaque lease/i,
+  );
 });
 
 test("tailors the execution prompt to each delivery role", () => {
@@ -409,32 +375,68 @@ test("accepts a complete QA report and enforces cross-field consistency", () => 
       .some((error) => error.includes("requires all acceptanceResults")));
 });
 
-test("validates optional host assertion bundle fields without requiring a bundle", () => {
-  const report = completeQaReport("qa-evidence/commands/current.log");
-  assert.deepEqual(validateRoleResult("QA_AGENT", report), []);
+test("accepts Host assertion contracts only for QA requests", () => {
+  const contracts = hostAssertionContracts();
+  const qaRequest = { ...request, role: "QA_AGENT", hostAssertionContracts: contracts };
 
-  const withBundle = {
+  assert.equal(validateRequest(qaRequest), qaRequest);
+  assert.throws(() => validateRequest({ ...request, hostAssertionContracts: contracts }), /QA_AGENT/);
+  assert.throws(() => validateRequest({
+    ...qaRequest,
+    hostAssertionContracts: [{ scope: "CURRENT", contentHash: "not-a-hash", version: 1 }],
+  }), /hostAssertionContracts/);
+});
+
+test("requires QA to echo only matching Host assertion contracts and scoped evidence", () => {
+  const contracts = hostAssertionContracts();
+  const base = completeQaReport("qa-evidence/commands/current.log");
+  const report = {
+    ...base,
+    acceptanceResults: base.acceptanceResults.map((entry) => (
+      entry.scope === "REGRESSION"
+        ? {
+          ...entry,
+          logArtifactId: "qa-evidence/commands/regression.log",
+          evidenceArtifactIds: ["qa-evidence/commands/regression.log"],
+        }
+        : entry
+    )),
+    hostAssertionResults: [
+      {
+        scope: "CURRENT",
+        contentHash: contracts[0].contentHash,
+        evidenceArtifactIds: ["qa-evidence/commands/current.log"],
+      },
+      {
+        scope: "REGRESSION",
+        contentHash: contracts[1].contentHash,
+        evidenceArtifactIds: ["qa-evidence/commands/regression.log"],
+      },
+    ],
+  };
+
+  assert.deepEqual(validateRoleResult("QA_AGENT", report, undefined, {}, contracts), []);
+
+  const missingEchoReport = { ...report };
+  delete missingEchoReport.hostAssertionResults;
+  const missingEchoErrors = validateRoleResult("QA_AGENT", missingEchoReport, undefined, {}, contracts);
+  assert.ok(missingEchoErrors.some((error) => error.includes("hostAssertionResults is required")));
+
+  const executableAgentFields = validateRoleResult("QA_AGENT", {
     ...report,
-    hostAssertionBundle: {
-      contentHash: `sha256:${"a".repeat(64)}`,
-      specs: [{
-        id: "json-1",
-        assertionType: "HTTP_JSONPATH",
-        target: "$.ok",
-        operator: "eq",
-        expected: "true",
-      }],
-    },
-  };
-  assert.deepEqual(validateRoleResult("QA_AGENT", withBundle), []);
+    hostAssertionBundle: { specs: [] },
+  }, undefined, {}, contracts);
+  assert.ok(executableAgentFields.some((error) => error.includes("hostAssertionBundle is not accepted")));
 
-  const malformed = {
-    ...withBundle,
-    hostAssertionBundle: { specs: "not-an-array" },
-  };
-  const errors = validateRoleResult("QA_AGENT", malformed);
-  assert.ok(errors.some((error) => error.includes("contentHash")));
-  assert.ok(errors.some((error) => error.includes("specs must be an array")));
+  const wrongScopeEvidence = validateRoleResult("QA_AGENT", {
+    ...report,
+    hostAssertionResults: report.hostAssertionResults.map((entry) => (
+      entry.scope === "REGRESSION"
+        ? { ...entry, evidenceArtifactIds: ["qa-evidence/commands/current.log"] }
+        : entry
+    )),
+  }, undefined, {}, contracts);
+  assert.ok(wrongScopeEvidence.some((error) => error.includes("REGRESSION") && error.includes("not referenced")));
 });
 
 test("rejects browser QA that collects but does not reference console and network evidence", () => {
@@ -707,6 +709,21 @@ function completeQaReport(evidencePath) {
   };
 }
 
+function hostAssertionContracts() {
+  return [
+    {
+      scope: "CURRENT",
+      contentHash: `sha256:${"a".repeat(64)}`,
+      version: 1,
+    },
+    {
+      scope: "REGRESSION",
+      contentHash: `sha256:${"b".repeat(64)}`,
+      version: 1,
+    },
+  ];
+}
+
 test("requires LOW budget confidence without historical samples for the reviewer", () => {
   const review = {
     decision: "APPROVED",
@@ -825,4 +842,88 @@ test("writes audit-only runtime context manifest after resource discovery", asyn
   assert.equal(persisted.observedFiles[0].path, "AGENTS.md");
   assert.equal(persisted.observedFiles[0].trustDecision, "LOADED");
   assert.equal(persisted.inputManifestHash, "sha256:abc");
+});
+
+test("docs-only classifier matches the host allowlist and fails closed", () => {
+  assert.equal(
+    classifyDocsOnlyChange(["README.md", "docs/guide.md", "docs/logo.svg"]),
+    DOCS_ONLY_DECISION.DOCS_ONLY,
+  );
+  assert.equal(
+    classifyDocsOnlyChange(["README.md", "src/app/page.tsx"]),
+    DOCS_ONLY_DECISION.NOT_DOCS_ONLY,
+  );
+  assert.equal(classifyDocsOnlyChange(["package.json"]), DOCS_ONLY_DECISION.NOT_DOCS_ONLY);
+  assert.equal(classifyDocsOnlyChange(["package-lock.json"]), DOCS_ONLY_DECISION.NOT_DOCS_ONLY);
+  assert.equal(classifyDocsOnlyChange(null), DOCS_ONLY_DECISION.UNDETERMINABLE);
+  assert.equal(classifyDocsOnlyChange([]), DOCS_ONLY_DECISION.UNDETERMINABLE);
+});
+
+test("accepts docs-only QA without browser evidence when changed files are docs-only", () => {
+  const report = {
+    ...completeQaReport("qa-evidence/commands/current.log"),
+    summary: "docs-only candidate verified without browser regression",
+    browserValidation: {
+      required: false,
+      performed: false,
+      decisionSource: "DOCS_ONLY",
+      baseUrl: "",
+      browser: "chromium",
+      viewports: [],
+    },
+  };
+  assert.deepEqual(
+    validateRoleResult("QA_AGENT", report, undefined, {}, [], ["README.md", "docs/smoke.md"]),
+    [],
+  );
+});
+
+test("rejects docs-only QA claim when changed files include source or package.json", () => {
+  const report = {
+    ...completeQaReport("qa-evidence/commands/current.log"),
+    browserValidation: {
+      required: false,
+      performed: false,
+      decisionSource: "DOCS_ONLY",
+      baseUrl: "",
+      browser: "chromium",
+      viewports: [],
+    },
+  };
+  const sourceErrors = validateRoleResult(
+    "QA_AGENT",
+    report,
+    undefined,
+    {},
+    [],
+    ["README.md", "src/app/page.tsx"],
+  );
+  const packageErrors = validateRoleResult(
+    "QA_AGENT",
+    report,
+    undefined,
+    {},
+    [],
+    ["package.json"],
+  );
+  assert.ok(sourceErrors.some((error) => error.includes("docs-only") && error.includes("full browser")));
+  assert.ok(packageErrors.some((error) => error.includes("docs-only") && error.includes("full browser")));
+});
+
+test("fails closed when docs-only claim lacks a determinable changed-file set", () => {
+  const report = {
+    ...completeQaReport("qa-evidence/commands/current.log"),
+    browserValidation: {
+      required: false,
+      performed: false,
+      decisionSource: "DOCS_ONLY",
+      baseUrl: "",
+      browser: "chromium",
+      viewports: [],
+    },
+  };
+  const missing = validateRoleResult("QA_AGENT", report, undefined, {}, [], null);
+  const empty = validateRoleResult("QA_AGENT", report, undefined, {}, [], []);
+  assert.ok(missing.some((error) => error.includes("docs-only") && error.includes("undeterminable")));
+  assert.ok(empty.some((error) => error.includes("docs-only") && error.includes("undeterminable")));
 });

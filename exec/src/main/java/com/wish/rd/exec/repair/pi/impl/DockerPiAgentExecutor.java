@@ -14,6 +14,7 @@ import com.wish.rd.exec.repair.docker.ContainerRunnerPort;
 import com.wish.rd.exec.repair.docker.RepairWorkspaceFactory;
 import com.wish.rd.exec.repair.docker.RepairWorkspaceRepositoryPort;
 import com.wish.rd.exec.repair.docker.StreamingContainerRunnerPort;
+import com.wish.rd.exec.repair.docker.model.ContainerNetworkPlan;
 import com.wish.rd.exec.repair.docker.model.ContainerRunRequest;
 import com.wish.rd.exec.repair.docker.model.ContainerRunResult;
 import com.wish.rd.exec.repair.docker.model.ContainerSecurityPolicy;
@@ -23,6 +24,7 @@ import com.wish.rd.exec.repair.execution.model.RepairArtifactType;
 import com.wish.rd.exec.repair.execution.model.RepairExecutionResult;
 import com.wish.rd.exec.repair.execution.model.RepairExecutionStatus;
 import com.wish.rd.exec.repair.execution.model.RepairJobCommand;
+import com.wish.rd.exec.repair.qa.QaExecutionMetadataKeys;
 import com.wish.rd.exec.repair.qa.QaRepositoryProfileDetector;
 import com.wish.rd.exec.repair.qa.model.QaExecutionProfile;
 import com.wish.rd.exec.repair.result.AgentRoleResultValidator;
@@ -49,6 +51,7 @@ import com.wish.rd.rag.project.agent.model.RuntimeContextPolicy;
 import java.math.BigDecimal;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.URI;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
 import java.nio.charset.StandardCharsets;
@@ -88,16 +91,21 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
     private static final Set<String> READ_ONLY_REPO_ROLES = Set.of(
             "REQUIREMENT_REVIEWER", "SOLUTION_ARCHITECT", "QA_AGENT"
     );
-    /**
-     * When credential relay is enabled, all Pi roles use {@code network=none} until a
-     * controlled host proxy/sidecar provides LLM egress. With relay off (default), every
-     * role uses {@link Configuration#networkMode()} so provider API calls can succeed;
-     * Reviewer/Architect still mount the repo read-only.
-     */
     private static final long DEFAULT_EXECUTION_TIMEOUT_MILLIS = 60L * 60L * 1000L;
     private static final long DEFAULT_BASH_COMMAND_TIMEOUT_MILLIS = 15L * 60L * 1000L;
     private static final String DEFAULT_CREDENTIAL_RELAY_URL =
-            "http://host.docker.internal:18080/internal/pi/credential-relay/redeem";
+            "http://host.docker.internal:18080/internal/pi/credential-relay/proxy";
+    private static final String PI_RELAY_BASE_URL = "http://rd-pi-relay:8787";
+    private static final String PI_RELAY_NETWORK_PREFIX = "rd-pi-network-";
+    private static final String PI_RELAY_CONTAINER_PREFIX = "rd-pi-relay-";
+    private static final String PI_RELAY_NETWORK_ALIAS = "rd-pi-relay";
+    private static final String PI_RELAY_SIDECAR_ENTRYPOINT = "node";
+    private static final String PI_RELAY_SIDECAR_COMMAND =
+            "/opt/rd-pi-bridge/src/rd-pi-relay-sidecar.mjs";
+    private static final int PI_RELAY_MAX_REQUEST_BYTES = 8 * 1024 * 1024;
+    private static final int PI_RELAY_MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
+    private static final long PI_RELAY_TIMEOUT_MILLIS = 60_000L;
+    private static final long PI_RELAY_STARTUP_TIMEOUT_MILLIS = 10_000L;
     private static final Map<String, String> PI_TMPFS_MOUNTS = Map.of(
             "/work/pi-agent", "rw,exec,size=256m,uid=1000,gid=1000",
             "/tmp", "rw,noexec,nosuid,size=1g,uid=1000,gid=1000",
@@ -105,10 +113,25 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
     );
     private static final ContainerSecurityPolicy PI_SECURITY_POLICY = piSecurityPolicy(512);
     private static final ContainerSecurityPolicy PI_QA_SECURITY_POLICY = piSecurityPolicy(1024);
+    private static final ContainerSecurityPolicy PI_RELAY_SECURITY_POLICY = new ContainerSecurityPolicy(
+            true,
+            true,
+            true,
+            true,
+            "256m",
+            "1",
+            128,
+            "1000:1000",
+            Map.of("/tmp", "rw,noexec,nosuid,size=32m,uid=1000,gid=1000")
+    );
     private static final String AGENT_RESULT_JSON = "__agentResultJson";
     private static final int SAFE_EVENT_PREVIEW_CHARS = 64 * 1024;
     private static final Set<String> SUPPORTED_ROLES = Set.of(
             "REQUIREMENT_REVIEWER", "SOLUTION_ARCHITECT", "CODING_AGENT", "QA_AGENT"
+    );
+    private static final Set<String> HOST_ASSERTION_SCOPES = Set.of("CURRENT", "REGRESSION");
+    private static final Set<String> HOST_ASSERTION_CONTRACT_FIELDS = Set.of(
+            "scope", "contentHash", "version"
     );
     private static final AgentRoleResultValidator ROLE_RESULT_VALIDATOR = new AgentRoleResultValidator();
     private static final RuntimeContextPreflightValidator RUNTIME_CONTEXT_PREFLIGHT_VALIDATOR =
@@ -335,6 +358,19 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                     Map.of("executionProfileSnapshotId", snapshot.snapshotId())
             );
         }
+        if (configuration.credentialRelayEnabled()) {
+            try {
+                validateRelayConfiguration(streamingRunner);
+            } catch (PiConfigurationException exception) {
+                return failed(
+                        RepairExecutionStatus.FAILED_VALIDATION,
+                        "Pi credential relay configuration validation failed.",
+                        exception.category,
+                        exception.getMessage(),
+                        Map.of("executionProfileSnapshotId", snapshot.snapshotId())
+                );
+            }
+        }
 
         RepairWorkspace workspace = null;
         EventCapture eventCapture = null;
@@ -351,6 +387,8 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                 materializeResources(snapshot, workspace.inputDirectory());
                 materializeSkills(snapshot.role(), workspace.inputDirectory());
                 QaProvision qaProvision = provisionQaInputs(command, snapshot, workspace);
+                // Host docs-only validation reads dockerMetadataJson only — never github/repo metadata.
+                Map<String, String> qaExecutionMetadata = qaExecutionMetadata(qaProvision);
                 String inputManifestJson = text(command.contextJson().get("inputManifestJson"));
                 PiRequestV2Materializer.materializeInputManifest(workspace.inputDirectory(), inputManifestJson);
                 Path requestPath = workspace.inputDirectory().resolve("request.json").normalize();
@@ -365,7 +403,13 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                 );
 
                 Map<String, String> environment = runtimeEnvironment(snapshot, provider, qaProvision);
-                ContainerRunRequest containerRequest = containerRequest(command, snapshot, workspace, environment);
+                ContainerRunRequest containerRequest = containerRequest(
+                        command,
+                        snapshot,
+                        workspace,
+                        environment,
+                        provider
+                );
                 eventCapture = new EventCapture(snapshot, containerRequest.containerName(), eventSink);
                 ContainerRunResult runResult = streamingRunner.run(containerRequest, eventCapture.listener());
             if (runResult == null) {
@@ -408,7 +452,8 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                     snapshot,
                     provider,
                     eventCapture,
-                    artifacts
+                    artifacts,
+                    qaExecutionMetadata
             );
             RepairExecutionResult preflightFailure = validateRuntimeContextPreflight(
                     command,
@@ -500,8 +545,8 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         String model = modelOverride.isBlank() ? required(snapshot, "providerModelId") : modelOverride;
         String baseUrl = required(snapshot, "providerBaseUrl");
         String protocol = required(snapshot, "providerProtocol");
-        String credentialEnv = required(snapshot, "credentialEnvironmentVariable").toUpperCase(Locale.ROOT);
-        if (!ENV_NAME.matcher(credentialEnv).matches()) {
+        String credentialEnv = text(snapshot.path("credentialEnvironmentVariable")).toUpperCase(Locale.ROOT);
+        if (!credentialEnv.isBlank() && !ENV_NAME.matcher(credentialEnv).matches()) {
             throw new PiConfigurationException(
                     "PI_PROVIDER_CONFIGURATION",
                     "credentialEnvironmentVariable must be an env name"
@@ -518,6 +563,12 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         }
         String api = piApi(providerProtocol);
         boolean authHeader = snapshot.path("providerAuthHeader").asBoolean(false);
+        if (credentialEnv.isBlank() && authHeader) {
+            throw new PiConfigurationException(
+                    "PI_PROVIDER_CONFIGURATION",
+                    "providerAuthHeader requires a credentialEnvironmentVariable"
+            );
+        }
         return new ProviderSpec(providerId, model, baseUrl, api, credentialEnv, providerProtocol.name(), authHeader);
     }
 
@@ -629,15 +680,23 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         request.put("provider", provider.providerId());
         request.put("model", provider.model());
         request.put("api", provider.api());
-        request.put("baseUrl", provider.baseUrl());
-        request.put("authHeader", provider.authHeader());
-        request.put("credentialEnvironmentVariable", provider.credentialEnvironmentVariable());
+        // Relay mode exposes only the task-local sidecar origin to Pi. The Host-owned
+        // policy retains the provider base URL and injects the raw credential later.
+        request.put("baseUrl", configuration.credentialRelayEnabled() ? PI_RELAY_BASE_URL : provider.baseUrl());
+        request.put("authHeader", configuration.credentialRelayEnabled() || provider.authHeader());
+        if (!provider.credentialEnvironmentVariable().isBlank()) {
+            request.put("credentialEnvironmentVariable", provider.credentialEnvironmentVariable());
+        }
         request.put("repoPath", CONTAINER_REPO);
         request.put("inputPath", "/work/input");
         request.put("outputPath", "/work/output");
         request.put("applyCandidatePatch", Boolean.parseBoolean(
                 command.policyJson().getOrDefault("applyCandidatePatch", "false")
         ));
+        List<Map<String, Object>> hostAssertionContracts = hostAssertionContracts(command, snapshot.role());
+        if (!hostAssertionContracts.isEmpty()) {
+            request.put("hostAssertionContracts", hostAssertionContracts);
+        }
         request.put("dynamicStateEnabled", snapshotJson.path("dynamicStateEnabled").asBoolean(false));
         request.put("maxInjectedStateBytes", positiveInt(snapshotJson.path("maxInjectedStateBytes"), 8192));
         request.put("contextProtocolVersion", text(snapshotJson.path("contextProtocolVersion")));
@@ -694,6 +753,91 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                 "toolPolicyVersion", snapshotJson.path("toolPolicyVersion").asLong(0L)
         ));
         Files.writeString(requestPath, OBJECT_MAPPER.writeValueAsString(request) + "\n", StandardCharsets.UTF_8);
+    }
+
+    private static List<Map<String, Object>> hostAssertionContracts(
+            RepairJobCommand command,
+            String role
+    ) {
+        String raw = text(command == null ? null : command.contextJson().get("hostAssertionContracts"));
+        if (raw.isBlank()) {
+            return List.of();
+        }
+        if (!"QA_AGENT".equals(role)) {
+            throw new PiConfigurationException(
+                    "PI_HOST_ASSERTION_CONTRACT",
+                    "hostAssertionContracts are only valid for QA_AGENT requests"
+            );
+        }
+        try {
+            JsonNode contracts = OBJECT_MAPPER.readTree(raw);
+            if (contracts == null || !contracts.isArray() || contracts.size() != 2) {
+                throw new PiConfigurationException(
+                        "PI_HOST_ASSERTION_CONTRACT",
+                        "hostAssertionContracts must contain CURRENT and REGRESSION contracts"
+                );
+            }
+            Set<String> scopes = new LinkedHashSet<>();
+            List<Map<String, Object>> parsed = new java.util.ArrayList<>();
+            for (int index = 0; index < contracts.size(); index++) {
+                JsonNode contract = contracts.get(index);
+                String prefix = "hostAssertionContracts[" + index + "]";
+                if (contract == null || !contract.isObject()) {
+                    throw new PiConfigurationException("PI_HOST_ASSERTION_CONTRACT", prefix + " must be an object");
+                }
+                java.util.Iterator<String> fields = contract.fieldNames();
+                while (fields.hasNext()) {
+                    String field = fields.next();
+                    if (!HOST_ASSERTION_CONTRACT_FIELDS.contains(field)) {
+                        throw new PiConfigurationException(
+                                "PI_HOST_ASSERTION_CONTRACT",
+                                prefix + " may contain only scope, contentHash, and version"
+                        );
+                    }
+                }
+                String scope = text(contract.path("scope"));
+                if (!HOST_ASSERTION_SCOPES.contains(scope)) {
+                    throw new PiConfigurationException(
+                            "PI_HOST_ASSERTION_CONTRACT",
+                            prefix + ".scope must be CURRENT or REGRESSION"
+                    );
+                }
+                if (!scopes.add(scope)) {
+                    throw new PiConfigurationException(
+                            "PI_HOST_ASSERTION_CONTRACT",
+                            "hostAssertionContracts contains duplicate " + scope + " scope"
+                    );
+                }
+                String contentHash = text(contract.path("contentHash"));
+                if (!contentHash.matches("sha256:[0-9a-fA-F]{64}")) {
+                    throw new PiConfigurationException(
+                            "PI_HOST_ASSERTION_CONTRACT",
+                            prefix + ".contentHash must be a sha256: hash"
+                    );
+                }
+                if (!contract.path("version").isIntegralNumber() || contract.path("version").longValue() < 1L) {
+                    throw new PiConfigurationException(
+                            "PI_HOST_ASSERTION_CONTRACT",
+                            prefix + ".version must be a positive integer"
+                    );
+                }
+                parsed.add(Map.of("scope", scope, "contentHash", contentHash,
+                        "version", contract.path("version").longValue()));
+            }
+            if (!scopes.contains("CURRENT") || !scopes.contains("REGRESSION")) {
+                throw new PiConfigurationException(
+                        "PI_HOST_ASSERTION_CONTRACT",
+                        "hostAssertionContracts must contain CURRENT and REGRESSION contracts"
+                );
+            }
+            return List.copyOf(parsed);
+        } catch (JsonProcessingException exception) {
+            throw new PiConfigurationException(
+                    "PI_HOST_ASSERTION_CONTRACT",
+                    "hostAssertionContracts must be valid JSON",
+                    exception
+            );
+        }
     }
 
     @SuppressWarnings("unchecked")
@@ -833,10 +977,17 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         if (!"QA_AGENT".equals(snapshot.role())) {
             return QaProvision.none();
         }
-        QaExecutionProfile profile = QA_PROFILE_DETECTOR.detect(command, workspace.repoDirectory());
+        List<String> candidateChangedFiles = QaRepositoryProfileDetector.readCandidateChangedFiles(
+                workspace.repoDirectory()
+        );
+        QaExecutionProfile profile = QA_PROFILE_DETECTOR.detect(
+                command,
+                workspace.repoDirectory(),
+                candidateChangedFiles
+        );
         Files.writeString(
                 workspace.inputDirectory().resolve("qa-profile.json"),
-                QA_PROFILE_DETECTOR.toJson(profile),
+                QA_PROFILE_DETECTOR.toJson(profile, candidateChangedFiles),
                 StandardCharsets.UTF_8
         );
         Path hubSkill = workspace.inputDirectory().resolve("skills")
@@ -846,7 +997,7 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         boolean hubPresent = Files.isRegularFile(hubSkill);
         // Prefer Skill Hub materialization under skills/; keep qa-skill/ as legacy fallback.
         boolean legacyWritten = !hubPresent && writeQaSkillDocument(workspace.inputDirectory());
-        return new QaProvision(profile, hubPresent, legacyWritten);
+        return new QaProvision(profile, hubPresent, legacyWritten, candidateChangedFiles);
     }
 
     private static boolean writeQaSkillDocument(Path inputDirectory) {
@@ -877,10 +1028,11 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
     private record QaProvision(
             QaExecutionProfile profile,
             boolean hubSkillPresent,
-            boolean legacySkillDocumentWritten
+            boolean legacySkillDocumentWritten,
+            List<String> candidateChangedFiles
     ) {
         private static QaProvision none() {
-            return new QaProvision(null, false, false);
+            return new QaProvision(null, false, false, null);
         }
     }
 
@@ -893,8 +1045,14 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
             if (credentialLeaseIssuer == null) {
                 throw new PiConfigurationException(
                         "PI_PROVIDER_CONFIGURATION",
-                        "credential relay is enabled but no PiCredentialLeaseIssuer is wired; "
-                                + "set rd.executor.pi.credential-relay-enabled=false"
+                        "credential relay is mandatory for credentialed Pi execution but no "
+                                + "PiCredentialLeaseIssuer is wired"
+                );
+            }
+            if (provider.credentialEnvironmentVariable().isBlank()) {
+                throw new PiConfigurationException(
+                        "PI_PROVIDER_CONFIGURATION",
+                        "credentialed Pi execution requires a credentialEnvironmentVariable"
                 );
             }
             String credential = authEnvironmentResolver.resolve(provider.credentialEnvironmentVariable());
@@ -916,15 +1074,12 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                     snapshot.stageRunId(),
                     provider.providerId(),
                     credential,
+                    relayPolicy(provider),
                     Duration.ofMinutes(45),
                     200
             );
             Map<String, String> environment = new LinkedHashMap<>();
             environment.put("RD_PI_CREDENTIAL_RELAY_ENABLED", "true");
-            environment.put("RD_PI_CREDENTIAL_RELAY_URL", configuration.credentialRelayUrl());
-            environment.put("RD_PI_CREDENTIAL_RELAY_TASK_ID", snapshot.taskId());
-            environment.put("RD_PI_CREDENTIAL_RELAY_STAGE_RUN_ID", snapshot.stageRunId());
-            environment.put("RD_PI_CREDENTIAL_RELAY_PROVIDER_ID", provider.providerId());
             environment.put("RD_PI_CREDENTIAL_LEASE", lease.token());
             environment.put("RD_PI_CREDENTIAL_LEASE_EXPIRES_AT", lease.expiresAt().toString());
             environment.put("RD_PI_CREDENTIAL_LEASE_MAX_CALLS", String.valueOf(lease.maxCalls()));
@@ -932,17 +1087,22 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
             populateSharedRuntimeEnvironment(environment, snapshot, qaProvision);
             return environment;
         }
+        if (provider.credentialEnvironmentVariable().isBlank()) {
+            Map<String, String> environment = new LinkedHashMap<>();
+            populateSharedRuntimeEnvironment(environment, snapshot, qaProvision);
+            return environment;
+        }
         String credential = authEnvironmentResolver.resolve(provider.credentialEnvironmentVariable());
-        if (credential == null || credential.isBlank()) {
+        if (credential != null && !credential.isBlank()) {
             throw new PiConfigurationException(
-                    "PI_PROVIDER_CONFIGURATION",
-                    "provider credential environment variable is missing: " + provider.credentialEnvironmentVariable()
+                    "PI_CREDENTIAL_RELAY_REQUIRED",
+                    "credentialed Pi execution requires credential relay; refusing to inject raw provider credential"
             );
         }
-        Map<String, String> environment = new LinkedHashMap<>();
-        environment.put(provider.credentialEnvironmentVariable(), credential);
-        populateSharedRuntimeEnvironment(environment, snapshot, qaProvision);
-        return environment;
+        throw new PiConfigurationException(
+                "PI_PROVIDER_CONFIGURATION",
+                "provider credential environment variable is missing: " + provider.credentialEnvironmentVariable()
+        );
     }
 
     private void populateSharedRuntimeEnvironment(
@@ -995,7 +1155,8 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
             RepairJobCommand command,
             AgentExecutionProfileSnapshot snapshot,
             RepairWorkspace workspace,
-            Map<String, String> environment
+            Map<String, String> environment,
+            ProviderSpec provider
     ) {
         Map<String, String> mounts = new LinkedHashMap<>();
         mounts.put(
@@ -1009,6 +1170,9 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                 ? configuration.qaImage()
                 : configuration.image();
         boolean browserQa = "QA_AGENT".equals(snapshot.role());
+        ContainerNetworkPlan networkPlan = configuration.credentialRelayEnabled()
+                ? relayNetworkPlan(snapshot, provider)
+                : null;
         return new ContainerRunRequest(
                 safeContainerName(command.taskId()),
                 image,
@@ -1016,24 +1180,144 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                 environment,
                 mounts,
                 CONTAINER_REPO,
-                resolveNetworkMode(snapshot.role()),
+                networkPlan == null ? configuration.networkMode() : networkPlan.internalNetworkName(),
                 configuration.removeAfterExit(),
                 false,
                 workspace.outputDirectory(),
                 browserQa,
                 browserQa ? "1g" : "",
                 configuration.executionTimeoutMillis(),
-                browserQa ? PI_QA_SECURITY_POLICY : PI_SECURITY_POLICY
+                browserQa ? PI_QA_SECURITY_POLICY : PI_SECURITY_POLICY,
+                networkPlan
         );
     }
 
-    private String resolveNetworkMode(String role) {
-        if (configuration.credentialRelayEnabled()) {
-            // Fail closed on arbitrary egress while host relay holds provider secrets.
-            // A future controlled relay/proxy network can replace this once sidecar + allowlist land.
-            return "none";
+    private ContainerNetworkPlan relayNetworkPlan(
+            AgentExecutionProfileSnapshot snapshot,
+            ProviderSpec provider
+    ) {
+        String resourceSuffix = relayResourceSuffix(snapshot);
+        String internalNetwork = PI_RELAY_NETWORK_PREFIX + resourceSuffix;
+        String sidecarName = PI_RELAY_CONTAINER_PREFIX + resourceSuffix;
+        Map<String, String> sidecarEnvironment = new LinkedHashMap<>();
+        sidecarEnvironment.put("RD_PI_RELAY_HOST_URL", configuration.credentialRelayUrl());
+        sidecarEnvironment.put("RD_PI_RELAY_TASK_ID", snapshot.taskId());
+        sidecarEnvironment.put("RD_PI_RELAY_STAGE_RUN_ID", snapshot.stageRunId());
+        sidecarEnvironment.put("RD_PI_RELAY_PROVIDER_ID", provider.providerId());
+        sidecarEnvironment.put("RD_PI_RELAY_MAX_REQUEST_BYTES", String.valueOf(PI_RELAY_MAX_REQUEST_BYTES));
+        sidecarEnvironment.put("RD_PI_RELAY_MAX_RESPONSE_BYTES", String.valueOf(PI_RELAY_MAX_RESPONSE_BYTES));
+        sidecarEnvironment.put("RD_PI_RELAY_TIMEOUT_MILLIS", String.valueOf(PI_RELAY_TIMEOUT_MILLIS));
+        return new ContainerNetworkPlan(
+                internalNetwork,
+                new ContainerNetworkPlan.Sidecar(
+                        sidecarName,
+                        PI_RELAY_NETWORK_ALIAS,
+                        configuration.image(),
+                        PI_RELAY_SIDECAR_ENTRYPOINT,
+                        List.of(PI_RELAY_SIDECAR_COMMAND),
+                        sidecarEnvironment,
+                        configuration.networkMode(),
+                        "http://127.0.0.1:8787/healthz",
+                        PI_RELAY_STARTUP_TIMEOUT_MILLIS,
+                        PI_RELAY_SECURITY_POLICY
+                )
+        );
+    }
+
+    private void validateRelayConfiguration(StreamingContainerRunnerPort streamingRunner) {
+        if (credentialLeaseIssuer == null) {
+            throw new PiConfigurationException(
+                    "PI_PROVIDER_CONFIGURATION",
+                    "credential relay is enabled but no PiCredentialLeaseIssuer is wired"
+            );
         }
-        return configuration.networkMode();
+        if (!streamingRunner.supportsNetworkPlans()) {
+            throw new PiConfigurationException(
+                    "PI_RELAY_NETWORK_CAPABILITY",
+                    "credential relay requires a container runner that honors task-local network plans"
+            );
+        }
+        String relayUrl = configuration.credentialRelayUrl();
+        try {
+            URI uri = URI.create(relayUrl);
+            String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase(Locale.ROOT);
+            if ((!"http".equals(scheme) && !"https".equals(scheme))
+                    || uri.getHost() == null
+                    || uri.getRawQuery() != null
+                    || uri.getRawFragment() != null
+                    || uri.getUserInfo() != null) {
+                throw new IllegalArgumentException(
+                        "relay URL must be an absolute HTTP(S) URL without credentials, query, or fragment"
+                );
+            }
+        } catch (IllegalArgumentException exception) {
+            throw new PiConfigurationException(
+                    "PI_PROVIDER_CONFIGURATION",
+                    "credential relay URL is invalid",
+                    exception
+            );
+        }
+        String egressNetwork = configuration.networkMode();
+        if (egressNetwork.isBlank()
+                || "none".equalsIgnoreCase(egressNetwork)
+                || "host".equalsIgnoreCase(egressNetwork)
+                || egressNetwork.startsWith("container:")
+                || !egressNetwork.matches("[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")) {
+            throw new PiConfigurationException(
+                    "PI_RELAY_NETWORK_CAPABILITY",
+                    "credential relay requires a named outbound Docker network"
+            );
+        }
+    }
+
+    private static String relayResourceSuffix(AgentExecutionProfileSnapshot snapshot) {
+        String identity = snapshot.taskId() + "-" + snapshot.stageRunId() + "-" + snapshot.attemptNo();
+        String readable = identity.replaceAll("[^A-Za-z0-9_.-]+", "-")
+                .replaceAll("^-+", "")
+                .replaceAll("-+$", "");
+        if (readable.isBlank()) {
+            readable = "task";
+        }
+        String fingerprint = sha256Hex(identity.getBytes(StandardCharsets.UTF_8)).substring(0, 12);
+        int maxReadableLength = 128 - PI_RELAY_NETWORK_PREFIX.length() - fingerprint.length() - 1;
+        if (readable.length() > maxReadableLength) {
+            readable = readable.substring(0, maxReadableLength).replaceAll("[-.]+$", "");
+        }
+        return readable + "-" + fingerprint;
+    }
+
+    private static PiCredentialLeaseIssuer.RelayPolicy relayPolicy(ProviderSpec provider) {
+        ModelProviderProtocol protocol;
+        try {
+            protocol = ModelProviderProtocol.parse(provider.protocol());
+        } catch (IllegalArgumentException exception) {
+            throw new PiConfigurationException("PI_PROVIDER_CONFIGURATION", exception.getMessage(), exception);
+        }
+        return new PiCredentialLeaseIssuer.RelayPolicy(
+                provider.baseUrl(),
+                List.of("POST"),
+                relayAllowedPaths(protocol),
+                provider.authHeader(),
+                PI_RELAY_MAX_REQUEST_BYTES,
+                PI_RELAY_MAX_RESPONSE_BYTES,
+                Duration.ofMillis(PI_RELAY_TIMEOUT_MILLIS)
+        );
+    }
+
+    private static List<String> relayAllowedPaths(ModelProviderProtocol protocol) {
+        return switch (protocol) {
+            case ANTHROPIC_COMPATIBLE, ANTHROPIC_MESSAGES -> List.of("/v1/messages");
+            case OPENAI_CHAT_COMPLETIONS -> List.of("/chat/completions");
+            case OPENAI_COMPLETIONS -> List.of("/completions");
+            case OPENAI_RESPONSES -> List.of("/responses");
+            // The Pi Google client encodes a model-specific stream route with query
+            // parameters. This sidecar intentionally rejects query routes, so allow no
+            // unsafe wildcard until Google gets a separately reviewed relay contract.
+            case GOOGLE_GENERATIVE_AI -> throw new PiConfigurationException(
+                    "PI_PROVIDER_CONFIGURATION",
+                    "credential relay does not support GOOGLE_GENERATIVE_AI because its provider route is not a fixed query-free path"
+            );
+        };
     }
 
     private static ContainerSecurityPolicy piSecurityPolicy(int pidsLimit) {
@@ -1501,13 +1785,31 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         }
     }
 
+    private static Map<String, String> qaExecutionMetadata(QaProvision qaProvision) {
+        Map<String, String> metadata = new LinkedHashMap<>();
+        if (qaProvision == null) {
+            return Map.copyOf(metadata);
+        }
+        if (qaProvision.profile() != null) {
+            metadata.put(QaExecutionMetadataKeys.DECISION_SOURCE, qaProvision.profile().decisionSource());
+        }
+        if (qaProvision.candidateChangedFiles() != null) {
+            metadata.put(
+                    QaExecutionMetadataKeys.CANDIDATE_CHANGED_FILES_JSON,
+                    jsonArrayText(qaProvision.candidateChangedFiles())
+            );
+        }
+        return Map.copyOf(metadata);
+    }
+
     private static Map<String, String> dockerMetadata(
             ContainerRunRequest request,
             ContainerRunResult result,
             AgentExecutionProfileSnapshot snapshot,
             ProviderSpec provider,
             EventCapture events,
-            List<RepairArtifact> artifacts
+            List<RepairArtifact> artifacts,
+            Map<String, String> qaExecutionMetadata
     ) {
         Map<String, String> metadata = new LinkedHashMap<>();
         metadata.put("runtime", "PI");
@@ -1541,6 +1843,9 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                 events
         ));
         result.metadata().forEach((key, value) -> metadata.put("runner." + key, SecretRedactor.redactValue(key, value)));
+        if (qaExecutionMetadata != null && !qaExecutionMetadata.isEmpty()) {
+            metadata.putAll(qaExecutionMetadata);
+        }
         return Map.copyOf(metadata);
     }
 
@@ -1986,7 +2291,7 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                 long executionTimeoutMillis
         ) {
             this(image, "", command, networkMode, removeAfterExit, allowPrivileged, executionTimeoutMillis,
-                    DEFAULT_BASH_COMMAND_TIMEOUT_MILLIS, 16L * 1024L * 1024L, "v1", false);
+                    DEFAULT_BASH_COMMAND_TIMEOUT_MILLIS, 16L * 1024L * 1024L, "v1", true);
         }
 
         public Configuration(
@@ -1999,7 +2304,7 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                 long executionTimeoutMillis
         ) {
             this(image, qaImage, command, networkMode, removeAfterExit, allowPrivileged, executionTimeoutMillis,
-                    DEFAULT_BASH_COMMAND_TIMEOUT_MILLIS, 16L * 1024L * 1024L, "v1", false);
+                    DEFAULT_BASH_COMMAND_TIMEOUT_MILLIS, 16L * 1024L * 1024L, "v1", true);
         }
 
         public Configuration(
@@ -2033,7 +2338,7 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                 String requestProtocolVersion
         ) {
             this(image, qaImage, command, networkMode, removeAfterExit, allowPrivileged, executionTimeoutMillis,
-                    bashCommandTimeoutMillis, rawEventMaxBytes, requestProtocolVersion, false,
+                    bashCommandTimeoutMillis, rawEventMaxBytes, requestProtocolVersion, true,
                     DEFAULT_CREDENTIAL_RELAY_URL);
         }
 
@@ -2049,7 +2354,7 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                     DEFAULT_BASH_COMMAND_TIMEOUT_MILLIS,
                     16L * 1024L * 1024L,
                     "v1",
-                    false
+                    true
             );
         }
 

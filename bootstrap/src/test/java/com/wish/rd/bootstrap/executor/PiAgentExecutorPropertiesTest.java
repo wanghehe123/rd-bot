@@ -43,21 +43,25 @@ class PiAgentExecutorPropertiesTest {
     }
 
     @Test
-    void shouldDefaultCredentialRelayDisabledAndPassThroughSetter() {
+    void shouldDefaultCredentialRelayEnabledAndPassThroughSetter() {
         PiAgentExecutorProperties properties = new PiAgentExecutorProperties();
 
-        assertFalse(properties.isCredentialRelayEnabled());
-        assertFalse(properties.toExecutorConfiguration().credentialRelayEnabled());
-
-        properties.setCredentialRelayEnabled(true);
         assertTrue(properties.isCredentialRelayEnabled());
         assertTrue(properties.toExecutorConfiguration().credentialRelayEnabled());
+
+        properties.setCredentialRelayEnabled(false);
+        assertFalse(properties.isCredentialRelayEnabled());
+        assertFalse(properties.toExecutorConfiguration().credentialRelayEnabled());
     }
 
     @Test
-    void shouldExposeTheConfiguredCredentialRelayUrlWithoutChangingTheDisabledDefault() {
+    void shouldExposeTheConfiguredCredentialRelayUrlWithoutChangingTheSafeDefault() {
         PiAgentExecutorProperties properties = new PiAgentExecutorProperties();
 
+        assertEquals(
+                "http://host.docker.internal:18080/internal/pi/credential-relay/proxy",
+                PiAgentExecutorProperties.DEFAULT_CREDENTIAL_RELAY_URL
+        );
         assertEquals(PiAgentExecutorProperties.DEFAULT_CREDENTIAL_RELAY_URL, properties.getCredentialRelayUrl());
         assertEquals(
                 PiAgentExecutorProperties.DEFAULT_CREDENTIAL_RELAY_URL,
@@ -67,6 +71,6 @@ class PiAgentExecutorPropertiesTest {
         properties.setCredentialRelayUrl("http://relay.internal/redeem");
         assertEquals("http://relay.internal/redeem", properties.getCredentialRelayUrl());
         assertEquals("http://relay.internal/redeem", properties.toExecutorConfiguration().credentialRelayUrl());
-        assertFalse(properties.isCredentialRelayEnabled());
+        assertTrue(properties.isCredentialRelayEnabled());
     }
 }

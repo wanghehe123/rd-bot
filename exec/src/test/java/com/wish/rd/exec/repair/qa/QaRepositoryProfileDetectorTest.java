@@ -9,6 +9,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.net.URI;
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -158,6 +159,83 @@ class QaRepositoryProfileDetectorTest {
         assertFalse(profile.browserRequired());
         assertFalse(profile.ambiguous());
         assertEquals("NOT_APPLICABLE", profile.decisionSource());
+    }
+
+    @Test
+    void shouldSkipBrowserBuildAndStartWhenCandidateChangeIsDocsOnly() throws Exception {
+        Files.writeString(repository.resolve("package.json"), """
+                {
+                  "scripts": {"dev": "next dev", "build": "next build", "start": "next start"},
+                  "dependencies": {"next": "latest", "react": "latest"}
+                }
+                """);
+
+        QaExecutionProfile profile = detector.detect(
+                command(Map.of()),
+                repository,
+                List.of("README.md", "docs/smoke-marker.md")
+        );
+
+        assertFalse(profile.browserRequired());
+        assertFalse(profile.ambiguous());
+        assertEquals("DOCS_ONLY", profile.decisionSource());
+        assertEquals("", profile.startCommand());
+        assertEquals("", profile.baseUrl());
+        assertTrue(profile.reason().toLowerCase().contains("docs-only"));
+    }
+
+    @Test
+    void shouldKeepFullNextJsProfileWhenCandidateTouchesSourceOrPackageJson() throws Exception {
+        Files.writeString(repository.resolve("package.json"), """
+                {
+                  "scripts": {"dev": "next dev", "build": "next build", "start": "next start"},
+                  "dependencies": {"next": "latest", "react": "latest"}
+                }
+                """);
+
+        QaExecutionProfile sourceTouch = detector.detect(
+                command(Map.of()),
+                repository,
+                List.of("README.md", "src/app/page.tsx")
+        );
+        QaExecutionProfile packageTouch = detector.detect(
+                command(Map.of()),
+                repository,
+                List.of("package.json")
+        );
+        QaExecutionProfile lockTouch = detector.detect(
+                command(Map.of()),
+                repository,
+                List.of("package-lock.json")
+        );
+
+        assertTrue(sourceTouch.browserRequired());
+        assertEquals("AUTO_DETECTION", sourceTouch.decisionSource());
+        assertEquals("npm run build && npm run start -- --hostname 0.0.0.0", sourceTouch.startCommand());
+
+        assertTrue(packageTouch.browserRequired());
+        assertEquals("AUTO_DETECTION", packageTouch.decisionSource());
+        assertTrue(lockTouch.browserRequired());
+        assertEquals("AUTO_DETECTION", lockTouch.decisionSource());
+    }
+
+    @Test
+    void shouldFailClosedToFullProfileWhenChangedFileSetIsUndeterminable() throws Exception {
+        Files.writeString(repository.resolve("package.json"), """
+                {
+                  "scripts": {"dev": "next dev", "build": "next build", "start": "next start"},
+                  "dependencies": {"next": "latest", "react": "latest"}
+                }
+                """);
+
+        QaExecutionProfile missing = detector.detect(command(Map.of()), repository, null);
+        QaExecutionProfile empty = detector.detect(command(Map.of()), repository, List.of());
+
+        assertTrue(missing.browserRequired());
+        assertEquals("AUTO_DETECTION", missing.decisionSource());
+        assertEquals("npm run build && npm run start -- --hostname 0.0.0.0", missing.startCommand());
+        assertTrue(empty.browserRequired());
+        assertEquals("AUTO_DETECTION", empty.decisionSource());
     }
 
     @Test

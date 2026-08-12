@@ -5,6 +5,7 @@ import com.wish.rd.exec.repair.pi.impl.InMemoryPiCredentialLeaseIssuer;
 import com.wish.rd.exec.repair.runtime.model.AgentRuntimeExecutionRequest;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.wish.rd.exec.repair.docker.ContainerOutputListener;
 import com.wish.rd.exec.repair.docker.RepairWorkspaceFactory;
 import com.wish.rd.exec.repair.docker.RepairWorkspaceRepositoryPort;
@@ -12,10 +13,16 @@ import com.wish.rd.exec.repair.docker.StreamingContainerRunnerPort;
 import com.wish.rd.exec.repair.docker.model.ContainerRunRequest;
 import com.wish.rd.exec.repair.docker.model.ContainerRunResult;
 import com.wish.rd.exec.repair.docker.model.RepairWorkspace;
+import com.wish.rd.exec.repair.execution.model.RepairArtifact;
+import com.wish.rd.exec.repair.execution.model.RepairArtifactType;
 import com.wish.rd.exec.repair.execution.model.RepairExecutionResult;
 import com.wish.rd.exec.repair.execution.model.RepairExecutionStatus;
+import com.wish.rd.exec.repair.execution.model.RepairInputAttachment;
 import com.wish.rd.exec.repair.execution.model.RepairJobCommand;
+import com.wish.rd.exec.repair.qa.QaExecutionMetadataKeys;
+import com.wish.rd.exec.repair.result.QaEvidenceBundleValidator;
 import com.wish.rd.exec.repair.result.StructuredResultValidator;
+import com.wish.rd.exec.repair.result.model.AgentRoleResultValidation;
 import com.wish.rd.exec.repair.runtime.AgentExecutionEventSink;
 import com.wish.rd.exec.repair.security.model.ExecutionAllowlistPolicy;
 import com.wish.rd.rag.project.agent.model.AgentExecutionProfileSnapshot;
@@ -24,10 +31,14 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -38,6 +49,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class DockerPiAgentExecutorTest {
@@ -332,6 +345,45 @@ class DockerPiAgentExecutorTest {
     }
 
     @Test
+    void shouldSerializeOnlyOpaqueHostAssertionContractsForQaRequests() throws Exception {
+        CapturingRunner runner = new CapturingRunner();
+        DockerPiAgentExecutor executor = executor(runner, AgentExecutionEventSink.noop(), ignored -> "secret");
+        RepairJobCommand base = command("task-host-contract", "QA_AGENT");
+        Map<String, String> context = new java.util.LinkedHashMap<>(base.contextJson());
+        context.put("hostAssertionContracts", hostAssertionContractsJson());
+        RepairJobCommand command = new RepairJobCommand(
+                base.repairRecordId(),
+                base.taskId(),
+                base.ticketId(),
+                base.ticketTitle(),
+                base.prompt(),
+                base.repositoryUrl(),
+                base.repoOwner(),
+                base.repoName(),
+                base.baseBranch(),
+                base.workBranch(),
+                context,
+                base.policyJson(),
+                base.attachments()
+        );
+
+        executor.execute(new AgentRuntimeExecutionRequest(
+                snapshot("snapshot-host-contract", "stage-task-host-contract", "task-host-contract",
+                        AgentRuntimeType.PI, "", "QA_AGENT"),
+                command
+        ));
+
+        JsonNode request = OBJECT_MAPPER.readTree(Files.readString(
+                temporaryDirectory.resolve("workspaces/task-host-contract/input/request.json")
+        ));
+        assertEquals(2, request.path("hostAssertionContracts").size());
+        assertEquals("CURRENT", request.path("hostAssertionContracts").get(0).path("scope").asText());
+        assertEquals("REGRESSION", request.path("hostAssertionContracts").get(1).path("scope").asText());
+        assertEquals(1L, request.path("hostAssertionContracts").get(0).path("version").asLong());
+        assertFalse(request.path("hostAssertionContracts").get(0).has("specs"));
+    }
+
+    @Test
     void shouldClearStalePiOutputBeforeStartingANewAttempt() throws Exception {
         Path staleRawEvents = temporaryDirectory.resolve(
                 "workspaces/task-1/output/private/pi-raw-events.jsonl"
@@ -494,54 +546,113 @@ class DockerPiAgentExecutorTest {
                 temporaryDirectory.resolve("workspaces/task-architect/repo").toString()
         ));
 
-        // QA still shares the task workspace layout today; independence means it must
-        // not rewrite the candidate patch via a writable repo mount. A separate checkout
-        // remains a follow-up slice.
         executor.execute(new AgentRuntimeExecutionRequest(
                 snapshot("snapshot-qa-ro", "stage-qa-ro", "task-qa-ro", AgentRuntimeType.PI, "", "QA_AGENT"),
                 command("task-qa-ro", "QA_AGENT")
         ));
-        assertEquals("/work/repo:ro", runner.request.mounts().get(
-                temporaryDirectory.resolve("workspaces/task-qa-ro/repo").toString()
-        ));
-        assertTrue(Files.isDirectory(temporaryDirectory.resolve("workspaces/task-qa-ro/repo")));
+        String qaRepoMount = runner.request.mounts().entrySet().stream()
+                .filter(entry -> "/work/repo:ro".equals(entry.getValue()))
+                .map(Map.Entry::getKey)
+                .findFirst()
+                .orElseThrow();
+        assertTrue(qaRepoMount.contains("/provider-attempts/"), qaRepoMount);
+        assertTrue(Files.isDirectory(Path.of(qaRepoMount)));
     }
 
     @Test
-    void shouldUseConfiguredNetworkForAllRolesWhenRelayDisabled() throws Exception {
+    void shouldGiveQaAnIndependentCandidatePatchWorkspaceWhileRetainingTaskCache() throws Exception {
         CapturingRunner runner = new CapturingRunner();
         DockerPiAgentExecutor executor = executor(runner, AgentExecutionEventSink.noop(), ignored -> "secret");
 
-        executor.execute(new AgentRuntimeExecutionRequest(
-                snapshot("snapshot-review-net", "stage-review-net", "task-review-net", AgentRuntimeType.PI, "",
-                        "REQUIREMENT_REVIEWER"),
-                command("task-review-net", "REQUIREMENT_REVIEWER")
-        ));
-        assertEquals("bridge", runner.request.networkMode());
+        Path taskRoot = temporaryDirectory.resolve("workspaces/task-qa-isolated");
+        Path codingRepo = Files.createDirectories(taskRoot.resolve("repo"));
+        Path codingOutput = Files.createDirectories(taskRoot.resolve("output"));
+        Path taskCache = Files.createDirectories(taskRoot.resolve("cache"));
+        Files.writeString(codingRepo.resolve("secret-coding-output.txt"), "coding-only\n");
+        Files.writeString(codingOutput.resolve("secret-coding-output.txt"), "coding-only\n");
+        Files.writeString(taskCache.resolve("package-cache-marker"), "retain\n");
 
-        executor.execute(new AgentRuntimeExecutionRequest(
-                snapshot("snapshot-architect-net", "stage-architect-net", "task-architect-net", AgentRuntimeType.PI, "",
-                        "SOLUTION_ARCHITECT"),
-                command("task-architect-net", "SOLUTION_ARCHITECT")
-        ));
-        assertEquals("bridge", runner.request.networkMode());
+        RepairJobCommand base = command("task-qa-isolated", "QA_AGENT");
+        RepairJobCommand qaCommand = new RepairJobCommand(
+                base.repairRecordId(),
+                base.taskId(),
+                base.ticketId(),
+                base.ticketTitle(),
+                base.prompt(),
+                base.repositoryUrl(),
+                base.repoOwner(),
+                base.repoName(),
+                base.baseBranch(),
+                base.workBranch(),
+                base.contextJson(),
+                Map.of(
+                        "repositoryPublishRequired", "false",
+                        "applyCandidatePatch", "true",
+                        "repositoryDeliveryMode", "LOCAL_ONLY"
+                ),
+                List.of(new RepairInputAttachment(
+                        "candidate-patch.diff",
+                        "text/x-diff",
+                        "diff --git a/README.md b/README.md\n".getBytes(StandardCharsets.UTF_8)
+                ))
+        );
 
-        executor.execute(new AgentRuntimeExecutionRequest(
-                snapshot("snapshot-coding-net", "stage-coding-net", "task-coding-net", AgentRuntimeType.PI, "",
-                        "CODING_AGENT"),
-                command("task-coding-net", "CODING_AGENT")
+        RepairExecutionResult result = executor.execute(new AgentRuntimeExecutionRequest(
+                snapshot("snapshot-qa-isolated", "stage-qa-isolated", "task-qa-isolated",
+                        AgentRuntimeType.PI, "", "QA_AGENT"),
+                qaCommand
         ));
-        assertEquals("bridge", runner.request.networkMode());
 
-        executor.execute(new AgentRuntimeExecutionRequest(
-                snapshot("snapshot-qa-net", "stage-qa-net", "task-qa-net", AgentRuntimeType.PI, "", "QA_AGENT"),
-                command("task-qa-net", "QA_AGENT")
-        ));
-        assertEquals("bridge", runner.request.networkMode());
+        assertEquals(RepairExecutionStatus.SUCCESS, result.status(), result.errorMessage());
+        Path qaInput = Path.of(runner.request.mounts().entrySet().stream()
+                .filter(entry -> "/work/input:ro".equals(entry.getValue()))
+                .map(Map.Entry::getKey)
+                .findFirst()
+                .orElseThrow());
+        Path qaRoot = qaInput.getParent();
+        assertTrue(qaRoot.toString().contains("/provider-attempts/"), qaRoot.toString());
+        assertNotNull(runner.request.mounts().get(taskCache.toString()), runner.request.mounts().toString());
+        assertEquals("/work/cache", runner.request.mounts().get(taskCache.toString()));
+        assertEquals("diff --git a/README.md b/README.md\n",
+                Files.readString(qaInput.resolve("attachments/candidate-patch.diff")));
+        assertFalse(Files.exists(qaRoot.resolve("repo/secret-coding-output.txt")));
+        assertFalse(Files.exists(qaRoot.resolve("output/secret-coding-output.txt")));
+        assertEquals("coding-only\n", Files.readString(codingRepo.resolve("secret-coding-output.txt")));
+        assertEquals("coding-only\n", Files.readString(codingOutput.resolve("secret-coding-output.txt")));
+        assertEquals("retain\n", Files.readString(taskCache.resolve("package-cache-marker")));
     }
 
     @Test
-    void shouldForceNetworkNoneForReviewRolesWhenCredentialRelayEnabled() throws Exception {
+    void shouldFailClosedWhenCredentialRelayIsExplicitlyDisabled() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        CapturingRunner runner = new CapturingRunner() {
+            @Override
+            public ContainerRunResult run(ContainerRunRequest request, ContainerOutputListener listener) {
+                calls.incrementAndGet();
+                return null;
+            }
+        };
+        DockerPiAgentExecutor executor = executor(
+                runner,
+                AgentExecutionEventSink.noop(),
+                ignored -> "secret",
+                disabledCredentialRelayConfiguration()
+        );
+
+        RepairExecutionResult result = executor.execute(new AgentRuntimeExecutionRequest(
+                snapshot("snapshot-relay-off", "stage-relay-off", "task-relay-off", AgentRuntimeType.PI, "",
+                        "CODING_AGENT"),
+                command("task-relay-off", "CODING_AGENT")
+        ));
+
+        assertEquals(RepairExecutionStatus.FAILED_VALIDATION, result.status());
+        assertEquals("PI_CREDENTIAL_RELAY_REQUIRED", result.rawResultJson().get("failureCategory"));
+        assertEquals(0, calls.get());
+        assertFalse(result.dockerMetadataJson().toString().contains("secret"));
+    }
+
+    @Test
+    void shouldCreateATaskLocalRelayNetworkForReviewRolesWhenCredentialRelayEnabled() throws Exception {
         CapturingRunner runner = new CapturingRunner();
         InMemoryPiCredentialLeaseIssuer issuer = new InMemoryPiCredentialLeaseIssuer();
         DockerPiAgentExecutor.Configuration relayOn = new DockerPiAgentExecutor.Configuration(
@@ -577,11 +688,15 @@ class DockerPiAgentExecutorTest {
                         AgentRuntimeType.PI, "", "REQUIREMENT_REVIEWER"),
                 command("task-review-relay-net", "REQUIREMENT_REVIEWER")
         ));
-        assertEquals("none", runner.request.networkMode());
+        assertTrue(runner.request.networkMode().startsWith("rd-pi-network-"));
+        assertNotNull(runner.request.networkPlan());
+        assertEquals(runner.request.networkMode(), runner.request.networkPlan().internalNetworkName());
+        assertEquals("rd-pi-relay", runner.request.networkPlan().sidecar().networkAlias());
+        assertEquals("bridge", runner.request.networkPlan().sidecar().egressNetwork());
     }
 
     @Test
-    void shouldForceNetworkNoneForCodingWhenCredentialRelayEnabled() throws Exception {
+    void shouldRouteCodingThroughTheTaskLocalRelaySidecarWhenCredentialRelayEnabled() throws Exception {
         CapturingRunner runner = new CapturingRunner();
         InMemoryPiCredentialLeaseIssuer issuer = new InMemoryPiCredentialLeaseIssuer();
         DockerPiAgentExecutor.Configuration relayOn = new DockerPiAgentExecutor.Configuration(
@@ -618,7 +733,10 @@ class DockerPiAgentExecutorTest {
                 command("task-coding-relay-net", "CODING_AGENT")
         ));
 
-        assertEquals("none", runner.request.networkMode());
+        assertTrue(runner.request.networkMode().startsWith("rd-pi-network-"));
+        assertNotNull(runner.request.networkPlan());
+        assertEquals("rd-pi-relay", runner.request.networkPlan().sidecar().networkAlias());
+        assertEquals("bridge", runner.request.networkPlan().sidecar().egressNetwork());
         assertFalse(runner.request.env().containsKey("PI_TEST_API_KEY"));
     }
 
@@ -638,6 +756,56 @@ class DockerPiAgentExecutorTest {
         assertEquals("/work/input/qa-profile.json", runner.request.env().get("RD_QA_PROFILE_FILE"));
         assertTrue(runner.request.env().containsKey("RD_QA_ALLOWED_HOSTS"));
         assertEquals("/work/output/qa-work/playwright", runner.request.env().get("PLAYWRIGHT_MCP_OUTPUT_DIR"));
+    }
+
+    @Test
+    void shouldPublishDeterminableQaCandidateChangedFilesInDockerMetadata() throws Exception {
+        String taskId = "task-qa-docs-meta";
+        String stageRunId = "stage-" + taskId;
+        IdentityCapturingRunner runner = new IdentityCapturingRunner(stageRunId, taskId, "QA_AGENT");
+        DockerPiAgentExecutor executor = executor(
+                runner,
+                AgentExecutionEventSink.noop(),
+                ignored -> "secret",
+                new DocsOnlyCandidateRepositoryPort()
+        );
+
+        RepairExecutionResult result = executor.execute(new AgentRuntimeExecutionRequest(
+                snapshot("snapshot-qa-docs-meta", stageRunId, taskId, AgentRuntimeType.PI, "", "QA_AGENT"),
+                command(taskId, "QA_AGENT")
+        ));
+
+        assertTrue(
+                result.dockerMetadataJson().containsKey(QaExecutionMetadataKeys.CANDIDATE_CHANGED_FILES_JSON),
+                () -> "QA candidate files must ride dockerMetadataJson; github="
+                        + result.githubMetadataJson()
+                        + " docker="
+                        + result.dockerMetadataJson()
+        );
+        assertFalse(
+                result.githubMetadataJson().containsKey(QaExecutionMetadataKeys.CANDIDATE_CHANGED_FILES_JSON),
+                "repository/github metadata must not carry the host docs-only decision channel"
+        );
+        assertEquals(
+                "DOCS_ONLY",
+                result.dockerMetadataJson().get(QaExecutionMetadataKeys.DECISION_SOURCE)
+        );
+
+        List<String> fromDocker = QaExecutionMetadataKeys.candidateChangedFilesFrom(result.dockerMetadataJson());
+        assertNotNull(fromDocker, "determinable docs-only change set must deserialize from docker metadata");
+        assertTrue(fromDocker.contains("docs/rd-bot-full-run-smoke.md"), fromDocker.toString());
+
+        AgentRoleResultValidation hostValidation = new QaEvidenceBundleValidator().validate(
+                docsOnlyQaResultJson(),
+                docsOnlyHostArtifacts(),
+                List.of("docs marker present"),
+                fromDocker
+        );
+        assertTrue(hostValidation.valid(), () -> String.join("; ", hostValidation.errors()));
+        assertNull(
+                QaExecutionMetadataKeys.candidateChangedFilesFrom(Map.of()),
+                "missing docker key must stay fail-closed (undeterminable)"
+        );
     }
 
     @Test
@@ -724,17 +892,20 @@ class DockerPiAgentExecutorTest {
     }
 
     @Test
-    void shouldInjectProviderCredentialWhenCredentialRelayDisabledByDefault() throws Exception {
+    void shouldDefaultCredentialedExecutionsToTheRelayAndNeverInjectRawSecret() throws Exception {
         CapturingRunner runner = new CapturingRunner();
         DockerPiAgentExecutor executor = executor(runner, AgentExecutionEventSink.noop(), ignored -> "secret-key");
 
-        executor.execute(new com.wish.rd.exec.repair.runtime.model.AgentRuntimeExecutionRequest(
-                snapshot("snapshot-cred-off", "stage-cred-off", "task-cred-off", AgentRuntimeType.PI, ""),
-                command("task-cred-off", "CODING_AGENT")
+        RepairExecutionResult result = executor.execute(new com.wish.rd.exec.repair.runtime.model.AgentRuntimeExecutionRequest(
+                snapshot("snapshot-1", "stage-1", "task-1", AgentRuntimeType.PI, ""),
+                command("task-1", "CODING_AGENT")
         ));
 
-        assertFalse(defaultConfiguration().credentialRelayEnabled());
-        assertEquals("secret-key", runner.request.env().get("PI_TEST_API_KEY"));
+        assertEquals(RepairExecutionStatus.SUCCESS, result.status(), result.errorMessage());
+        assertTrue(defaultConfiguration().credentialRelayEnabled());
+        assertFalse(runner.request.env().containsKey("PI_TEST_API_KEY"));
+        assertTrue(runner.request.env().get("RD_PI_CREDENTIAL_LEASE").startsWith("pcl_"));
+        assertFalse(runner.request.env().values().stream().anyMatch(value -> value != null && value.contains("secret-key")));
     }
 
     @Test
@@ -760,7 +931,12 @@ class DockerPiAgentExecutorTest {
                 "v1",
                 true
         );
-        DockerPiAgentExecutor executor = executor(runner, AgentExecutionEventSink.noop(), ignored -> "secret", relayOn);
+        DockerPiAgentExecutor executor = executorWithoutLeaseIssuer(
+                runner,
+                AgentExecutionEventSink.noop(),
+                ignored -> "secret",
+                relayOn
+        );
 
         RepairExecutionResult result = executor.execute(new com.wish.rd.exec.repair.runtime.model.AgentRuntimeExecutionRequest(
                 snapshot("snapshot-relay", "stage-relay", "task-relay", AgentRuntimeType.PI, ""),
@@ -772,6 +948,65 @@ class DockerPiAgentExecutorTest {
         assertTrue(result.errorMessage().contains("credential relay")
                 || result.errorMessage().contains("PiCredentialLeaseIssuer"));
         assertEquals(0, calls.get());
+    }
+
+    @Test
+    void shouldFailClosedBeforeContainerCreationWhenRunnerCannotHonorRelayNetworkPlan() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        CapturingRunner runner = new CapturingRunner() {
+            @Override
+            public boolean supportsNetworkPlans() {
+                return false;
+            }
+
+            @Override
+            public ContainerRunResult run(ContainerRunRequest request, ContainerOutputListener listener) {
+                calls.incrementAndGet();
+                return null;
+            }
+        };
+        DockerPiAgentExecutor executor = executor(
+                runner,
+                AgentExecutionEventSink.noop(),
+                ignored -> "secret",
+                defaultConfiguration()
+        );
+
+        RepairExecutionResult result = executor.execute(new AgentRuntimeExecutionRequest(
+                snapshot("snapshot-network-capability", "stage-network-capability", "task-network-capability",
+                        AgentRuntimeType.PI, ""),
+                command("task-network-capability", "CODING_AGENT")
+        ));
+
+        assertEquals(RepairExecutionStatus.FAILED_VALIDATION, result.status());
+        assertEquals("PI_RELAY_NETWORK_CAPABILITY", result.rawResultJson().get("failureCategory"));
+        assertEquals(0, calls.get());
+    }
+
+    @Test
+    void shouldAllowExplicitNoCredentialLocalPathWithoutWritingCredentialEnvironment() throws Exception {
+        CapturingRunner runner = new CapturingRunner();
+        DockerPiAgentExecutor executor = executor(
+                runner,
+                AgentExecutionEventSink.noop(),
+                ignored -> "unused-secret",
+                disabledCredentialRelayConfiguration()
+        );
+
+        RepairExecutionResult result = executor.execute(new AgentRuntimeExecutionRequest(
+                snapshotWithoutCredential("snapshot-1", "stage-1", "task-1"),
+                command("task-1", "CODING_AGENT")
+        ));
+
+        assertEquals(RepairExecutionStatus.SUCCESS, result.status(), result.errorMessage());
+        assertFalse(runner.request.env().containsKey("PI_TEST_API_KEY"));
+        assertFalse(runner.request.env().values().stream().anyMatch(value -> value != null && value.contains("unused-secret")));
+        JsonNode requestJson = OBJECT_MAPPER.readTree(Files.readString(
+                temporaryDirectory.resolve("workspaces/task-1/input/request.json"),
+                StandardCharsets.UTF_8
+        ));
+        assertTrue(requestJson.path("credentialEnvironmentVariable").isMissingNode());
+        assertFalse(requestJson.path("authHeader").asBoolean());
     }
 
     @Test
@@ -806,7 +1041,7 @@ class DockerPiAgentExecutorTest {
                 issuer
         );
 
-        executor.execute(new com.wish.rd.exec.repair.runtime.model.AgentRuntimeExecutionRequest(
+        RepairExecutionResult result = executor.execute(new com.wish.rd.exec.repair.runtime.model.AgentRuntimeExecutionRequest(
                 snapshot("snapshot-lease", "stage-lease", "task-lease", AgentRuntimeType.PI, ""),
                 command("task-lease", "CODING_AGENT")
         ));
@@ -814,16 +1049,45 @@ class DockerPiAgentExecutorTest {
         Map<String, String> env = runner.request.env();
         assertEquals("true", env.get("RD_PI_CREDENTIAL_RELAY_ENABLED"));
         assertTrue(env.get("RD_PI_CREDENTIAL_LEASE").startsWith("pcl_"));
-        assertEquals(
-                "http://host.docker.internal:18080/internal/pi/credential-relay/redeem",
-                env.get("RD_PI_CREDENTIAL_RELAY_URL")
-        );
-        assertEquals("task-lease", env.get("RD_PI_CREDENTIAL_RELAY_TASK_ID"));
-        assertEquals("stage-lease", env.get("RD_PI_CREDENTIAL_RELAY_STAGE_RUN_ID"));
-        assertEquals("provider-1", env.get("RD_PI_CREDENTIAL_RELAY_PROVIDER_ID"));
+        assertFalse(env.containsKey("RD_PI_CREDENTIAL_RELAY_URL"));
+        assertFalse(env.containsKey("RD_PI_CREDENTIAL_RELAY_TASK_ID"));
+        assertFalse(env.containsKey("RD_PI_CREDENTIAL_RELAY_STAGE_RUN_ID"));
+        assertFalse(env.containsKey("RD_PI_CREDENTIAL_RELAY_PROVIDER_ID"));
         assertFalse(env.containsKey("PI_TEST_API_KEY"));
         assertFalse(env.values().stream().anyMatch(value -> value != null && value.contains("super-secret")));
-        assertEquals(Optional.of("super-secret-key"), issuer.redeem(env.get("RD_PI_CREDENTIAL_LEASE")));
+        assertNotNull(runner.request.networkPlan());
+        Map<String, String> relayEnv = runner.request.networkPlan().sidecar().env();
+        assertEquals("node", runner.request.networkPlan().sidecar().entrypoint());
+        assertEquals(
+                List.of("/opt/rd-pi-bridge/src/rd-pi-relay-sidecar.mjs"),
+                runner.request.networkPlan().sidecar().command()
+        );
+        assertEquals(
+                "http://host.docker.internal:18080/internal/pi/credential-relay/proxy",
+                relayEnv.get("RD_PI_RELAY_HOST_URL")
+        );
+        assertEquals("task-lease", relayEnv.get("RD_PI_RELAY_TASK_ID"));
+        assertEquals("stage-lease", relayEnv.get("RD_PI_RELAY_STAGE_RUN_ID"));
+        assertEquals("provider-1", relayEnv.get("RD_PI_RELAY_PROVIDER_ID"));
+        assertFalse(relayEnv.values().stream().anyMatch(value -> value != null && value.contains("super-secret")));
+        assertTrue(issuer.authorize(
+                env.get("RD_PI_CREDENTIAL_LEASE"),
+                "task-lease",
+                "stage-lease",
+                "provider-1",
+                "POST",
+                "/chat/completions",
+                2
+        ).isPresent());
+        String requestJson = Files.readString(
+                temporaryDirectory.resolve("workspaces/task-lease/input/request.json"),
+                StandardCharsets.UTF_8
+        );
+        assertTrue(requestJson.contains("http://rd-pi-relay:8787"));
+        assertTrue(OBJECT_MAPPER.readTree(requestJson).path("authHeader").asBoolean());
+        assertFalse(requestJson.contains("super-secret"));
+        assertFalse(runner.request.command().toString().contains("super-secret"));
+        assertFalse(result.dockerMetadataJson().toString().contains("super-secret"));
     }
 
     @Test
@@ -871,7 +1135,24 @@ class DockerPiAgentExecutorTest {
                 runner,
                 eventSink,
                 authResolver,
-                defaultConfiguration()
+                defaultConfiguration(),
+                RepairWorkspaceRepositoryPort.noop()
+        );
+    }
+
+    private DockerPiAgentExecutor executor(
+            StreamingContainerRunnerPort runner,
+            AgentExecutionEventSink eventSink,
+            com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor.AuthEnvironmentResolver authResolver,
+            RepairWorkspaceRepositoryPort workspaceRepository
+    ) {
+        return executor(
+                new RepairWorkspaceFactory(temporaryDirectory.resolve("workspaces"), RESULT_SCHEMA),
+                runner,
+                eventSink,
+                authResolver,
+                defaultConfiguration(),
+                workspaceRepository
         );
     }
 
@@ -886,7 +1167,8 @@ class DockerPiAgentExecutorTest {
                 runner,
                 eventSink,
                 authResolver,
-                configuration
+                configuration,
+                RepairWorkspaceRepositoryPort.noop()
         );
     }
 
@@ -896,7 +1178,14 @@ class DockerPiAgentExecutorTest {
             AgentExecutionEventSink eventSink,
             com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor.AuthEnvironmentResolver authResolver
     ) {
-        return executor(workspaceFactory, runner, eventSink, authResolver, defaultConfiguration());
+        return executor(
+                workspaceFactory,
+                runner,
+                eventSink,
+                authResolver,
+                defaultConfiguration(),
+                RepairWorkspaceRepositoryPort.noop()
+        );
     }
 
     private DockerPiAgentExecutor executor(
@@ -906,8 +1195,48 @@ class DockerPiAgentExecutorTest {
             com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor.AuthEnvironmentResolver authResolver,
             DockerPiAgentExecutor.Configuration configuration
     ) {
+        return executor(
+                workspaceFactory,
+                runner,
+                eventSink,
+                authResolver,
+                configuration,
+                RepairWorkspaceRepositoryPort.noop()
+        );
+    }
+
+    private DockerPiAgentExecutor executor(
+            RepairWorkspaceFactory workspaceFactory,
+            StreamingContainerRunnerPort runner,
+            AgentExecutionEventSink eventSink,
+            com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor.AuthEnvironmentResolver authResolver,
+            DockerPiAgentExecutor.Configuration configuration,
+            RepairWorkspaceRepositoryPort workspaceRepository
+    ) {
         return new DockerPiAgentExecutor(
                 workspaceFactory,
+                runner,
+                new StructuredResultValidator(),
+                configuration,
+                workspaceRepository,
+                ExecutionAllowlistPolicy.disabled(),
+                PiResourceManifestMaterializerPort.emptyOnly(),
+                PiSkillMaterializerPort.emptyOnly(),
+                eventSink,
+                com.wish.rd.exec.repair.pi.AgentPrivateArtifactPublisher.noop(),
+                authResolver,
+                configuration.credentialRelayEnabled() ? new InMemoryPiCredentialLeaseIssuer() : null
+        );
+    }
+
+    private DockerPiAgentExecutor executorWithoutLeaseIssuer(
+            StreamingContainerRunnerPort runner,
+            AgentExecutionEventSink eventSink,
+            com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor.AuthEnvironmentResolver authResolver,
+            DockerPiAgentExecutor.Configuration configuration
+    ) {
+        return new DockerPiAgentExecutor(
+                new RepairWorkspaceFactory(temporaryDirectory.resolve("workspaces"), RESULT_SCHEMA),
                 runner,
                 new StructuredResultValidator(),
                 configuration,
@@ -927,7 +1256,27 @@ class DockerPiAgentExecutorTest {
                 "bridge",
                 true,
                 false,
-                60_000L
+                60_000L,
+                900_000L,
+                16L * 1024L * 1024L,
+                "v1",
+                true
+        );
+    }
+
+    private static DockerPiAgentExecutor.Configuration disabledCredentialRelayConfiguration() {
+        return new DockerPiAgentExecutor.Configuration(
+                "rd-bot/pi-agent:test",
+                "rd-bot/pi-agent-qa:local",
+                List.of("node", "/opt/rd-pi-bridge/src/rd-pi-bridge.mjs"),
+                "bridge",
+                true,
+                false,
+                60_000L,
+                900_000L,
+                16L * 1024L * 1024L,
+                "v1",
+                false
         );
     }
 
@@ -996,6 +1345,23 @@ class DockerPiAgentExecutorTest {
         );
     }
 
+    private static String hostAssertionContractsJson() {
+        return """
+                [
+                  {
+                    "scope": "CURRENT",
+                    "contentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "version": 1
+                  },
+                  {
+                    "scope": "REGRESSION",
+                    "contentHash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    "version": 1
+                  }
+                ]
+                """;
+    }
+
     private static AgentExecutionProfileSnapshot snapshot(
             String snapshotId,
             String stageRunId,
@@ -1053,6 +1419,35 @@ class DockerPiAgentExecutorTest {
         );
     }
 
+    private static AgentExecutionProfileSnapshot snapshotWithoutCredential(
+            String snapshotId,
+            String stageRunId,
+            String taskId
+    ) throws IOException {
+        AgentExecutionProfileSnapshot base = snapshot(
+                snapshotId,
+                stageRunId,
+                taskId,
+                AgentRuntimeType.PI,
+                "",
+                "CODING_AGENT"
+        );
+        ObjectNode json = (ObjectNode) OBJECT_MAPPER.readTree(base.snapshotJson());
+        json.remove("credentialEnvironmentVariable");
+        String snapshotJson = OBJECT_MAPPER.writeValueAsString(json);
+        return new AgentExecutionProfileSnapshot(
+                base.snapshotId(),
+                base.stageRunId(),
+                base.taskId(),
+                base.role(),
+                base.attemptNo(),
+                base.runtimeType(),
+                snapshotJson,
+                AgentExecutionProfileSnapshot.sha256(snapshotJson),
+                base.resolvedAtEpochMillis()
+        );
+    }
+
     private static AgentExecutionProfileSnapshot snapshotUnchecked(
             String snapshotId,
             String stageRunId,
@@ -1065,9 +1460,176 @@ class DockerPiAgentExecutorTest {
         }
     }
 
+    private static String docsOnlyQaResultJson() {
+        return """
+                {
+                  "status": "PASSED",
+                  "summary": "docs-only candidate verified without browser regression",
+                  "failureCategory": "NONE",
+                  "retryRecommendation": "NONE",
+                  "browserValidation": {
+                    "required": false,
+                    "performed": false,
+                    "decisionSource": "DOCS_ONLY",
+                    "baseUrl": "",
+                    "browser": "chromium",
+                    "viewports": []
+                  },
+                  "acceptanceResults": [
+                    {
+                      "criteria": "docs marker present",
+                      "scope": "CURRENT",
+                      "command": "rg -n rd-bot-full-run README.md docs/rd-bot-full-run-smoke.md",
+                      "status": "PASSED",
+                      "exitCode": 0,
+                      "durationMillis": 120,
+                      "logArtifactId": "qa-evidence/commands/current.log",
+                      "evidenceArtifactIds": ["qa-evidence/commands/current.log"]
+                    },
+                    {
+                      "criteria": "no runtime files changed",
+                      "scope": "REGRESSION",
+                      "command": "git diff --cached --name-only",
+                      "status": "PASSED",
+                      "exitCode": 0,
+                      "durationMillis": 80,
+                      "logArtifactId": "qa-evidence/commands/regression.log",
+                      "evidenceArtifactIds": ["qa-evidence/commands/regression.log"]
+                    }
+                  ],
+                  "evidenceManifestArtifactId": "qa-evidence/manifest.json"
+                }
+                """;
+    }
+
+    private static List<RepairArtifact> docsOnlyHostArtifacts() {
+        List<RepairArtifact> evidence = List.of(
+                hostArtifact(RepairArtifactType.QA_COMMAND_LOG, "qa-evidence/commands/current.log", "current log"),
+                hostArtifact(RepairArtifactType.QA_COMMAND_LOG, "qa-evidence/commands/regression.log", "regression log")
+        );
+        String entries = evidence.stream()
+                .map(artifact -> """
+                        {"path":"%s","bytes":%s,"sha256":"%s"}
+                        """.formatted(
+                        artifact.name(),
+                        artifact.metadataJson().get("bytes"),
+                        artifact.metadataJson().get("sha256")
+                ).strip())
+                .reduce((left, right) -> left + "," + right)
+                .orElse("");
+        List<RepairArtifact> artifacts = new ArrayList<>(evidence);
+        artifacts.add(0, hostArtifact(
+                RepairArtifactType.QA_EVIDENCE_MANIFEST,
+                "qa-evidence/manifest.json",
+                "{\"version\":1,\"artifacts\":[" + entries + "]}"
+        ));
+        return List.copyOf(artifacts);
+    }
+
+    private static RepairArtifact hostArtifact(RepairArtifactType type, String name, String body) {
+        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+        return new RepairArtifact(
+                type,
+                name,
+                "file:///tmp/output/" + name,
+                "QA evidence",
+                Map.of(
+                        "bytes", String.valueOf(bytes.length),
+                        "sha256", sha256Hex(bytes),
+                        "contentType", "application/octet-stream",
+                        "contentPreview", body
+                )
+        );
+    }
+
+    private static String sha256Hex(byte[] value) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value));
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException(exception);
+        }
+    }
+
+    private static final class DocsOnlyCandidateRepositoryPort implements RepairWorkspaceRepositoryPort {
+
+        @Override
+        public RepositoryOperationResult prepare(RepairJobCommand command, RepairWorkspace workspace) throws IOException {
+            Path repo = workspace.repoDirectory();
+            Files.createDirectories(repo);
+            runGit(repo, "init");
+            runGit(repo, "config", "user.email", "qa-meta@example.test");
+            runGit(repo, "config", "user.name", "qa-meta");
+            // Baseline looks like a runnable Next.js app so the auto profile requires
+            // browser QA; the staged docs-only patch then downgrades to DOCS_ONLY.
+            Files.writeString(repo.resolve("README.md"), "baseline\n", StandardCharsets.UTF_8);
+            Files.writeString(repo.resolve("package.json"), """
+                    {
+                      "name": "qa-docs-meta",
+                      "scripts": {
+                        "dev": "next dev",
+                        "build": "next build",
+                        "start": "next start"
+                      },
+                      "dependencies": {
+                        "next": "15.0.0",
+                        "react": "19.0.0",
+                        "react-dom": "19.0.0"
+                      }
+                    }
+                    """, StandardCharsets.UTF_8);
+            runGit(repo, "add", "README.md", "package.json");
+            runGit(repo, "commit", "-m", "baseline");
+            Path docs = Files.createDirectories(repo.resolve("docs"));
+            Files.writeString(
+                    docs.resolve("rd-bot-full-run-smoke.md"),
+                    "rd-bot-full-run smoke marker\n",
+                    StandardCharsets.UTF_8
+            );
+            runGit(repo, "add", "docs/rd-bot-full-run-smoke.md");
+            return new RepositoryOperationResult(Map.of("candidatePatchApplied", "true"));
+        }
+
+        @Override
+        public RepositoryOperationResult publish(RepairJobCommand command, RepairWorkspace workspace) {
+            return RepositoryOperationResult.empty();
+        }
+
+        private static void runGit(Path repo, String... args) throws IOException {
+            List<String> command = new ArrayList<>();
+            command.add("git");
+            command.add("-C");
+            command.add(repo.toAbsolutePath().normalize().toString());
+            command.addAll(List.of(args));
+            ProcessBuilder builder = new ProcessBuilder(command);
+            builder.redirectErrorStream(true);
+            Process process = builder.start();
+            String output;
+            try (InputStream stream = process.getInputStream()) {
+                output = new String(stream.readAllBytes(), StandardCharsets.UTF_8);
+            }
+            try {
+                if (!process.waitFor(30, TimeUnit.SECONDS)) {
+                    process.destroyForcibly();
+                    throw new IOException("git timed out: " + command);
+                }
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new IOException("git interrupted: " + command, exception);
+            }
+            if (process.exitValue() != 0) {
+                throw new IOException("git failed (" + process.exitValue() + "): " + command + "\n" + output);
+            }
+        }
+    }
+
     private static class CapturingRunner implements StreamingContainerRunnerPort {
 
         protected ContainerRunRequest request;
+
+        @Override
+        public boolean supportsNetworkPlans() {
+            return true;
+        }
 
         @Override
         public ContainerRunResult run(ContainerRunRequest request, ContainerOutputListener listener) throws IOException {
@@ -1104,6 +1666,55 @@ class DockerPiAgentExecutorTest {
                     request.outputDirectory().resolve("result.json"),
                     request.outputDirectory().resolve("patch.diff"),
                     request.outputDirectory().resolve("test.log"),
+                    null,
+                    null,
+                    Map.of("containerName", request.containerName())
+            );
+        }
+    }
+
+    private static final class IdentityCapturingRunner extends CapturingRunner {
+
+        private final String stageRunId;
+        private final String taskId;
+        private final String role;
+
+        private IdentityCapturingRunner(String stageRunId, String taskId, String role) {
+            this.stageRunId = stageRunId;
+            this.taskId = taskId;
+            this.role = role;
+        }
+
+        @Override
+        public ContainerRunResult run(ContainerRunRequest request, ContainerOutputListener listener) throws IOException {
+            this.request = request;
+            Files.createDirectories(request.outputDirectory());
+            Files.writeString(
+                    request.outputDirectory().resolve("result.json"),
+                    docsOnlyQaResultJson(),
+                    StandardCharsets.UTF_8
+            );
+            String events = """
+                    {"protocol":"rd-agent-event/v1","eventType":"RUNTIME_READY","sourceSequence":1,"stageRunId":"%s","taskId":"%s","role":"%s"}
+                    {"protocol":"rd-agent-event/v1","eventType":"AGENT_STARTED","sourceSequence":2,"stageRunId":"%s","taskId":"%s","role":"%s"}
+                    {"protocol":"rd-agent-event/v1","eventType":"RESULT_SUBMITTED","sourceSequence":3,"stageRunId":"%s","taskId":"%s","role":"%s"}
+                    {"protocol":"rd-agent-event/v1","eventType":"AGENT_SETTLED","sourceSequence":4,"stageRunId":"%s","taskId":"%s","role":"%s"}
+                    """.formatted(
+                    stageRunId, taskId, role,
+                    stageRunId, taskId, role,
+                    stageRunId, taskId, role,
+                    stageRunId, taskId, role
+            );
+            Files.writeString(request.outputDirectory().resolve("agent-events.jsonl"), events, StandardCharsets.UTF_8);
+            listener.onStdout(events);
+            return new ContainerRunResult(
+                    0,
+                    12L,
+                    "",
+                    "",
+                    request.outputDirectory().resolve("result.json"),
+                    null,
+                    null,
                     null,
                     null,
                     Map.of("containerName", request.containerName())

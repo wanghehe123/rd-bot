@@ -11,6 +11,7 @@ import java.time.Duration;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
 class PiCredentialLeaseIssuerWiringTest {
 
@@ -35,8 +36,16 @@ class PiCredentialLeaseIssuerWiringTest {
         ApplicationContextRunner relayContext = contextRunner
                 .withUserConfiguration(PiCredentialRelayService.class, PiCredentialRelayController.class);
 
-        relayContext.run(context -> assertTrue(context.getBeansOfType(PiCredentialRelayController.class).isEmpty()));
+        relayContext.run(context -> {
+            assertThat(context).hasNotFailed();
+            assertTrue(context.getBeansOfType(PiCredentialRelayController.class).isEmpty());
+            assertNotNull(context.getBean(PiCredentialRelayService.class));
+        });
         relayContext.withPropertyValues("rd.executor.pi.credential-relay-enabled=true")
-                .run(context -> assertNotNull(context.getBean(PiCredentialRelayController.class)));
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertNotNull(context.getBean(PiCredentialRelayController.class));
+                    assertNotNull(context.getBean(PiCredentialRelayService.class));
+                });
     }
 }

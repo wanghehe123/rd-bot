@@ -8,8 +8,10 @@ import com.wish.rd.rag.qa.model.QaValidationProfileCommand;
 import com.wish.rd.exec.repair.qa.model.QaExecutionProfile;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -17,55 +19,105 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Resolves whether browser QA is required using deterministic precedence and conservative auto-detection.
+ *
+ * <p>When the candidate change set is provably docs-only, browser build/start checks are skipped.
+ * Ambiguous or undeterminable change sets fail closed to the full browser profile.
  */
 public final class QaRepositoryProfileDetector {
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final QaDocsOnlyChangeClassifier DOCS_ONLY_CLASSIFIER = new QaDocsOnlyChangeClassifier();
     private static final List<String> REPOSITORY_PROFILE_PATHS = List.of(
             ".rd-bot/qa-profile.json",
             "rd-bot.qa.json"
     );
 
+    /**
+     * Resolves the QA profile and applies the docs-only exception from the repository's real git change set.
+     *
+     * @param command repair job command with optional QA profile overrides
+     * @param repository prepared repository root (candidate patch already applied when present)
+     * @return resolved execution profile
+     */
     public QaExecutionProfile detect(RepairJobCommand command, Path repository) {
+        return detect(command, repository, readCandidateChangedFiles(repository));
+    }
+
+    /**
+     * Resolves the QA profile using an explicit candidate changed-file set (tests and host callers).
+     *
+     * @param command repair job command with optional QA profile overrides
+     * @param repository prepared repository root
+     * @param candidateChangedFiles real changed paths from the candidate patch; {@code null} means undeterminable
+     * @return resolved execution profile
+     */
+    public QaExecutionProfile detect(
+            RepairJobCommand command,
+            Path repository,
+            List<String> candidateChangedFiles
+    ) {
         Map<String, String> context = command == null || command.contextJson() == null
                 ? Map.of()
                 : command.contextJson();
         String taskProfileJson = firstNonBlank(
                 context.get("qaTaskOverrideJson"), browserModeJson(context.get("qaBrowserMode")));
+        QaExecutionProfile resolved;
         if (isAutoProfile(taskProfileJson)) {
-            return withRegressionCommands(
+            resolved = withRegressionCommands(
                     repositoryProfileOrAuto(repository),
                     profileRegressionCommands(taskProfileJson)
             );
-        }
-        QaExecutionProfile taskOverride = explicitProfile(
-                taskProfileJson,
-                "TASK_OVERRIDE"
-        );
-        if (taskOverride != null) {
-            return taskOverride;
-        }
-        String projectProfileJson = context.get("qaProjectProfileJson");
-        if (isAutoProfile(projectProfileJson)) {
-            return withRegressionCommands(
-                    repositoryProfileOrAuto(repository),
-                    profileRegressionCommands(projectProfileJson)
+        } else {
+            QaExecutionProfile taskOverride = explicitProfile(
+                    taskProfileJson,
+                    "TASK_OVERRIDE"
             );
+            if (taskOverride != null) {
+                resolved = taskOverride;
+            } else {
+                String projectProfileJson = context.get("qaProjectProfileJson");
+                if (isAutoProfile(projectProfileJson)) {
+                    resolved = withRegressionCommands(
+                            repositoryProfileOrAuto(repository),
+                            profileRegressionCommands(projectProfileJson)
+                    );
+                } else {
+                    QaExecutionProfile projectProfile = explicitProfile(projectProfileJson, "PROJECT_PROFILE");
+                    resolved = projectProfile != null ? projectProfile : repositoryProfileOrAuto(repository);
+                }
+            }
         }
-        QaExecutionProfile projectProfile = explicitProfile(projectProfileJson, "PROJECT_PROFILE");
-        if (projectProfile != null) {
-            return projectProfile;
-        }
-        return repositoryProfileOrAuto(repository);
+        return applyDocsOnlyException(resolved, candidateChangedFiles);
     }
 
     public String toJson(QaExecutionProfile profile) {
+        return toJson(profile, null);
+    }
+
+    /**
+     * Serializes the resolved profile and embeds the host-computed candidate changed-file set.
+     *
+     * @param profile resolved QA profile
+     * @param candidateChangedFiles real changed paths; omitted when {@code null}
+     * @return JSON written to {@code /work/input/qa-profile.json}
+     */
+    public String toJson(QaExecutionProfile profile, List<String> candidateChangedFiles) {
         QaExecutionProfile safe = profile == null ? notApplicable("QA profile missing") : profile;
         try {
-            return OBJECT_MAPPER.writeValueAsString(safe);
+            com.fasterxml.jackson.databind.node.ObjectNode node = OBJECT_MAPPER.valueToTree(safe);
+            if (candidateChangedFiles != null) {
+                com.fasterxml.jackson.databind.node.ArrayNode files = node.putArray("candidateChangedFiles");
+                for (String path : candidateChangedFiles) {
+                    if (path != null && !path.isBlank()) {
+                        files.add(path.strip().replace('\\', '/'));
+                    }
+                }
+            }
+            return OBJECT_MAPPER.writeValueAsString(node);
         } catch (JsonProcessingException exception) {
             throw new IllegalArgumentException("failed to serialize QA execution profile", exception);
         }
@@ -275,6 +327,90 @@ public final class QaRepositoryProfileDetector {
     private QaExecutionProfile repositoryProfileOrAuto(Path repository) {
         QaExecutionProfile repositoryProfile = repositoryProfile(repository);
         return repositoryProfile == null ? autoDetect(repository) : repositoryProfile;
+    }
+
+    private static QaExecutionProfile applyDocsOnlyException(
+            QaExecutionProfile profile,
+            List<String> candidateChangedFiles
+    ) {
+        if (profile == null || !profile.browserRequired() || profile.ambiguous()) {
+            return profile;
+        }
+        if (DOCS_ONLY_CLASSIFIER.classify(candidateChangedFiles)
+                != QaDocsOnlyChangeClassifier.Decision.DOCS_ONLY) {
+            // UNDETERMINABLE and NOT_DOCS_ONLY both keep the full browser profile (fail closed).
+            return profile;
+        }
+        return new QaExecutionProfile(
+                false,
+                false,
+                "DOCS_ONLY",
+                "",
+                "",
+                "",
+                List.of(),
+                List.of(),
+                "candidate change is docs-only; skip build/start/browser regression"
+        );
+    }
+
+    /**
+     * Reads the real candidate changed-file set from the prepared repository.
+     *
+     * <p>Prefers staged paths ({@code git diff --cached}) because local QA applies the candidate
+     * patch with {@code git apply --index}. Falls back to unstaged and untracked paths. Returns
+     * {@code null} when git is unavailable so callers fail closed to the full profile.
+     *
+     * @param repository prepared repository root
+     * @return changed paths, or {@code null} when the set cannot be determined
+     */
+    public static List<String> readCandidateChangedFiles(Path repository) {
+        if (repository == null || !Files.isDirectory(repository)) {
+            return null;
+        }
+        LinkedHashSet<String> paths = new LinkedHashSet<>();
+        if (!collectGitPaths(repository, List.of("diff", "--cached", "--name-only", "--diff-filter=ACDMRTUXB"), paths)
+                || !collectGitPaths(repository, List.of("diff", "--name-only", "--diff-filter=ACDMRTUXB"), paths)
+                || !collectGitPaths(repository, List.of("ls-files", "--others", "--exclude-standard"), paths)) {
+            return null;
+        }
+        return List.copyOf(paths);
+    }
+
+    private static boolean collectGitPaths(Path repository, List<String> gitArgs, LinkedHashSet<String> paths) {
+        List<String> argv = new ArrayList<>();
+        argv.add("git");
+        argv.add("-C");
+        argv.add(repository.toAbsolutePath().normalize().toString());
+        argv.addAll(gitArgs);
+        ProcessBuilder builder = new ProcessBuilder(argv);
+        builder.redirectErrorStream(true);
+        try {
+            Process process = builder.start();
+            String output;
+            try (InputStream stream = process.getInputStream()) {
+                output = new String(stream.readAllBytes(), StandardCharsets.UTF_8);
+            }
+            if (!process.waitFor(20, TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+                return false;
+            }
+            if (process.exitValue() != 0) {
+                return false;
+            }
+            for (String line : output.split("\\R")) {
+                String path = line.strip();
+                if (!path.isBlank()) {
+                    paths.add(path.replace('\\', '/'));
+                }
+            }
+            return true;
+        } catch (IOException | InterruptedException exception) {
+            if (exception instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+            }
+            return false;
+        }
     }
 
     private static boolean isAutoProfile(String json) {

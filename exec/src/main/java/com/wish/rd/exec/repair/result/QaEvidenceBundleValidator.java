@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wish.rd.exec.repair.execution.model.RepairArtifact;
 import com.wish.rd.exec.repair.execution.model.RepairArtifactType;
+import com.wish.rd.exec.repair.qa.QaDocsOnlyChangeClassifier;
 import com.wish.rd.exec.repair.result.model.AgentRoleResultValidation;
 
 import java.util.ArrayList;
@@ -17,6 +18,10 @@ import java.util.regex.Pattern;
 
 /**
  * Validates that a QA report references real, non-empty artifacts collected from the executor workspace.
+ *
+ * <p>Docs-only candidates (host-verified from the real changed-file set) may omit browser evidence;
+ * undeterminable change sets fail closed and still require the full browser bundle when browser
+ * validation was performed.
  */
 public final class QaEvidenceBundleValidator {
 
@@ -24,6 +29,7 @@ public final class QaEvidenceBundleValidator {
             "\\\"isError\\\"\\s*:\\s*true",
             Pattern.CASE_INSENSITIVE
     );
+    private static final QaDocsOnlyChangeClassifier DOCS_ONLY_CLASSIFIER = new QaDocsOnlyChangeClassifier();
 
     private final ObjectMapper objectMapper;
     private final AgentRoleResultValidator roleResultValidator;
@@ -47,16 +53,39 @@ public final class QaEvidenceBundleValidator {
      * @return combined protocol and evidence validation
      */
     public AgentRoleResultValidation validate(String resultJson, List<RepairArtifact> artifacts) {
-        return validate(resultJson, artifacts, List.of());
+        return validate(resultJson, artifacts, List.of(), null);
     }
 
     /**
      * Validates the QA bundle and requires every task acceptance criterion to have a CURRENT result.
+     *
+     * @param resultJson strict QA result JSON
+     * @param artifacts artifacts collected from {@code /work/output}
+     * @param requiredAcceptanceCriteria task acceptance criteria that must appear in CURRENT/REGRESSION rows
+     * @return combined protocol and evidence validation
      */
     public AgentRoleResultValidation validate(
             String resultJson,
             List<RepairArtifact> artifacts,
             List<String> requiredAcceptanceCriteria
+    ) {
+        return validate(resultJson, artifacts, requiredAcceptanceCriteria, null);
+    }
+
+    /**
+     * Validates the QA bundle with a host-computed candidate changed-file set for docs-only decisions.
+     *
+     * @param resultJson strict QA result JSON
+     * @param artifacts artifacts collected from {@code /work/output}
+     * @param requiredAcceptanceCriteria task acceptance criteria that must appear in CURRENT/REGRESSION rows
+     * @param candidateChangedFiles real changed paths from the candidate patch; {@code null} means undeterminable
+     * @return combined protocol and evidence validation
+     */
+    public AgentRoleResultValidation validate(
+            String resultJson,
+            List<RepairArtifact> artifacts,
+            List<String> requiredAcceptanceCriteria,
+            List<String> candidateChangedFiles
     ) {
         List<String> errors = new ArrayList<>(roleResultValidator.validate("QA_AGENT", resultJson).errors());
         JsonNode root = parseObject(resultJson);
@@ -144,8 +173,21 @@ public final class QaEvidenceBundleValidator {
             }
         }
 
-        if (root.path("browserValidation").path("required").asBoolean(false)
-                && root.path("browserValidation").path("performed").asBoolean(false)) {
+        JsonNode browserValidation = root.path("browserValidation");
+        boolean browserRequired = browserValidation.path("required").asBoolean(false);
+        boolean browserPerformed = browserValidation.path("performed").asBoolean(false);
+        String decisionSource = browserValidation.path("decisionSource").asText("").strip();
+        boolean docsOnlyDecision = "DOCS_ONLY".equals(decisionSource);
+        QaDocsOnlyChangeClassifier.Decision docsOnly = DOCS_ONLY_CLASSIFIER.classify(candidateChangedFiles);
+        if (docsOnlyDecision) {
+            if (docsOnly == QaDocsOnlyChangeClassifier.Decision.UNDETERMINABLE) {
+                errors.add("docs-only QA requires a determinable candidate changed-file set; undeterminable changes keep the full browser profile");
+            } else if (docsOnly != QaDocsOnlyChangeClassifier.Decision.DOCS_ONLY) {
+                errors.add("docs-only QA claim rejected because candidate changes are not docs-only; full browser evidence is required");
+            } else if (browserRequired || browserPerformed) {
+                errors.add("docs-only QA requires browserValidation.required=false and performed=false");
+            }
+        } else if (browserRequired && browserPerformed) {
             requireReferencedType(RepairArtifactType.QA_SCREENSHOT, referencedArtifacts, artifactsByName, errors);
             requireReferencedType(RepairArtifactType.QA_TRACE, referencedArtifacts, artifactsByName, errors);
             requireReferencedType(RepairArtifactType.QA_CONSOLE_LOG, referencedArtifacts, artifactsByName, errors);

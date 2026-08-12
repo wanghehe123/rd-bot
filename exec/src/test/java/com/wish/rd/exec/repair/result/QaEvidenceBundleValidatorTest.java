@@ -42,6 +42,64 @@ class QaEvidenceBundleValidatorTest {
     }
 
     @Test
+    void shouldAcceptDocsOnlyQaWithoutBrowserEvidenceWhenChangedFilesAreDocsOnly() {
+        AgentRoleResultValidation validation = validator.validate(
+                docsOnlyQaResult(),
+                docsOnlyArtifacts(),
+                List.of("docs marker present"),
+                List.of("README.md", "docs/smoke-marker.md")
+        );
+
+        assertTrue(validation.valid(), () -> String.join(", ", validation.errors()));
+    }
+
+    @Test
+    void shouldRejectDocsOnlyClaimWhenChangedFilesIncludeSourceOrPackageJson() {
+        AgentRoleResultValidation sourceTouch = validator.validate(
+                docsOnlyQaResult(),
+                docsOnlyArtifacts(),
+                List.of("docs marker present"),
+                List.of("README.md", "src/app/page.tsx")
+        );
+        AgentRoleResultValidation packageTouch = validator.validate(
+                docsOnlyQaResult(),
+                docsOnlyArtifacts(),
+                List.of("docs marker present"),
+                List.of("package.json")
+        );
+
+        assertFalse(sourceTouch.valid());
+        assertTrue(sourceTouch.errors().stream().anyMatch(error ->
+                error.contains("docs-only") && error.contains("full browser")));
+        assertFalse(packageTouch.valid());
+        assertTrue(packageTouch.errors().stream().anyMatch(error ->
+                error.contains("docs-only") && error.contains("full browser")));
+    }
+
+    @Test
+    void shouldFailClosedWhenDocsOnlyClaimLacksDeterminableChangedFiles() {
+        AgentRoleResultValidation missing = validator.validate(
+                docsOnlyQaResult(),
+                docsOnlyArtifacts(),
+                List.of("docs marker present"),
+                null
+        );
+        AgentRoleResultValidation empty = validator.validate(
+                docsOnlyQaResult(),
+                docsOnlyArtifacts(),
+                List.of("docs marker present"),
+                List.of()
+        );
+
+        assertFalse(missing.valid());
+        assertTrue(missing.errors().stream().anyMatch(error ->
+                error.contains("docs-only") && error.toLowerCase().contains("undeterminable")));
+        assertFalse(empty.valid());
+        assertTrue(empty.errors().stream().anyMatch(error ->
+                error.contains("docs-only") && error.toLowerCase().contains("undeterminable")));
+    }
+
+    @Test
     void shouldRejectBrowserEvidenceWithoutConsoleAndNetworkRecords() {
         List<RepairArtifact> evidence = List.of(
                 artifact(RepairArtifactType.QA_COMMAND_LOG, "qa-evidence/commands/current.log", "current log"),
@@ -263,5 +321,57 @@ class QaEvidenceBundleValidatorTest {
         return strictQaResult()
                 .replace("\"criteria\": \"current feature\"", "\"criteria\": \"AC1: current feature\"")
                 .replace("\"criteria\": \"critical regression\"", "\"criteria\": \"AC2: critical regression\"");
+    }
+
+    private static String docsOnlyQaResult() {
+        return """
+                {
+                  "status": "PASSED",
+                  "summary": "docs-only candidate verified without browser regression",
+                  "failureCategory": "NONE",
+                  "retryRecommendation": "NONE",
+                  "browserValidation": {
+                    "required": false,
+                    "performed": false,
+                    "decisionSource": "DOCS_ONLY",
+                    "baseUrl": "",
+                    "browser": "chromium",
+                    "viewports": []
+                  },
+                  "acceptanceResults": [
+                    {
+                      "criteria": "docs marker present",
+                      "scope": "CURRENT",
+                      "command": "rg -n rd-bot-full-run README.md docs/smoke-marker.md",
+                      "status": "PASSED",
+                      "exitCode": 0,
+                      "durationMillis": 120,
+                      "logArtifactId": "qa-evidence/commands/current.log",
+                      "evidenceArtifactIds": ["qa-evidence/commands/current.log"]
+                    },
+                    {
+                      "criteria": "no runtime files changed",
+                      "scope": "REGRESSION",
+                      "command": "git diff --cached --name-only",
+                      "status": "PASSED",
+                      "exitCode": 0,
+                      "durationMillis": 80,
+                      "logArtifactId": "qa-evidence/commands/regression.log",
+                      "evidenceArtifactIds": ["qa-evidence/commands/regression.log"]
+                    }
+                  ],
+                  "evidenceManifestArtifactId": "qa-evidence/manifest.json"
+                }
+                """;
+    }
+
+    private static List<RepairArtifact> docsOnlyArtifacts() {
+        List<RepairArtifact> evidence = List.of(
+                artifact(RepairArtifactType.QA_COMMAND_LOG, "qa-evidence/commands/current.log", "current log"),
+                artifact(RepairArtifactType.QA_COMMAND_LOG, "qa-evidence/commands/regression.log", "regression log")
+        );
+        List<RepairArtifact> artifacts = new ArrayList<>(evidence);
+        artifacts.add(0, manifestArtifact(evidence));
+        return List.copyOf(artifacts);
     }
 }
