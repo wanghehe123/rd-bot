@@ -37,7 +37,7 @@ class PackageStructureTest {
     }
 
     @Test
-    void userDomainFollowsRagentMvcPackageShape() {
+    void userDomainFollowsMvcPackageShape() {
         Path userRoot = PROJECT_ROOT.resolve("bootstrap/src/main/java/com/wish/rd/bootstrap/user");
 
         assertThat(userRoot.resolve("controller/UserAdminController.java")).exists();

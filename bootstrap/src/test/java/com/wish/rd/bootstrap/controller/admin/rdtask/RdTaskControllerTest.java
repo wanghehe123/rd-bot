@@ -7,10 +7,15 @@ import com.wish.rd.engine.agent.impl.InMemoryAgentStageArtifactStore;
 import com.wish.rd.engine.agent.model.AgentStageArtifact;
 import com.wish.rd.engine.agent.model.AgentStageRun;
 import com.wish.rd.bootstrap.executor.impl.QaEvidenceRetentionService;
+import com.wish.rd.bootstrap.threading.RequirementDeliveryDispatchService;
 import com.wish.rd.engine.bugfix.RdBotFixEngine;
 import com.wish.rd.engine.bugfix.model.RdBotFixCommand;
 import com.wish.rd.engine.bugfix.model.RdBotFixResult;
 import com.wish.rd.engine.requirement.RequirementDeliveryEngine;
+import com.wish.rd.engine.requirement.policy.RequirementPolicyTransactionPort;
+import com.wish.rd.engine.requirement.policy.model.ApproveRequirementPolicyCommand;
+import com.wish.rd.engine.requirement.job.impl.InMemoryRequirementDeliveryJobStore;
+import com.wish.rd.engine.requirement.job.impl.InMemoryRequirementStageCommandStore;
 import com.wish.rd.engine.requirement.model.RequirementExecutionResult;
 import com.wish.rd.engine.requirement.model.RequirementPullRequestPublication;
 import com.wish.rd.engine.ticket.RdTaskRestartEngine;
@@ -30,6 +35,8 @@ import com.wish.rd.rag.project.RdProjectService;
 import com.wish.rd.rag.project.RdProjectStore;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
 import org.springframework.mock.web.MockMultipartFile;
+import org.springframework.core.task.SyncTaskExecutor;
+import org.springframework.core.task.support.TaskExecutorAdapter;
 import org.springframework.beans.factory.support.StaticListableBeanFactory;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -145,6 +152,44 @@ class RdTaskControllerTest {
     }
 
     @Test
+    void shouldPauseRequirementTaskThroughAdminApi() throws Exception {
+        String response = mockMvc.perform(post("/admin/rd-tasks/requirements")
+                        .contentType(APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "title": "需求暂停回归",
+                                  "priority": "P1",
+                                  "repositoryUrl": "https://github.com/example-owner/example-repo.git",
+                                  "repoOwner": "example-owner",
+                                  "repoName": "example-repo",
+                                  "baseBranch": "main",
+                                  "expectedResult": "需求任务可以被管理台暂停",
+                                  "acceptanceCriteria": ["pause returns the updated task"],
+                                  "materials": [{
+                                    "materialType": "REQUIREMENT",
+                                    "sourceType": "MANUAL_TEXT",
+                                    "title": "需求正文",
+                                    "content": "验证需求任务暂停。",
+                                    "mimeType": "text/plain"
+                                  }],
+                                  "autoExecute": false,
+                                  "tokenBudgetOverride": 0
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        String taskId = com.jayway.jsonpath.JsonPath.read(response, "$.taskId");
+
+        mockMvc.perform(post("/admin/rd-tasks/{taskId}/pause", taskId)
+                        .contentType(APPLICATION_JSON)
+                        .content("{\"message\":\"需求人工暂停\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.taskId", is(taskId)))
+                .andExpect(jsonPath("$.taskType", is("REQUIREMENT")))
+                .andExpect(jsonPath("$.paused", is(true)));
+    }
+
+    @Test
     void shouldResumeAndPublishRestartMessageWhenRestartEngineAvailable() throws Exception {
         AtomicReference<RepairTicketMessage> published = new AtomicReference<>();
         RdTaskRestartEngine restartEngine = new RdTaskRestartEngine(
@@ -256,6 +301,74 @@ class RdTaskControllerTest {
     }
 
     @Test
+    void shouldFailClosedWhenPolicyApprovalBodyIsMissing() throws Exception {
+        mockMvc.perform(post("/admin/rd-tasks/{taskId}/approve", "9999999999999999"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void shouldApproveThroughThePolicyTransactionWithTheExactHostControlledCommand() throws Exception {
+        String taskId = createTask("FS-POLICY-1", "策略审批任务", "P1");
+        AtomicReference<ApproveRequirementPolicyCommand> command = new AtomicReference<>();
+        AtomicReference<String> actor = new AtomicReference<>();
+        AtomicReference<Long> approvedAt = new AtomicReference<>();
+        RequirementPolicyTransactionPort policyPort = (received, receivedActor, now) -> {
+            command.set(received);
+            actor.set(receivedActor);
+            approvedAt.set(now);
+            return null;
+        };
+        RdTaskController controller = new RdTaskController(registry);
+        controller.setRequirementPolicyTransactionPort(policyPort);
+        mockMvc = MockMvcBuilders.standaloneSetup(controller).build();
+        String planDigest = com.wish.rd.engine.requirement.policy.model.RequirementPolicyRun
+                .canonicalJsonDigest("{\"plan\":true}");
+        String policyDigest = com.wish.rd.engine.requirement.policy.model.RequirementPolicyRun
+                .canonicalJsonDigest("{\"action\":\"WAITING_APPROVAL\"}");
+
+        mockMvc.perform(post("/admin/rd-tasks/{taskId}/approve", taskId)
+                        .contentType(APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of(
+                                "policyRunId", "101",
+                                "expectedTaskVersion", 5,
+                                "expectedTaskFence", 7,
+                                "planDigest", planDigest,
+                                "policyDigest", policyDigest,
+                                "approvalRequestId", "request-1",
+                                "decision", "APPROVED",
+                                "note", "approved by host service"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status", is("CREATED")));
+
+        assertEquals(new ApproveRequirementPolicyCommand(
+                taskId, "101", 5L, 7L, planDigest, policyDigest,
+                "request-1", "APPROVED", "approved by host service"), command.get());
+        assertEquals("ADMIN_API", actor.get());
+        assertTrue(approvedAt.get() > 0L);
+        assertEquals("CREATED", registry.getTask(taskId).status().name());
+    }
+
+    @Test
+    void shouldFailClosedWhenPolicyApprovalPortIsUnavailable() throws Exception {
+        String taskId = createTask("FS-POLICY-2", "策略审批端口缺失", "P1");
+        String digest = com.wish.rd.engine.requirement.policy.model.RequirementPolicyRun
+                .canonicalJsonDigest("{\"value\":true}");
+
+        mockMvc.perform(post("/admin/rd-tasks/{taskId}/approve", taskId)
+                        .contentType(APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of(
+                                "policyRunId", "101",
+                                "expectedTaskVersion", 5,
+                                "expectedTaskFence", 7,
+                                "planDigest", digest,
+                                "policyDigest", digest,
+                                "approvalRequestId", "request-1",
+                                "decision", "APPROVED",
+                                "note", "safe"))))
+                .andExpect(status().isConflict());
+    }
+
+    @Test
     void shouldPageResults() throws Exception {
         for (int i = 0; i < 3; i++) {
             createTask("FS-30" + i, "任务-" + i, "P1");
@@ -337,6 +450,110 @@ class RdTaskControllerTest {
                 .andExpect(jsonPath("$[0].taskId", is(taskId)))
                 .andExpect(jsonPath("$[0].sourceType", is("MANUAL_TEXT")))
                 .andExpect(jsonPath("$[0].contentPreview", is("用户可以在订单详情页点击催单。")));
+    }
+
+    @Test
+    void shouldRoundTripStructuredHostAssertionBundleWhenCreatingRequirementTask() throws Exception {
+        String response = mockMvc.perform(post("/admin/rd-tasks/requirements")
+                        .contentType(APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "title": "Host assertion API round trip",
+                                  "priority": "P1",
+                                  "repositoryUrl": "https://github.com/example/waimai.git",
+                                  "baseBranch": "main",
+                                  "expectedResult": "Host assertions are frozen before QA",
+                                  "acceptanceCriteria": ["human-readable criterion remains available"],
+                                  "hostAssertionBundle": {
+                                    "assertions": [
+                                      {
+                                        "scope": "CURRENT",
+                                        "id": "current-health",
+                                        "assertionType": "HTTP_STATUS",
+                                        "target": "/health",
+                                        "operator": "eq",
+                                        "expected": "200"
+                                      },
+                                      {
+                                        "scope": "REGRESSION",
+                                        "id": "regression-health",
+                                        "assertionType": "HTTP_STATUS",
+                                        "target": "/health",
+                                        "operator": "eq",
+                                        "expected": "200"
+                                      }
+                                    ]
+                                  },
+                                  "materials": [{
+                                    "sourceType": "MANUAL_TEXT",
+                                    "title": "需求正文",
+                                    "content": "Host assertion input is task-owned.",
+                                    "mimeType": "text/plain"
+                                  }],
+                                  "autoExecute": false
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.acceptanceCriteriaJson", is("[\"human-readable criterion remains available\"]")))
+                .andExpect(jsonPath("$.hostAssertionBundle.assertions", hasSize(2)))
+                .andExpect(jsonPath("$.hostAssertionBundle.assertions[0].scope", is("CURRENT")))
+                .andReturn().getResponse().getContentAsString();
+
+        String taskId = com.jayway.jsonpath.JsonPath.read(response, "$.taskId");
+        mockMvc.perform(get("/admin/rd-tasks/{taskId}", taskId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.hostAssertionBundle.assertions", hasSize(2)))
+                .andExpect(jsonPath("$.hostAssertionBundle.assertions[1].scope", is("REGRESSION")));
+    }
+
+    @Test
+    void shouldRejectMalformedStructuredHostAssertionBundleAtRequirementCreation() throws Exception {
+        mockMvc.perform(post("/admin/rd-tasks/requirements")
+                        .contentType(APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "title": "Malformed Host assertion bundle",
+                                  "priority": "P1",
+                                  "repositoryUrl": "https://github.com/example/waimai.git",
+                                  "baseBranch": "main",
+                                  "expectedResult": "must fail closed",
+                                  "hostAssertionBundle": {"assertions": []},
+                                  "materials": [{
+                                    "sourceType": "MANUAL_TEXT",
+                                    "title": "需求正文",
+                                    "content": "The malformed assertion request must be rejected."
+                                  }],
+                                  "autoExecute": false
+                                }
+                                """))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void shouldUpdateRequirementTaskEditableFieldsAndReadBack() throws Exception {
+        String taskId = createRequirementTask(false);
+
+        mockMvc.perform(put("/admin/rd-tasks/{taskId}", taskId)
+                        .contentType(APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of(
+                                "title", "编辑后的需求标题",
+                                "priority", "P0",
+                                "ticketTitle", "管理台标题"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.taskId", is(taskId)))
+                .andExpect(jsonPath("$.taskType", is("REQUIREMENT")))
+                .andExpect(jsonPath("$.title", is("编辑后的需求标题")))
+                .andExpect(jsonPath("$.priority", is("P0")))
+                .andExpect(jsonPath("$.status", is("CREATED")))
+                .andExpect(jsonPath("$.projectId", is("")))
+                .andExpect(jsonPath("$.acceptanceCriteriaJson", is("[\"前端构建通过\"]")));
+
+        mockMvc.perform(get("/admin/rd-tasks/{taskId}", taskId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.title", is("编辑后的需求标题")))
+                .andExpect(jsonPath("$.priority", is("P0")))
+                .andExpect(jsonPath("$.status", is("CREATED")))
+                .andExpect(jsonPath("$.acceptanceCriteriaJson", is("[\"前端构建通过\"]")));
     }
 
     @Test
@@ -804,7 +1021,7 @@ class RdTaskControllerTest {
     }
 
     @Test
-    void shouldApproveWaitingRequirementTaskAndContinueExecution() throws Exception {
+    void shouldApproveWaitingRequirementThroughTheTransactionWithoutLegacyExecutionSubmission() throws Exception {
         InMemoryTaskMaterialStore materialStore = new InMemoryTaskMaterialStore();
         RequirementDeliveryEngine deliveryEngine = new RequirementDeliveryEngine(
                 registry,
@@ -865,8 +1082,9 @@ class RdTaskControllerTest {
                         "{\"provider\":\"controller-test\"}"
                 )
         );
-        mockMvc = MockMvcBuilders.standaloneSetup(controllerWithRequirementEngine(materialStore, deliveryEngine))
-                .build();
+        RdTaskController controller = controllerWithRequirementEngine(materialStore, deliveryEngine);
+        controller.setRequirementPolicyTransactionPort((command, actor, now) -> null);
+        mockMvc = MockMvcBuilders.standaloneSetup(controller).build();
         String body = objectMapper.writeValueAsString(Map.of(
                 "title", "开发管理后台商品管理功能",
                 "priority", "P2",
@@ -888,14 +1106,24 @@ class RdTaskControllerTest {
                 .andExpect(jsonPath("$.status", is("WAITING_APPROVAL")))
                 .andReturn().getResponse().getContentAsString();
         String taskId = com.jayway.jsonpath.JsonPath.read(response, "$.taskId");
+        String planDigest = com.wish.rd.engine.requirement.policy.model.RequirementPolicyRun
+                .canonicalJsonDigest("{\"plan\":true}");
+        String policyDigest = com.wish.rd.engine.requirement.policy.model.RequirementPolicyRun
+                .canonicalJsonDigest("{\"action\":\"WAITING_APPROVAL\"}");
 
         mockMvc.perform(post("/admin/rd-tasks/{taskId}/approve", taskId)
                         .contentType(APPLICATION_JSON)
-                        .content("{\"message\":\"人工确认商品管理需求可以进入沙箱执行\"}"))
+                        .content(objectMapper.writeValueAsString(Map.of(
+                                "policyRunId", "101",
+                                "expectedTaskVersion", 5,
+                                "expectedTaskFence", 7,
+                                "planDigest", planDigest,
+                                "policyDigest", policyDigest,
+                                "approvalRequestId", "request-1",
+                                "decision", "APPROVED",
+                                "note", "人工确认商品管理需求可以进入沙箱执行"))))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status", is("COMPLETED")))
-                .andExpect(jsonPath("$.pullRequestUrl", is("https://github.com/example/waimai/pull/77")))
-                .andExpect(jsonPath("$.executionEvidence.summary", is("已完成商品管理功能")));
+                .andExpect(jsonPath("$.status", is("WAITING_APPROVAL")));
 
         assertEquals(List.of(
                 "CREATED",
@@ -906,14 +1134,7 @@ class RdTaskControllerTest {
                 "PLAN_GENERATING",
                 "PLAN_GENERATED",
                 "WAITING_POLICY",
-                "WAITING_APPROVAL",
-                "APPROVED",
-                "EXECUTING",
-                "VALIDATING",
-                "PR_CREATING",
-                "COMMITTED",
-                "REPORTING",
-                "COMPLETED"
+                "WAITING_APPROVAL"
         ), registry.timeline(taskId).stream().map(event -> event.status()).toList());
     }
 
@@ -975,6 +1196,16 @@ class RdTaskControllerTest {
                 "WAITING_POLICY",
                 "WAITING_APPROVAL"
         ), registry.timeline(taskId).stream().map(event -> event.status()).toList());
+    }
+
+    @Test
+    void shouldFailClosedWhenRequirementDispatchServiceIsUnavailable() throws Exception {
+        String taskId = createRequirementTask(false);
+
+        mockMvc.perform(post("/admin/rd-tasks/{taskId}/submit", taskId))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value(
+                        "requirement delivery dispatch service unavailable"));
     }
 
     @Test
@@ -1097,6 +1328,7 @@ class RdTaskControllerTest {
         beans.addBean("materialStore", materialStore);
         beans.addBean("idGenerator", generator());
         beans.addBean("requirementDeliveryEngine", deliveryEngine);
+        beans.addBean("requirementDeliveryDispatchService", dispatchService(deliveryEngine));
         return new RdTaskController(
                 registry,
                 beans.getBeanProvider(com.wish.rd.exec.repair.execution.RepairExecutionControlPort.class),
@@ -1109,6 +1341,23 @@ class RdTaskControllerTest {
                 beans.getBeanProvider(RdBotFixEngine.class),
                 beans.getBeanProvider(com.wish.rd.bootstrap.threading.BugFixExecutionDispatchService.class),
                 beans.getBeanProvider(RdProjectService.class)
+        );
+    }
+
+    private RequirementDeliveryDispatchService dispatchService(RequirementDeliveryEngine deliveryEngine) {
+        return new RequirementDeliveryDispatchService(
+                deliveryEngine,
+                new TaskExecutorAdapter(new SyncTaskExecutor()),
+                new InMemoryRequirementDeliveryJobStore(),
+                generator(),
+                registry,
+                "controller-test-worker",
+                3,
+                60_000L,
+                null,
+                null,
+                new InMemoryRequirementStageCommandStore(),
+                command -> deliveryEngine.submit(command.taskId())
         );
     }
 

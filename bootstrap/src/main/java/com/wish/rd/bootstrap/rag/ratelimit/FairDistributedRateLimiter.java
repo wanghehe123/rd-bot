@@ -32,7 +32,7 @@ import java.util.function.Consumer;
 import java.util.function.IntSupplier;
 
 /**
- * Redis backed fair distributed rate limiter migrated from ragent.
+ * Redis backed fair distributed rate limiter.
  *
  * <p>It uses a Redisson expirable semaphore for concurrency, a Redis ZSET for FIFO queue order,
  * a Lua script for atomic head-window claims, and a topic to wake local pollers across instances.

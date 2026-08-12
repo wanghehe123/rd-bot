@@ -37,6 +37,10 @@ public class ProcessGitRepairWorkspaceRepository implements RepairWorkspaceRepos
     private static final String GIT_BINARY = "git";
     private static final int OUTPUT_LIMIT = 2_000;
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final String REQUIREMENT_PUBLICATION_TASK_ID = "requirementPublicationTaskId";
+    private static final String REQUIREMENT_PUBLICATION_OPERATION_ID = "requirementPublicationOperationId";
+    private static final String REQUIREMENT_PUBLICATION_CANDIDATE_PATCH_SHA256 =
+            "requirementPublicationCandidatePatchSha256";
 
     private final DockerExecutorProperties.GitProperties properties;
 
@@ -414,9 +418,37 @@ public class ProcessGitRepairWorkspaceRepository implements RepairWorkspaceRepos
         return normalized;
     }
 
-    private static String commitMessage(RepairJobCommand command) {
+    private static String commitMessage(RepairJobCommand command) throws IOException {
+        String publicationTaskId = policyValue(command, REQUIREMENT_PUBLICATION_TASK_ID);
+        String operationId = policyValue(command, REQUIREMENT_PUBLICATION_OPERATION_ID);
+        String candidatePatchSha256 = policyValue(command, REQUIREMENT_PUBLICATION_CANDIDATE_PATCH_SHA256);
+        if (!publicationTaskId.isBlank() || !operationId.isBlank() || !candidatePatchSha256.isBlank()) {
+            requireSingleLineMarker(publicationTaskId, REQUIREMENT_PUBLICATION_TASK_ID);
+            requireSingleLineMarker(operationId, REQUIREMENT_PUBLICATION_OPERATION_ID);
+            requireSingleLineMarker(candidatePatchSha256, REQUIREMENT_PUBLICATION_CANDIDATE_PATCH_SHA256);
+            return "RD-Bot requirement " + publicationTaskId
+                    + "\n\nrd-operation-id: " + operationId
+                    + "\nrd-candidate-patch-sha256: " + candidatePatchSha256;
+        }
         String ticket = command.ticketId().isBlank() ? command.taskId() : command.ticketId();
         return "RD-Bot repair " + ticket;
+    }
+
+    private static String policyValue(RepairJobCommand command, String key) {
+        if (command == null || command.policyJson() == null) {
+            return "";
+        }
+        String value = command.policyJson().getOrDefault(key, "");
+        return value == null ? "" : value.strip();
+    }
+
+    private static void requireSingleLineMarker(String value, String fieldName) throws IOException {
+        if (value == null || value.isBlank()) {
+            throw new IOException("requirement publication marker must not be blank: " + fieldName);
+        }
+        if (value.indexOf('\n') >= 0 || value.indexOf('\r') >= 0) {
+            throw new IOException("requirement publication marker must be one line: " + fieldName);
+        }
     }
 
     private static String repositoryName(RepairJobCommand command) {

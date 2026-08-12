@@ -69,6 +69,16 @@
     </dependencies>
 
     <build>
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+                <excludes>
+                    <!-- Machine-local overrides (gitignored); never ship in the boot jar. -->
+                    <exclude>application-local.yaml</exclude>
+                    <exclude>application-local.yml</exclude>
+                </excludes>
+            </resource>
+        </resources>
         <plugins>
             <plugin>
                 <groupId>org.springframework.boot</groupId>

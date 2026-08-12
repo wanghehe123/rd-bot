@@ -1,7 +1,7 @@
 package com.wish.rd.exec.repair.model;
 
 /**
- * 模型熔断三态，对齐 ragent 的模型健康状态机。
+ * 模型熔断三态，模型健康状态机（CLOSED/OPEN/HALF_OPEN）。
  */
 public enum ModelHealthState {
 

@@ -99,7 +99,7 @@ class PostgresPersistenceCrudIntegrationTest {
         registry.add("rd.storage.mode", () -> "memory");
         registry.add("spring.datasource.url", () -> System.getProperty(
                 "rd.integration.postgres.url",
-                "jdbc:postgresql://127.0.0.1:5432/ragent?client_encoding=UTF8"
+                "jdbc:postgresql://127.0.0.1:5432/rdbot?client_encoding=UTF8"
         ));
         registry.add("spring.datasource.username", () -> System.getProperty(
                 "rd.integration.postgres.username",

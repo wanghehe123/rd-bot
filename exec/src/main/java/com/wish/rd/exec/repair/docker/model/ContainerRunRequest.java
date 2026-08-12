@@ -22,6 +22,7 @@ import java.util.Map;
  * @param sharedMemorySize 容器共享内存大小，例如 {@code 1g}
  * @param executionTimeoutMillis 容器执行硬超时；{@code 0} 表示不设硬超时
  * @param securityPolicy   Docker 安全与资源边界；禁用时保持既有行为
+ * @param networkPlan      可选的任务内网与受信任 relay sidecar 计划
  */
 public record ContainerRunRequest(
         String containerName,
@@ -37,7 +38,8 @@ public record ContainerRunRequest(
         boolean initEnabled,
         String sharedMemorySize,
         long executionTimeoutMillis,
-        ContainerSecurityPolicy securityPolicy
+        ContainerSecurityPolicy securityPolicy,
+        ContainerNetworkPlan networkPlan
 ) {
 
     public ContainerRunRequest {
@@ -59,6 +61,48 @@ public record ContainerRunRequest(
             throw new IllegalArgumentException("outputDirectory must not be null");
         }
         outputDirectory = outputDirectory.toAbsolutePath().normalize();
+        if (networkPlan != null && !networkMode.equals(networkPlan.internalNetworkName())) {
+            throw new IllegalArgumentException(
+                    "networkMode must equal the internal network declared by networkPlan");
+        }
+    }
+
+    /**
+     * Backward-compatible request constructor with an explicit security policy and no sidecar plan.
+     */
+    public ContainerRunRequest(
+            String containerName,
+            String image,
+            List<String> command,
+            Map<String, String> env,
+            Map<String, String> mounts,
+            String workingDirectory,
+            String networkMode,
+            boolean removeAfterExit,
+            boolean allowPrivileged,
+            Path outputDirectory,
+            boolean initEnabled,
+            String sharedMemorySize,
+            long executionTimeoutMillis,
+            ContainerSecurityPolicy securityPolicy
+    ) {
+        this(
+                containerName,
+                image,
+                command,
+                env,
+                mounts,
+                workingDirectory,
+                networkMode,
+                removeAfterExit,
+                allowPrivileged,
+                outputDirectory,
+                initEnabled,
+                sharedMemorySize,
+                executionTimeoutMillis,
+                securityPolicy,
+                null
+        );
     }
 
     /**
@@ -93,7 +137,8 @@ public record ContainerRunRequest(
                 initEnabled,
                 sharedMemorySize,
                 executionTimeoutMillis,
-                ContainerSecurityPolicy.disabled()
+                ContainerSecurityPolicy.disabled(),
+                null
         );
     }
 

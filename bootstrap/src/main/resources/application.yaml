@@ -8,7 +8,7 @@ spring:
       max-file-size: 50MB
       max-request-size: 100MB
   datasource:
-    url: ${POSTGRES_URL:jdbc:postgresql://127.0.0.1:5432/ragent?client_encoding=UTF8}
+    url: ${POSTGRES_URL:jdbc:postgresql://127.0.0.1:5432/rdbot?client_encoding=UTF8}
     username: ${POSTGRES_USERNAME:postgres}
     password: ${POSTGRES_PASSWORD:postgres}
     hikari:
@@ -102,6 +102,17 @@ rd:
     max-attempts: ${RD_REQUIREMENT_DELIVERY_MAX_ATTEMPTS:3}
     lease-millis: ${RD_REQUIREMENT_DELIVERY_LEASE_MILLIS:600000}
     recovery-interval-millis: ${RD_REQUIREMENT_DELIVERY_RECOVERY_INTERVAL_MILLIS:30000}
+    scheduling:
+      max-per-project: ${RD_REQUIREMENT_DELIVERY_SCHEDULING_MAX_PER_PROJECT:2}
+      max-docker: ${RD_REQUIREMENT_DELIVERY_SCHEDULING_MAX_DOCKER:4}
+      max-browser-qa: ${RD_REQUIREMENT_DELIVERY_SCHEDULING_MAX_BROWSER_QA:2}
+      max-provider: ${RD_REQUIREMENT_DELIVERY_SCHEDULING_MAX_PROVIDER:8}
+      max-per-provider: ${RD_REQUIREMENT_DELIVERY_SCHEDULING_MAX_PER_PROVIDER:2}
+      batch-size: ${RD_REQUIREMENT_DELIVERY_SCHEDULING_BATCH_SIZE:8}
+      aging-millis: ${RD_REQUIREMENT_DELIVERY_SCHEDULING_AGING_MILLIS:60000}
+      command-deadline-millis: ${RD_REQUIREMENT_DELIVERY_SCHEDULING_COMMAND_DEADLINE_MILLIS:3600000}
+      default-provider-id: ${RD_REQUIREMENT_DELIVERY_SCHEDULING_DEFAULT_PROVIDER_ID:local-provider}
+      project-weights: {}
     handoff:
       max-tokens: ${RD_REQUIREMENT_DELIVERY_HANDOFF_MAX_TOKENS:4000}
   financial:
@@ -202,10 +213,10 @@ rd:
       network-mode: ${RD_EXECUTOR_PI_NETWORK_MODE:bridge}
       remove-after-exit: ${RD_EXECUTOR_PI_REMOVE_AFTER_EXIT:true}
       allow-privileged: ${RD_EXECUTOR_PI_ALLOW_PRIVILEGED:false}
-      # Relay remains opt-in; relay-enabled Pi uses network=none until a reachable controlled relay
-      # path passes an end-to-end Docker test.
-      credential-relay-enabled: ${RD_EXECUTOR_PI_CREDENTIAL_RELAY_ENABLED:false}
-      credential-relay-url: ${RD_EXECUTOR_PI_CREDENTIAL_RELAY_URL:http://host.docker.internal:18080/internal/pi/credential-relay/redeem}
+      # Relay is the safe production default. Credentialed Pi runs must use the
+      # task-local internal network; only the hardened sidecar joins this egress network.
+      credential-relay-enabled: ${RD_EXECUTOR_PI_CREDENTIAL_RELAY_ENABLED:true}
+      credential-relay-url: ${RD_EXECUTOR_PI_CREDENTIAL_RELAY_URL:http://host.docker.internal:18080/internal/pi/credential-relay/proxy}
       execution-timeout-millis: ${RD_EXECUTOR_PI_EXECUTION_TIMEOUT_MILLIS:3600000}
       bash-command-timeout-millis: ${RD_EXECUTOR_PI_BASH_COMMAND_TIMEOUT_MILLIS:900000}
       raw-event-max-bytes: ${RD_EXECUTOR_PI_MAX_RAW_EVENT_BYTES:16777216}
@@ -254,6 +265,7 @@ rd:
         enabled: ${RD_EXECUTOR_DOCKER_CIRCUIT_BREAKER_ENABLED:true}
         failure-threshold: ${RD_EXECUTOR_DOCKER_CIRCUIT_BREAKER_FAILURE_THRESHOLD:3}
         open-duration-millis: ${RD_EXECUTOR_DOCKER_CIRCUIT_BREAKER_OPEN_DURATION_MILLIS:60000}
+        state-store: ${RD_EXECUTOR_DOCKER_CIRCUIT_BREAKER_STATE_STORE:redis}
       security:
         enabled: ${RD_EXECUTOR_DOCKER_SECURITY_ENABLED:true}
         repository-urls:

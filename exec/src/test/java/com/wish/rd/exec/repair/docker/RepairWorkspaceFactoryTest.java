@@ -138,6 +138,11 @@ class RepairWorkspaceFactoryTest {
         assertTrue(acceptanceItem.path("required").toString().contains("durationMillis"));
         assertTrue(acceptanceItem.path("required").toString().contains("evidenceArtifactIds"));
         assertEquals("CURRENT", acceptanceItem.path("properties").path("scope").path("enum").get(0).asText());
+        JsonNode hostAssertionResults = schema.path("properties").path("hostAssertionResults");
+        assertEquals("array", hostAssertionResults.path("type").asText());
+        assertEquals(2, hostAssertionResults.path("minItems").asInt());
+        assertTrue(hostAssertionResults.path("items").path("required").toString().contains("contentHash"));
+        assertFalse(schema.path("properties").has("hostAssertionBundle"));
         assertFalse(schema.path("required").toString().contains("changedFiles"));
     }
 

@@ -76,6 +76,56 @@ class ProcessGitRepairWorkspaceRepositoryTest {
     }
 
     @Test
+    void shouldWriteImmutableRequirementPublicationMarkersInPushedCommit() throws Exception {
+        assumeTrue(gitAvailable(), "git CLI is required");
+        Path seedRepository = temporaryDirectory.resolve("marker-seed");
+        Path remoteRepository = temporaryDirectory.resolve("marker-remote.git");
+        createSeedRepository(seedRepository, remoteRepository);
+
+        RepairWorkspaceFactory factory = new RepairWorkspaceFactory(
+                temporaryDirectory.resolve("marker-workspaces"),
+                "{\"type\":\"object\"}"
+        );
+        RepairJobCommand command = command(remoteRepository.toString(), Map.of(
+                "requirementPublicationTaskId", "task-1001",
+                "requirementPublicationOperationId", "sha256:operation-1001",
+                "requirementPublicationCandidatePatchSha256", "sha256:patch-1001"
+        ));
+        RepairWorkspace workspace = factory.create(command);
+        DockerExecutorProperties properties = new DockerExecutorProperties();
+        properties.getGit().setUserName("RD-Bot Test");
+        properties.getGit().setUserEmail("rd-bot-test@example.local");
+        ProcessGitRepairWorkspaceRepository repository = new ProcessGitRepairWorkspaceRepository(properties);
+
+        repository.prepare(command, workspace);
+        Files.createDirectories(workspace.repoDirectory().resolve("client/src"));
+        Files.writeString(
+                workspace.repoDirectory().resolve("client/src/markers.ts"),
+                "export const markers = true;\n",
+                StandardCharsets.UTF_8
+        );
+        Files.writeString(
+                workspace.files().resultJson(),
+                "{\"changedFiles\":[\"client/src/markers.ts\"]}",
+                StandardCharsets.UTF_8
+        );
+
+        repository.publish(command, workspace);
+
+        String remoteCommitMessage = git(
+                null,
+                "--git-dir", remoteRepository.toString(),
+                "log", "-1", "--format=%B", "refs/heads/repair/task-1001"
+        ).stdout().strip();
+        assertEquals("""
+                RD-Bot requirement task-1001
+
+                rd-operation-id: sha256:operation-1001
+                rd-candidate-patch-sha256: sha256:patch-1001
+                """.strip(), remoteCommitMessage);
+    }
+
+    @Test
     void shouldPrepareFromExistingRemoteWorkBranchWhenAvailable() throws Exception {
         assumeTrue(gitAvailable(), "git CLI is required");
         Path seedRepository = temporaryDirectory.resolve("seed");
@@ -405,6 +455,10 @@ class ProcessGitRepairWorkspaceRepositoryTest {
     }
 
     private static RepairJobCommand command(String repositoryUrl) {
+        return command(repositoryUrl, Map.of());
+    }
+
+    private static RepairJobCommand command(String repositoryUrl, Map<String, String> policyJson) {
         return new RepairJobCommand(
                 "repair-1001",
                 "task-1001",
@@ -417,7 +471,7 @@ class ProcessGitRepairWorkspaceRepositoryTest {
                 "main",
                 "repair/task-1001",
                 Map.of("ragSummary", "waimai order context"),
-                Map.of()
+                policyJson
         );
     }
 

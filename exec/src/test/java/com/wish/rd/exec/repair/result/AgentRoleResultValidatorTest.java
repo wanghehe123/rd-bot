@@ -339,6 +339,66 @@ class AgentRoleResultValidatorTest {
     }
 
     @Test
+    void shouldRejectAgentControlledHostAssertionsAndMalformedEchoes() {
+        AgentRoleResultValidation validation = validator.validate("QA_AGENT", """
+                {
+                  "status": "PASSED",
+                  "summary": "all checks passed",
+                  "failureCategory": "NONE",
+                  "retryRecommendation": "NONE",
+                  "browserValidation": {
+                    "required": false,
+                    "performed": false,
+                    "decisionSource": "NOT_APPLICABLE",
+                    "baseUrl": "",
+                    "browser": "chromium",
+                    "viewports": []
+                  },
+                  "acceptanceResults": [
+                    {
+                      "criteria": "current",
+                      "scope": "CURRENT",
+                      "command": "./mvnw test",
+                      "status": "PASSED",
+                      "exitCode": 0,
+                      "durationMillis": 1,
+                      "logArtifactId": "qa-evidence/commands/current.log",
+                      "evidenceArtifactIds": ["qa-evidence/commands/current.log"]
+                    },
+                    {
+                      "criteria": "regression",
+                      "scope": "REGRESSION",
+                      "command": "./mvnw test",
+                      "status": "PASSED",
+                      "exitCode": 0,
+                      "durationMillis": 1,
+                      "logArtifactId": "qa-evidence/commands/regression.log",
+                      "evidenceArtifactIds": ["qa-evidence/commands/regression.log"]
+                    }
+                  ],
+                  "evidenceManifestArtifactId": "qa-evidence/manifest.json",
+                  "hostAssertionBundle": {"specs": []},
+                  "hostAssertionWorkspace": "/tmp/agent-selected",
+                  "hostAssertionResults": [
+                    {
+                      "scope": "CURRENT",
+                      "contentHash": "not-a-hash",
+                      "evidenceArtifactIds": [],
+                      "specs": []
+                    }
+                  ]
+                }
+                """);
+
+        assertFalse(validation.valid());
+        assertTrue(validation.errors().stream().anyMatch(error -> error.contains("hostAssertionBundle is not accepted")));
+        assertTrue(validation.errors().stream().anyMatch(error -> error.contains("hostAssertionWorkspace is not accepted")));
+        assertTrue(validation.errors().stream().anyMatch(error -> error.contains("hostAssertionResults[0] may contain only")));
+        assertTrue(validation.errors().stream().anyMatch(error -> error.contains("contentHash must be a sha256")));
+        assertTrue(validation.errors().stream().anyMatch(error -> error.contains("evidenceArtifactIds must be a non-empty array")));
+    }
+
+    @Test
     void shouldDelegateCodingAgentResultToStructuredRepairValidator() {
         AgentRoleResultValidation validation = validator.validate("CODING_AGENT", """
                 {

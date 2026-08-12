@@ -21,7 +21,7 @@ public class RdBotRuntimeConfiguration {
     @Bean
     @ConditionalOnProperty(name = "rd.knowledge.store", havingValue = "postgres")
     public DataSource rdBotDataSource(
-            @Value("${spring.datasource.url:jdbc:postgresql://127.0.0.1:5432/ragent?client_encoding=UTF8}") String url,
+            @Value("${spring.datasource.url:jdbc:postgresql://127.0.0.1:5432/rdbot?client_encoding=UTF8}") String url,
             @Value("${spring.datasource.username:postgres}") String username,
             @Value("${spring.datasource.password:postgres}") String password,
             @Value("${spring.datasource.hikari.maximum-pool-size:10}") int maximumPoolSize,

@@ -1,6 +1,9 @@
 package com.wish.rd.engine.provider;
 
 import com.wish.rd.engine.agent.model.AgentRole;
+import com.wish.rd.engine.provider.model.ProviderFallbackDecision;
+import com.wish.rd.engine.provider.model.ProviderFallbackSideEffectSafety;
+import com.wish.rd.engine.provider.model.ProviderWorkRisk;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -52,6 +55,23 @@ class ProviderFallbackPolicyEnforcerTest {
         assertEquals(
                 ProviderFallbackDecision.NEEDS_HUMAN,
                 enforcer.evaluate(AgentRole.REQUIREMENT_REVIEWER, "openai", "401", "anthropic")
+        );
+    }
+
+    @Test
+    void shouldRequireHumanForHostClassifiedDatabaseMigrationEvenWhenFallbackIsCapable() {
+        assertEquals(
+                ProviderFallbackDecision.NEEDS_HUMAN,
+                enforcer.evaluateWithReason(
+                        AgentRole.CODING_AGENT,
+                        "openai",
+                        "503",
+                        "anthropic",
+                        ProviderFallbackSideEffectSafety.explicitCleanAttempt(
+                                "stage-1", "attempt-2"
+                        ),
+                        ProviderWorkRisk.HIGH_RISK
+                ).decision()
         );
     }
 }

@@ -1,5 +1,8 @@
 package com.wish.rd.engine.scheduling;
 
+import com.wish.rd.engine.scheduling.model.FairScheduleLimits;
+import com.wish.rd.engine.scheduling.model.ScheduleResourceClass;
+import com.wish.rd.engine.scheduling.model.StageScheduleCandidate;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;

@@ -13,6 +13,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.wish.rd.rag.runtime.model.CreateRequirementTaskCommand;
 import com.wish.rd.rag.runtime.model.RdRequirementTask;
 import com.wish.rd.rag.runtime.model.RdTaskPage;
@@ -92,6 +93,34 @@ class RagStreamTaskRegistryRequirementTest {
         RdRequirementTask deadLetter = registry.createRequirementTask(command("死信需求"));
         assertEquals(RdTaskStatus.DEAD_LETTERED,
                 registry.markDeadLettered(deadLetter.taskId(), "超过派发上限").status());
+    }
+
+    @Test
+    void approvalMustAdvanceTheFencedTaskSnapshotTogetherWithItsAuditRecord() {
+        InMemoryRdTaskStatusEventStore events = new InMemoryRdTaskStatusEventStore();
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(), events, generator());
+        RdRequirementTask task = registry.createRequirementTask(command("审批绑定需求"));
+        task = registry.markRequirementMaterialCollecting(task.taskId(), "收集材料");
+        task = registry.markRequirementMaterialReady(task.taskId(), "材料就绪");
+        task = registry.markRequirementContextBuilding(task.taskId(), "构建上下文");
+        task = registry.markRequirementContextReady(task.taskId(), "{\"context\":true}");
+        task = registry.markRequirementPlanGenerating(task.taskId(), "生成计划");
+        task = registry.markRequirementPlanGenerated(task.taskId(), "{\"plan\":\"bound\"}");
+        task = registry.markRequirementWaitingPolicy(task.taskId(),
+                "{\"policyAction\":\"WAITING_APPROVAL\"}");
+        task = registry.markRequirementWaitingApproval(task.taskId(),
+                "{\"policyAction\":\"WAITING_APPROVAL\"}");
+        long versionBeforeApproval = task.version();
+        long fenceBeforeApproval = task.fencingToken();
+
+        RdRequirementTask approved = registry.approveRequirementTask(task.taskId(), "批准绑定计划与策略");
+
+        assertEquals(RdTaskStatus.WAITING_APPROVAL, approved.status());
+        assertEquals(versionBeforeApproval + 1L, approved.version());
+        assertEquals(fenceBeforeApproval + 1L, approved.fencingToken());
+        assertTrue(events.listByTask(task.taskId()).stream()
+                .anyMatch(event -> event.status().equals("APPROVED")));
     }
 
     private CreateRequirementTaskCommand command(String title) {

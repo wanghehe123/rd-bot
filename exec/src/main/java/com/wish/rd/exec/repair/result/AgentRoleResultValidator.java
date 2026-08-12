@@ -5,9 +5,11 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.regex.Pattern;
 import com.wish.rd.exec.repair.result.model.AgentRoleResultValidation;
 import com.wish.rd.exec.repair.result.model.StructuredResultValidation;
 import com.wish.rd.rag.project.agent.model.ContextProtocolVersion;
@@ -43,8 +45,15 @@ public final class AgentRoleResultValidator {
             "PROJECT_PROFILE",
             "REPOSITORY_CONFIG",
             "AUTO_DETECTION",
-            "NOT_APPLICABLE"
+            "NOT_APPLICABLE",
+            "DOCS_ONLY"
     );
+    private static final Set<String> HOST_ASSERTION_RESULT_FIELDS = Set.of(
+            "scope",
+            "contentHash",
+            "evidenceArtifactIds"
+    );
+    private static final Pattern SHA256_CONTENT_HASH = Pattern.compile("^sha256:[0-9a-fA-F]{64}$");
 
     private final ObjectMapper objectMapper;
     private final StructuredResultValidator structuredResultValidator;
@@ -187,6 +196,7 @@ public final class AgentRoleResultValidator {
         validateEnum(root, "retryRecommendation", QA_RETRY_RECOMMENDATIONS, errors);
         validateQaBrowserValidation(root, errors);
         validateString(root, "evidenceManifestArtifactId", errors);
+        validateHostAssertionResults(root, errors);
         JsonNode acceptanceResults = root.get("acceptanceResults");
         if (acceptanceResults == null || !acceptanceResults.isArray() || acceptanceResults.isEmpty()) {
             errors.add("acceptanceResults must be a non-empty array");
@@ -270,6 +280,58 @@ public final class AgentRoleResultValidator {
             errors.add("status FAILED requires a retryRecommendation");
         }
         return List.copyOf(errors);
+    }
+
+    private static void validateHostAssertionResults(JsonNode root, List<String> errors) {
+        for (String field : List.of(
+                "hostAssertionBundle",
+                "hostAssertionWorkspace",
+                "hostAssertionBaseUrl",
+                "hostAssertionContext"
+        )) {
+            if (root.has(field)) {
+                errors.add(field + " is not accepted; agents must not control Host assertion execution");
+            }
+        }
+        JsonNode results = root.get("hostAssertionResults");
+        if (results == null) {
+            return;
+        }
+        if (!results.isArray() || results.isEmpty()) {
+            errors.add("hostAssertionResults must be a non-empty array when supplied");
+            return;
+        }
+        Set<String> scopes = new HashSet<>();
+        for (int index = 0; index < results.size(); index++) {
+            JsonNode result = results.get(index);
+            String prefix = "hostAssertionResults[" + index + "]";
+            if (result == null || !result.isObject()) {
+                errors.add(prefix + " must be an object");
+                continue;
+            }
+            result.fieldNames().forEachRemaining(field -> {
+                if (!HOST_ASSERTION_RESULT_FIELDS.contains(field)) {
+                    errors.add(prefix + " may contain only scope, contentHash, and evidenceArtifactIds");
+                }
+            });
+            validateEnum(result, "scope", prefix + ".scope", QA_SCOPES, errors);
+            String scope = result.path("scope").asText("").strip().toUpperCase(Locale.ROOT);
+            if (QA_SCOPES.contains(scope) && !scopes.add(scope)) {
+                errors.add("hostAssertionResults contains duplicate " + scope + " scope");
+            }
+            JsonNode contentHash = result.get("contentHash");
+            if (contentHash == null || !contentHash.isTextual()
+                    || !SHA256_CONTENT_HASH.matcher(contentHash.asText("").strip()).matches()) {
+                errors.add(prefix + ".contentHash must be a sha256: hash");
+            }
+            validateStringArray(
+                    result,
+                    "evidenceArtifactIds",
+                    prefix + ".evidenceArtifactIds",
+                    true,
+                    errors
+            );
+        }
     }
 
     private static void validateQaBrowserValidation(JsonNode root, List<String> errors) {

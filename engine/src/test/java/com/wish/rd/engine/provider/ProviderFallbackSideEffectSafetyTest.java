@@ -1,6 +1,12 @@
 package com.wish.rd.engine.provider;
 
 import com.wish.rd.engine.agent.model.AgentRole;
+import com.wish.rd.engine.provider.model.ProviderCapability;
+import com.wish.rd.engine.provider.model.ProviderCapabilityProfile;
+import com.wish.rd.engine.provider.model.ProviderFallbackDecision;
+import com.wish.rd.engine.provider.model.ProviderFallbackEvaluation;
+import com.wish.rd.engine.provider.model.ProviderFallbackSideEffectSafety;
+import com.wish.rd.engine.provider.model.ProviderWorkRisk;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;

@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class RdTaskPersistencePolicyTest {
@@ -51,11 +52,22 @@ class RdTaskPersistencePolicyTest {
         assertTrue(sql.contains("ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS acceptance_criteria_json JSONB NOT NULL DEFAULT '[]'::jsonb"));
         assertTrue(sql.contains("ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS version BIGINT NOT NULL DEFAULT 0"));
         assertTrue(sql.contains("ck_rd_tasks_version_non_negative"));
+        assertTrue(sql.contains("ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS fencing_token BIGINT NOT NULL DEFAULT 1"));
+        assertTrue(sql.contains("ck_rd_tasks_fencing_token_positive"));
         String mapper = Files.readString(PROJECT_ROOT.resolve(
                 "bootstrap/src/main/java/com/wish/rd/bootstrap/persistence/mapper/RdTaskMapper.java"));
         assertTrue(mapper.contains("advanceStatusWithExpectedVersion"));
         assertTrue(mapper.contains("AND version = #{expectedVersion}"));
+        assertTrue(mapper.contains("AND fencing_token = #{expectedFencingToken}"));
         assertTrue(mapper.contains("AND status = #{expectedStatus}"));
+        assertTrue(mapper.contains("updateTaskWithExpectedVersionFenced"));
+        assertTrue(mapper.contains("ON CONFLICT (id) DO NOTHING"));
+        assertFalse(mapper.contains("status = EXCLUDED.status"),
+                "blind upsert must not overwrite a live task status");
+        assertFalse(mapper.contains("version = EXCLUDED.version"),
+                "blind upsert must not overwrite task version");
+        assertFalse(mapper.contains("fencing_token = EXCLUDED.fencing_token"),
+                "blind upsert must not overwrite task fencing token");
         assertTrue(sql.contains("content_hash"));
         assertTrue(sql.contains("VARCHAR(128) NOT NULL DEFAULT ''"));
         assertTrue(sql.contains("metadata_json         JSONB NOT NULL DEFAULT '{}'::jsonb"));

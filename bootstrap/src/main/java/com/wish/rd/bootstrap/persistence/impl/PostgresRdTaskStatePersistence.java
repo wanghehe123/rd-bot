@@ -4,6 +4,7 @@ import com.wish.rd.rag.runtime.RdTaskStatePersistence;
 import com.wish.rd.rag.runtime.model.RdBugFixTask;
 import com.wish.rd.rag.runtime.model.RdRequirementTask;
 import com.wish.rd.rag.runtime.model.RdTask;
+import com.wish.rd.rag.runtime.model.RdTaskStatus;
 import com.wish.rd.rag.runtime.model.RdTaskStatusEvent;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
@@ -40,5 +41,82 @@ public class PostgresRdTaskStatePersistence implements RdTaskStatePersistence {
             eventStore.save(event);
         }
         return saved;
+    }
+
+    @Override
+    @Transactional
+    public RdTask saveWithEventCas(
+            RdTask task,
+            RdTaskStatusEvent event,
+            long expectedVersion,
+            long expectedFencingToken,
+            RdTaskStatus expectedStatus
+    ) {
+        Objects.requireNonNull(task, "task must not be null");
+        Objects.requireNonNull(expectedStatus, "expectedStatus must not be null");
+        if (task.status() == null) {
+            throw new IllegalArgumentException("task status must not be null");
+        }
+        taskStore.advanceStatusWithExpectedVersion(
+                task.taskId(), expectedVersion, expectedFencingToken, expectedStatus, task.status(),
+                task.errorMessage(), executionResultJson(task), pullRequestUrl(task), promptSnapshot(task)
+        );
+        RdTask saved = taskStore.findTask(task.taskId()).orElseThrow(
+                () -> new IllegalStateException("task disappeared after fenced CAS: " + task.taskId()));
+        if (event != null) {
+            eventStore.save(event);
+        }
+        return saved;
+    }
+
+    @Override
+    @Transactional
+    public RdTask saveActionWithEventCas(
+            RdTask task,
+            RdTaskStatusEvent event,
+            long expectedVersion,
+            long expectedFencingToken,
+            RdTaskStatus expectedStatus
+    ) {
+        Objects.requireNonNull(task, "task must not be null");
+        Objects.requireNonNull(expectedStatus, "expectedStatus must not be null");
+        taskStore.updateTaskWithExpectedVersion(
+                task, expectedVersion, expectedFencingToken, expectedStatus);
+        RdTask saved = taskStore.findTask(task.taskId()).orElseThrow(
+                () -> new IllegalStateException("task disappeared after fenced snapshot update: " + task.taskId()));
+        if (event != null) {
+            eventStore.save(event);
+        }
+        return saved;
+    }
+
+    private String executionResultJson(RdTask task) {
+        if (task instanceof RdBugFixTask bugFixTask) {
+            return bugFixTask.executionResultJson();
+        }
+        if (task instanceof RdRequirementTask requirementTask) {
+            return requirementTask.executionResultJson();
+        }
+        return null;
+    }
+
+    private String pullRequestUrl(RdTask task) {
+        if (task instanceof RdBugFixTask bugFixTask) {
+            return bugFixTask.pullRequestUrl();
+        }
+        if (task instanceof RdRequirementTask requirementTask) {
+            return requirementTask.pullRequestUrl();
+        }
+        return null;
+    }
+
+    private String promptSnapshot(RdTask task) {
+        if (task instanceof RdBugFixTask bugFixTask) {
+            return bugFixTask.promptSnapshot();
+        }
+        if (task instanceof RdRequirementTask requirementTask) {
+            return requirementTask.promptSnapshot();
+        }
+        return null;
     }
 }

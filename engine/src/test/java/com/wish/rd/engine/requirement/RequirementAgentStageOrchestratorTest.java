@@ -250,6 +250,33 @@ class RequirementAgentStageOrchestratorTest {
                         .contains("UNKNOWN_REMOTE_RESULT")));
     }
 
+    @Test
+    void host_blocks_capable_coding_fallback_without_host_clean_attempt_evidence() {
+        AgentWorkflowPlan plan = AgentWorkflowPlan.codingBenchmark(CodingBenchmarkArm.A);
+        OrchestratorTestHarness harness = new OrchestratorTestHarness()
+                .prestageRoles(plan.roles())
+                .prestageRoleContexts(plan.roles());
+        harness.executor.codingResultOverride = """
+                {"role":"CODING_AGENT","status":"SUCCEEDED","provider":"anthropic",
+                "providerAttempts":[
+                  {"provider":"openai","status":"TIMEOUT"},
+                  {"provider":"anthropic","status":"SUCCESS"}
+                ],
+                "budgetEstimate":{"initialTokens":1024,"retryReserveTokens":128,
+                "estimatedTotalTokens":1152,"confidence":"LOW","basis":"heuristic","historicalSamples":[]},
+                "tokenBudgetEstimate":{"tokens":256}}
+                """.strip();
+
+        RequirementExecutionResult result = harness.orchestrator.run(
+                plan, harness.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION, null);
+
+        assertFalse(result.success());
+        assertTrue(result.errorMessage().contains("host rejected provider fallback"));
+        assertTrue(result.errorMessage().contains("host-owned clean attempt evidence is missing"));
+        assertTrue(result.resultJson().contains("\"status\":\"WAITING_POLICY\"")
+                || result.resultJson().contains("\"status\":\"NEEDS_HUMAN\""));
+    }
+
     // ---------- (g) orchestrator_invokes_executor_for_each_role_in_plan_order ----------
     @Test
     void orchestrator_invokes_executor_for_each_role_in_plan_order() {
@@ -527,6 +554,23 @@ class RequirementAgentStageOrchestratorTest {
                 "reviewer prompt should label the role");
         assertTrue(reviewerPrompt.contains("需求评审"),
                 "reviewer prompt should include the role instruction section");
+    }
+
+    @Test
+    void buildAgentPrompt_requires_only_hostAssertionResultEchoes_for_qa() {
+        AgentWorkflowPlan plan = AgentWorkflowPlan.production();
+        OrchestratorTestHarness harness = new OrchestratorTestHarness()
+                .prestageRoles(plan.roles())
+                .prestageRoleContexts(plan.roles());
+
+        harness.orchestrator.run(
+                plan, harness.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION, null);
+
+        String qaPrompt = harness.executor.lastPromptByRole.get(AgentRole.QA_AGENT);
+        assertNotNull(qaPrompt, "QA prompt should be captured");
+        assertTrue(qaPrompt.contains("\"hostAssertionResults\""), qaPrompt);
+        assertFalse(qaPrompt.contains("\"hostAssertionBundle\""), qaPrompt);
+        assertTrue(qaPrompt.contains("hostAssertionContracts"), qaPrompt);
     }
 
     @Test

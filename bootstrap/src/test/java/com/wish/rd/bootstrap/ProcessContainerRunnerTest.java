@@ -5,6 +5,7 @@ import com.wish.rd.bootstrap.executor.impl.ProcessContainerRunner;
 import com.wish.rd.exec.repair.docker.ContainerOutputListener;
 import com.wish.rd.exec.repair.docker.model.ContainerRunRequest;
 import com.wish.rd.exec.repair.docker.model.ContainerRunResult;
+import com.wish.rd.exec.repair.docker.model.ContainerNetworkPlan;
 import com.wish.rd.exec.repair.docker.model.ContainerSecurityPolicy;
 import com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor;
 import org.junit.jupiter.api.Test;
@@ -325,6 +326,119 @@ class ProcessContainerRunnerTest {
     }
 
     @Test
+    void shouldUseAnInternalTaskNetworkForTheRelaySidecarAndRemoveItAfterPiStops() throws IOException {
+        DockerExecutorProperties properties = new DockerExecutorProperties();
+        String opaqueLease = "pcl_opaque-lease-must-not-appear-in-argv";
+        RecordingLauncher launcher = new RecordingLauncher(temporaryDirectory.resolve("output"), 0);
+        ProcessContainerRunner runner = runner(properties, launcher);
+        ContainerSecurityPolicy relayPolicy = new ContainerSecurityPolicy(
+                true,
+                true,
+                true,
+                true,
+                "256m",
+                "1",
+                128,
+                "1000:1000",
+                Map.of("/tmp", "rw,noexec,nosuid,size=32m,uid=1000,gid=1000")
+        );
+        ContainerNetworkPlan networkPlan = new ContainerNetworkPlan(
+                "rd-pi-network-task-1",
+                new ContainerNetworkPlan.Sidecar(
+                        "rd-pi-relay-task-1",
+                        "rd-pi-relay",
+                        "rd-bot/pi-agent:test",
+                        "node",
+                        List.of("/opt/rd-pi-bridge/src/rd-pi-relay-sidecar.mjs"),
+                        Map.of(
+                                "RD_PI_RELAY_HOST_URL", "http://host.docker.internal:18080/internal/pi/credential-relay/proxy",
+                                "RD_PI_RELAY_TASK_ID", "task-1",
+                                "RD_PI_RELAY_STAGE_RUN_ID", "stage-1",
+                                "RD_PI_RELAY_PROVIDER_ID", "provider-1"
+                        ),
+                        "bridge",
+                        "http://127.0.0.1:8787/healthz",
+                        2_000L,
+                        relayPolicy
+                )
+        );
+        ContainerRunRequest request = new ContainerRunRequest(
+                "rd-pi-task-1",
+                "rd-bot/pi-agent:test",
+                List.of("node", "agent.mjs"),
+                Map.of("RD_PI_CREDENTIAL_LEASE", opaqueLease),
+                Map.of(temporaryDirectory.resolve("workspace").toString(), "/work"),
+                "/work",
+                networkPlan.internalNetworkName(),
+                true,
+                false,
+                temporaryDirectory.resolve("output"),
+                false,
+                "",
+                60_000L,
+                ContainerSecurityPolicy.disabled(),
+                networkPlan
+        );
+
+        ContainerRunResult result = runner.run(request);
+
+        assertEquals(0, result.exitCode());
+        List<List<String>> commands = launcher.commands();
+        int networkCreate = commandIndex(commands, List.of("docker", "network", "create"));
+        int sidecarRun = commands.stream()
+                .filter(command -> command.contains("-d") && command.contains("rd-pi-relay-task-1"))
+                .findFirst()
+                .map(commands::indexOf)
+                .orElse(-1);
+        int bridgeConnect = commandIndex(commands, List.of(
+                "docker", "network", "connect", "bridge", "rd-pi-relay-task-1"
+        ));
+        int healthCheck = commands.stream()
+                .filter(command -> command.size() > 3
+                        && "docker".equals(command.getFirst())
+                        && "exec".equals(command.get(1))
+                        && "rd-pi-relay-task-1".equals(command.get(2)))
+                .findFirst()
+                .map(commands::indexOf)
+                .orElse(-1);
+        int agentRun = commands.stream()
+                .filter(command -> command.contains("agent.mjs"))
+                .findFirst()
+                .map(commands::indexOf)
+                .orElse(-1);
+        int sidecarCleanup = commandIndex(commands, List.of("docker", "rm", "-f", "rd-pi-relay-task-1"));
+        int networkCleanup = commandIndex(commands, List.of("docker", "network", "rm", "rd-pi-network-task-1"));
+
+        assertTrue(networkCreate >= 0);
+        assertTrue(commands.get(networkCreate).contains("--internal"));
+        assertTrue(sidecarRun > networkCreate);
+        assertTrue(commands.get(sidecarRun).contains("--network-alias"));
+        assertTrue(commands.get(sidecarRun).contains("rd-pi-relay"));
+        assertTrue(commands.get(sidecarRun).contains("--read-only"));
+        List<String> sidecarCommand = commands.get(sidecarRun);
+        int sidecarImage = sidecarCommand.indexOf("rd-bot/pi-agent:test");
+        assertTrue(sidecarImage >= 2);
+        assertEquals(
+                List.of(
+                        "--entrypoint",
+                        "node",
+                        "rd-bot/pi-agent:test",
+                        "/opt/rd-pi-bridge/src/rd-pi-relay-sidecar.mjs"
+                ),
+                sidecarCommand.subList(sidecarImage - 2, sidecarImage + 2)
+        );
+        assertTrue(bridgeConnect > sidecarRun);
+        assertTrue(healthCheck > bridgeConnect);
+        assertTrue(agentRun > healthCheck);
+        assertTrue(commands.get(agentRun).contains("rd-pi-network-task-1"));
+        assertTrue(sidecarCleanup > agentRun);
+        assertTrue(networkCleanup > sidecarCleanup);
+        assertFalse(commands.toString().contains(opaqueLease));
+        assertFalse(Files.readString(request.outputDirectory().resolve("docker-meta.json"), StandardCharsets.UTF_8)
+                .contains(opaqueLease));
+    }
+
+    @Test
     void shouldPassRequestHardTimeoutToDockerProcessLauncher() throws IOException {
         DockerExecutorProperties properties = new DockerExecutorProperties();
         AtomicLong capturedTimeout = new AtomicLong(-1L);
@@ -471,6 +585,17 @@ class ProcessContainerRunnerTest {
                 configuration.allowPrivileged(),
                 temporaryDirectory.resolve("output")
         );
+    }
+
+    private static int commandIndex(List<List<String>> commands, List<String> expected) {
+        for (int index = 0; index < commands.size(); index++) {
+            List<String> command = commands.get(index);
+            if (command.size() >= expected.size()
+                    && command.subList(0, expected.size()).equals(expected)) {
+                return index;
+            }
+        }
+        return -1;
     }
 
     private static final class RecordingLauncher implements ProcessContainerRunner.CommandLauncher {

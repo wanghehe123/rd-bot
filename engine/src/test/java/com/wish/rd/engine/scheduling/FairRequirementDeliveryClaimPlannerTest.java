@@ -1,10 +1,15 @@
 package com.wish.rd.engine.scheduling;
 
 import com.wish.rd.engine.requirement.job.model.RequirementDeliveryJob;
+import com.wish.rd.engine.requirement.job.model.RequirementStageCommand;
+import com.wish.rd.engine.scheduling.model.FairScheduleLimits;
+import com.wish.rd.engine.scheduling.model.ScheduleResourceClass;
+import com.wish.rd.engine.scheduling.model.StageScheduleCandidate;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -64,5 +69,74 @@ class FairRequirementDeliveryClaimPlannerTest {
         assertEquals(1, planned.size());
         assertEquals("t-b1", planned.getFirst().taskId());
         assertTrue(planned.stream().noneMatch(j -> j.taskId().equals("t-a1")));
+    }
+
+    @Test
+    void shouldRequireEveryResourceAndProviderCapacityBeforePlanningAClaim() {
+        long now = 10_000L;
+        FairScheduleLimits limits = new FairScheduleLimits(4, 1, 1, 2, 1, 8, 60_000L);
+        RequirementStageCommand running = command(
+                "running-coding", "project-a", "provider-a",
+                Set.of(ScheduleResourceClass.PROVIDER, ScheduleResourceClass.DOCKER), now - 1_000L
+        ).claimed("worker-a", now + 60_000L, now);
+        RequirementStageCommand sameProvider = command(
+                "same-provider", "project-b", "provider-a",
+                Set.of(ScheduleResourceClass.PROVIDER), now - 900L
+        );
+        RequirementStageCommand dockerSaturated = command(
+                "docker-saturated", "project-c", "provider-b",
+                Set.of(ScheduleResourceClass.PROVIDER, ScheduleResourceClass.DOCKER), now - 800L
+        );
+        RequirementStageCommand available = command(
+                "available", "project-d", "provider-b",
+                Set.of(ScheduleResourceClass.PROVIDER), now - 700L
+        );
+
+        List<RequirementStageCommand> planned = planner.planStageCommands(
+                List.of(sameProvider, dockerSaturated, available),
+                List.of(running),
+                limits,
+                now,
+                Map.of()
+        );
+
+        assertEquals(List.of("available"), planned.stream()
+                .map(RequirementStageCommand::commandId)
+                .toList());
+    }
+
+    @Test
+    void shouldClassifyAiReviewAsProviderWork() {
+        assertEquals(
+                Set.of(ScheduleResourceClass.PROVIDER),
+                FairRequirementDeliveryClaimPlanner.classifyStageRequirements(
+                        "REQUIREMENT_DELIVERY", "AI_REVIEW")
+        );
+    }
+
+    private static RequirementStageCommand command(
+            String commandId,
+            String projectId,
+            String providerId,
+            Set<ScheduleResourceClass> resourceRequirements,
+            long createdAtEpochMillis
+    ) {
+        return RequirementStageCommand.pending(
+                commandId,
+                "task-" + commandId,
+                0L,
+                1L,
+                "CODING_AGENT",
+                "ROLE_EXECUTION:CODING_AGENT",
+                0,
+                3,
+                createdAtEpochMillis + 60_000L,
+                ScheduleResourceClass.PROVIDER,
+                resourceRequirements,
+                projectId,
+                providerId,
+                "P1",
+                createdAtEpochMillis
+        );
     }
 }

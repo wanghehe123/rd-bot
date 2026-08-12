@@ -20,6 +20,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
@@ -210,9 +211,15 @@ class PostgresAgentStageArtifactStoreTest {
                 first.createdAtEpochMillis()
         );
         ConcurrentHashMap<Long, RdAgentStageArtifactRow> rows = new ConcurrentHashMap<>();
+        AtomicReference<String> committedHash = new AtomicReference<>();
         when(mapper.insertStageArtifactIgnoringConflict(any(RdAgentStageArtifactRow.class))).thenAnswer(invocation -> {
             RdAgentStageArtifactRow row = invocation.getArgument(0);
-            return rows.putIfAbsent(row.id, row) == null ? 1 : 0;
+            RdAgentStageArtifactRow existing = rows.putIfAbsent(row.id, row);
+            if (existing == null) {
+                committedHash.compareAndSet(null, row.contentHash);
+                return 1;
+            }
+            return 0;
         });
         when(mapper.selectById(artifactId)).thenAnswer(invocation -> rows.get(artifactId));
 
@@ -220,9 +227,12 @@ class PostgresAgentStageArtifactStoreTest {
         CountDownLatch start = new CountDownLatch(1);
         AtomicReference<AgentStageArtifact> winner = new AtomicReference<>();
         AtomicReference<Throwable> loserError = new AtomicReference<>();
+        AtomicReference<String> rejectedHash = new AtomicReference<>();
         try (ExecutorService executor = Executors.newFixedThreadPool(2)) {
-            executor.submit(() -> runConcurrentSave(store, first, ready, start, winner, loserError));
-            executor.submit(() -> runConcurrentSave(store, second, ready, start, winner, loserError));
+            executor.submit(() -> runConcurrentSave(
+                    store, first, ready, start, winner, loserError, rejectedHash));
+            executor.submit(() -> runConcurrentSave(
+                    store, second, ready, start, winner, loserError, rejectedHash));
             ready.await();
             start.countDown();
             executor.shutdown();
@@ -230,10 +240,15 @@ class PostgresAgentStageArtifactStoreTest {
         }
 
         assertNotNull(winner.get());
-        assertEquals("sha256:first", winner.get().contentHash());
+        assertNotNull(committedHash.get());
+        assertEquals(committedHash.get(), winner.get().contentHash());
+        assertNotNull(rows.get(artifactId));
+        assertEquals(committedHash.get(), rows.get(artifactId).contentHash);
         assertNotNull(loserError.get());
         assertEquals(IllegalStateException.class, loserError.get().getClass());
         assertEquals("immutable artifact conflict: " + artifactId, loserError.get().getMessage());
+        assertNotNull(rejectedHash.get());
+        assertNotEquals(committedHash.get(), rejectedHash.get());
         verify(mapper, never()).upsertStageArtifact(any(RdAgentStageArtifactRow.class));
     }
 
@@ -319,7 +334,8 @@ class PostgresAgentStageArtifactStoreTest {
             CountDownLatch ready,
             CountDownLatch start,
             AtomicReference<AgentStageArtifact> winner,
-            AtomicReference<Throwable> loserError
+            AtomicReference<Throwable> loserError,
+            AtomicReference<String> rejectedHash
     ) {
         ready.countDown();
         try {
@@ -327,6 +343,7 @@ class PostgresAgentStageArtifactStoreTest {
             AgentStageArtifact saved = store.saveImmutable(artifact);
             winner.compareAndSet(null, saved);
         } catch (Throwable throwable) {
+            rejectedHash.compareAndSet(null, artifact.contentHash());
             loserError.compareAndSet(null, throwable);
         }
     }

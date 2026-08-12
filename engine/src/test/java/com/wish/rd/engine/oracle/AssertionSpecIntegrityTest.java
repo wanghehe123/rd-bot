@@ -1,6 +1,7 @@
 package com.wish.rd.engine.oracle;
 
 import com.wish.rd.engine.oracle.model.AssertionSpec;
+import com.wish.rd.engine.oracle.model.AssertionSpecBundle;
 import com.wish.rd.engine.oracle.model.AssertionType;
 import org.junit.jupiter.api.Test;
 

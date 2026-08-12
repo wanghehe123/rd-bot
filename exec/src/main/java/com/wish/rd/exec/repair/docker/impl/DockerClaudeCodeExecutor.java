@@ -18,6 +18,8 @@ import com.wish.rd.exec.repair.execution.model.RepairJobCommand;
 import com.wish.rd.exec.repair.model.ModelCircuitBreakerPolicy;
 import com.wish.rd.exec.repair.model.ModelHealthSnapshot;
 import com.wish.rd.exec.repair.health.ModelHealthStore;
+import com.wish.rd.exec.repair.provider.ProviderFallbackPreflightPort;
+import com.wish.rd.exec.repair.qa.QaExecutionMetadataKeys;
 import com.wish.rd.exec.repair.qa.model.QaExecutionProfile;
 import com.wish.rd.exec.repair.qa.QaRepositoryProfileDetector;
 import com.wish.rd.exec.repair.result.model.AgentRoleResultValidation;
@@ -34,6 +36,7 @@ import java.math.BigDecimal;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.LinkOption;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -55,6 +58,7 @@ import com.wish.rd.exec.repair.docker.usage.model.ClaudeTokenUsageSnapshot;
 import com.wish.rd.exec.repair.docker.trace.ClaudeExecutionTraceParser;
 
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -128,6 +132,7 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
     private final ExecutionAllowlistPolicy executionAllowlistPolicy;
     private final AuthEnvironmentResolver authEnvironmentResolver;
     private final BudgetCurrencyConverter budgetCurrencyConverter;
+    private final ProviderFallbackPreflightPort providerFallbackPreflight;
 
     /**
      * 创建 Docker Claude Code 执行器。
@@ -388,6 +393,36 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
             AuthEnvironmentResolver authEnvironmentResolver,
             BudgetCurrencyConverter budgetCurrencyConverter
     ) {
+        this(
+                workspaceFactory,
+                containerRunner,
+                resultValidator,
+                configuration,
+                workspaceRepository,
+                watchdog,
+                modelHealthStore,
+                executionRegistry,
+                executionAllowlistPolicy,
+                authEnvironmentResolver,
+                budgetCurrencyConverter,
+                ProviderFallbackPreflightPort.unavailable()
+        );
+    }
+
+    public DockerClaudeCodeExecutor(
+            RepairWorkspaceFactory workspaceFactory,
+            ContainerRunnerPort containerRunner,
+            StructuredResultValidator resultValidator,
+            Configuration configuration,
+            RepairWorkspaceRepositoryPort workspaceRepository,
+            RepairExecutionWatchdog watchdog,
+            ModelHealthStore modelHealthStore,
+            DockerExecutionRegistry executionRegistry,
+            ExecutionAllowlistPolicy executionAllowlistPolicy,
+            AuthEnvironmentResolver authEnvironmentResolver,
+            BudgetCurrencyConverter budgetCurrencyConverter,
+            ProviderFallbackPreflightPort providerFallbackPreflight
+    ) {
         if (workspaceFactory == null) {
             throw new IllegalArgumentException("workspaceFactory must not be null");
         }
@@ -418,6 +453,9 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
         this.budgetCurrencyConverter = budgetCurrencyConverter == null
                 ? new BudgetCurrencyConverter(BudgetCurrencyConverter.DEFAULT_CNY_PER_USD)
                 : budgetCurrencyConverter;
+        this.providerFallbackPreflight = providerFallbackPreflight == null
+                ? ProviderFallbackPreflightPort.unavailable()
+                : providerFallbackPreflight;
     }
 
     /**
@@ -446,13 +484,50 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
             RepairWorkspaceRepositoryPort.RepositoryState qaRepositoryBaseline = qaRepositoryBaseline(command, workspace);
             QaExecutionProfile qaProfile = resolveQaProfile(command, workspace);
             List<ClaudeCodeModelProvider> providers = configuration.providers();
+            String fallbackSafetyJson = "";
             for (int index = 0; index < providers.size(); index++) {
                 ClaudeCodeModelProvider provider = providers.get(index);
                 if (!modelHealthStore.allowCall(provider.name())) {
                     providerAttempts.add(skippedAttemptMetadata(provider, index + 1));
                     continue;
                 }
-                cleanOutputDirectory(workspace.outputDirectory());
+                String attemptId = providerAttemptId(index + 1, provider);
+                if (lastResult != null) {
+                    workspace = workspaceFactory.createProviderAttempt(command, attemptId);
+                    persistProviderAttemptManifest(command, provider, attemptId, workspace);
+                    ProviderFallbackPreflightPort.Decision fallbackDecision = providerFallbackPreflight.evaluate(
+                            providerFallbackRequest(
+                                    command,
+                                    provider,
+                                    attemptId,
+                                    lastResult,
+                                    workspace,
+                                    providerAttempts.isEmpty()
+                                            ? ""
+                                            : providerAttempts.getLast().getOrDefault("provider", "")
+                            )
+                    );
+                    if (fallbackDecision == null || !fallbackDecision.allowed()) {
+                        String reason = fallbackDecision == null
+                                ? "host provider fallback preflight returned no decision"
+                                : fallbackDecision.reason();
+                        providerAttempts.add(blockedAttemptMetadata(provider, index + 1, attemptId, reason));
+                        return withProviderAttempts(
+                                failedExecution(
+                                        "provider fallback blocked before alternate provider invocation: " + reason),
+                                providerAttempts
+                        );
+                    }
+                    repositoryMetadata = new LinkedHashMap<>(
+                            workspaceRepository.prepare(command, workspace).metadataJson()
+                    );
+                    requireCandidatePatchApplication(command, repositoryMetadata);
+                    qaRepositoryBaseline = qaRepositoryBaseline(command, workspace);
+                    qaProfile = resolveQaProfile(command, workspace);
+                    fallbackSafetyJson = providerFallbackSafetyJson(command, attemptId);
+                } else {
+                    cleanOutputDirectory(workspace.outputDirectory());
+                }
                 long startedAtEpochMillis = System.currentTimeMillis();
                 AttemptOutcome outcome = runProvider(
                         command,
@@ -475,34 +550,16 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
                         index + 1,
                         providerResult,
                         startedAtEpochMillis,
-                        System.currentTimeMillis()
+                        System.currentTimeMillis(),
+                        attemptId,
+                        workspace
                 ));
                 if (!shouldFallback(lastResult) || index == providers.size() - 1) {
-                    return withProviderMetadata(lastResult, provider, providerAttempts);
+                    return withProviderFallbackSafety(
+                            withProviderMetadata(lastResult, provider, providerAttempts),
+                            fallbackSafetyJson
+                    );
                 }
-            }
-            if (lastResult == null && !providerAttempts.isEmpty()) {
-                ClaudeCodeModelProvider provider = providers.getFirst();
-                int attempt = providerAttempts.size() + 1;
-                cleanOutputDirectory(workspace.outputDirectory());
-                long startedAtEpochMillis = System.currentTimeMillis();
-                AttemptOutcome outcome = runProvider(command, workspace, provider, attempt, providers.size(), qaProfile);
-                RepairExecutionResult guardedResult = enforceQaRepositoryUnchanged(
-                        command, workspace, qaRepositoryBaseline, outcome.result());
-                RepairExecutionResult providerResult = withRepositoryMetadata(guardedResult, repositoryMetadata);
-                markProviderHealth(provider, providerResult);
-                lastResult = providerResult;
-                if (providerResult.status() == RepairExecutionStatus.SUCCESS) {
-                    lastResult = publishRepositoryIfRequired(command, workspace, providerResult);
-                }
-                providerAttempts.add(attemptMetadata(
-                        provider,
-                        attempt,
-                        providerResult,
-                        startedAtEpochMillis,
-                        System.currentTimeMillis()
-                ));
-                return withProviderMetadata(lastResult, provider, providerAttempts);
             }
             return withProviderAttempts(
                     lastResult == null
@@ -730,12 +787,26 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
             ClaudeTokenUsageSnapshot tokenUsage = TOKEN_USAGE_PARSER.parse(runResult.claudeEventsJsonl());
             evaluateWatchdog(command, runResult, tokenUsage);
             List<RepairArtifact> artifacts = collectArtifacts(workspace.outputDirectory());
-            Map<String, String> dockerMetadata = dockerMetadata(request, runResult, artifacts, tokenUsage);
+            Map<String, String> dockerMetadata = new LinkedHashMap<>(
+                    dockerMetadata(request, runResult, artifacts, tokenUsage)
+            );
+            if (qaProfile != null) {
+                dockerMetadata.put(QaExecutionMetadataKeys.DECISION_SOURCE, qaProfile.decisionSource());
+                List<String> candidateChangedFiles = QaRepositoryProfileDetector.readCandidateChangedFiles(
+                        workspace.repoDirectory()
+                );
+                if (candidateChangedFiles != null) {
+                    dockerMetadata.put(
+                            QaExecutionMetadataKeys.CANDIDATE_CHANGED_FILES_JSON,
+                            jsonValue(candidateChangedFiles)
+                    );
+                }
+            }
             return new AttemptOutcome(toExecutionResult(
                     command,
                     runResult,
                     artifacts,
-                    dockerMetadata,
+                    Map.copyOf(dockerMetadata),
                     qaProfile
             ));
         } catch (IOException exception) {
@@ -977,10 +1048,17 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
         if (!"QA_AGENT".equals(agentRole(command))) {
             return null;
         }
-        QaExecutionProfile profile = qaProfileDetector.detect(command, workspace.repoDirectory());
+        List<String> candidateChangedFiles = QaRepositoryProfileDetector.readCandidateChangedFiles(
+                workspace.repoDirectory()
+        );
+        QaExecutionProfile profile = qaProfileDetector.detect(
+                command,
+                workspace.repoDirectory(),
+                candidateChangedFiles
+        );
         Files.writeString(
                 workspace.inputDirectory().resolve("qa-profile.json"),
-                qaProfileDetector.toJson(profile),
+                qaProfileDetector.toJson(profile, candidateChangedFiles),
                 StandardCharsets.UTF_8
         );
         return profile;
@@ -1114,11 +1192,17 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
             int attempt,
             RepairExecutionResult result,
             long startedAtEpochMillis,
-            long finishedAtEpochMillis
+            long finishedAtEpochMillis,
+            String attemptId,
+            RepairWorkspace workspace
     ) {
         Map<String, String> metadata = new LinkedHashMap<>();
         metadata.put("provider", provider.name());
         metadata.put("attempt", String.valueOf(attempt));
+        metadata.put("attemptId", normalizeEnvText(attemptId));
+        metadata.put("workspaceRoot", workspace == null || workspace.root() == null
+                ? ""
+                : workspace.root().toString());
         metadata.put("status", result == null ? "FAILED" : result.status().name());
         metadata.put("startedAtEpochMillis", String.valueOf(startedAtEpochMillis));
         metadata.put("finishedAtEpochMillis", String.valueOf(Math.max(startedAtEpochMillis, finishedAtEpochMillis)));
@@ -1133,6 +1217,79 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
         return Map.copyOf(metadata);
     }
 
+    private static String providerAttemptId(int attempt, ClaudeCodeModelProvider provider) {
+        String providerName = provider == null ? "provider" : provider.name();
+        String safeProvider = providerName.replaceAll("[^A-Za-z0-9._-]", "-");
+        return "attempt-" + Math.max(1, attempt) + "-" + safeProvider + "-" + UUID.randomUUID();
+    }
+
+    private static String providerFallbackSafetyJson(RepairJobCommand command, String attemptId) {
+        String operationId = firstNonBlank(
+                command == null ? "" : command.contextJson().get("stageRunId"),
+                command == null ? "" : command.repairRecordId()
+        );
+        return jsonValue(Map.of(
+                "state", "EXPLICIT_CLEAN_ATTEMPT",
+                "operationId", operationId,
+                "attemptId", normalizeEnvText(attemptId),
+                "outputReset", false,
+                "reason", "provider switch uses a distinct host-created workspace"
+        ));
+    }
+
+    private static void persistProviderAttemptManifest(
+            RepairJobCommand command,
+            ClaudeCodeModelProvider provider,
+            String attemptId,
+            RepairWorkspace workspace
+    ) throws IOException {
+        if (workspace == null || workspace.root() == null) {
+            throw new IOException("provider attempt workspace root is missing");
+        }
+        Path manifest = workspace.root().resolve("provider-attempt.json").normalize();
+        if (!manifest.startsWith(workspace.root().toAbsolutePath().normalize())
+                || Files.isSymbolicLink(manifest)) {
+            throw new IOException("provider attempt manifest path is unsafe");
+        }
+        Files.writeString(
+                manifest,
+                jsonValue(Map.of(
+                        "attemptId", normalizeEnvText(attemptId),
+                        "workflowTaskId", command.contextJson().getOrDefault(
+                                "workflowTaskId", command.taskId()),
+                        "stageRunId", command.contextJson().getOrDefault("stageRunId", ""),
+                        "provider", provider == null ? "" : provider.name(),
+                        "createdAtEpochMillis", System.currentTimeMillis()
+                )),
+                StandardCharsets.UTF_8,
+                StandardOpenOption.CREATE_NEW,
+                StandardOpenOption.WRITE
+        );
+    }
+
+    private static RepairExecutionResult withProviderFallbackSafety(
+            RepairExecutionResult result,
+            String fallbackSafetyJson
+    ) {
+        if (result == null || fallbackSafetyJson == null || fallbackSafetyJson.isBlank()) {
+            return result;
+        }
+        Map<String, String> dockerMetadata = new LinkedHashMap<>(result.dockerMetadataJson());
+        dockerMetadata.put("providerFallbackSafety", fallbackSafetyJson);
+        return new RepairExecutionResult(
+                result.status(),
+                result.summary(),
+                result.pullRequestUrl(),
+                result.artifacts(),
+                result.rawResultJson(),
+                dockerMetadata,
+                result.githubMetadataJson(),
+                result.testMetadataJson(),
+                result.riskMetadataJson(),
+                result.errorMessage()
+        );
+    }
+
     private Map<String, String> skippedAttemptMetadata(ClaudeCodeModelProvider provider, int attempt) {
         long occurredAtEpochMillis = System.currentTimeMillis();
         Map<String, String> metadata = new LinkedHashMap<>();
@@ -1145,6 +1302,83 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
         metadata.put("errorMessage", "provider is unavailable by circuit breaker");
         putHealthMetadata(metadata, provider.name(), modelHealthStore.snapshot(provider.name()));
         return Map.copyOf(metadata);
+    }
+
+    private static Map<String, String> blockedAttemptMetadata(
+            ClaudeCodeModelProvider provider,
+            int attempt,
+            String attemptId,
+            String reason
+    ) {
+        long occurredAtEpochMillis = System.currentTimeMillis();
+        Map<String, String> metadata = new LinkedHashMap<>();
+        metadata.put("provider", provider == null ? "" : provider.name());
+        metadata.put("attempt", String.valueOf(attempt));
+        metadata.put("attemptId", normalizeEnvText(attemptId));
+        metadata.put("status", "BLOCKED_POLICY");
+        metadata.put("startedAtEpochMillis", String.valueOf(occurredAtEpochMillis));
+        metadata.put("finishedAtEpochMillis", String.valueOf(occurredAtEpochMillis));
+        metadata.put("errorCategory", "PROVIDER_FALLBACK_POLICY");
+        metadata.put("errorMessage", SecretRedactor.redactFreeform(reason));
+        return Map.copyOf(metadata);
+    }
+
+    private static ProviderFallbackPreflightPort.Request providerFallbackRequest(
+            RepairJobCommand command,
+            ClaudeCodeModelProvider fallbackProvider,
+            String attemptId,
+            RepairExecutionResult failedResult,
+            RepairWorkspace workspace,
+            String failedProvider
+    ) {
+        return new ProviderFallbackPreflightPort.Request(
+                command.contextJson().getOrDefault("workflowTaskId", command.taskId()),
+                command.contextJson().getOrDefault("stageRunId", ""),
+                agentRole(command),
+                normalizeEnvText(failedProvider),
+                failedResult == null ? "" : failedResult.status().name(),
+                fallbackProvider == null ? "" : fallbackProvider.name(),
+                attemptId,
+                workspace != null
+                        && directoryEmpty(workspace.repoDirectory())
+                        && directoryEmpty(workspace.outputDirectory()),
+                highRiskProviderWork(command)
+        );
+    }
+
+    private static boolean highRiskProviderWork(RepairJobCommand command) {
+        if (command == null) {
+            return false;
+        }
+        String taskText = String.join(" ",
+                normalizeEnvText(command.ticketTitle()),
+                normalizeEnvText(command.prompt()),
+                normalizeEnvText(command.contextJson().get("title")),
+                normalizeEnvText(command.contextJson().get("expectedResult")),
+                normalizeEnvText(command.contextJson().get("acceptanceCriteriaJson"))
+        ).toLowerCase(java.util.Locale.ROOT);
+        String[] highRiskMarkers = {
+                "authentication", "authorization", "permission", "security", "encryption", "privacy",
+                "payment", "database schema", "schema migration", "migration", "credential", "secret",
+                "认证", "鉴权", "授权", "权限", "安全", "加密", "隐私", "支付", "数据库结构", "迁移", "密钥"
+        };
+        for (String marker : highRiskMarkers) {
+            if (taskText.contains(marker)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean directoryEmpty(Path directory) {
+        if (directory == null || !Files.isDirectory(directory)) {
+            return false;
+        }
+        try (Stream<Path> paths = Files.list(directory)) {
+            return paths.findAny().isEmpty();
+        } catch (IOException exception) {
+            return false;
+        }
     }
 
     private static void putHealthMetadata(
@@ -1260,7 +1494,8 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
             AgentRoleResultValidation evidenceValidation = qaEvidenceBundleValidator.validate(
                     rawJson,
                     artifacts,
-                    taskAcceptanceCriteria(command)
+                    taskAcceptanceCriteria(command),
+                    candidateChangedFilesFromMetadata(dockerMetadata)
             );
             if (!evidenceValidation.valid()) {
                 return failedValidation(
@@ -1352,6 +1587,10 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
         } catch (JsonProcessingException exception) {
             return List.of();
         }
+    }
+
+    private static List<String> candidateChangedFilesFromMetadata(Map<String, String> dockerMetadata) {
+        return QaExecutionMetadataKeys.candidateChangedFilesFrom(dockerMetadata);
     }
 
     private static List<String> validateResolvedQaProfile(String rawJson, QaExecutionProfile profile) {

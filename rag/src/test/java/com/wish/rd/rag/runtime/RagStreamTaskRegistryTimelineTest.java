@@ -15,7 +15,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import com.wish.rd.rag.runtime.model.CreateRequirementTaskCommand;
 import com.wish.rd.rag.runtime.model.RdBugFixTask;
+import com.wish.rd.rag.runtime.model.RdRequirementTask;
 import com.wish.rd.rag.runtime.model.RdTaskEventTrigger;
 import com.wish.rd.rag.runtime.model.RdTaskPage;
 import com.wish.rd.rag.runtime.model.RdTaskQuery;
@@ -98,6 +100,20 @@ class RagStreamTaskRegistryTimelineTest {
     }
 
     @Test
+    void pauseResumeAndDeleteAdvanceTheFencedSnapshotVersion() {
+        RagStreamTaskRegistry registry = newRegistry();
+        RdBugFixTask created = registry.createBugFixTask(ticket(), "P1");
+        assertEquals(0L, created.version());
+
+        RdBugFixTask paused = registry.pause(created.taskId(), "operator pause");
+        assertEquals(1L, paused.version());
+        RdBugFixTask resumed = registry.resume(created.taskId(), "operator resume");
+        assertEquals(2L, resumed.version());
+        assertTrue(registry.deleteTask(created.taskId()));
+        assertEquals(3L, registry.get(created.taskId()).version());
+    }
+
+    @Test
     void shouldUpdateEditableFieldsWithoutStatusChange() {
         RagStreamTaskRegistry registry = newRegistry();
         RdBugFixTask created = registry.createBugFixTask(ticket(), "P2");
@@ -108,6 +124,55 @@ class RagStreamTaskRegistryTimelineTest {
         assertEquals("P0", updated.priority());
         assertEquals("新工单标题", updated.ticketTitle());
         assertEquals(created.status(), updated.status());
+    }
+
+    @Test
+    void metadataEditDoesNotAppendStateTimelineEventForBugFixOrRequirement() {
+        InMemoryRdTaskStatusEventStore events = new InMemoryRdTaskStatusEventStore();
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(), events, generator());
+
+        RdBugFixTask bugFix = registry.createBugFixTask(ticket(), "P2");
+        int bugFixEventsBefore = events.listByTask(bugFix.taskId()).size();
+        RdBugFixTask editedBugFix = registry.updateTask(
+                bugFix.taskId(), "编辑后的修复标题", "P0", "编辑后的工单标题");
+        assertEquals(bugFixEventsBefore, events.listByTask(bugFix.taskId()).size());
+        assertEquals(bugFix.version() + 1L, editedBugFix.version());
+        assertEquals(List.of(RdTaskStatus.CREATED.name()),
+                events.listByTask(bugFix.taskId()).stream().map(RdTaskStatusEvent::status).toList());
+
+        RdRequirementTask requirement = registry.createRequirementTask(new CreateRequirementTaskCommand(
+                "需求标题", "P1", "https://github.com/example/repo.git", "owner", "repo", "main",
+                "交付结果", List.of("验收标准"), false));
+        int requirementEventsBefore = events.listByTask(requirement.taskId()).size();
+        RdRequirementTask editedRequirement = (RdRequirementTask) registry.updateTaskMetadata(
+                requirement.taskId(), "编辑后的需求标题", "P0", "ignored-ticket-title");
+        assertEquals(requirementEventsBefore, events.listByTask(requirement.taskId()).size());
+        assertEquals(requirement.version() + 1L, editedRequirement.version());
+        assertEquals(List.of(RdTaskStatus.CREATED.name()),
+                events.listByTask(requirement.taskId()).stream().map(RdTaskStatusEvent::status).toList());
+    }
+
+    @Test
+    void legacyBugFixUpdateRejectsRequirementBeforeWriting() {
+        InMemoryRdTaskStatusEventStore events = new InMemoryRdTaskStatusEventStore();
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(), events, generator());
+        RdRequirementTask created = registry.createRequirementTask(new CreateRequirementTaskCommand(
+                "原始需求标题", "P1", "https://github.com/example/repo.git", "owner", "repo", "main",
+                "交付结果", List.of("验收标准"), false));
+        int eventsBefore = events.listByTask(created.taskId()).size();
+
+        assertThrows(IllegalStateException.class, () -> registry.updateTask(
+                created.taskId(), "不应写入", "P0", "不应写入工单标题"));
+
+        RdRequirementTask persisted = (RdRequirementTask) registry.getTask(created.taskId());
+        assertEquals(created.title(), persisted.title());
+        assertEquals(created.priority(), persisted.priority());
+        assertEquals(created.status(), persisted.status());
+        assertEquals(created.version(), persisted.version());
+        assertEquals(created.fencingToken(), persisted.fencingToken());
+        assertEquals(eventsBefore, events.listByTask(created.taskId()).size());
     }
 
     @Test

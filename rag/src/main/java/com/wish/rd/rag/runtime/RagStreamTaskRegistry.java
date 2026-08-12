@@ -512,17 +512,15 @@ public final class RagStreamTaskRegistry {
         String safeReason = reason == null ? "" : reason.strip();
         RdTaskType taskType = RdTaskType.parse(existing.taskType(), RdTaskType.REQUIREMENT);
         RdTaskTransitionPolicy.ensureTransition(taskType, existing.status(), targetStatus);
-        long expectedVersion = taskStore.findVersion(existing.taskId()).orElse(0L);
+        long expectedVersion = existing.version();
+        long expectedFencingToken = existing.fencingToken();
+        long now = System.currentTimeMillis();
+        RdTask next = nextSnapshot(
+                existing, targetStatus, safeReason, executionResultJson, pullRequestUrl, promptSnapshot, now);
         try {
-            taskStore.advanceStatusWithExpectedVersion(
-                    existing.taskId(),
-                    expectedVersion,
-                    existing.status(),
-                    targetStatus,
-                    safeReason,
-                    executionResultJson,
-                    pullRequestUrl,
-                    promptSnapshot
+            return saveTaskWithEventCas(
+                    next, targetStatus.name(), next.title(), safeReason, RdTaskEventTrigger.SYSTEM,
+                    expectedVersion, expectedFencingToken, existing.status()
             );
         } catch (IllegalStateException stale) {
             RdTask latest = getTask(existing.taskId());
@@ -531,15 +529,6 @@ public final class RagStreamTaskRegistry {
             }
             throw stale;
         }
-        RdTask updated = getTask(existing.taskId());
-        recordEvent(
-                updated,
-                targetStatus.name(),
-                updated.title(),
-                safeReason,
-                RdTaskEventTrigger.SYSTEM
-        );
-        return updated;
     }
 
     /** 将失败任务推进到任务级 RECOVERING；阶段重试仍创建新 attempt。 */
@@ -709,6 +698,51 @@ public final class RagStreamTaskRegistry {
         return withTaskLock(taskId, () -> {
             RdRequirementTask existing = getRequirementTask(taskId);
             return transitionAndSave(existing, RdTaskStatus.MATERIAL_COLLECTING, "", "", "", "");
+        });
+    }
+
+    /**
+     * Applies one requirement transition using the caller's immutable snapshot metadata.
+     *
+     * <p>This is the stage-command write boundary: it never reloads the task before CAS, so a
+     * worker whose lease expired cannot adopt a newer version/fencing token.
+     *
+     * @param snapshot task snapshot captured before the stage was leased
+     * @param targetStatus target status
+     * @param promptSnapshot optional prompt snapshot
+     * @param executionResultJson optional result snapshot
+     * @param pullRequestUrl optional PR URL
+     * @param errorMessage optional failure reason
+     * @return fenced persisted snapshot
+     */
+    public RdRequirementTask transitionRequirementFenced(
+            RdRequirementTask snapshot,
+            RdTaskStatus targetStatus,
+            String promptSnapshot,
+            String executionResultJson,
+            String pullRequestUrl,
+            String errorMessage
+    ) {
+        if (snapshot == null || targetStatus == null) {
+            throw new IllegalArgumentException("snapshot and targetStatus must not be null");
+        }
+        if (snapshot.fencingToken() <= 0L) {
+            throw new IllegalArgumentException("fenced requirement transition requires a positive fencing token");
+        }
+        return withTaskLock(snapshot.taskId(), () -> {
+            RdTaskTransitionPolicy.ensureTransition(
+                    RdTaskType.REQUIREMENT, snapshot.status(), targetStatus);
+            RdRequirementTask next = snapshot.withState(
+                    targetStatus,
+                    promptSnapshot,
+                    executionResultJson,
+                    pullRequestUrl,
+                    errorMessage,
+                    System.currentTimeMillis());
+            return (RdRequirementTask) saveTaskWithEventCas(
+                    next, targetStatus.name(), next.title(), next.errorMessage(),
+                    RdTaskEventTrigger.SYSTEM,
+                    snapshot.version(), snapshot.fencingToken(), snapshot.status());
         });
     }
 
@@ -909,6 +943,68 @@ public final class RagStreamTaskRegistry {
     }
 
     /**
+     * Commits a requirement task using only the concurrency metadata captured by the caller.
+     *
+     * <p>This publication-finalization path deliberately does not reload the task before issuing
+     * its compare-and-set. A worker that lost its lease must fail against the original version,
+     * status and fencing token instead of borrowing a newer snapshot.
+     *
+     * @param taskId task identifier
+     * @param expectedVersion version captured before publication
+     * @param expectedStatus status captured before publication
+     * @param expectedFencingToken fencing token captured before publication
+     * @param pullRequestUrl confirmed pull request URL
+     * @param executionResultJson durable delivery result
+     * @return committed task snapshot after the fenced transition
+     * @throws IllegalStateException when the task has advanced since the caller's snapshot
+     */
+    public RdRequirementTask markRequirementCommittedFenced(
+            String taskId,
+            long expectedVersion,
+            RdTaskStatus expectedStatus,
+            long expectedFencingToken,
+            String pullRequestUrl,
+            String executionResultJson
+    ) {
+        String safeTaskId = requireTaskId(taskId);
+        if (expectedVersion < 0L || expectedFencingToken <= 0L) {
+            throw new IllegalArgumentException("expectedVersion must not be negative and expectedFencingToken must be positive");
+        }
+        if (expectedStatus == null) {
+            throw new IllegalArgumentException("expectedStatus must not be null");
+        }
+        return withTaskLock(safeTaskId, () -> {
+            RdTaskTransitionPolicy.ensureTransition(
+                    RdTaskType.REQUIREMENT, expectedStatus, RdTaskStatus.COMMITTED);
+            long now = System.currentTimeMillis();
+            // The SQL CAS changes only status/result/PR fields. Constructing this transition
+            // payload avoids a task-store reload that could let a stale worker adopt new fencing.
+            RdRequirementTask next = RdRequirementTask.created(
+                    safeTaskId,
+                    new CreateRequirementTaskCommand("", "P2", "", "", "", "", "", List.of(), false),
+                    now
+            ).withState(
+                    RdTaskStatus.COMMITTED,
+                    "",
+                    executionResultJson,
+                    pullRequestUrl,
+                    "",
+                    now
+            ).withConcurrency(expectedVersion, expectedFencingToken);
+            return (RdRequirementTask) saveTaskWithEventCas(
+                    next,
+                    RdTaskStatus.COMMITTED.name(),
+                    "",
+                    "",
+                    RdTaskEventTrigger.SYSTEM,
+                    expectedVersion,
+                    expectedFencingToken,
+                    expectedStatus
+            );
+        });
+    }
+
+    /**
      * 将需求任务推进到 REPORTING。
      *
      * @param taskId           任务 ID
@@ -1067,10 +1163,56 @@ public final class RagStreamTaskRegistry {
      */
     public RdBugFixTask updateTask(String taskId, String title, String priority, String ticketTitle) {
         return withTaskLock(taskId, () -> {
-            RdBugFixTask existing = get(taskId);
-            RdBugFixTask updated = existing.withEditedFields(title, priority, ticketTitle, System.currentTimeMillis());
-            return taskStore.saveBugFixTask(updated);
+            RdTask existing = getTask(taskId);
+            if (!(existing instanceof RdBugFixTask)) {
+                throw new IllegalStateException("rd task is not a bug-fix task: " + taskId);
+            }
+            return (RdBugFixTask) updateTaskMetadataLocked(existing, title, priority, ticketTitle);
         });
+    }
+
+    /**
+     * 修改任意 RD 任务的通用管理元数据，不改变状态机或需求交付字段。
+     *
+     * <p>BugFix 还会更新工单标题；需求任务没有工单标题字段，因此该入参被有意忽略。
+     * 两种任务都通过同一 action CAS 边界写快照，但不会追加状态时间线事件，避免旧阶段 worker 覆盖编辑结果。
+     *
+     * @param taskId      任务 ID
+     * @param title       展示标题（空则保留原值）
+     * @param priority    优先级（空则保留原值）
+     * @param ticketTitle BugFix 工单标题（需求任务忽略）
+     * @return 更新后任务快照
+     */
+    public RdTask updateTaskMetadata(String taskId, String title, String priority, String ticketTitle) {
+        return withTaskLock(taskId, () -> {
+            RdTask existing = getTask(taskId);
+            return updateTaskMetadataLocked(existing, title, priority, ticketTitle);
+        });
+    }
+
+    private RdTask updateTaskMetadataLocked(
+            RdTask existing,
+            String title,
+            String priority,
+            String ticketTitle
+    ) {
+        RdTask updated;
+        if (existing instanceof RdBugFixTask bugFixTask) {
+            updated = bugFixTask.withEditedFields(title, priority, ticketTitle, System.currentTimeMillis());
+        } else if (existing instanceof RdRequirementTask requirementTask) {
+            updated = requirementTask.withEditedFields(title, priority, System.currentTimeMillis());
+        } else {
+            throw new IllegalArgumentException("unsupported rd task type: " + existing.getClass().getName());
+        }
+        // Metadata edits are not state transitions: persist the snapshot under CAS without
+        // appending a duplicate state-entry event to the task timeline.
+        return saveTaskActionWithEventCas(
+                updated,
+                null,
+                existing.version(),
+                existing.fencingToken(),
+                existing.status()
+        );
     }
 
     /**
@@ -1095,8 +1237,13 @@ public final class RagStreamTaskRegistry {
         return withTaskLock(taskId, () -> {
             RdTask existing = getTask(taskId);
             RdTask paused = switchPaused(existing, true, System.currentTimeMillis());
-            return saveTaskWithEvent(
-                    paused, RdTaskStatusEvent.ACTION_PAUSED, paused.title(), message, RdTaskEventTrigger.API);
+            return saveTaskActionWithEventCas(
+                    paused,
+                    buildEvent(paused, RdTaskStatusEvent.ACTION_PAUSED, paused.title(), message, RdTaskEventTrigger.API),
+                    existing.version(),
+                    existing.fencingToken(),
+                    existing.status()
+            );
         });
     }
 
@@ -1122,8 +1269,13 @@ public final class RagStreamTaskRegistry {
         return withTaskLock(taskId, () -> {
             RdTask existing = getTask(taskId);
             RdTask resumed = switchPaused(existing, false, System.currentTimeMillis());
-            return saveTaskWithEvent(
-                    resumed, RdTaskStatusEvent.ACTION_RESUMED, resumed.title(), message, RdTaskEventTrigger.API);
+            return saveTaskActionWithEventCas(
+                    resumed,
+                    buildEvent(resumed, RdTaskStatusEvent.ACTION_RESUMED, resumed.title(), message, RdTaskEventTrigger.API),
+                    existing.version(),
+                    existing.fencingToken(),
+                    existing.status()
+            );
         });
     }
 
@@ -1163,9 +1315,15 @@ public final class RagStreamTaskRegistry {
                     return false;
                 }
                 RdTask deleted = deletedTask(existing, System.currentTimeMillis());
-                // Keep the DELETED audit event; do not wipe the entire timeline after recording it.
-                recordEvent(deleted, RdTaskStatusEvent.ACTION_DELETED, deleted.title(), "管理台删除任务", RdTaskEventTrigger.API);
-                saveTask(deleted);
+                // Keep the DELETED audit event; the CAS boundary prevents a late worker from reviving it.
+                saveTaskActionWithEventCas(
+                        deleted,
+                        buildEvent(deleted, RdTaskStatusEvent.ACTION_DELETED, deleted.title(),
+                                "管理台删除任务", RdTaskEventTrigger.API),
+                        existing.version(),
+                        existing.fencingToken(),
+                        existing.status()
+                );
                 return true;
             }).orElse(false);
         });
@@ -1284,8 +1442,9 @@ public final class RagStreamTaskRegistry {
                 System.currentTimeMillis()
         );
         String message = next.errorMessage().isBlank() ? "" : next.errorMessage();
-        return (RdBugFixTask) saveTaskWithEvent(
-                next, next.status().name(), next.title(), message, RdTaskEventTrigger.SYSTEM);
+        return (RdBugFixTask) saveTaskWithEventCas(
+                next, next.status().name(), next.title(), message, RdTaskEventTrigger.SYSTEM,
+                existing.version(), existing.fencingToken(), existing.status());
     }
 
     private RdRequirementTask transitionAndSave(
@@ -1313,8 +1472,9 @@ public final class RagStreamTaskRegistry {
                 System.currentTimeMillis()
         );
         String message = next.errorMessage().isBlank() ? "" : next.errorMessage();
-        return (RdRequirementTask) saveTaskWithEvent(
-                next, next.status().name(), next.title(), message, RdTaskEventTrigger.SYSTEM);
+        return (RdRequirementTask) saveTaskWithEventCas(
+                next, next.status().name(), next.title(), message, RdTaskEventTrigger.SYSTEM,
+                existing.version(), existing.fencingToken(), existing.status());
     }
 
     private RdTask saveTaskWithEvent(
@@ -1325,6 +1485,62 @@ public final class RagStreamTaskRegistry {
             RdTaskEventTrigger trigger
     ) {
         return statePersistence.saveWithEvent(task, buildEvent(task, status, title, message, trigger));
+    }
+
+    private RdTask saveTaskWithEventCas(
+            RdTask task,
+            String status,
+            String title,
+            String message,
+            RdTaskEventTrigger trigger,
+            long expectedVersion,
+            long expectedFencingToken,
+            RdTaskStatus expectedStatus
+    ) {
+        return statePersistence.saveWithEventCas(
+                task,
+                buildEvent(task, status, title, message, trigger),
+                expectedVersion,
+                expectedFencingToken,
+                expectedStatus
+        );
+    }
+
+    private RdTask saveTaskActionWithEventCas(
+            RdTask task,
+            RdTaskStatusEvent event,
+            long expectedVersion,
+            long expectedFencingToken,
+            RdTaskStatus expectedStatus
+    ) {
+        return statePersistence.saveActionWithEventCas(
+                task,
+                event,
+                expectedVersion,
+                expectedFencingToken,
+                expectedStatus
+        );
+    }
+
+    private RdTask nextSnapshot(
+            RdTask existing,
+            RdTaskStatus targetStatus,
+            String reason,
+            String executionResultJson,
+            String pullRequestUrl,
+            String promptSnapshot,
+            long now
+    ) {
+        if (existing instanceof RdBugFixTask bugFixTask) {
+            return bugFixTask.withState(
+                    targetStatus, "", "", promptSnapshot, executionResultJson,
+                    pullRequestUrl, reason, now);
+        }
+        if (existing instanceof RdRequirementTask requirementTask) {
+            return requirementTask.withState(
+                    targetStatus, promptSnapshot, executionResultJson, pullRequestUrl, reason, now);
+        }
+        throw new IllegalArgumentException("unsupported rd task type: " + existing.getClass().getName());
     }
 
     /**

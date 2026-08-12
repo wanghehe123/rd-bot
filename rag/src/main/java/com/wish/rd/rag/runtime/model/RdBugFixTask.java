@@ -27,6 +27,8 @@ package com.wish.rd.rag.runtime.model;
  * @param createTimeEpochMillis 创建时间
  * @param updateTimeEpochMillis 更新时间
  * @param paused                是否被管理台暂停（仅标记，不改变状态机合法性）
+ * @param version               乐观并发版本
+ * @param fencingToken          单调 fencing token，拒绝租约失效后的旧写者
  */
 public record RdBugFixTask(
         String taskId,
@@ -50,7 +52,9 @@ public record RdBugFixTask(
         String baseBranch,
         long createTimeEpochMillis,
         long updateTimeEpochMillis,
-        boolean paused
+        boolean paused,
+        long version,
+        long fencingToken
 ) implements RdTask {
 
     public static final String TASK_TYPE = "BUG_FIX";
@@ -75,6 +79,8 @@ public record RdBugFixTask(
         repoOwner = safe(repoOwner);
         repoName = safe(repoName);
         baseBranch = safe(baseBranch);
+        version = Math.max(0L, version);
+        fencingToken = Math.max(0L, fencingToken);
     }
 
     public RdBugFixTask(
@@ -116,7 +122,42 @@ public record RdBugFixTask(
                 "",
                 createTimeEpochMillis,
                 updateTimeEpochMillis,
-                paused
+                paused,
+                0L,
+                0L
+        );
+    }
+
+    /** Backward-compatible constructor for snapshots carrying project metadata. */
+    public RdBugFixTask(
+            String taskId,
+            String taskType,
+            String ticketId,
+            String ticketTitle,
+            String priority,
+            RdTaskStatus status,
+            String messageId,
+            String title,
+            String promptSnapshot,
+            String executionResultJson,
+            String pullRequestUrl,
+            String errorMessage,
+            String projectId,
+            String projectKey,
+            String projectName,
+            String repositoryUrl,
+            String repoOwner,
+            String repoName,
+            String baseBranch,
+            long createTimeEpochMillis,
+            long updateTimeEpochMillis,
+            boolean paused
+    ) {
+        this(
+                taskId, taskType, ticketId, ticketTitle, priority, status, messageId, title,
+                promptSnapshot, executionResultJson, pullRequestUrl, errorMessage,
+                projectId, projectKey, projectName, repositoryUrl, repoOwner, repoName, baseBranch,
+                createTimeEpochMillis, updateTimeEpochMillis, paused, 0L, 0L
         );
     }
 
@@ -159,7 +200,9 @@ public record RdBugFixTask(
                 "",
                 createTimeEpochMillis,
                 createTimeEpochMillis,
-                false
+                false,
+                0L,
+                0L
         );
     }
 
@@ -208,7 +251,9 @@ public record RdBugFixTask(
                 baseBranch,
                 createTimeEpochMillis,
                 updateTimeEpochMillis,
-                paused
+                paused,
+                version,
+                fencingToken
         );
     }
 
@@ -249,7 +294,9 @@ public record RdBugFixTask(
                 baseBranch,
                 createTimeEpochMillis,
                 updateTimeEpochMillis,
-                paused
+                paused,
+                version,
+                fencingToken
         );
     }
 
@@ -283,7 +330,25 @@ public record RdBugFixTask(
                 baseBranch,
                 createTimeEpochMillis,
                 updateTimeEpochMillis,
-                newPaused
+                newPaused,
+                version,
+                fencingToken
+        );
+    }
+
+    /**
+     * Returns a snapshot carrying persistence-layer concurrency metadata.
+     *
+     * @param newVersion new optimistic version
+     * @param newFencingToken new fencing token
+     * @return snapshot with updated concurrency metadata
+     */
+    public RdBugFixTask withConcurrency(long newVersion, long newFencingToken) {
+        return new RdBugFixTask(
+                taskId, taskType, ticketId, ticketTitle, priority, status, messageId, title,
+                promptSnapshot, executionResultJson, pullRequestUrl, errorMessage,
+                projectId, projectKey, projectName, repositoryUrl, repoOwner, repoName, baseBranch,
+                createTimeEpochMillis, updateTimeEpochMillis, paused, newVersion, newFencingToken
         );
     }
 
@@ -311,7 +376,9 @@ public record RdBugFixTask(
                 baseBranch,
                 createTimeEpochMillis,
                 updateTimeEpochMillis,
-                paused
+                paused,
+                version,
+                fencingToken
         );
     }
 

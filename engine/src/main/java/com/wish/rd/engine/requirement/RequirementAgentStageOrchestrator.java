@@ -57,10 +57,13 @@ import com.wish.rd.engine.requirement.model.RequirementPlan;
 import com.wish.rd.engine.requirement.model.RequirementPolicyDecision;
 import com.wish.rd.engine.retry.model.TaskFailurePhase;
 import com.wish.rd.engine.retry.model.TaskRetryCheckpoint;
-import com.wish.rd.engine.provider.ProviderFallbackDecision;
-import com.wish.rd.engine.provider.ProviderFallbackEvaluation;
 import com.wish.rd.engine.provider.ProviderFallbackPolicyEnforcer;
-import com.wish.rd.engine.provider.ProviderFallbackSideEffectSafety;
+import com.wish.rd.engine.provider.ProviderSideEffectStatusPort;
+import com.wish.rd.engine.provider.ProviderCapabilityCatalog;
+import com.wish.rd.engine.provider.model.ProviderFallbackDecision;
+import com.wish.rd.engine.provider.model.ProviderFallbackEvaluation;
+import com.wish.rd.engine.provider.model.ProviderFallbackSideEffectSafety;
+import com.wish.rd.engine.provider.model.ProviderWorkRisk;
 
 /**
  * 需求交付 Agent 阶段编排器（独立）。
@@ -123,6 +126,8 @@ public class RequirementAgentStageOrchestrator {
     private final RequirementExecutorPort executor;
     private final SnowflakeIdGenerator idGenerator;
     private final ProviderFallbackPolicyEnforcer providerFallbackPolicy;
+    private volatile ProviderSideEffectStatusPort providerSideEffectStatusPort =
+            ProviderSideEffectStatusPort.unavailable();
 
     public RequirementAgentStageOrchestrator(
             AgentStageRunStore stageRunStore,
@@ -167,6 +172,13 @@ public class RequirementAgentStageOrchestrator {
      */
     public void setRetrievalRecorder(RequirementContextRetrievalRecorder retrievalRecorder) {
         this.retrievalRecorder = retrievalRecorder;
+    }
+
+    /** Injects the Host-owned publication and provider-attempt safety resolver. */
+    public void setProviderSideEffectStatusPort(ProviderSideEffectStatusPort providerSideEffectStatusPort) {
+        this.providerSideEffectStatusPort = providerSideEffectStatusPort == null
+                ? ProviderSideEffectStatusPort.unavailable()
+                : providerSideEffectStatusPort;
     }
 
     /**
@@ -373,9 +385,9 @@ public class RequirementAgentStageOrchestrator {
             }
             // 结果产出：保存角色产物并补齐 provider 元数据；Host 门控拒绝不安全静默降级。
             stage = captureResultArtifact(stage, roleResult);
-            stage = recordProviderMetadata(stage, roleResult);
+            stage = recordProviderMetadata(stage, roleResult, task);
             Optional<ProviderFallbackEvaluation> rejectedFallback =
-                    rejectUnsafeProviderFallback(stage, role, roleResult);
+                    rejectUnsafeProviderFallback(stage, role, roleResult, task);
             if (rejectedFallback.isPresent()) {
                 ProviderFallbackEvaluation evaluation = rejectedFallback.get();
                 ProviderFallbackDecision decision = evaluation.decision();
@@ -855,7 +867,11 @@ public class RequirementAgentStageOrchestrator {
         }
     }
 
-    private AgentStageRun recordProviderMetadata(AgentStageRun stage, RequirementExecutionResult result) {
+    private AgentStageRun recordProviderMetadata(
+            AgentStageRun stage,
+            RequirementExecutionResult result,
+            RdRequirementTask task
+    ) {
         ProviderMetadata metadata = providerMetadata(result.resultJson());
         if (metadata.isEmpty()) {
             return stage;
@@ -865,7 +881,7 @@ public class RequirementAgentStageOrchestrator {
                 metadata.providerAttemptsJson(),
                 System.currentTimeMillis()
         ));
-        publishProviderFallbackAlert(updatedStage, metadata);
+        publishProviderFallbackAlert(updatedStage, metadata, task);
         return updatedStage;
     }
 
@@ -891,14 +907,19 @@ public class RequirementAgentStageOrchestrator {
                     providerName,
                     providerAttemptsJson,
                     safetyMetadata.safety(),
-                    safetyMetadata.declared()
+                    safetyMetadata.declared(),
+                    safetyMetadata.hostOwned()
             );
         } catch (JsonProcessingException exception) {
             return ProviderMetadata.empty();
         }
     }
 
-    private void publishProviderFallbackAlert(AgentStageRun stage, ProviderMetadata metadata) {
+    private void publishProviderFallbackAlert(
+            AgentStageRun stage,
+            ProviderMetadata metadata,
+            RdRequirementTask task
+    ) {
         ProviderFallbackEvidence fallback = providerFallbackEvidence(metadata);
         if (fallback.isEmpty()) {
             return;
@@ -908,7 +929,8 @@ public class RequirementAgentStageOrchestrator {
                 fallback.failedProvider(),
                 fallback.failedStatus(),
                 fallback.activeProvider(),
-                providerFallbackSafety(stage, metadata)
+                providerFallbackSafety(stage, metadata),
+                providerWorkRisk(task, stage.role())
         );
         alertSink.publish(new AgentWorkflowAlert(
                 stage.taskId(),
@@ -941,7 +963,8 @@ public class RequirementAgentStageOrchestrator {
     private Optional<ProviderFallbackEvaluation> rejectUnsafeProviderFallback(
             AgentStageRun stage,
             AgentRole role,
-            RequirementExecutionResult result
+            RequirementExecutionResult result,
+            RdRequirementTask task
     ) {
         ProviderMetadata metadata = providerMetadata(result == null ? "" : result.resultJson());
         ProviderFallbackEvidence fallback = providerFallbackEvidence(metadata);
@@ -953,7 +976,8 @@ public class RequirementAgentStageOrchestrator {
                 fallback.failedProvider(),
                 fallback.failedStatus(),
                 fallback.activeProvider(),
-                providerFallbackSafety(stage, metadata)
+                providerFallbackSafety(stage, metadata),
+                providerWorkRisk(task, role)
         );
         if (evaluation.allowed()) {
             return Optional.empty();
@@ -961,13 +985,35 @@ public class RequirementAgentStageOrchestrator {
         return Optional.of(evaluation);
     }
 
+    private static ProviderWorkRisk providerWorkRisk(RdRequirementTask task, AgentRole role) {
+        ProviderWorkRisk roleRisk = ProviderCapabilityCatalog.workRiskForRole(role);
+        if (task == null || roleRisk == ProviderWorkRisk.GENERATION_ONLY) {
+            return roleRisk;
+        }
+        String taskText = String.join(" ",
+                safe(task.title()),
+                safe(task.expectedResult()),
+                safe(task.acceptanceCriteriaJson())
+        ).toLowerCase(Locale.ROOT);
+        String[] highRiskMarkers = {
+                "authentication", "authorization", "permission", "security", "encryption", "privacy",
+                "payment", "database schema", "schema migration", "migration", "credential", "secret",
+                "认证", "鉴权", "授权", "权限", "安全", "加密", "隐私", "支付", "数据库结构", "迁移", "密钥"
+        };
+        for (String marker : highRiskMarkers) {
+            if (taskText.contains(marker)) {
+                return ProviderWorkRisk.HIGH_RISK;
+            }
+        }
+        return roleRisk;
+    }
+
     /**
      * Resolves host-owned side-effect evidence for a stage provider switch.
      *
-     * <p>An explicit non-safe declaration always wins and fails closed. When no
-     * declaration is present, the persisted stage idempotency key and positive
-     * attempt number form the bounded clean-attempt invariant used by the
-     * existing delivery executor path.
+     * <p>The executor evidence is resolved again through a Host-owned port. A
+     * stage id, attempt number, or Agent-declared JSON is never proof that a
+     * Provider switch used a clean workspace or that remote effects are settled.
      *
      * @param stage    current stage attempt
      * @param metadata provider result metadata
@@ -977,33 +1023,64 @@ public class RequirementAgentStageOrchestrator {
             AgentStageRun stage,
             ProviderMetadata metadata
     ) {
-        if (metadata != null && metadata.sideEffectSafetyDeclared()) {
-            return metadata.sideEffectSafety();
-        }
-        if (stage != null
-                && stage.attemptNo() > 0
-                && !stage.idempotencyKey().isBlank()
-                && !stage.stageRunId().isBlank()) {
-            return ProviderFallbackSideEffectSafety.explicitCleanAttempt(
-                    stage.idempotencyKey(),
-                    stage.stageRunId() + "#attempt-" + stage.attemptNo()
+        if (stage == null) {
+            return ProviderFallbackSideEffectSafety.unknown(
+                    "host-owned clean attempt evidence is missing"
             );
         }
-        return ProviderFallbackSideEffectSafety.unknown(
-                "stage attempt marker is missing; provider switch safety cannot be established"
+        ProviderFallbackSideEffectSafety executorEvidence = metadata == null
+                ? ProviderFallbackSideEffectSafety.unknown(
+                        "executor-owned provider-attempt evidence is missing"
+                )
+                : metadata.sideEffectSafety();
+        if (metadata != null
+                && !metadata.sideEffectSafetyHostOwned()
+                && executorEvidence.isExplicitlySafe()) {
+            executorEvidence = ProviderFallbackSideEffectSafety.unknown(
+                    "host-owned clean attempt evidence is missing"
+            );
+        }
+        if (metadata != null
+                && metadata.sideEffectSafetyDeclared()
+                && !metadata.sideEffectSafetyHostOwned()
+                && !executorEvidence.isExplicitlySafe()) {
+            // Untrusted output may make the decision stricter, never more permissive.
+            return executorEvidence;
+        }
+        ProviderFallbackSideEffectSafety resolved = providerSideEffectStatusPort.resolve(
+                new ProviderSideEffectStatusPort.Request(
+                        stage.taskId(),
+                        stage.stageRunId(),
+                        stage.idempotencyKey(),
+                        stage.attemptNo(),
+                        stage.role(),
+                        executorEvidence
+                )
         );
+        return resolved == null
+                ? ProviderFallbackSideEffectSafety.unknown(
+                        "host side-effect resolver returned no decision"
+                )
+                : resolved;
     }
 
     private SafetyMetadata providerFallbackSafetyMetadata(JsonNode root, JsonNode dockerMetadata) {
+        JsonNode hostSafetyNode = firstObject(root.path("hostProviderFallbackSafety"));
+        if (hostSafetyNode != null) {
+            return parsedSafetyMetadata(hostSafetyNode, true);
+        }
         JsonNode safetyNode = firstObject(
                 root.path("providerFallbackSafety"),
-                dockerMetadata.path("providerFallbackSafety"),
                 root.path("sideEffectSafety"),
                 dockerMetadata.path("sideEffectSafety")
         );
         if (safetyNode == null) {
             return SafetyMetadata.undeclared();
         }
+        return parsedSafetyMetadata(safetyNode, false);
+    }
+
+    private SafetyMetadata parsedSafetyMetadata(JsonNode safetyNode, boolean hostOwned) {
         ProviderFallbackSideEffectSafety.State state =
                 ProviderFallbackSideEffectSafety.parseState(text(safetyNode.path("state")));
         String reason = firstNonBlank(
@@ -1023,7 +1100,7 @@ public class RequirementAgentStageOrchestrator {
                 safetyNode.path("outputReset").asBoolean(false),
                 reason
         );
-        return new SafetyMetadata(safety, true);
+        return new SafetyMetadata(safety, true, hostOwned);
     }
 
     private JsonNode firstObject(JsonNode... candidates) {
@@ -2855,18 +2932,20 @@ public class RequirementAgentStageOrchestrator {
                     - 基于代码交付候选包、验收标准和真实命令执行 QA 复核。
                     - 上游环境备忘（含 CODING_AGENT 已验证的测试执行方式）视为已验证事实直接沿用，不要从零重复探测环境。
                     - 先读取 /work/input/qa-profile.json，并遵循已安装的 qa-playwright-cli Skill；Web 项目且配置要求时必须执行真实 Chromium 浏览器验证。
+                    - docs-only 例外（宿主根据候选补丁的真实变更文件集判定，写入 qa-profile.json 的 decisionSource=DOCS_ONLY 与 candidateChangedFiles）：仅当 profile 判定为 docs-only 时，跳过 npm install / build / start 与 Chromium 浏览器回归，browserValidation 必须为 required=false、performed=false、decisionSource=DOCS_ONLY；不得凭任务描述或自我声明降级。变更集无法判定或含任意运行时相关文件时必须跑完整浏览器画像。
                     - 若存在 /work/input/qa-skill/SKILL.md，先完整阅读并严格遵循其中的流程与工具（rd-qa-evidence.mjs / playwright-cli）。
                     - 证据目录约定：截图写入 qa-evidence/screenshots/、Playwright trace 写入 qa-evidence/traces/、浏览器 console 写入 qa-evidence/console/、network 写入 qa-evidence/network/、命令日志写入 qa-evidence/commands/；放错目录会导致证据类型无法识别而阻断交付。evidenceArtifactIds 引用的每个文件都必须非空。
                     - 不创建新 PR，也不得修改 /work/repo 中的跟踪文件；临时脚本只能写入 /work/output/qa-work。
                     - 退出状态契约：验证过程中允许用 git stash/checkout 做原始态对照，但写 result.json 前必须恢复原状——/work/repo 退出时必须保持候选补丁在位的状态（git diff HEAD 非空且与进入时一致），丢弃补丁即判基础设施失败。
-                    - 当前需求验收（CURRENT）和受影响的既有关键路径回归（REGRESSION）都必须真实执行；任一必需检查缺少证据或被跳过都阻断交付。
-                    - 必须记录每条命令的退出码、耗时和日志；每个 qa-evidence/ 日志文件必须非空，至少包含命令文本、退出码和时间戳；如果命令成功且无输出（如 git diff --check），在日志中写入命令和 exit code 0 及说明。浏览器验证必须补充截图、trace、console 和 network 证据，且这些证据必须被 acceptanceResults 的 logArtifactId 或 evidenceArtifactIds 显式引用：至少各引用一次 qa-evidence/console/、qa-evidence/network/、qa-evidence/traces/ 下的文件，以及 qa-evidence/screenshots/ 下文件名含 desktop 和含 mobile 的截图各一张；只采集或只写入 manifest 而不引用会导致整个结果被宿主拒绝。
+                    - 当前需求验收（CURRENT）和受影响的既有关键路径回归（REGRESSION）都必须真实执行；任一必需检查缺少证据或被跳过都阻断交付。docs-only 时 CURRENT/REGRESSION 用文件/文本类命令验证即可，不得要求浏览器证据。
+                    - 必须记录每条命令的退出码、耗时和日志；每个 qa-evidence/ 日志文件必须非空，至少包含命令文本、退出码和时间戳；如果命令成功且无输出（如 git diff --check），在日志中写入命令和 exit code 0 及说明。当 browserValidation.required 且 performed 为 true 时，必须补充截图、trace、console 和 network 证据，且这些证据必须被 acceptanceResults 的 logArtifactId 或 evidenceArtifactIds 显式引用：至少各引用一次 qa-evidence/console/、qa-evidence/network/、qa-evidence/traces/ 下的文件，以及 qa-evidence/screenshots/ 下文件名含 desktop 和含 mobile 的截图各一张；只采集或只写入 manifest 而不引用会导致整个结果被宿主拒绝。docs-only（decisionSource=DOCS_ONLY）不要求上述浏览器证据。
                     - 如用包装脚本记录命令，必须以 bash -c '完整命令行' 方式执行；直接把带环境变量前缀的命令（如 PYTHONPATH=x cmd）当参数逐词执行会报 127；时间预算优先保障真实命令执行与 result.json 落盘，深度分析写进 summary 即可，不要因分析耗尽容器超时。
                     - evidenceArtifactIds 和 logArtifactId 只能引用 /work/output/qa-evidence/ 下实际存在的证据文件，不要引用 /work/output/qa-work/ 下的临时文件。
                     - manifest.json 必须包含 "version": 1（整数）和 "artifacts" 数组；不要使用 "schema" 替代 "version"。
                     - manifest.json 的每个 artifact 条目必须包含 "path"、"bytes"（文件精确字节数，整数）和 "sha256"（文件 SHA-256 哈希，小写十六进制 64 位字符串）三个字段；使用 sha256sum 命令获取准确值。
                     - manifest.json 的 artifact path 只能以 "qa-evidence/" 开头；不要在 manifest 中列出 patch.diff、test.log 或任何 qa-evidence/ 以外的文件。
                     - PRODUCT_DEFECT 或 REGRESSION 失败必须建议退回 CODING_AGENT；环境、鉴权、QA 基础设施、需求歧义或 flaky 问题建议 HUMAN。
+                    - 当输入上下文提供 hostAssertionContracts 时，Host 已冻结可执行断言。仅回传两个 hostAssertionResults echo（CURRENT 和 REGRESSION），每项只能有 scope、输入给定的 contentHash 和同 scope acceptanceResults 已引用的非空 evidenceArtifactIds。不得提交 hostAssertionBundle、hostAssertionWorkspace、hostAssertionBaseUrl 或 hostAssertionContext；Host 独立选择工作区和执行规范。
                     - 最后生成完整性 manifest，再把严格协议写入 /work/output/result.json。
                     """.strip();
             default -> throw new IllegalArgumentException("unsupported requirement role: " + role);
@@ -3009,7 +3088,14 @@ public class RequirementAgentStageOrchestrator {
                           "evidenceArtifactIds": ["qa-evidence/ 下的真实证据相对路径"]
                         }
                       ],
-                      "evidenceManifestArtifactId": "qa-evidence/manifest.json"
+                      "evidenceManifestArtifactId": "qa-evidence/manifest.json",
+                      "hostAssertionResults": [
+                        {
+                          "scope": "CURRENT|REGRESSION",
+                          "contentHash": "输入 hostAssertionContracts 中同 scope 的 sha256 摘要",
+                          "evidenceArtifactIds": ["同 scope acceptanceResults 已引用的 qa-evidence/ 路径"]
+                        }
+                      ]
                     }
                     """.strip();
             default -> throw new IllegalArgumentException("unsupported requirement role: " + role);
@@ -3183,7 +3269,8 @@ public class RequirementAgentStageOrchestrator {
             String providerName,
             String providerAttemptsJson,
             ProviderFallbackSideEffectSafety sideEffectSafety,
-            boolean sideEffectSafetyDeclared
+            boolean sideEffectSafetyDeclared,
+            boolean sideEffectSafetyHostOwned
     ) {
 
         private ProviderMetadata {
@@ -3205,6 +3292,7 @@ public class RequirementAgentStageOrchestrator {
                     ProviderFallbackSideEffectSafety.unknown(
                             "provider result did not declare side-effect safety"
                     ),
+                    false,
                     false
             );
         }
@@ -3216,7 +3304,8 @@ public class RequirementAgentStageOrchestrator {
 
     private record SafetyMetadata(
             ProviderFallbackSideEffectSafety safety,
-            boolean declared
+            boolean declared,
+            boolean hostOwned
     ) {
         private SafetyMetadata {
             safety = safety == null
@@ -3231,6 +3320,7 @@ public class RequirementAgentStageOrchestrator {
                     ProviderFallbackSideEffectSafety.unknown(
                             "provider result did not declare side-effect safety"
                     ),
+                    false,
                     false
             );
         }

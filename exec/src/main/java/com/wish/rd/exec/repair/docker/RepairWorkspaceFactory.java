@@ -50,11 +50,44 @@ public class RepairWorkspaceFactory {
      */
     public RepairWorkspace create(RepairJobCommand command) throws IOException {
         Path taskRoot = prepareWorkspaceRoot(command);
+        return createWorkspace(command, taskRoot, taskRoot.resolve("cache"));
+    }
 
-        Path inputDirectory = taskRoot.resolve("input");
-        Path repoDirectory = taskRoot.resolve("repo");
-        Path outputDirectory = taskRoot.resolve("output");
-        Path cacheDirectory = taskRoot.resolve("cache");
+    /**
+     * Creates a provider-specific attempt workspace while retaining the task-local
+     * package cache. Provider fallback must not observe files left by the failed
+     * provider in {@code repo/}, {@code input/}, or {@code output/}.
+     *
+     * @param command   repair execution command
+     * @param attemptId immutable provider-attempt id
+     * @return isolated provider-attempt workspace
+     * @throws IOException when the workspace cannot be created safely
+     */
+    public RepairWorkspace createProviderAttempt(
+            RepairJobCommand command,
+            String attemptId
+    ) throws IOException {
+        Path taskRoot = prepareWorkspaceRoot(command);
+        String attemptDirectoryName = requireSafeTaskDirectoryName(attemptId);
+        Path attemptsRoot = taskRoot.resolve("provider-attempts").toAbsolutePath().normalize();
+        Path attemptRoot = attemptsRoot.resolve(attemptDirectoryName).toAbsolutePath().normalize();
+        ensureInsideWorkspaceRoot(attemptRoot);
+        rejectSymlink(attemptsRoot);
+        rejectSymlink(attemptRoot);
+        Files.createDirectories(attemptRoot);
+        rejectSymlink(attemptRoot);
+        ensureRealPathInsideWorkspaceRoot(attemptRoot);
+        return createWorkspace(command, attemptRoot, taskRoot.resolve("cache"));
+    }
+
+    private RepairWorkspace createWorkspace(
+            RepairJobCommand command,
+            Path root,
+            Path cacheDirectory
+    ) throws IOException {
+        Path inputDirectory = root.resolve("input");
+        Path repoDirectory = root.resolve("repo");
+        Path outputDirectory = root.resolve("output");
         rejectSymlink(inputDirectory);
         rejectSymlink(repoDirectory);
         rejectSymlink(outputDirectory);
@@ -63,7 +96,7 @@ public class RepairWorkspaceFactory {
         Files.createDirectories(repoDirectory);
         Files.createDirectories(outputDirectory);
         Files.createDirectories(cacheDirectory);
-        ensureRealPathInsideWorkspaceRoot(taskRoot);
+        ensureRealPathInsideWorkspaceRoot(root);
         ensureRealPathInsideWorkspaceRoot(inputDirectory);
         ensureRealPathInsideWorkspaceRoot(repoDirectory);
         ensureRealPathInsideWorkspaceRoot(outputDirectory);
@@ -84,7 +117,7 @@ public class RepairWorkspaceFactory {
         Files.writeString(files.context(), toContextJson(command), StandardCharsets.UTF_8);
         Files.writeString(files.resultSchema(), resultSchemaJson(command), StandardCharsets.UTF_8);
 
-        return new RepairWorkspace(taskRoot, inputDirectory, repoDirectory, outputDirectory, cacheDirectory, files);
+        return new RepairWorkspace(root, inputDirectory, repoDirectory, outputDirectory, cacheDirectory, files);
     }
 
     /**
@@ -354,7 +387,8 @@ public class RepairWorkspaceFactory {
                         "PROJECT_PROFILE",
                         "REPOSITORY_CONFIG",
                         "AUTO_DETECTION",
-                        "NOT_APPLICABLE"
+                        "NOT_APPLICABLE",
+                        "DOCS_ONLY"
                       ]
                     },
                     "baseUrl": {"type": "string"},
@@ -403,7 +437,26 @@ public class RepairWorkspaceFactory {
                     }
                   }
                 },
-                "evidenceManifestArtifactId": {"type": "string", "pattern": "\\\\S"}
+                "evidenceManifestArtifactId": {"type": "string", "pattern": "\\\\S"},
+                "hostAssertionResults": {
+                  "type": "array",
+                  "minItems": 2,
+                  "maxItems": 2,
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["scope", "contentHash", "evidenceArtifactIds"],
+                    "properties": {
+                      "scope": {"type": "string", "enum": ["CURRENT", "REGRESSION"]},
+                      "contentHash": {"type": "string", "pattern": "^sha256:[0-9a-fA-F]{64}$"},
+                      "evidenceArtifactIds": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {"type": "string", "pattern": "\\\\S"}
+                      }
+                    }
+                  }
+                }
               }
             }
             """;

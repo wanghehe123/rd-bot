@@ -1,6 +1,7 @@
 package com.wish.rd.bootstrap.feishu.im;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.wish.rd.bootstrap.threading.RequirementDeliveryDispatchService;
 import com.wish.rd.engine.agent.model.AgentRole;
 import com.wish.rd.engine.requirement.RequirementDeliveryEngine;
 import com.wish.rd.engine.requirement.model.RequirementExecutionResult;
@@ -24,9 +25,13 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.CompletableFuture;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -208,6 +213,84 @@ class FeishuImMessageControllerTest {
                         "{\"provider\":\"feishu-im-test\"}"
                 )
         );
+        RequirementDeliveryDispatchService dispatchService = mock(RequirementDeliveryDispatchService.class);
+        when(dispatchService.submit(anyString())).thenAnswer(invocation -> CompletableFuture.completedFuture(
+                deliveryEngine.submit(invocation.getArgument(0))));
+        FeishuImMessageController controller = new FeishuImMessageController(
+                new ObjectMapper(),
+                properties,
+                new FeishuImTicketParser(),
+                store,
+                TicketEventIngestionEngine.forTesting(
+                        publisher,
+                        new TicketEventIngestionEngine.InMemoryDeduplicationStore(),
+                        "feishu-im"
+                ),
+                registry,
+                materialStore,
+                deliveryEngine,
+                dispatchService,
+                generator()
+        );
+        MockMvc localMockMvc = MockMvcBuilders.standaloneSetup(controller).build();
+        String text = """
+                @_user_1 做需求
+                标题: 增加订单催单功能
+                仓库: https://github.com/example/waimai.git
+                分支: main
+                优先级: P1
+                需求: 用户可以在订单详情页点击催单。
+                预期结果: 订单详情页可以催单
+                验收: 前端构建通过
+                """;
+
+        String response = localMockMvc.perform(post("/feishu/im/events")
+                        .contentType("application/json")
+                        .content(eventJsonWithText("evt-req", "om_req_1", text, List.of("@_user_1"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.accepted").value(true))
+                .andExpect(jsonPath("$.taskType").value("REQUIREMENT"))
+                .andExpect(jsonPath("$.status").value("COMPLETED"))
+                .andExpect(jsonPath("$.pullRequestUrl").value("https://github.com/example/waimai/pull/22"))
+                .andExpect(jsonPath("$.dispatched").value(true))
+                .andReturn().getResponse().getContentAsString();
+        String taskId = com.jayway.jsonpath.JsonPath.read(response, "$.taskId");
+
+        assertTrue(publisher.published.isEmpty());
+        assertEquals(RdTaskStatus.COMPLETED, registry.getTask(taskId).status());
+        assertEquals(List.of(
+                RdTaskStatus.CREATED.name(),
+                RdTaskStatus.MATERIAL_COLLECTING.name(),
+                RdTaskStatus.MATERIAL_READY.name(),
+                RdTaskStatus.CONTEXT_BUILDING.name(),
+                RdTaskStatus.CONTEXT_READY.name(),
+                RdTaskStatus.PLAN_GENERATING.name(),
+                RdTaskStatus.PLAN_GENERATED.name(),
+                RdTaskStatus.WAITING_POLICY.name(),
+                RdTaskStatus.EXECUTING.name(),
+                RdTaskStatus.VALIDATING.name(),
+                RdTaskStatus.PR_CREATING.name(),
+                RdTaskStatus.COMMITTED.name(),
+                RdTaskStatus.REPORTING.name(),
+                RdTaskStatus.COMPLETED.name()
+        ), registry.timeline(taskId).stream().map(event -> event.status()).toList());
+        RdRequirementTask saved = registry.getRequirementTask(taskId);
+        assertEquals("FEISHU_IM", saved.sourceType());
+        assertEquals("om_req_1", saved.sourceId());
+        assertEquals(1, materialStore.listByTask(taskId).size());
+    }
+
+    @Test
+    void shouldFailClosedWhenRequirementDispatchServiceIsUnavailable() throws Exception {
+        FeishuImProperties properties = new FeishuImProperties();
+        properties.setEnabled(true);
+        properties.setRequireAtMention(true);
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(),
+                new InMemoryRdTaskStatusEventStore(),
+                generator());
+        InMemoryTaskMaterialStore materialStore = new InMemoryTaskMaterialStore();
+        RequirementDeliveryEngine deliveryEngine = mock(RequirementDeliveryEngine.class);
         FeishuImMessageController controller = new FeishuImMessageController(
                 new ObjectMapper(),
                 properties,
@@ -236,43 +319,15 @@ class FeishuImMessageControllerTest {
                 验收: 前端构建通过
                 """;
 
-        String response = localMockMvc.perform(post("/feishu/im/events")
+        localMockMvc.perform(post("/feishu/im/events")
                         .contentType("application/json")
-                        .content(eventJsonWithText("evt-req", "om_req_1", text, List.of("@_user_1"))))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.accepted").value(true))
-                .andExpect(jsonPath("$.taskType").value("REQUIREMENT"))
-                .andExpect(jsonPath("$.status").value("COMPLETED"))
-                .andExpect(jsonPath("$.pullRequestUrl").value("https://github.com/example/waimai/pull/22"))
-                .andExpect(jsonPath("$.summary").value("实现完成"))
-                .andExpect(jsonPath("$.prBody").value(org.hamcrest.Matchers.containsString("新增订单催单按钮")))
-                .andExpect(jsonPath("$.changedFiles[0]").value("client/src/pages/OrderDetail.tsx"))
-                .andExpect(jsonPath("$.testCommands[0]").value("npm run build"))
-                .andReturn().getResponse().getContentAsString();
-        String taskId = com.jayway.jsonpath.JsonPath.read(response, "$.taskId");
+                        .content(eventJsonWithText("evt-req-no-dispatch", "om_req_no_dispatch", text,
+                                List.of("@_user_1"))))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value("requirement delivery is unavailable"));
 
-        assertTrue(publisher.published.isEmpty());
-        assertEquals(RdTaskStatus.COMPLETED, registry.getTask(taskId).status());
-        assertEquals(List.of(
-                RdTaskStatus.CREATED.name(),
-                RdTaskStatus.MATERIAL_COLLECTING.name(),
-                RdTaskStatus.MATERIAL_READY.name(),
-                RdTaskStatus.CONTEXT_BUILDING.name(),
-                RdTaskStatus.CONTEXT_READY.name(),
-                RdTaskStatus.PLAN_GENERATING.name(),
-                RdTaskStatus.PLAN_GENERATED.name(),
-                RdTaskStatus.WAITING_POLICY.name(),
-                RdTaskStatus.EXECUTING.name(),
-                RdTaskStatus.VALIDATING.name(),
-                RdTaskStatus.PR_CREATING.name(),
-                RdTaskStatus.COMMITTED.name(),
-                RdTaskStatus.REPORTING.name(),
-                RdTaskStatus.COMPLETED.name()
-        ), registry.timeline(taskId).stream().map(event -> event.status()).toList());
-        RdRequirementTask saved = registry.getRequirementTask(taskId);
-        assertEquals("FEISHU_IM", saved.sourceType());
-        assertEquals("om_req_1", saved.sourceId());
-        assertEquals(1, materialStore.listByTask(taskId).size());
+        org.mockito.Mockito.verify(deliveryEngine, org.mockito.Mockito.never()).submit(anyString());
+        assertTrue(registry.listTasks().isEmpty());
     }
 
     @Test

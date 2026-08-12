@@ -64,7 +64,14 @@ public final class PostgresRequirementDeliveryJobStore implements RequirementDel
 
     @Override
     public List<RequirementDeliveryJob> recoverable(long now) {
-        return mapper.recoverable(PostgresPersistenceSupport.toDateTime(now)).stream().map(this::toJob).toList();
+        return recoverable(now, 256);
+    }
+
+    @Override
+    public List<RequirementDeliveryJob> recoverable(long now, int limit) {
+        return mapper.recoverable(
+                        PostgresPersistenceSupport.toDateTime(now), Math.max(1, limit))
+                .stream().map(this::toJob).toList();
     }
 
     @Override

@@ -307,6 +307,7 @@ public class DockerExecutorProperties {
         private boolean enabled = true;
         private int failureThreshold = DEFAULT_CIRCUIT_BREAKER_FAILURE_THRESHOLD;
         private long openDurationMillis = DEFAULT_CIRCUIT_BREAKER_OPEN_DURATION_MILLIS;
+        private String stateStore = "memory";
 
         public boolean isEnabled() {
             return enabled;
@@ -330,6 +331,18 @@ public class DockerExecutorProperties {
 
         public void setOpenDurationMillis(long openDurationMillis) {
             this.openDurationMillis = Math.max(1L, openDurationMillis);
+        }
+
+        public String getStateStore() {
+            return stateStore;
+        }
+
+        public void setStateStore(String stateStore) {
+            String normalized = stateStore == null ? "" : stateStore.strip().toLowerCase();
+            if (!"memory".equals(normalized) && !"redis".equals(normalized)) {
+                throw new IllegalArgumentException("circuit breaker state-store must be memory or redis");
+            }
+            this.stateStore = normalized;
         }
 
         /**

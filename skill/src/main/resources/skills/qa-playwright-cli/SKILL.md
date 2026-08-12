@@ -24,6 +24,15 @@ Treat QA as a delivery blocker, not a build summary.
 4. When browser validation is required, verify desktop `1440x900` and mobile `390x844` with Chromium.
 5. Capture command exit codes, durations, logs, screenshots, trace, console output, network requests, and real HTTP transcripts as applicable.
 
+### Docs-only exception
+
+Read `/work/input/qa-profile.json` first. When `decisionSource` is `DOCS_ONLY` (host-computed from the
+real candidate changed-file set in `candidateChangedFiles`), skip `npm install`, production
+`build`/`start`, and Chromium browser flows. Set `browserValidation.required=false`,
+`performed=false`, and `decisionSource=DOCS_ONLY`. Prove CURRENT/REGRESSION with file/text commands
+against the docs change only. Never self-declare docs-only from the task description. If the profile
+is not `DOCS_ONLY`, keep the full browser profile and evidence rules unchanged.
+
 Do not use a clean base-branch comparison unless the changed branch fails and diagnosis needs it.
 
 ## Browser Workflow
@@ -136,8 +145,10 @@ node /usr/local/bin/rd-qa-evidence.mjs manifest
 
 Every `logArtifactId`, every `evidenceArtifactIds` entry, and `evidenceManifestArtifactId` in `result.json` must be a relative path under `qa-evidence/` that exists and is non-empty.
 
-When browser validation was performed, the union of `logArtifactId` and `evidenceArtifactIds` across
-`acceptanceResults` must reference at least one file under each of `qa-evidence/console/`,
-`qa-evidence/network/`, and `qa-evidence/traces/`, plus one `qa-evidence/screenshots/` file whose name
-contains `desktop` and one whose name contains `mobile`. Evidence that is only collected or only listed
-in the manifest without being referenced causes the host to reject the whole result.
+When browser validation was performed (`required=true` and `performed=true`), the union of
+`logArtifactId` and `evidenceArtifactIds` across `acceptanceResults` must reference at least one file
+under each of `qa-evidence/console/`, `qa-evidence/network/`, and `qa-evidence/traces/`, plus one
+`qa-evidence/screenshots/` file whose name contains `desktop` and one whose name contains `mobile`.
+Evidence that is only collected or only listed in the manifest without being referenced causes the host
+to reject the whole result. Docs-only profiles (`decisionSource=DOCS_ONLY`) do not require browser
+evidence references.

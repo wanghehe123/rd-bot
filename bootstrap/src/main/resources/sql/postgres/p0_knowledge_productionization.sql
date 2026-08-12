@@ -275,6 +275,12 @@ ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS base_branch VARCHAR(256) NOT NULL 
 ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS work_branch VARCHAR(256) NOT NULL DEFAULT '';
 ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS expected_result TEXT NOT NULL DEFAULT '';
 ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS acceptance_criteria_json JSONB NOT NULL DEFAULT '[]'::jsonb;
+-- WP-3/E2: structured executable assertions are an explicit Host-owned task input. NULL retains
+-- the legacy human-readable acceptanceCriteria path; only an object can request Host assertions.
+ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS host_assertion_bundle_json JSONB;
+ALTER TABLE rd_tasks DROP CONSTRAINT IF EXISTS ck_rd_tasks_host_assertion_bundle_object;
+ALTER TABLE rd_tasks ADD CONSTRAINT ck_rd_tasks_host_assertion_bundle_object
+    CHECK (host_assertion_bundle_json IS NULL OR jsonb_typeof(host_assertion_bundle_json) = 'object');
 ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS token_budget_override BIGINT NOT NULL DEFAULT 0;
 ALTER TABLE rd_tasks DROP CONSTRAINT IF EXISTS ck_rd_tasks_token_budget_override_non_negative;
 ALTER TABLE rd_tasks ADD CONSTRAINT ck_rd_tasks_token_budget_override_non_negative
@@ -284,6 +290,10 @@ ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS version BIGINT NOT NULL DEFAULT 0;
 ALTER TABLE rd_tasks DROP CONSTRAINT IF EXISTS ck_rd_tasks_version_non_negative;
 ALTER TABLE rd_tasks ADD CONSTRAINT ck_rd_tasks_version_non_negative
     CHECK (version >= 0);
+ALTER TABLE rd_tasks ADD COLUMN IF NOT EXISTS fencing_token BIGINT NOT NULL DEFAULT 1;
+ALTER TABLE rd_tasks DROP CONSTRAINT IF EXISTS ck_rd_tasks_fencing_token_positive;
+ALTER TABLE rd_tasks ADD CONSTRAINT ck_rd_tasks_fencing_token_positive
+    CHECK (fencing_token > 0);
 CREATE INDEX IF NOT EXISTS idx_rd_tasks_project ON rd_tasks (project_id, task_type, updated_at);
 
 -- 任务管理：状态事件 append-only 表，承载全链路时间线（含耗时与触发来源）。
@@ -567,4 +577,3 @@ CREATE INDEX IF NOT EXISTS idx_rd_requirement_publications_task_status
 CREATE INDEX IF NOT EXISTS idx_rd_requirement_publications_reconcile
     ON rd_requirement_publications (next_reconcile_at)
     WHERE status = 'UNKNOWN_REMOTE_RESULT';
-

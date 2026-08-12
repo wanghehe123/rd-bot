@@ -4,7 +4,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wish.rd.bootstrap.feishu.im.model.FeishuImTicketDraft;
 import com.wish.rd.bootstrap.threading.RequirementDeliveryDispatchService;
-import com.wish.rd.engine.requirement.model.RequirementDeliveryResult;
 import com.wish.rd.adapter.model.TicketSnapshot;
 import com.wish.rd.engine.requirement.RequirementDeliveryEngine;
 import com.wish.rd.engine.ticket.model.RepairQueuePublishResult;
@@ -216,6 +215,9 @@ public class FeishuImMessageController {
             response.put("message", "需求任务缺少必填字段: " + String.join(", ", missingFields));
             return ResponseEntity.ok(response);
         }
+        if (requirementDeliveryDispatchService == null) {
+            return ResponseEntity.status(409).body(Map.of("message", "requirement delivery is unavailable"));
+        }
         RdRequirementTask task = taskRegistry.createRequirementTask(new CreateRequirementTaskCommand(
                 draft.title(),
                 draft.priority(),
@@ -247,12 +249,7 @@ public class FeishuImMessageController {
                 System.currentTimeMillis(),
                 System.currentTimeMillis()
         ));
-        RequirementDeliveryResult result = null;
-        if (requirementDeliveryDispatchService != null) {
-            requirementDeliveryDispatchService.submit(task.taskId());
-        } else {
-            result = requirementDeliveryEngine.submit(task.taskId());
-        }
+        requirementDeliveryDispatchService.submit(task.taskId());
         RdRequirementTask latest = taskRegistry.getRequirementTask(task.taskId());
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("accepted", true);
@@ -260,10 +257,7 @@ public class FeishuImMessageController {
         response.put("taskId", latest.taskId());
         response.put("status", latest.status().name());
         response.put("pullRequestUrl", latest.pullRequestUrl());
-        response.put("dispatched", requirementDeliveryDispatchService != null);
-        if (result != null) {
-            response.putAll(executionEvidence(result.resultJson()));
-        }
+        response.put("dispatched", true);
         return ResponseEntity.ok(response);
     }
 

@@ -16,6 +16,9 @@ import com.wish.rd.exec.repair.docker.RepairWorkspaceRepositoryPort;
 import com.wish.rd.exec.repair.execution.RepairExecutionControlPort;
 import com.wish.rd.exec.repair.execution.RepairExecutorPort;
 import com.wish.rd.exec.repair.health.ModelHealthStore;
+import com.wish.rd.exec.repair.health.ModelHealthStateStore;
+import com.wish.rd.exec.repair.health.impl.InMemoryModelHealthStateStore;
+import com.wish.rd.exec.repair.provider.ProviderFallbackPreflightPort;
 import com.wish.rd.exec.repair.result.StructuredResultValidator;
 import com.wish.rd.exec.repair.security.model.ExecutionAllowlistPolicy;
 import org.springframework.beans.factory.ObjectProvider;
@@ -77,12 +80,26 @@ public class DockerExecutorConfiguration {
      * Provides the model-provider circuit breaker state store used by Docker execution.
      *
      * @param properties docker executor properties
+     * @param stateStoreProvider configured atomic state backend
      * @return model health store
      */
     @Bean
     @ConditionalOnMissingBean
-    public ModelHealthStore modelHealthStore(DockerExecutorProperties properties) {
-        return new ModelHealthStore(properties.getCircuitBreaker().toPolicy());
+    public ModelHealthStore modelHealthStore(
+            DockerExecutorProperties properties,
+            ObjectProvider<ModelHealthStateStore> stateStoreProvider
+    ) {
+        ModelHealthStateStore stateStore = stateStoreProvider.getIfAvailable();
+        String configuredStore = properties.getCircuitBreaker().getStateStore();
+        if (stateStore == null && "redis".equals(configuredStore)) {
+            throw new IllegalStateException(
+                    "Redis ModelHealthStateStore is required when circuit-breaker.state-store=redis"
+            );
+        }
+        if (stateStore == null) {
+            stateStore = new InMemoryModelHealthStateStore();
+        }
+        return new ModelHealthStore(properties.getCircuitBreaker().toPolicy(), stateStore);
     }
 
     /**
@@ -185,7 +202,8 @@ public class DockerExecutorConfiguration {
             QaPlaywrightSkillProvisioner.Provision qaSkillProvision,
             RoleHandoffDocumentSkillProvisioner.Provision handoffSkillProvision,
             ObjectProvider<RepairWorkspaceRepositoryPort> repositoryPortProvider,
-            ObjectProvider<FinancialProperties> financialPropertiesProvider
+            ObjectProvider<FinancialProperties> financialPropertiesProvider,
+            ObjectProvider<ProviderFallbackPreflightPort> providerFallbackPreflightProvider
     ) {
         DockerClaudeCodeExecutor.Configuration configuration = properties.toExecutorConfiguration()
                 .withQaSkill(new DockerClaudeCodeExecutor.QaSkillConfiguration(
@@ -212,7 +230,10 @@ public class DockerExecutorConfiguration {
                 modelHealthStore,
                 executionRegistry,
                 executionAllowlistPolicy,
-                financialPropertiesProvider.getIfAvailable(FinancialProperties::new).toBudgetCurrencyConverter()
+                DockerClaudeCodeExecutor.AuthEnvironmentResolver.system(),
+                financialPropertiesProvider.getIfAvailable(FinancialProperties::new).toBudgetCurrencyConverter(),
+                providerFallbackPreflightProvider.getIfAvailable(
+                        ProviderFallbackPreflightPort::unavailable)
         );
     }
 

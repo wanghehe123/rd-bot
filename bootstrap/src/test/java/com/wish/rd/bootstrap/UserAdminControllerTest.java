@@ -26,7 +26,7 @@ class UserAdminControllerTest {
     private MockMvc mockMvc;
 
     @Test
-    void managesUsersWithRagentCompatibleAdminEndpoints() throws Exception {
+    void managesUsersWithAdminEndpoints() throws Exception {
         mockMvc.perform(get("/users")
                         .param("current", "1")
                         .param("size", "10"))

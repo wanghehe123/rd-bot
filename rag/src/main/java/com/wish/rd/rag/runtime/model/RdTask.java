@@ -63,4 +63,22 @@ public interface RdTask {
      * @return epoch millis
      */
     long updateTimeEpochMillis();
+
+    /**
+     * Returns the optimistic concurrency version persisted with this snapshot.
+     *
+     * @return non-negative snapshot version
+     */
+    default long version() {
+        return 0L;
+    }
+
+    /**
+     * Returns the monotonic fencing token carried by this snapshot.
+     *
+     * @return non-negative fencing token
+     */
+    default long fencingToken() {
+        return 0L;
+    }
 }

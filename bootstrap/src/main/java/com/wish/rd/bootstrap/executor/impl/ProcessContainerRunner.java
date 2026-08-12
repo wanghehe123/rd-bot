@@ -5,8 +5,10 @@ import com.wish.rd.bootstrap.executor.DockerExecutorProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wish.rd.exec.repair.docker.ContainerControlPort;
 import com.wish.rd.exec.repair.docker.ContainerOutputListener;
+import com.wish.rd.exec.repair.docker.model.ContainerNetworkPlan;
 import com.wish.rd.exec.repair.docker.model.ContainerRunRequest;
 import com.wish.rd.exec.repair.docker.model.ContainerRunResult;
+import com.wish.rd.exec.repair.docker.model.ContainerSecurityPolicy;
 import com.wish.rd.exec.repair.docker.ContainerRunnerPort;
 import com.wish.rd.exec.repair.execution.model.RepairExecutionStopCommand;
 import com.wish.rd.exec.repair.execution.model.RepairExecutionStopResult;
@@ -48,7 +50,22 @@ public class ProcessContainerRunner implements ContainerRunnerPort, com.wish.rd.
 
     private static final String DOCKER_BINARY = "docker";
     private static final long CONTROL_COMMAND_TIMEOUT_MILLIS = 30_000L;
+    private static final long SIDECAR_HEALTH_RETRY_MILLIS = 100L;
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final String SIDECAR_HEALTH_CHECK_SCRIPT = """
+            const url = process.argv[1];
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 1000);
+            fetch(url, { signal: controller.signal })
+              .then(response => {
+                clearTimeout(timeout);
+                process.exit(response.status === 204 ? 0 : 1);
+              })
+              .catch(() => {
+                clearTimeout(timeout);
+                process.exit(1);
+              });
+            """;
 
     private final DockerExecutorProperties properties;
     private final TimedCommandLauncher commandLauncher;
@@ -111,16 +128,24 @@ public class ProcessContainerRunner implements ContainerRunnerPort, com.wish.rd.
     }
 
     @Override
+    public boolean supportsNetworkPlans() {
+        return true;
+    }
+
+    @Override
     public ContainerRunResult run(ContainerRunRequest request) throws IOException {
         if (request == null) {
             throw new IllegalArgumentException("request must not be null");
         }
         Files.createDirectories(request.outputDirectory());
         List<String> argv = buildCommand(request);
-        CommandResult commandResult = launch(argv, request.env(), request.executionTimeoutMillis());
-        if (commandResult.timedOut()) {
-            cleanupTimedOutContainer(request.containerName());
-        }
+        CommandResult commandResult = runWithNetworkPlan(request, () -> {
+            CommandResult result = launch(argv, request.env(), request.executionTimeoutMillis());
+            if (result.timedOut()) {
+                cleanupTimedOutContainer(request.containerName());
+            }
+            return result;
+        });
         writeDockerMetadata(request, argv, commandResult);
         return containerRunResult(request, argv, commandResult);
     }
@@ -133,15 +158,18 @@ public class ProcessContainerRunner implements ContainerRunnerPort, com.wish.rd.
         ContainerOutputListener safeListener = listener == null ? ContainerOutputListener.noop() : listener;
         Files.createDirectories(request.outputDirectory());
         List<String> argv = buildCommand(request);
-        CommandResult commandResult = launchStreaming(
-                argv,
-                request.env(),
-                request.executionTimeoutMillis(),
-                safeListener
-        );
-        if (commandResult.timedOut()) {
-            cleanupTimedOutContainer(request.containerName());
-        }
+        CommandResult commandResult = runWithNetworkPlan(request, () -> {
+            CommandResult result = launchStreaming(
+                    argv,
+                    request.env(),
+                    request.executionTimeoutMillis(),
+                    safeListener
+            );
+            if (result.timedOut()) {
+                cleanupTimedOutContainer(request.containerName());
+            }
+            return result;
+        });
         writeDockerMetadata(request, argv, commandResult);
         return containerRunResult(request, argv, commandResult);
     }
@@ -238,7 +266,10 @@ public class ProcessContainerRunner implements ContainerRunnerPort, com.wish.rd.
     }
 
     private static void appendSecurityPolicy(List<String> argv, ContainerRunRequest request) {
-        var policy = request.securityPolicy();
+        appendSecurityPolicy(argv, request.securityPolicy());
+    }
+
+    private static void appendSecurityPolicy(List<String> argv, ContainerSecurityPolicy policy) {
         if (!policy.enabled()) {
             return;
         }
@@ -267,6 +298,156 @@ public class ProcessContainerRunner implements ContainerRunnerPort, com.wish.rd.
                     argv.add("--tmpfs");
                     argv.add(entry.getKey() + ":" + entry.getValue());
                 });
+    }
+
+    private CommandResult runWithNetworkPlan(
+            ContainerRunRequest request,
+            ContainerInvocation invocation
+    ) throws IOException {
+        ContainerNetworkPlan plan = request.networkPlan();
+        if (plan == null) {
+            return invocation.run();
+        }
+
+        ContainerNetworkPlan.Sidecar sidecar = plan.sidecar();
+        boolean networkCreated = false;
+        boolean sidecarLaunchAttempted = false;
+        try {
+            runRequired(
+                    List.of(DOCKER_BINARY, "network", "create", "--internal", plan.internalNetworkName()),
+                    Map.of(),
+                    CONTROL_COMMAND_TIMEOUT_MILLIS,
+                    "create internal task network"
+            );
+            networkCreated = true;
+
+            sidecarLaunchAttempted = true;
+            runRequired(
+                    buildSidecarCommand(plan),
+                    sidecar.env(),
+                    CONTROL_COMMAND_TIMEOUT_MILLIS,
+                    "start credential relay sidecar"
+            );
+            runRequired(
+                    List.of(DOCKER_BINARY, "network", "connect", sidecar.egressNetwork(), sidecar.containerName()),
+                    Map.of(),
+                    CONTROL_COMMAND_TIMEOUT_MILLIS,
+                    "connect credential relay sidecar to egress network"
+            );
+            awaitSidecarHealth(sidecar);
+            return invocation.run();
+        } finally {
+            if (sidecarLaunchAttempted) {
+                cleanupSidecar(sidecar.containerName());
+            }
+            if (networkCreated) {
+                cleanupNetwork(plan.internalNetworkName());
+            }
+        }
+    }
+
+    private List<String> buildSidecarCommand(ContainerNetworkPlan plan) {
+        ContainerNetworkPlan.Sidecar sidecar = plan.sidecar();
+        List<String> argv = new ArrayList<>();
+        argv.add(DOCKER_BINARY);
+        argv.add("run");
+        argv.add("-d");
+        argv.add("--name");
+        argv.add(sidecar.containerName());
+        argv.add("--network");
+        argv.add(plan.internalNetworkName());
+        argv.add("--network-alias");
+        argv.add(sidecar.networkAlias());
+        appendSecurityPolicy(argv, sidecar.securityPolicy());
+        appendEnvironment(argv, sidecar.env());
+        if (!sidecar.entrypoint().isBlank()) {
+            argv.add("--entrypoint");
+            argv.add(sidecar.entrypoint());
+        }
+        argv.add(sidecar.image());
+        argv.addAll(sidecar.command());
+        return List.copyOf(argv);
+    }
+
+    private void awaitSidecarHealth(ContainerNetworkPlan.Sidecar sidecar) throws IOException {
+        long timeoutNanos = TimeUnit.MILLISECONDS.toNanos(sidecar.startupTimeoutMillis());
+        long deadline = System.nanoTime() + timeoutNanos;
+        while (true) {
+            long remainingNanos = deadline - System.nanoTime();
+            if (remainingNanos <= 0L) {
+                throw new IOException("credential relay sidecar health check timed out");
+            }
+            long commandTimeoutMillis = Math.max(
+                    1L,
+                    Math.min(
+                            TimeUnit.NANOSECONDS.toMillis(remainingNanos),
+                            sidecar.startupTimeoutMillis()
+                    )
+            );
+            try {
+                CommandResult result = launch(
+                        List.of(
+                                DOCKER_BINARY,
+                                "exec",
+                                sidecar.containerName(),
+                                "node",
+                                "-e",
+                                SIDECAR_HEALTH_CHECK_SCRIPT,
+                                sidecar.healthCheckUrl()
+                        ),
+                        Map.of(),
+                        commandTimeoutMillis
+                );
+                if (!result.timedOut() && result.exitCode() == 0) {
+                    return;
+                }
+            } catch (IOException ignored) {
+                // Startup is asynchronous; only the bounded deadline decides whether it failed.
+            }
+            sleepBeforeHealthRetry(deadline);
+        }
+    }
+
+    private static void sleepBeforeHealthRetry(long deadlineNanos) throws IOException {
+        long remainingMillis = TimeUnit.NANOSECONDS.toMillis(Math.max(0L, deadlineNanos - System.nanoTime()));
+        if (remainingMillis <= 0L) {
+            return;
+        }
+        try {
+            Thread.sleep(Math.min(SIDECAR_HEALTH_RETRY_MILLIS, remainingMillis));
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new IOException("credential relay sidecar health check interrupted", exception);
+        }
+    }
+
+    private CommandResult runRequired(
+            List<String> argv,
+            Map<String, String> environment,
+            long timeoutMillis,
+            String action
+    ) throws IOException {
+        CommandResult result = launch(argv, environment, timeoutMillis);
+        if (result.timedOut() || result.exitCode() != 0) {
+            throw new IOException(action + " failed");
+        }
+        return result;
+    }
+
+    private void cleanupSidecar(String sidecarName) {
+        cleanupControlResource(List.of(DOCKER_BINARY, "rm", "-f", sidecarName));
+    }
+
+    private void cleanupNetwork(String networkName) {
+        cleanupControlResource(List.of(DOCKER_BINARY, "network", "rm", networkName));
+    }
+
+    private void cleanupControlResource(List<String> argv) {
+        try {
+            launch(argv, Map.of(), CONTROL_COMMAND_TIMEOUT_MILLIS);
+        } catch (IOException ignored) {
+            // The caller's result remains authoritative; cleanup is best effort.
+        }
     }
 
     private CommandResult launch(
@@ -364,6 +545,9 @@ public class ProcessContainerRunner implements ContainerRunnerPort, com.wish.rd.
         String normalized = key == null ? "" : key.toUpperCase();
         if ("RD_CLAUDE_AUTH_TOKEN_ENV".equals(normalized) || "RD_CLAUDE_API_KEY_ENV".equals(normalized)) {
             return false;
+        }
+        if ("RD_PI_CREDENTIAL_LEASE".equals(normalized)) {
+            return true;
         }
         return normalized.contains("SECRET")
                 || normalized.contains("TOKEN")
@@ -656,6 +840,12 @@ public class ProcessContainerRunner implements ContainerRunnerPort, com.wish.rd.
                 long timeoutMillis,
                 ContainerOutputListener listener
         ) throws IOException, InterruptedException;
+    }
+
+    @FunctionalInterface
+    private interface ContainerInvocation {
+
+        CommandResult run() throws IOException;
     }
 
     /**

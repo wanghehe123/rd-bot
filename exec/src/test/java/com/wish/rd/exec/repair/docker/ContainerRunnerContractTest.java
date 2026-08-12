@@ -18,6 +18,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.wish.rd.exec.repair.docker.model.ContainerRunRequest;
 import com.wish.rd.exec.repair.docker.model.ContainerRunResult;
+import com.wish.rd.exec.repair.docker.model.ContainerNetworkPlan;
 import com.wish.rd.exec.repair.docker.model.ContainerSecurityPolicy;
 
 class ContainerRunnerContractTest {
@@ -202,6 +203,56 @@ class ContainerRunnerContractTest {
                 "",
                 60_000L,
                 policy
+        ));
+    }
+
+    @Test
+    void requestRequiresTheWorkloadNetworkToMatchItsInternalSidecarPlan() {
+        Path outputDirectory = temporaryDirectory.resolve("output");
+        ContainerSecurityPolicy sidecarPolicy = new ContainerSecurityPolicy(
+                true,
+                true,
+                true,
+                true,
+                "256m",
+                "1",
+                64,
+                "1000:1000",
+                Map.of("/tmp", "rw,noexec,nosuid,size=32m,uid=1000,gid=1000")
+        );
+        ContainerNetworkPlan plan = new ContainerNetworkPlan(
+                "rd-pi-network-task-1",
+                new ContainerNetworkPlan.Sidecar(
+                        "rd-pi-relay-task-1",
+                        "rd-pi-relay",
+                        "rd-bot/pi-agent:local",
+                        List.of("node", "relay.mjs"),
+                        Map.of(),
+                        "bridge",
+                        "http://127.0.0.1:8787/healthz",
+                        2_000L,
+                        sidecarPolicy
+                )
+        );
+
+        assertEquals("", plan.sidecar().entrypoint());
+
+        assertThrows(IllegalArgumentException.class, () -> new ContainerRunRequest(
+                "repair-task-1001",
+                "rd-bot/pi-agent:local",
+                List.of("node", "bridge.mjs"),
+                Map.of(),
+                Map.of(),
+                "/work/repo",
+                "bridge",
+                true,
+                false,
+                outputDirectory,
+                false,
+                "",
+                60_000L,
+                ContainerSecurityPolicy.disabled(),
+                plan
         ));
     }
 

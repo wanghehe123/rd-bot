@@ -124,6 +124,16 @@ public interface RdTaskStore {
     }
 
     /**
+     * Reads the fencing token associated with a task snapshot.
+     *
+     * @param taskId task id
+     * @return fencing token, or empty when the snapshot is missing
+     */
+    default Optional<Long> findFencingToken(String taskId) {
+        return Optional.empty();
+    }
+
+    /**
      * Advances status only when stored {@code version} and {@code status} match; increments version.
      * Cancel / pause / worker completion races must use this instead of blind {@code save*Task}.
      *
@@ -143,6 +153,24 @@ public interface RdTaskStore {
     ) {
         advanceStatusWithExpectedVersion(
                 taskId, expectedVersion, expectedStatus, newStatus, errorMessage, null, null
+        );
+    }
+
+    /**
+     * Fenced status advance. A non-negative fencing token must match the persisted token;
+     * {@code -1} is retained only for source-compatible legacy callers.
+     */
+    default void advanceStatusWithExpectedVersion(
+            String taskId,
+            long expectedVersion,
+            long expectedFencingToken,
+            RdTaskStatus expectedStatus,
+            RdTaskStatus newStatus,
+            String errorMessage
+    ) {
+        advanceStatusWithExpectedVersion(
+                taskId, expectedVersion, expectedFencingToken, expectedStatus, newStatus,
+                errorMessage, null, null, null
         );
     }
 
@@ -172,6 +200,23 @@ public interface RdTaskStore {
     }
 
     /**
+     * Fenced status advance with optional result, PR and prompt payloads.
+     */
+    default void advanceStatusWithExpectedVersion(
+            String taskId,
+            long expectedVersion,
+            long expectedFencingToken,
+            RdTaskStatus expectedStatus,
+            RdTaskStatus newStatus,
+            String errorMessage,
+            String executionResultJson,
+            String pullRequestUrl,
+            String promptSnapshot
+    ) {
+        throw new UnsupportedOperationException("fenced CAS status advance is unavailable for this RdTaskStore");
+    }
+
+    /**
      * CAS status advance including optional {@code promptSnapshot} for EXECUTING transitions.
      */
     default void advanceStatusWithExpectedVersion(
@@ -184,6 +229,36 @@ public interface RdTaskStore {
             String pullRequestUrl,
             String promptSnapshot
     ) {
-        throw new UnsupportedOperationException("CAS status advance is unavailable for this RdTaskStore");
+        advanceStatusWithExpectedVersion(
+                taskId,
+                expectedVersion,
+                -1L,
+                expectedStatus,
+                newStatus,
+                errorMessage,
+                executionResultJson,
+                pullRequestUrl,
+                promptSnapshot
+        );
+    }
+
+    /**
+     * Persists a complete task snapshot only when its version, fencing token and current status
+     * still match the values read by the caller. This is used for metadata, pause and logical
+     * delete commands so those actions cannot fall back to a blind upsert.
+     *
+     * @param task             next task snapshot
+     * @param expectedVersion   version read by the caller
+     * @param expectedFencingToken fencing token read by the caller
+     * @param expectedStatus    status read by the caller
+     * @throws IllegalStateException when the snapshot is stale or the task is missing
+     */
+    default void updateTaskWithExpectedVersion(
+            RdTask task,
+            long expectedVersion,
+            long expectedFencingToken,
+            RdTaskStatus expectedStatus
+    ) {
+        throw new UnsupportedOperationException("fenced task snapshot update is unavailable for this RdTaskStore");
     }
 }

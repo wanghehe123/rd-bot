@@ -1,6 +1,9 @@
 package com.wish.rd.engine.provider;
 
 import com.wish.rd.engine.agent.model.AgentRole;
+import com.wish.rd.engine.provider.model.ProviderCapability;
+import com.wish.rd.engine.provider.model.ProviderCapabilityProfile;
+import com.wish.rd.engine.provider.model.ProviderWorkRisk;
 
 import java.util.Locale;
 import java.util.Map;

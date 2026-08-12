@@ -1,11 +1,12 @@
 package com.wish.rd.bootstrap.oracle;
 
-import com.wish.rd.engine.oracle.AssertionEvaluationContext;
-import com.wish.rd.engine.oracle.AssertionOutcome;
-import com.wish.rd.engine.oracle.AssertionResult;
-import com.wish.rd.engine.oracle.AssertionSpecBundle;
 import com.wish.rd.engine.oracle.HostAssertionOracle;
+import com.wish.rd.bootstrap.oracle.impl.SqlRowExistsAssertionRunner;
+import com.wish.rd.engine.oracle.model.AssertionEvaluationContext;
+import com.wish.rd.engine.oracle.model.AssertionOutcome;
+import com.wish.rd.engine.oracle.model.AssertionResult;
 import com.wish.rd.engine.oracle.model.AssertionSpec;
+import com.wish.rd.engine.oracle.model.AssertionSpecBundle;
 import com.wish.rd.engine.oracle.model.AssertionType;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;

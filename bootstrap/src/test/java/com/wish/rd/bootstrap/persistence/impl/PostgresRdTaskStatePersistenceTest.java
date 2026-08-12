@@ -13,6 +13,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -39,6 +40,29 @@ class PostgresRdTaskStatePersistenceTest {
                 "saveWithEvent", com.wish.rd.rag.runtime.model.RdTask.class, RdTaskStatusEvent.class);
         assertTrue(method.isAnnotationPresent(Transactional.class));
         assertEquals(task, persistence.saveWithEvent(task, null));
+    }
+
+    @Test
+    void shouldSavePauseOrMetadataActionThroughFencedCasTransaction() throws Exception {
+        PostgresRdTaskStore taskStore = mock(PostgresRdTaskStore.class);
+        PostgresRdTaskStatusEventStore eventStore = mock(PostgresRdTaskStatusEventStore.class);
+        PostgresRdTaskStatePersistence persistence = new PostgresRdTaskStatePersistence(taskStore, eventStore);
+        RdRequirementTask task = RdRequirementTask.created("1784100000003", command(), 1_784_100_000_000L)
+                .withPaused(true, 1_784_100_000_001L);
+        RdTaskStatusEvent event = new RdTaskStatusEvent(
+                "1784100000004", task.taskId(), RdTaskStatusEvent.ACTION_PAUSED, task.title(), "pause", 1L, 0L,
+                RdTaskEventTrigger.API.name());
+        when(taskStore.findTask(task.taskId())).thenReturn(java.util.Optional.of(task));
+
+        assertEquals(task, persistence.saveActionWithEventCas(
+                task, event, 0L, 1L, RdTaskStatus.CREATED));
+
+        verify(taskStore).updateTaskWithExpectedVersion(eq(task), eq(0L), eq(1L), eq(RdTaskStatus.CREATED));
+        verify(eventStore).save(event);
+        Method method = PostgresRdTaskStatePersistence.class.getMethod(
+                "saveActionWithEventCas", com.wish.rd.rag.runtime.model.RdTask.class,
+                RdTaskStatusEvent.class, long.class, long.class, RdTaskStatus.class);
+        assertTrue(method.isAnnotationPresent(Transactional.class));
     }
 
     private CreateRequirementTaskCommand command() {

@@ -1,5 +1,12 @@
 package com.wish.rd.engine.provider;
 
+import com.wish.rd.engine.provider.model.ProviderCapability;
+import com.wish.rd.engine.provider.model.ProviderCapabilityProfile;
+import com.wish.rd.engine.provider.model.ProviderFallbackDecision;
+import com.wish.rd.engine.provider.model.ProviderFallbackEvaluation;
+import com.wish.rd.engine.provider.model.ProviderFallbackSideEffectSafety;
+import com.wish.rd.engine.provider.model.ProviderWorkRisk;
+
 import java.util.Objects;
 
 /**

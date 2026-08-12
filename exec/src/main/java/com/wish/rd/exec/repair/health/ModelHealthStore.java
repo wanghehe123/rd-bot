@@ -3,14 +3,13 @@ package com.wish.rd.exec.repair.health;
 import com.wish.rd.exec.repair.model.ModelCircuitBreakerPolicy;
 import com.wish.rd.exec.repair.model.ModelHealthSnapshot;
 import com.wish.rd.exec.repair.model.ModelHealthState;
+import com.wish.rd.exec.repair.health.impl.InMemoryModelHealthStateStore;
 
-import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.Objects;
 
 /**
- * 模型健康状态存储器，按 ragent 的 CLOSED/OPEN/HALF_OPEN 语义实现断路器。
+ * 模型健康状态存储器，按 CLOSED/OPEN/HALF_OPEN 语义实现断路器。
  *
  * <p>该类属于 exec 执行层，不依赖 Spring 或具体模型 SDK。调用方用供应商名或模型名作为 ID，
  * 在真实调用前执行 {@link #allowCall(String)}，并在调用结束后标记成功或失败。
@@ -18,7 +17,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class ModelHealthStore {
 
     private final ModelCircuitBreakerPolicy policy;
-    private final Map<String, ModelHealth> healthById = new ConcurrentHashMap<>();
+    private final ModelHealthStateStore stateStore;
 
     /**
      * 创建模型健康状态存储器。
@@ -26,7 +25,18 @@ public class ModelHealthStore {
      * @param policy 熔断策略，null 时使用禁用策略
      */
     public ModelHealthStore(ModelCircuitBreakerPolicy policy) {
+        this(policy, new InMemoryModelHealthStateStore());
+    }
+
+    /**
+     * Creates a circuit breaker backed by the supplied atomic state store.
+     *
+     * @param policy circuit-breaker policy, or disabled when {@code null}
+     * @param stateStore shared state store; production supplies Redis
+     */
+    public ModelHealthStore(ModelCircuitBreakerPolicy policy, ModelHealthStateStore stateStore) {
         this.policy = policy == null ? ModelCircuitBreakerPolicy.disabled() : policy;
+        this.stateStore = Objects.requireNonNull(stateStore, "stateStore must not be null");
     }
 
     /**
@@ -43,14 +53,7 @@ public class ModelHealthStore {
         if (normalized.isBlank()) {
             return false;
         }
-        ModelHealth health = healthById.get(normalized);
-        if (health == null) {
-            return false;
-        }
-        if (health.state == ModelHealthState.OPEN && health.openUntil > System.currentTimeMillis()) {
-            return true;
-        }
-        return health.state == ModelHealthState.HALF_OPEN && health.halfOpenInFlight;
+        return stateStore.isUnavailable(normalized, System.currentTimeMillis());
     }
 
     /**
@@ -68,31 +71,7 @@ public class ModelHealthStore {
         if (!policy.enabled()) {
             return true;
         }
-        long now = System.currentTimeMillis();
-        AtomicBoolean allowed = new AtomicBoolean(false);
-        healthById.compute(normalized, (key, value) -> {
-            ModelHealth health = value == null ? new ModelHealth() : value;
-            if (health.state == ModelHealthState.OPEN) {
-                if (health.openUntil > now) {
-                    return health;
-                }
-                health.state = ModelHealthState.HALF_OPEN;
-                health.halfOpenInFlight = true;
-                allowed.set(true);
-                return health;
-            }
-            if (health.state == ModelHealthState.HALF_OPEN) {
-                if (health.halfOpenInFlight) {
-                    return health;
-                }
-                health.halfOpenInFlight = true;
-                allowed.set(true);
-                return health;
-            }
-            allowed.set(true);
-            return health;
-        });
-        return allowed.get();
+        return stateStore.tryAcquireCall(normalized, policy, System.currentTimeMillis());
     }
 
     /**
@@ -105,14 +84,7 @@ public class ModelHealthStore {
         if (!policy.enabled() || normalized.isBlank()) {
             return;
         }
-        healthById.compute(normalized, (key, value) -> {
-            ModelHealth health = value == null ? new ModelHealth() : value;
-            health.state = ModelHealthState.CLOSED;
-            health.consecutiveFailures = 0;
-            health.openUntil = 0L;
-            health.halfOpenInFlight = false;
-            return health;
-        });
+        stateStore.markSuccess(normalized);
     }
 
     /**
@@ -125,25 +97,7 @@ public class ModelHealthStore {
         if (!policy.enabled() || normalized.isBlank()) {
             return;
         }
-        long now = System.currentTimeMillis();
-        healthById.compute(normalized, (key, value) -> {
-            ModelHealth health = value == null ? new ModelHealth() : value;
-            if (health.state == ModelHealthState.HALF_OPEN) {
-                health.state = ModelHealthState.OPEN;
-                health.openUntil = now + policy.openDurationMillis();
-                health.consecutiveFailures = 0;
-                health.halfOpenInFlight = false;
-                return health;
-            }
-            health.consecutiveFailures++;
-            if (health.consecutiveFailures >= policy.failureThreshold()) {
-                health.state = ModelHealthState.OPEN;
-                health.openUntil = now + policy.openDurationMillis();
-                health.consecutiveFailures = 0;
-                health.halfOpenInFlight = false;
-            }
-            return health;
-        });
+        stateStore.markFailure(normalized, policy, System.currentTimeMillis());
     }
 
     /**
@@ -157,11 +111,7 @@ public class ModelHealthStore {
         if (normalized.isBlank()) {
             return new ModelHealthSnapshot("", ModelHealthState.CLOSED, 0, 0L, false);
         }
-        ModelHealth health = healthById.get(normalized);
-        if (health == null) {
-            return new ModelHealthSnapshot(normalized, ModelHealthState.CLOSED, 0, 0L, false);
-        }
-        return health.snapshot(normalized);
+        return stateStore.snapshot(normalized, System.currentTimeMillis());
     }
 
     /**
@@ -170,11 +120,10 @@ public class ModelHealthStore {
      * @return 按模型 ID 排序后的不可变快照
      */
     public Map<String, ModelHealthSnapshot> snapshots() {
-        Map<String, ModelHealthSnapshot> snapshots = new LinkedHashMap<>();
-        healthById.keySet().stream()
-                .sorted()
-                .forEach(id -> snapshots.put(id, snapshot(id)));
-        return Map.copyOf(snapshots);
+        if (!policy.enabled()) {
+            return Map.of();
+        }
+        return stateStore.snapshots(System.currentTimeMillis());
     }
 
     /**
@@ -190,21 +139,4 @@ public class ModelHealthStore {
         return id == null ? "" : id.strip();
     }
 
-    private static final class ModelHealth {
-        private int consecutiveFailures;
-        private long openUntil;
-        private boolean halfOpenInFlight;
-        private ModelHealthState state;
-
-        private ModelHealth() {
-            this.consecutiveFailures = 0;
-            this.openUntil = 0L;
-            this.halfOpenInFlight = false;
-            this.state = ModelHealthState.CLOSED;
-        }
-
-        private ModelHealthSnapshot snapshot(String id) {
-            return new ModelHealthSnapshot(id, state, consecutiveFailures, openUntil, halfOpenInFlight);
-        }
-    }
 }

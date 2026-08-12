@@ -22,7 +22,7 @@ class RagV3ChatControllerTest {
     private MockMvc mockMvc;
 
     @Test
-    void exposesRagentStyleSseChatEndpoint() throws Exception {
+    void exposesSseChatEndpoint() throws Exception {
         mockMvc.perform(get("/rag/v3/chat")
                         .param("question", "支付系统下单接口 500。金额为空怎么修复？")
                         .param("deepThinking", "false"))
@@ -36,7 +36,7 @@ class RagV3ChatControllerTest {
     }
 
     @Test
-    void exposesRagentStyleStopEndpoint() throws Exception {
+    void exposesStopEndpoint() throws Exception {
         mockMvc.perform(post("/rag/v3/stop")
                         .param("taskId", "task-v3-test"))
                 .andExpect(status().isOk())

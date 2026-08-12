@@ -41,9 +41,13 @@ public class RdTaskRow {
     public String workBranch;
     public String expectedResult;
     public String acceptanceCriteriaJson;
+    /** Canonical structured Host assertion input; null preserves legacy text-only criteria. */
+    public String hostAssertionBundleJson;
     public Long tokenBudgetOverride;
     /** Optimistic concurrency token; advanced by CAS status writers. */
     public Long version;
+    /** Monotonic fencing token; stale leases cannot write after token rotation. */
+    public Long fencingToken;
     public OffsetDateTime createdAt;
     public OffsetDateTime updatedAt;
 }

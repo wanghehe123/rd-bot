@@ -3,6 +3,7 @@ package com.wish.rd.bootstrap;
 import com.wish.rd.adapter.TicketProviderPort;
 import com.wish.rd.adapter.TicketUpdatePort;
 import com.wish.rd.bootstrap.feishu.im.FeishuImMessageController;
+import com.wish.rd.bootstrap.threading.RequirementDeliveryDispatchService;
 import com.wish.rd.bootstrap.feishu.im.impl.FeishuImTicketAdapter;
 import com.wish.rd.engine.ticket.impl.TicketRepairEngine;
 import com.wish.rd.engine.ticket.impl.TicketRepairExecutionConsumer;
@@ -37,6 +38,8 @@ class FeishuImBeanWiringTest {
     @Autowired
     private FeishuImMessageController controller;
     @Autowired
+    private RequirementDeliveryDispatchService requirementDeliveryDispatchService;
+    @Autowired
     private TicketProviderPort providerPort;
     @Autowired
     private TicketUpdatePort updatePort;
@@ -48,6 +51,7 @@ class FeishuImBeanWiringTest {
     @Test
     void should_wire飞书IM工单端口_当启用IMProvider() {
         assertNotNull(controller);
+        assertNotNull(requirementDeliveryDispatchService);
         assertInstanceOf(FeishuImTicketAdapter.class, providerPort);
         assertInstanceOf(FeishuImTicketAdapter.class, updatePort);
     }

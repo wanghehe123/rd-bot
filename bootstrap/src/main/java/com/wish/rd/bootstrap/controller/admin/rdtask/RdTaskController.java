@@ -2,6 +2,7 @@ package com.wish.rd.bootstrap.controller.admin.rdtask;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.annotation.JsonAlias;
 import com.wish.rd.adapter.model.TicketSnapshot;
 import com.wish.rd.bootstrap.threading.BugFixExecutionDispatchService;
 import com.wish.rd.bootstrap.threading.RequirementDeliveryDispatchService;
@@ -18,6 +19,9 @@ import com.wish.rd.engine.control.RdTaskExecutionControlEngine;
 import com.wish.rd.engine.control.model.RdTaskExecutionControlResult;
 import com.wish.rd.engine.ticket.RdTaskRestartEngine;
 import com.wish.rd.engine.requirement.RequirementDeliveryEngine;
+import com.wish.rd.engine.requirement.policy.RequirementPolicyTransactionPort;
+import com.wish.rd.engine.requirement.policy.model.ApproveRequirementPolicyCommand;
+import com.wish.rd.engine.oracle.AssertionSpecCompiler;
 import com.wish.rd.exec.repair.execution.RepairExecutionControlPort;
 import com.wish.rd.exec.repair.execution.model.RepairExecutionStopCommand;
 import com.wish.rd.exec.repair.execution.model.RepairExecutionStopResult;
@@ -83,6 +87,9 @@ import java.util.Set;
 @RestController
 public class RdTaskController {
 
+    /** Host-controlled service actor; this deployment has no authenticated human identity context. */
+    private static final String POLICY_APPROVAL_ACTOR = "ADMIN_API";
+
     /** 列表视图中文本字段的截断长度，避免大块 prompt/结果 JSON 透出列表。 */
     private static final int PREVIEW_MAX_CHARS = 120;
     private static final long MAX_MATERIAL_SIZE = 10L * 1024L * 1024L;
@@ -93,6 +100,7 @@ public class RdTaskController {
             "application/json", "application/xml"
     );
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final AssertionSpecCompiler ASSERTION_SPEC_COMPILER = new AssertionSpecCompiler();
 
     private final RagStreamTaskRegistry registry;
     private final RepairExecutionControlPort executionControlPort;
@@ -108,6 +116,7 @@ public class RdTaskController {
     private RdTaskExecutionControlEngine taskExecutionControlEngine;
     private QaEvidenceRetentionService qaEvidenceRetentionService;
     private AgentStageRunStore agentStageRunStore;
+    private RequirementPolicyTransactionPort requirementPolicyTransactionPort;
     private final Object materialUploadMonitor = new Object();
     private ObjectStorageService objectStorageService = new InMemoryObjectStorageService();
 
@@ -131,6 +140,12 @@ public class RdTaskController {
     @Autowired(required = false)
     void setAgentStageRunStore(AgentStageRunStore agentStageRunStore) {
         this.agentStageRunStore = agentStageRunStore;
+    }
+
+    /** Optional wiring preserves the controller's legacy constructors for standalone administration tests. */
+    @Autowired(required = false)
+    void setRequirementPolicyTransactionPort(RequirementPolicyTransactionPort requirementPolicyTransactionPort) {
+        this.requirementPolicyTransactionPort = requirementPolicyTransactionPort;
     }
 
     public RdTaskController(RagStreamTaskRegistry registry) {
@@ -366,7 +381,8 @@ public class RdTaskController {
                 safeRequest.acceptanceCriteria(),
                 List.of(),
                 safeRequest.autoExecute(),
-                safeRequest.tokenBudgetOverride()
+                safeRequest.tokenBudgetOverride(),
+                safeRequest.hostAssertionBundle()
         ));
         saveRequirementMaterials(task.taskId(), safeRequest.materials());
         if (safeRequest.autoExecute()) {
@@ -391,7 +407,8 @@ public class RdTaskController {
         if (request == null) {
             throw new IllegalArgumentException("request body must not be null");
         }
-        return toDetailView(registry.updateTask(taskId, request.title(), request.priority(), request.ticketTitle()));
+        return toDetailView(registry.updateTaskMetadata(
+                taskId, request.title(), request.priority(), request.ticketTitle()));
     }
 
     /**
@@ -407,7 +424,7 @@ public class RdTaskController {
             @RequestBody(required = false) RdTaskActionRequest request
     ) {
         String message = request == null ? "管理台暂停" : request.message();
-        return toDetailView(registry.pause(taskId, message));
+        return toDetailView(registry.pauseTask(taskId, message));
     }
 
     /**
@@ -438,20 +455,34 @@ public class RdTaskController {
     }
 
     /**
-     * 审批通过等待人工确认的需求任务，并继续提交进入交付链路。
+     * Produces the durable, digest-bound approval resume command through the policy transaction.
      *
      * @param taskId  任务 ID
-     * @param request 动作请求（可选 message）
-     * @return 审批并重新提交后的任务视图
+     * @param request immutable policy approval payload
+     * @return latest registry task view; persistence-backed registry wiring owns freshness
      */
     @PostMapping("/admin/rd-tasks/{taskId}/approve")
     public RdTaskView approve(
             @PathVariable("taskId") String taskId,
-            @RequestBody(required = false) RdTaskActionRequest request
+            @RequestBody ApproveRequirementPolicyRequest request
     ) {
-        String message = request == null ? "管理台审批通过" : request.message();
-        registry.approveRequirementTask(taskId, message);
-        submitRequirementTask(taskId);
+        if (request == null) {
+            throw new IllegalArgumentException("request body must not be null");
+        }
+        if (requirementPolicyTransactionPort == null) {
+            throw new IllegalStateException("requirement policy transaction port unavailable");
+        }
+        requirementPolicyTransactionPort.approve(new ApproveRequirementPolicyCommand(
+                taskId,
+                request.policyRunId(),
+                request.expectedTaskVersion(),
+                request.expectedTaskFence(),
+                request.planDigest(),
+                request.policyDigest(),
+                request.approvalRequestId(),
+                request.decision(),
+                request.note()
+        ), POLICY_APPROVAL_ACTOR, Instant.now().toEpochMilli());
         return toDetailView(registry.getTask(taskId));
     }
 
@@ -835,6 +866,7 @@ public class RdTaskController {
         String workBranch = "";
         String expectedResult = "";
         String acceptanceCriteriaJson = "[]";
+        JsonNode hostAssertionBundle = null;
         long tokenBudgetOverride = 0L;
         if (task instanceof RdBugFixTask bugFixTask) {
             ticketId = bugFixTask.ticketId();
@@ -868,6 +900,7 @@ public class RdTaskController {
             workBranch = requirementTask.workBranch();
             expectedResult = requirementTask.expectedResult();
             acceptanceCriteriaJson = requirementTask.acceptanceCriteriaJson();
+            hostAssertionBundle = listView ? null : requirementTask.hostAssertionBundle();
             tokenBudgetOverride = requirementTask.tokenBudgetOverride();
         }
         return new RdTaskView(
@@ -898,6 +931,7 @@ public class RdTaskController {
                 workBranch,
                 expectedResult,
                 acceptanceCriteriaJson,
+                hostAssertionBundle,
                 executionEvidence(executionResultJson, pullRequestUrl),
                 tokenBudgetOverride
         );
@@ -1013,6 +1047,11 @@ public class RdTaskController {
         boolean hasUsableMaterial = request.materials().stream().anyMatch(RdTaskController::hasUsableMaterial);
         if (!hasUsableMaterial) {
             throw new IllegalArgumentException("at least one material content or sourceUri is required");
+        }
+        if (request.hostAssertionBundle() != null) {
+            // The dedicated JSON field is executable Host input. Do not reinterpret a malformed
+            // envelope as legacy natural-language acceptance text.
+            ASSERTION_SPEC_COMPILER.compileByScope(request.hostAssertionBundle());
         }
         return request;
     }
@@ -1256,14 +1295,10 @@ public class RdTaskController {
     }
 
     private void submitRequirementTask(String taskId) {
-        if (requirementDeliveryDispatchService != null) {
-            requirementDeliveryDispatchService.submit(taskId);
-            return;
+        if (requirementDeliveryDispatchService == null) {
+            throw new IllegalStateException("requirement delivery dispatch service unavailable");
         }
-        if (requirementDeliveryEngine == null) {
-            throw new IllegalStateException("requirement delivery engine unavailable");
-        }
-        requirementDeliveryEngine.submit(taskId);
+        requirementDeliveryDispatchService.submit(taskId);
     }
 
     private boolean isRecoverableRequirementStatus(RdTaskStatus status) {
@@ -1446,12 +1481,16 @@ public class RdTaskController {
             String baseBranch,
             String expectedResult,
             List<String> acceptanceCriteria,
+            @JsonAlias({"assertionBundle", "structuredAssertionBundle"}) JsonNode hostAssertionBundle,
             List<RequirementMaterialInput> materials,
             boolean autoExecute,
             long tokenBudgetOverride
     ) {
         public CreateRequirementTaskRequest {
             acceptanceCriteria = acceptanceCriteria == null ? List.of() : List.copyOf(acceptanceCriteria);
+            hostAssertionBundle = hostAssertionBundle == null || hostAssertionBundle.isNull()
+                    ? null
+                    : hostAssertionBundle.deepCopy();
             materials = materials == null ? List.of() : List.copyOf(materials);
             if (tokenBudgetOverride < 0L) {
                 throw new IllegalArgumentException("tokenBudgetOverride must not be negative");
@@ -1485,6 +1524,19 @@ public class RdTaskController {
         public RdTaskActionRequest {
             message = message == null ? "" : message;
         }
+    }
+
+    /** Immutable, digest- and concurrency-bound request for the host policy-approval transaction. */
+    public record ApproveRequirementPolicyRequest(
+            String policyRunId,
+            long expectedTaskVersion,
+            long expectedTaskFence,
+            String planDigest,
+            String policyDigest,
+            String approvalRequestId,
+            String decision,
+            String note
+    ) {
     }
 
     /** 停止任务响应体。 */
@@ -1525,9 +1577,19 @@ public class RdTaskController {
             String workBranch,
             String expectedResult,
             String acceptanceCriteriaJson,
+            JsonNode hostAssertionBundle,
             ExecutionEvidenceView executionEvidence,
             long tokenBudgetOverride
     ) {
+        public RdTaskView {
+            hostAssertionBundle = hostAssertionBundle == null || hostAssertionBundle.isNull()
+                    ? null
+                    : hostAssertionBundle.deepCopy();
+        }
+
+        public JsonNode hostAssertionBundle() {
+            return hostAssertionBundle == null ? null : hostAssertionBundle.deepCopy();
+        }
     }
 
     /** 执行证据摘要。 */

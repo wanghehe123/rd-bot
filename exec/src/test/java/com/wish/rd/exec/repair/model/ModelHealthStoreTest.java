@@ -1,6 +1,7 @@
 package com.wish.rd.exec.repair.model;
 
 import com.wish.rd.exec.repair.health.ModelHealthStore;
+import com.wish.rd.exec.repair.health.impl.InMemoryModelHealthStateStore;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -55,6 +56,21 @@ class ModelHealthStoreTest {
         assertTrue(store.allowCall("deepseek"));
         assertFalse(store.allowCall("deepseek"));
         assertTrue(store.isUnavailable("deepseek"));
+    }
+
+    @Test
+    void shouldAllowOnlyOneHalfOpenCallAcrossStoresSharingState() throws InterruptedException {
+        InMemoryModelHealthStateStore stateStore = new InMemoryModelHealthStateStore();
+        ModelCircuitBreakerPolicy policy = new ModelCircuitBreakerPolicy(true, 2, 50L);
+        ModelHealthStore first = new ModelHealthStore(policy, stateStore);
+        ModelHealthStore second = new ModelHealthStore(policy, stateStore);
+        open(first, "deepseek");
+
+        Thread.sleep(75L);
+
+        assertTrue(first.allowCall("deepseek"));
+        assertFalse(second.allowCall("deepseek"));
+        assertEquals(ModelHealthState.HALF_OPEN, second.snapshot("deepseek").state());
     }
 
     @Test

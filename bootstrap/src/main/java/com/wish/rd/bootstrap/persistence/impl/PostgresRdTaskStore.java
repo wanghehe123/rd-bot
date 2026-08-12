@@ -1,5 +1,7 @@
 package com.wish.rd.bootstrap.persistence.impl;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wish.rd.bootstrap.persistence.PostgresPersistenceSupport;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
@@ -25,6 +27,8 @@ import org.springframework.stereotype.Component;
 @ConditionalOnProperty(name = "rd.knowledge.store", havingValue = "postgres")
 public final class PostgresRdTaskStore implements RdTaskStore {
 
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+
     private final RdTaskMapper taskMapper;
 
     public PostgresRdTaskStore(RdTaskMapper taskMapper) {
@@ -33,8 +37,21 @@ public final class PostgresRdTaskStore implements RdTaskStore {
 
     @Override
     public RdBugFixTask saveBugFixTask(RdBugFixTask task) {
-        taskMapper.upsertTask(toRow(task));
-        return task;
+        RdTaskRow existing = taskMapper.selectById(PostgresPersistenceSupport.parseId(task.taskId()));
+        if (existing == null) {
+            RdTaskRow row = toRow(task);
+            assignInitialFencingToken(row);
+            taskMapper.upsertTask(row);
+            return findBugFixTask(task.taskId()).orElse(task);
+        }
+        if (task.fencingToken() <= 0L
+                || !task.status().name().equals(existing.status)
+                || !sameConcurrency(task.version(), task.fencingToken(), existing)) {
+            throw new IllegalStateException(
+                    "existing rd task snapshots must use fenced CAS: " + task.taskId());
+        }
+        updateTaskWithExpectedVersion(task, task.version(), task.fencingToken(), task.status());
+        return findBugFixTask(task.taskId()).orElse(task);
     }
 
     @Override
@@ -46,8 +63,21 @@ public final class PostgresRdTaskStore implements RdTaskStore {
 
     @Override
     public RdRequirementTask saveRequirementTask(RdRequirementTask task) {
-        taskMapper.upsertTask(toRow(task));
-        return task;
+        RdTaskRow existing = taskMapper.selectById(PostgresPersistenceSupport.parseId(task.taskId()));
+        if (existing == null) {
+            RdTaskRow row = toRow(task);
+            assignInitialFencingToken(row);
+            taskMapper.upsertTask(row);
+            return findRequirementTask(task.taskId()).orElse(task);
+        }
+        if (task.fencingToken() <= 0L
+                || !task.status().name().equals(existing.status)
+                || !sameConcurrency(task.version(), task.fencingToken(), existing)) {
+            throw new IllegalStateException(
+                    "existing rd task snapshots must use fenced CAS: " + task.taskId());
+        }
+        updateTaskWithExpectedVersion(task, task.version(), task.fencingToken(), task.status());
+        return findRequirementTask(task.taskId()).orElse(task);
     }
 
     @Override
@@ -121,13 +151,57 @@ public final class PostgresRdTaskStore implements RdTaskStore {
             String pullRequestUrl,
             String promptSnapshot
     ) {
+        throw new UnsupportedOperationException(
+                "unfenced rd_tasks status writes are disabled; provide expected fencing token");
+    }
+
+    @Override
+    public void updateTaskWithExpectedVersion(
+            com.wish.rd.rag.runtime.model.RdTask task,
+            long expectedVersion,
+            long expectedFencingToken,
+            RdTaskStatus expectedStatus
+    ) {
+        if (task == null || expectedStatus == null) {
+            throw new IllegalArgumentException("task and expectedStatus must not be null");
+        }
+        requirePositiveFencingToken(expectedFencingToken);
+        int updated = taskMapper.updateTaskWithExpectedVersionFenced(
+                toRow(task),
+                expectedVersion,
+                expectedFencingToken,
+                expectedStatus.name()
+        );
+        if (updated != 1) {
+            throw new IllegalStateException(
+                    "stale or mismatched fenced rd_tasks snapshot for id=" + task.taskId()
+                            + " expectedVersion=" + expectedVersion
+                            + " expectedFencingToken=" + expectedFencingToken
+                            + " expectedStatus=" + expectedStatus
+            );
+        }
+    }
+
+    @Override
+    public void advanceStatusWithExpectedVersion(
+            String taskId,
+            long expectedVersion,
+            long expectedFencingToken,
+            RdTaskStatus expectedStatus,
+            RdTaskStatus newStatus,
+            String errorMessage,
+            String executionResultJson,
+            String pullRequestUrl,
+            String promptSnapshot
+    ) {
         if (expectedStatus == null || newStatus == null) {
             throw new IllegalArgumentException("expectedStatus and newStatus must not be null");
         }
-        long id = PostgresPersistenceSupport.parseId(taskId);
-        int updated = taskMapper.advanceStatusWithExpectedVersion(
-                id,
+        requirePositiveFencingToken(expectedFencingToken);
+        int updated = taskMapper.advanceStatusWithExpectedVersionFenced(
+                PostgresPersistenceSupport.parseId(taskId),
                 expectedVersion,
+                expectedFencingToken,
                 expectedStatus.name(),
                 newStatus.name(),
                 errorMessage,
@@ -138,8 +212,9 @@ public final class PostgresRdTaskStore implements RdTaskStore {
         );
         if (updated != 1) {
             throw new IllegalStateException(
-                    "stale or mismatched rd_tasks CAS for id=" + taskId
+                    "stale or mismatched fenced rd_tasks CAS for id=" + taskId
                             + " expectedVersion=" + expectedVersion
+                            + " expectedFencingToken=" + expectedFencingToken
                             + " expectedStatus=" + expectedStatus
             );
         }
@@ -155,6 +230,22 @@ public final class PostgresRdTaskStore implements RdTaskStore {
     public Optional<Long> findVersion(String taskId) {
         return Optional.ofNullable(taskMapper.selectById(PostgresPersistenceSupport.parseId(taskId)))
                 .map(row -> row.version == null ? 0L : row.version);
+    }
+
+    @Override
+    public Optional<Long> findFencingToken(String taskId) {
+        return Optional.ofNullable(taskMapper.selectById(PostgresPersistenceSupport.parseId(taskId)))
+                .map(row -> row.fencingToken == null ? 0L : row.fencingToken);
+    }
+
+    private RdTaskRow toRow(com.wish.rd.rag.runtime.model.RdTask task) {
+        if (task instanceof RdBugFixTask bugFixTask) {
+            return toRow(bugFixTask);
+        }
+        if (task instanceof RdRequirementTask requirementTask) {
+            return toRow(requirementTask);
+        }
+        throw new IllegalArgumentException("unsupported rd task type: " + task.getClass().getName());
     }
 
     private RdTaskRow toRow(RdBugFixTask task) {
@@ -184,8 +275,10 @@ public final class PostgresRdTaskStore implements RdTaskStore {
         row.workBranch = "";
         row.expectedResult = "";
         row.acceptanceCriteriaJson = "[]";
+        row.hostAssertionBundleJson = null;
         row.tokenBudgetOverride = 0L;
-        row.version = 0L;
+        row.version = task.version();
+        row.fencingToken = task.fencingToken();
         row.createdAt = PostgresPersistenceSupport.toDateTime(task.createTimeEpochMillis());
         row.updatedAt = PostgresPersistenceSupport.toDateTime(task.updateTimeEpochMillis());
         row.paused = task.paused();
@@ -219,8 +312,10 @@ public final class PostgresRdTaskStore implements RdTaskStore {
         row.workBranch = task.workBranch();
         row.expectedResult = task.expectedResult();
         row.acceptanceCriteriaJson = task.acceptanceCriteriaJson().isBlank() ? "[]" : task.acceptanceCriteriaJson();
+        row.hostAssertionBundleJson = writeHostAssertionBundle(task.hostAssertionBundle());
         row.tokenBudgetOverride = task.tokenBudgetOverride();
-        row.version = 0L;
+        row.version = task.version();
+        row.fencingToken = task.fencingToken();
         row.createdAt = PostgresPersistenceSupport.toDateTime(task.createTimeEpochMillis());
         row.updatedAt = PostgresPersistenceSupport.toDateTime(task.updateTimeEpochMillis());
         row.paused = task.paused();
@@ -250,7 +345,9 @@ public final class PostgresRdTaskStore implements RdTaskStore {
                 row.baseBranch,
                 PostgresPersistenceSupport.toEpochMillis(row.createdAt),
                 PostgresPersistenceSupport.toEpochMillis(row.updatedAt),
-                row.paused != null && row.paused
+                row.paused != null && row.paused,
+                row.version == null ? 0L : row.version,
+                row.fencingToken == null ? 0L : row.fencingToken
         );
     }
 
@@ -281,7 +378,50 @@ public final class PostgresRdTaskStore implements RdTaskStore {
                 PostgresPersistenceSupport.toEpochMillis(row.createdAt),
                 PostgresPersistenceSupport.toEpochMillis(row.updatedAt),
                 row.paused != null && row.paused,
-                row.tokenBudgetOverride == null ? 0L : row.tokenBudgetOverride
+                row.tokenBudgetOverride == null ? 0L : row.tokenBudgetOverride,
+                row.version == null ? 0L : row.version,
+                row.fencingToken == null ? 0L : row.fencingToken,
+                readHostAssertionBundle(row.hostAssertionBundleJson)
         );
+    }
+
+    private boolean sameConcurrency(long version, long fencingToken, RdTaskRow existing) {
+        return (existing.version == null ? 0L : existing.version) == version
+                && (existing.fencingToken == null ? 0L : existing.fencingToken) == fencingToken;
+    }
+
+    private static void assignInitialFencingToken(RdTaskRow row) {
+        if (row.fencingToken == null || row.fencingToken <= 0L) {
+            row.fencingToken = 1L;
+        }
+    }
+
+    private static void requirePositiveFencingToken(long fencingToken) {
+        if (fencingToken <= 0L) {
+            throw new IllegalArgumentException("expectedFencingToken must be positive");
+        }
+    }
+
+    private static String writeHostAssertionBundle(JsonNode bundle) {
+        if (bundle == null || bundle.isNull()) {
+            return null;
+        }
+        try {
+            return OBJECT_MAPPER.writeValueAsString(bundle);
+        } catch (Exception exception) {
+            throw new IllegalStateException("Host assertion task input cannot be serialized", exception);
+        }
+    }
+
+    private static JsonNode readHostAssertionBundle(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        try {
+            JsonNode parsed = OBJECT_MAPPER.readTree(raw);
+            return parsed == null || parsed.isNull() ? null : parsed;
+        } catch (Exception exception) {
+            throw new IllegalStateException("stored Host assertion task input is invalid", exception);
+        }
     }
 }

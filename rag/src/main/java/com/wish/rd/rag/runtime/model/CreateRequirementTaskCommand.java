@@ -1,5 +1,7 @@
 package com.wish.rd.rag.runtime.model;
 
+import com.fasterxml.jackson.databind.JsonNode;
+
 import java.util.List;
 
 /**
@@ -21,6 +23,7 @@ import java.util.List;
  * @param acceptanceCriteria 验收标准
  * @param materials          需求材料输入
  * @param autoExecute        是否创建后自动进入执行队列
+ * @param hostAssertionBundle 明确的 Host 断言定义；空值保留纯文字验收标准兼容路径
  */
 public record CreateRequirementTaskCommand(
         String title,
@@ -39,8 +42,56 @@ public record CreateRequirementTaskCommand(
         List<String> acceptanceCriteria,
         List<RequirementMaterialInput> materials,
         boolean autoExecute,
-        long tokenBudgetOverride
+        long tokenBudgetOverride,
+        JsonNode hostAssertionBundle
 ) {
+
+    /**
+     * Backward-compatible constructor for callers that predate structured Host assertions.
+     *
+     * @param title task title
+     * @param priority task priority
+     * @param sourceType source type
+     * @param sourceId source identifier
+     * @param sourceUrl source URL
+     * @param projectId project identifier
+     * @param projectKey project key
+     * @param projectName project name
+     * @param repositoryUrl repository URL
+     * @param repoOwner repository owner
+     * @param repoName repository name
+     * @param baseBranch base branch
+     * @param expectedResult expected outcome
+     * @param acceptanceCriteria human-readable acceptance criteria
+     * @param materials task materials
+     * @param autoExecute whether to enqueue immediately
+     * @param tokenBudgetOverride token budget override
+     */
+    public CreateRequirementTaskCommand(
+            String title,
+            String priority,
+            String sourceType,
+            String sourceId,
+            String sourceUrl,
+            String projectId,
+            String projectKey,
+            String projectName,
+            String repositoryUrl,
+            String repoOwner,
+            String repoName,
+            String baseBranch,
+            String expectedResult,
+            List<String> acceptanceCriteria,
+            List<RequirementMaterialInput> materials,
+            boolean autoExecute,
+            long tokenBudgetOverride
+    ) {
+        this(
+                title, priority, sourceType, sourceId, sourceUrl, projectId, projectKey, projectName,
+                repositoryUrl, repoOwner, repoName, baseBranch, expectedResult, acceptanceCriteria,
+                materials, autoExecute, tokenBudgetOverride, null
+        );
+    }
 
     /** Backward-compatible constructor for callers without a task token-budget override. */
     public CreateRequirementTaskCommand(
@@ -196,6 +247,25 @@ public record CreateRequirementTaskCommand(
         if (tokenBudgetOverride < 0L) {
             throw new IllegalArgumentException("tokenBudgetOverride must not be negative");
         }
+        hostAssertionBundle = copyHostAssertionBundle(hostAssertionBundle);
+    }
+
+    /**
+     * Returns whether this task explicitly requested Host-owned executable assertions.
+     *
+     * @return true when a structured assertion definition was supplied
+     */
+    public boolean hasHostAssertionBundle() {
+        return hostAssertionBundle != null && !hostAssertionBundle.isNull();
+    }
+
+    /**
+     * Returns a defensive copy so caller mutation cannot alter the persisted task input.
+     *
+     * @return structured Host assertion definition or null for legacy text-only tasks
+     */
+    public JsonNode hostAssertionBundle() {
+        return hostAssertionBundle == null ? null : hostAssertionBundle.deepCopy();
     }
 
     /**
@@ -245,5 +315,9 @@ public record CreateRequirementTaskCommand(
 
     private static String safe(String value) {
         return value == null ? "" : value.strip();
+    }
+
+    private static JsonNode copyHostAssertionBundle(JsonNode value) {
+        return value == null || value.isNull() ? null : value.deepCopy();
     }
 }

@@ -3,6 +3,7 @@ package com.wish.rd.engine.requirement;
 import com.wish.rd.engine.agent.model.AgentRole;
 import com.wish.rd.engine.retrieval.DeepRetrievalOrchestrator;
 import com.wish.rd.engine.retrieval.RequirementKnowledgeSearchPort;
+import com.wish.rd.engine.retrieval.iterative.IterativeRetrievalPolicy;
 import com.wish.rd.engine.retrieval.model.RetrievalOutcome;
 import com.wish.rd.rag.retrieval.run.RetrievalRunLifecycle;
 import com.wish.rd.rag.retrieval.run.model.RetrievalConsumerType;
@@ -36,14 +37,31 @@ public final class RequirementContextRetrievalRecorder {
     }
 
     public List<RetrievalOutcome> record(RdRequirementTask task, List<TaskMaterial> materials) {
+        return recordWithPolicy(task, materials, IterativeRetrievalPolicy.disabled());
+    }
+
+    /**
+     * Records requirement and role evidence with an explicit iterative opt-in policy.
+     * The existing {@link #record} method remains single-pass by default.
+     *
+     * @param task requirement task
+     * @param materials task materials
+     * @param policy explicit retrieval policy
+     * @return one outcome for the requirement base and each delivery role
+     */
+    public List<RetrievalOutcome> recordWithPolicy(
+            RdRequirementTask task,
+            List<TaskMaterial> materials,
+            IterativeRetrievalPolicy policy
+    ) {
         if (task == null) {
             return List.of();
         }
         List<TaskMaterial> safeMaterials = materials == null ? List.of() : List.copyOf(materials);
         List<RetrievalOutcome> outcomes = new ArrayList<>();
-        outcomes.add(recordOnly(task, safeMaterials, RetrievalConsumerType.REQUIREMENT_BASE, null));
+        outcomes.add(recordOnly(task, safeMaterials, RetrievalConsumerType.REQUIREMENT_BASE, null, policy));
         for (AgentRole role : AgentRole.requirementDeliveryOrder()) {
-            outcomes.add(recordOnly(task, safeMaterials, RetrievalConsumerType.AGENT_ROLE, role));
+            outcomes.add(recordOnly(task, safeMaterials, RetrievalConsumerType.AGENT_ROLE, role, policy));
         }
         return List.copyOf(outcomes);
     }
@@ -89,6 +107,20 @@ public final class RequirementContextRetrievalRecorder {
             String stageRunId,
             String upstreamClues
     ) {
+        return recordOnly(task, materials, consumerType, role, stageRunId, upstreamClues,
+                IterativeRetrievalPolicy.disabled());
+    }
+
+    /** Runs one stage-bound retrieval with an explicit iterative opt-in policy. */
+    public RetrievalOutcome recordOnly(
+            RdRequirementTask task,
+            List<TaskMaterial> materials,
+            RetrievalConsumerType consumerType,
+            AgentRole role,
+            String stageRunId,
+            String upstreamClues,
+            IterativeRetrievalPolicy policy
+    ) {
         if (task == null) {
             throw new IllegalArgumentException("task is required");
         }
@@ -98,8 +130,18 @@ public final class RequirementContextRetrievalRecorder {
             throw new IllegalArgumentException("role is required for " + consumer);
         }
         List<TaskMaterial> safeMaterials = materials == null ? List.of() : List.copyOf(materials);
-        return orchestrator.retrieve(
-                task, safeMaterials, consumer, role, stageRunId, upstreamClues, DEFAULT_TOP_K
+        return orchestrator.retrieveWithPolicy(
+                task, safeMaterials, consumer, role, stageRunId, upstreamClues, DEFAULT_TOP_K, policy
         );
+    }
+
+    private RetrievalOutcome recordOnly(
+            RdRequirementTask task,
+            List<TaskMaterial> materials,
+            RetrievalConsumerType consumerType,
+            AgentRole role,
+            IterativeRetrievalPolicy policy
+    ) {
+        return recordOnly(task, materials, consumerType, role, "", "", policy);
     }
 }

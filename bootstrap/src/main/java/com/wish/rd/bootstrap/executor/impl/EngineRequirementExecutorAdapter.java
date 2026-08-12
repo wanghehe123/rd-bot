@@ -16,10 +16,11 @@ import com.wish.rd.exec.repair.execution.model.RepairJobCommand;
 import com.wish.rd.exec.repair.runtime.model.AgentRuntimeExecutionRequest;
 import com.wish.rd.exec.repair.runtime.AgentRuntimeRouter;
 import com.wish.rd.bootstrap.oracle.HostOwnedAssertionGate;
-import com.wish.rd.engine.oracle.AssertionEvaluationContext;
-import com.wish.rd.engine.oracle.FileAssertionRunner;
 import com.wish.rd.engine.oracle.HostAssertionOracle;
 import com.wish.rd.engine.oracle.model.AssertionType;
+import com.wish.rd.engine.oracle.model.FrozenAssertionBundle;
+import com.wish.rd.engine.oracle.impl.FileAssertionRunner;
+import com.wish.rd.exec.repair.qa.QaExecutionMetadataKeys;
 import com.wish.rd.exec.repair.result.AgentRoleResultValidator;
 import com.wish.rd.exec.repair.result.QaEvidenceBundleValidator;
 import com.wish.rd.exec.repair.result.model.AgentRoleResultValidation;
@@ -35,7 +36,6 @@ import org.springframework.core.task.TaskRejectedException;
 
 import java.net.URI;
 import java.net.URISyntaxException;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -324,7 +324,7 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
                 );
             }
         }
-        String invalidQaProtocolReason = invalidQaProtocolReason(request, repairResult);
+        String invalidQaProtocolReason = invalidQaProtocolReason(request, repairResult, command);
         if (!invalidQaProtocolReason.isBlank()) {
             return RequirementExecutionResult.failure(
                     request.taskId(),
@@ -415,6 +415,7 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
         String executionTaskId = executionTaskId(request);
         List<com.wish.rd.exec.repair.execution.model.RepairInputAttachment> attachments = inputAttachments(request);
         requireVerifiedCandidatePatchForLocalQa(request, attachments);
+        Map<String, String> context = contextJson(request, attachments);
         return new RepairJobCommand(
                 executionTaskId,
                 executionTaskId,
@@ -426,7 +427,7 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
                 repository.name(),
                 task.baseBranch(),
                 workBranch(task),
-                contextJson(request, attachments),
+                context,
                 policyJson(request, attachments),
                 attachments
         );
@@ -520,7 +521,14 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
         context.put("pullRequestRequired", Boolean.toString(request.pullRequestRequired()));
         context.put("title", task.title());
         context.put("expectedResult", task.expectedResult());
-        context.put("acceptanceCriteriaJson", task.acceptanceCriteriaJson());
+        List<FrozenAssertionBundle> hostAssertionContracts = freezeHostAssertions(request, task);
+        if (hostAssertionContracts.isEmpty()) {
+            context.put("acceptanceCriteriaJson", task.acceptanceCriteriaJson());
+        } else {
+            // The QA agent receives identities only; canonical executable specs remain Host-owned.
+            context.put("acceptanceCriteriaJson", "[]");
+            context.put("hostAssertionContracts", hostAssertionContractsJson(hostAssertionContracts));
+        }
         context.put("roleContextJson", request.roleContextJson());
         context.put("upstreamHandoffManifestJson", handoffManifestForWorkspace(request, attachments));
         if (request.executionProfileSnapshotId() != null
@@ -545,6 +553,36 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
         context.put("materials", materialSummary(request.materials()));
         appendQaProfileContext(context, request, task);
         return Map.copyOf(context);
+    }
+
+    private List<FrozenAssertionBundle> freezeHostAssertions(
+            RequirementExecutionRequest request,
+            RdRequirementTask task
+    ) {
+        if (request == null || task == null || request.role() != AgentRole.QA_AGENT) {
+            return List.of();
+        }
+        return hostOwnedAssertionGate.freeze(
+                request.taskId(),
+                request.stageRunId(),
+                task.hostAssertionBundle()
+        );
+    }
+
+    private String hostAssertionContractsJson(List<FrozenAssertionBundle> contracts) {
+        List<Map<String, Object>> values = (contracts == null ? List.<FrozenAssertionBundle>of() : contracts).stream()
+                .sorted(java.util.Comparator.comparing(FrozenAssertionBundle::scope))
+                .map(bundle -> Map.<String, Object>of(
+                        "scope", bundle.scope(),
+                        "contentHash", bundle.contentHash(),
+                        "version", bundle.version()
+                ))
+                .toList();
+        try {
+            return OBJECT_MAPPER.writeValueAsString(values);
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("Host assertion contracts cannot be serialized", exception);
+        }
     }
 
     private String handoffManifestForWorkspace(
@@ -736,6 +774,7 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
         normalizeRoleResult(request, repairResult, value);
         value.put("pullRequestUrl", "");
         value.put("dockerMetadata", repairResult.dockerMetadataJson());
+        appendHostProviderFallbackSafety(repairResult, value);
         value.put("codePlatformMetadata", Map.of());
         value.put("testMetadata", repairResult.testMetadataJson());
         value.put("riskMetadata", repairResult.riskMetadataJson());
@@ -748,6 +787,26 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
             return OBJECT_MAPPER.writeValueAsString(value);
         } catch (JsonProcessingException exception) {
             return "{\"status\":\"FAILED\",\"errorMessage\":\"failed to serialize execution result\"}";
+        }
+    }
+
+    private static void appendHostProviderFallbackSafety(
+            RepairExecutionResult repairResult,
+            Map<String, Object> value
+    ) {
+        String safetyJson = repairResult.dockerMetadataJson().getOrDefault(
+                "providerFallbackSafety", ""
+        );
+        if (safetyJson.isBlank()) {
+            return;
+        }
+        try {
+            JsonNode safety = OBJECT_MAPPER.readTree(safetyJson);
+            if (safety != null && safety.isObject()) {
+                value.put("hostProviderFallbackSafety", safety);
+            }
+        } catch (JsonProcessingException ignored) {
+            // Malformed executor metadata remains absent and therefore fails closed.
         }
     }
 
@@ -1016,7 +1075,8 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
 
     private String invalidQaProtocolReason(
             RequirementExecutionRequest request,
-            RepairExecutionResult repairResult
+            RepairExecutionResult repairResult,
+            RepairJobCommand command
     ) {
         if (request == null
                 || request.role() != AgentRole.QA_AGENT
@@ -1033,15 +1093,17 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
             AgentRoleResultValidation evidenceValidation = QA_EVIDENCE_BUNDLE_VALIDATOR.validate(
                     json,
                     repairResult.artifacts(),
-                    acceptanceCriteria(request.task())
+                    acceptanceCriteria(request.task()),
+                    candidateChangedFilesFromMetadata(repairResult.dockerMetadataJson())
             );
             if (!evidenceValidation.valid()) {
                 return "QA evidence bundle invalid: " + String.join("; ", evidenceValidation.errors());
             }
-            Map<String, Object> expanded = expandedAgentResult(repairResult.rawResultJson());
             List<String> hostAssertionErrors = hostOwnedAssertionGate.validate(
                     json,
-                    hostAssertionContext(expanded)
+                    request.taskId(),
+                    request.stageRunId(),
+                    command
             );
             return hostAssertionErrors.isEmpty()
                     ? ""
@@ -1051,13 +1113,9 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
         }
     }
 
-    private AssertionEvaluationContext hostAssertionContext(Map<String, Object> expanded) {
-        String workspace = text(expanded.get("hostAssertionWorkspace"));
-        String baseUrl = text(expanded.get("hostAssertionBaseUrl"));
-        Path root = workspace.isBlank()
-                ? Path.of(System.getProperty("java.io.tmpdir", ".")).toAbsolutePath().normalize()
-                : Path.of(workspace).toAbsolutePath().normalize();
-        return new AssertionEvaluationContext(root, baseUrl, Map.of());
+    private static List<String> candidateChangedFilesFromMetadata(Map<String, String> dockerMetadata) {
+        // Fail-closed: only the docker metadata channel is authoritative for docs-only.
+        return QaExecutionMetadataKeys.candidateChangedFilesFrom(dockerMetadata);
     }
 
     private String qaFailureReason(RepairExecutionResult repairResult) {

@@ -1,0 +1,155 @@
+# =============================================================================
+# RD-Bot local profile EXAMPLE (safe to commit)
+# =============================================================================
+#
+# Spring Boot loads application-{profile}.yaml only when that profile is active.
+# There is NO committed application-local.yaml (gitignored). Copy this file first:
+#
+#   cp bootstrap/src/main/resources/application-local.example.yaml \
+#      bootstrap/src/main/resources/application-local.yaml
+#   SPRING_PROFILES_ACTIVE=local \
+#   SPRING_CONFIG_ADDITIONAL_LOCATION=optional:file:./bootstrap/src/main/resources/application-local.yaml \
+#     ./mvnw -pl bootstrap spring-boot:run
+#
+# application-local.yaml is gitignored and excluded from the packaged boot jar.
+# Alternatives:
+#   --spring.config.additional-location=optional:file:./bootstrap/src/main/resources/application-local.yaml
+#   or export SPRING_PROFILES_ACTIVE=local (IDE run configs, shell, etc.)
+#
+# .gitignore ignores application-local.yaml / application-local.yml / *.local —
+# keep secrets and machine-specific overrides only in the copied local file.
+#
+# Two modes:
+#   (A) DEFAULT below — docker-compose infra (Postgres / Redis / MinIO→RustFS contract)
+#       for fuller admin. Start infra first: docker compose up -d
+#       then optionally: ./scripts/bootstrap-db.sh
+#   (B) MEMORY-ONLY block at the bottom (commented) — zero infra UI smoke,
+#       mirrors bootstrap/src/test/resources/application.yaml toggles.
+#
+# =============================================================================
+
+# --- (A) Compose-backed defaults (Postgres + Redis + S3/MinIO) ----------------
+
+spring:
+  datasource:
+    url: jdbc:postgresql://127.0.0.1:5432/rdbot?client_encoding=UTF8
+    username: postgres
+    password: postgres
+  data:
+    redis:
+      host: 127.0.0.1
+      port: 6379
+      # password:   # leave empty unless your Redis requires AUTH
+
+rustfs:
+  url: http://localhost:9000
+  bucket: biz
+  access-key-id: rustfsadmin
+  secret-access-key: rustfsadmin
+
+rd:
+  # Override WishDisk / machine-specific defaults from application.yaml
+  evaluation:
+    coding-benchmark-root: ./qa-runs/coding-benchmark
+    coding-benchmark-prep-root: ./qa-runs/coding-benchmark-prep
+    # coding-benchmark.executor: fake   # optional: container-free control-plane rehearsal
+
+  knowledge:
+    store: postgres
+  storage:
+    mode: s3
+
+  distributed-lock:
+    mode: redisson
+    # mode: local   # use when Redis is down (single-process only)
+
+  repair:
+    queue:
+      mode: redis-stream
+      # mode: memory   # use when Redis is down / UI smoke without streams
+    ticket:
+      provider: mock
+      auto-execute:
+        enabled: false
+    acceptance:
+      enabled: false
+
+  executor:
+    agent-runtime:
+      enabled: false
+    docker:
+      enabled: false
+      git:
+        enabled: false
+    mock:
+      enabled: false
+
+  github:
+    merge-sync:
+      enabled: false
+    code-platform:
+      mode: mock
+
+  ticket:
+    write-back:
+      enabled: true
+      mode: mock
+
+  feishu:
+    im:
+      enabled: false
+      local-listener:
+        enabled: false
+      write-back:
+        enabled: false
+      alert:
+        enabled: false
+    helpdesk:
+      enabled: false
+      write-back:
+        enabled: false
+
+# =============================================================================
+# (B) Memory-only / zero-infra UI smoke — COMMENT OUT block (A) rd.* infra
+#     toggles above (or override) and UNCOMMENT the block below instead.
+#     DataSource is created only when rd.knowledge.store=postgres, so memory
+#     mode does not need Postgres. Also set lock/queue to local/memory.
+# =============================================================================
+#
+# rd:
+#   knowledge:
+#     store: memory
+#   storage:
+#     mode: memory
+#   distributed-lock:
+#     mode: local
+#   repair:
+#     queue:
+#       mode: memory
+#     ticket:
+#       provider: mock
+#       auto-execute:
+#         enabled: false
+#     acceptance:
+#       enabled: false
+#   executor:
+#     agent-runtime:
+#       enabled: false
+#     docker:
+#       enabled: false
+#       git:
+#         enabled: false
+#   github:
+#     merge-sync:
+#       enabled: false
+#     code-platform:
+#       mode: mock
+#   ticket:
+#     write-back:
+#       mode: mock
+#   feishu:
+#     im:
+#       enabled: false
+#       local-listener:
+#         enabled: false
+#

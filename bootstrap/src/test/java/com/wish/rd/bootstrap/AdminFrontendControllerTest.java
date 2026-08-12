@@ -48,7 +48,7 @@ class AdminFrontendControllerTest {
     }
 
     @Test
-    void servesRagentStyleReactAdminRoutesAndAssets() throws Exception {
+    void servesReactAdminRoutesAndAssets() throws Exception {
         for (String route : new String[]{
                 "/admin/dashboard",
                 "/admin/traces",

@@ -1,0 +1,49 @@
+# Postgres schema scripts
+
+Apply these migrations against database `rdbot` after starting local infra.
+
+## Prerequisites
+
+- Postgres **with pgvector** (`CREATE EXTENSION vector` is in `p0_knowledge_productionization.sql`)
+- Recommended: `docker compose up -d` from the repo root (image `pgvector/pgvector:pg16`)
+
+## Apply order
+
+Scripts are applied in **numeric** `pN_` order (then filename). `p10` runs after `p9`; both `p8_*` files run after `p7`.
+
+| Order | File |
+|------:|------|
+| 0 | `p0_knowledge_productionization.sql` |
+| 1 | `p1_multi_agent_orchestration.sql` |
+| 2 | `p2_rag_retrieval_state.sql` |
+| 3 | `p3_task_retry_ai_review.sql` |
+| 4 | `p4_web_evaluation_console.sql` |
+| 5 | `p5_qa_evidence.sql` |
+| 6 | `p6_evaluation_data_quality.sql` |
+| 7 | `p7_project_runtime_profiles.sql` |
+| 8 | `p8_default_qa_v2.sql` |
+| 8 | `p8_pi_agent_runtime.sql` |
+| 9 | `p9_default_qa_v2_gate.sql` |
+| 10 | `p10_skill_hub.sql` |
+
+Skip `README.md` and any non-`.sql` files.
+
+## Bootstrap
+
+```bash
+docker compose up -d
+./scripts/bootstrap-db.sh
+```
+
+Defaults: `localhost:5432`, database `rdbot`, user/password `postgres`/`postgres`.
+
+Overrides: `POSTGRES_URL` (JDBC or `postgresql://…`), or `POSTGRES_HOST` / `POSTGRES_PORT` / `POSTGRES_DB` / `POSTGRES_USER` / `POSTGRES_PASSWORD` (also `POSTGRES_USERNAME`).
+
+## MinIO bucket
+
+`docker compose` includes a one-shot `minio-init` service that creates bucket `biz`. Manual alternative:
+
+```bash
+mc alias set local http://localhost:9000 rustfsadmin rustfsadmin
+mc mb --ignore-existing local/biz
+```

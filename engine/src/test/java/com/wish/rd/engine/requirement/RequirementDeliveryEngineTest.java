@@ -47,6 +47,12 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import com.wish.rd.engine.requirement.model.RequirementDeliveryResult;
 import com.wish.rd.engine.requirement.model.RequirementDeliveryReviewResult;
 import com.wish.rd.engine.requirement.model.RequirementExecutionRequest;
@@ -62,6 +68,7 @@ import com.wish.rd.engine.requirement.publication.RequirementPublicationLedger;
 import com.wish.rd.engine.requirement.publication.impl.InMemoryRequirementPublicationStore;
 import com.wish.rd.engine.requirement.publication.model.RequirementPublication;
 import com.wish.rd.engine.requirement.publication.model.RequirementPublicationStatus;
+import com.wish.rd.engine.provider.model.ProviderFallbackSideEffectSafety;
 
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -199,7 +206,11 @@ class RequirementDeliveryEngineTest {
         assertTrue(captured.get(3).prompt().contains("\"browserValidation\""));
         assertTrue(captured.get(3).prompt().contains("\"scope\": \"CURRENT|REGRESSION\""));
         assertTrue(captured.get(3).prompt().contains("\"evidenceManifestArtifactId\""));
+        assertTrue(captured.get(3).prompt().contains("\"hostAssertionResults\""));
+        assertFalse(captured.get(3).prompt().contains("\"hostAssertionBundle\""));
         assertTrue(captured.get(3).prompt().contains("/work/input/qa-profile.json"));
+        assertTrue(captured.get(3).prompt().contains("docs-only"));
+        assertTrue(captured.get(3).prompt().contains("DOCS_ONLY"));
         assertTrue(captured.get(3).prompt().contains("不得修改 /work/repo 中的跟踪文件"));
         assertTrue(captured.getFirst().prompt().contains("\"decision\""));
         assertTrue(captured.get(1).prompt().contains("\"implementationSteps\""));
@@ -222,8 +233,6 @@ class RequirementDeliveryEngineTest {
                 .findFirst()
                 .orElseThrow();
         assertEquals("claude-code-coding_agent", codingStage.providerName());
-        assertTrue(codingStage.providerAttemptsJson().contains("\"provider\":\"deepseek\""));
-        assertTrue(codingStage.providerAttemptsJson().contains("\"status\":\"FAILED_VALIDATION\""));
         assertTrue(codingStage.providerAttemptsJson().contains("\"provider\":\"claude-code-coding_agent\""));
         assertTrue(codingStage.providerAttemptsJson().contains("\"status\":\"SUCCESS\""));
         assertEquals(List.of(
@@ -331,6 +340,65 @@ class RequirementDeliveryEngineTest {
         assertEquals("https://github.com/example/waimai/pull/99", stored.pullRequestUrl());
         assertEquals(99, stored.pullRequestNumber());
         assertEquals(4, stored.version());
+    }
+
+    @Test
+    void shouldFinalizeConfirmedPublicationThroughAtomicCommitPortOnce() {
+        RagStreamTaskRegistry registry = spy(new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(), new InMemoryRdTaskStatusEventStore(), generator()));
+        InMemoryTaskMaterialStore materialStore = new InMemoryTaskMaterialStore();
+        RdRequirementTask task = createRequirementTask(
+                registry,
+                materialStore,
+                "atomic-publication-finalization-material",
+                "原子发布完成",
+                "已确认 PR 的任务和账本必须经同一提交端口完成",
+                "验证引擎不会在事务端口之外重复提交任务状态。"
+        );
+        RequirementDeliveryEngine engine = happyPathEngineWithCandidatePatch(
+                registry,
+                materialStore,
+                new InMemoryAgentStageRunStore(),
+                new RecordingRequirementPullRequestPublisher()
+        );
+        InMemoryRequirementPublicationStore publicationStore = new InMemoryRequirementPublicationStore();
+        RequirementPublicationLedger ledger = new RequirementPublicationLedger(publicationStore);
+        String candidatePatchSha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        String operationId = RequirementOperationId.of(
+                task.taskId(), "main", "requirement/" + task.taskId(), candidatePatchSha256);
+        AtomicInteger commitPortCalls = new AtomicInteger();
+        engine.setPublicationLedger(ledger);
+        engine.setBranchPublisher(command -> RequirementBranchPublication.success(
+                command.taskId(), "atomic-branch-sha", "{}"));
+        engine.setProviderSideEffectStatusPort(request -> ProviderFallbackSideEffectSafety.explicitCleanAttempt(
+                "test-operation-" + request.stageRunId(),
+                "test-attempt-" + request.stageAttemptNo()
+        ));
+        engine.setPublicationCommitPort(command -> {
+            commitPortCalls.incrementAndGet();
+            assertEquals(operationId, command.operationId());
+            assertEquals(RdTaskStatus.PR_CREATING, command.expectedStatus());
+            assertTrue(command.expectedVersion() > 0L);
+            assertTrue(command.expectedFencingToken() > 0L);
+            RdRequirementTask committed = registry.markRequirementCommittedFenced(
+                    command.taskId(),
+                    command.expectedVersion(),
+                    command.expectedStatus(),
+                    command.expectedFencingToken(),
+                    command.pullRequestUrl(),
+                    command.executionResultJson());
+            ledger.markCommitted(command.operationId());
+            return committed;
+        });
+
+        RequirementDeliveryResult result = engine.submit(task.taskId());
+
+        assertEquals(RdTaskStatus.COMPLETED, result.status(), result.errorMessage());
+        assertEquals(1, commitPortCalls.get());
+        verify(registry, times(1)).markRequirementCommittedFenced(
+                eq(task.taskId()), anyLong(), eq(RdTaskStatus.PR_CREATING), anyLong(), anyString(), anyString());
+        assertEquals(RequirementPublicationStatus.COMMITTED,
+                publicationStore.findByOperationId(operationId).orElseThrow().status());
     }
 
     @Test
@@ -573,7 +641,6 @@ class RequirementDeliveryEngineTest {
                 new RequirementDeliveryReviewer(),
                 new RecordingRequirementPullRequestPublisher()
         );
-
         RequirementDeliveryResult result = engine.submit(task.taskId());
 
         assertEquals(RdTaskStatus.COMPLETED, result.status());
@@ -1280,7 +1347,6 @@ class RequirementDeliveryEngineTest {
                 new RequirementDeliveryReviewer(),
                 new RecordingRequirementPullRequestPublisher()
         );
-
         RequirementDeliveryResult result = engine.submit(task.taskId());
 
         assertEquals(RdTaskStatus.COMPLETED, result.status());
@@ -2154,6 +2220,10 @@ class RequirementDeliveryEngineTest {
                 new RequirementDeliveryReviewer(),
                 new RecordingRequirementPullRequestPublisher()
         );
+        engine.setProviderSideEffectStatusPort(request -> ProviderFallbackSideEffectSafety.explicitCleanAttempt(
+                "test-operation-" + request.stageRunId(),
+                "test-attempt-" + request.stageAttemptNo()
+        ));
 
         RequirementDeliveryResult result = engine.submit(task.taskId());
 
@@ -2324,7 +2394,7 @@ class RequirementDeliveryEngineTest {
         assertTrue(result.resultJson().contains("\"approved\":false"));
         assertTrue(stageRunStore.listByTask(task.taskId()).stream()
                 .allMatch(stage -> stage.status() == AgentStageStatus.SUCCEEDED));
-        assertEquals(4, alertSink.alerts().stream()
+        assertEquals(0, alertSink.alerts().stream()
                 .filter(alert -> alert.type() == AgentWorkflowAlertType.PROVIDER_FALLBACK)
                 .count());
         List<AgentWorkflowAlert> deliveryReviewAlerts = alertSink.alerts().stream()
@@ -2780,7 +2850,7 @@ class RequirementDeliveryEngineTest {
                       },
                       "dockerMetadata": {
                         "provider": "%s",
-                        "providerAttemptsJson": "[{\\"provider\\":\\"deepseek\\",\\"status\\":\\"FAILED_VALIDATION\\"},{\\"provider\\":\\"%s\\",\\"status\\":\\"SUCCESS\\"}]"
+                        "providerAttemptsJson": "[{\\"provider\\":\\"%s\\",\\"status\\":\\"SUCCESS\\"}]"
                       }
                     }
                     """.formatted(providerName, providerName);
@@ -2825,7 +2895,7 @@ class RequirementDeliveryEngineTest {
                       "evidenceManifestArtifactId": "qa-evidence-manifest",
                       "dockerMetadata": {
                         "provider": "%s",
-                        "providerAttemptsJson": "[{\\"provider\\":\\"deepseek\\",\\"status\\":\\"FAILED_VALIDATION\\"},{\\"provider\\":\\"%s\\",\\"status\\":\\"SUCCESS\\"}]"
+                        "providerAttemptsJson": "[{\\"provider\\":\\"%s\\",\\"status\\":\\"SUCCESS\\"}]"
                       }
                     }
                     """.formatted(providerName, providerName);
@@ -2835,7 +2905,7 @@ class RequirementDeliveryEngineTest {
                   "status": "SUCCESS",
                   "dockerMetadata": {
                     "provider": "%s",
-                    "providerAttemptsJson": "[{\\"provider\\":\\"deepseek\\",\\"status\\":\\"FAILED_VALIDATION\\"},{\\"provider\\":\\"%s\\",\\"status\\":\\"SUCCESS\\"}]"
+                    "providerAttemptsJson": "[{\\"provider\\":\\"%s\\",\\"status\\":\\"SUCCESS\\"}]"
                   }
                 }
                 """.formatted(providerName, providerName);
@@ -2945,7 +3015,7 @@ class RequirementDeliveryEngineTest {
                   "prBody": "## Summary\\n- implement requirement",
                   "dockerMetadata": {
                     "provider": "%s",
-                    "providerAttemptsJson": "[{\\"provider\\":\\"deepseek\\",\\"status\\":\\"FAILED_VALIDATION\\"},{\\"provider\\":\\"%s\\",\\"status\\":\\"SUCCESS\\"}]"
+                    "providerAttemptsJson": "[{\\"provider\\":\\"%s\\",\\"status\\":\\"SUCCESS\\"}]"
                   }
                 }
                 """.formatted(providerName, providerName);

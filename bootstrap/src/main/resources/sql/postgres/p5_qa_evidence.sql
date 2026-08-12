@@ -36,3 +36,16 @@ CREATE INDEX IF NOT EXISTS idx_rd_qa_evidence_task
 CREATE INDEX IF NOT EXISTS idx_rd_qa_evidence_expiry
     ON rd_qa_evidence_objects (expires_at)
     WHERE expires_at IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS rd_host_assertion_bundles (
+    task_id BIGINT NOT NULL,
+    stage_run_id BIGINT NOT NULL,
+    scope VARCHAR(16) NOT NULL,
+    canonical_specs_json JSONB NOT NULL,
+    content_hash TEXT NOT NULL,
+    version BIGINT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (task_id, stage_run_id, scope),
+    CONSTRAINT chk_rd_host_assertion_bundle_scope CHECK (scope IN ('CURRENT', 'REGRESSION')),
+    CONSTRAINT chk_rd_host_assertion_bundle_version CHECK (version > 0)
+);

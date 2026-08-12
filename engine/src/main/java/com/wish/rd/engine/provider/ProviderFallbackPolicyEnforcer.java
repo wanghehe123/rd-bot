@@ -1,6 +1,11 @@
 package com.wish.rd.engine.provider;
 
 import com.wish.rd.engine.agent.model.AgentRole;
+import com.wish.rd.engine.provider.model.ProviderCapabilityProfile;
+import com.wish.rd.engine.provider.model.ProviderFallbackDecision;
+import com.wish.rd.engine.provider.model.ProviderFallbackEvaluation;
+import com.wish.rd.engine.provider.model.ProviderFallbackSideEffectSafety;
+import com.wish.rd.engine.provider.model.ProviderWorkRisk;
 
 import java.util.Objects;
 
@@ -89,11 +94,32 @@ public final class ProviderFallbackPolicyEnforcer {
             String activeProvider,
             ProviderFallbackSideEffectSafety sideEffectSafety
     ) {
+        return evaluateWithReason(
+                role,
+                failedProvider,
+                failedStatus,
+                activeProvider,
+                sideEffectSafety,
+                ProviderCapabilityCatalog.workRiskForRole(role)
+        );
+    }
+
+    /** Evaluates a fallback using a Host-classified task risk override. */
+    public ProviderFallbackEvaluation evaluateWithReason(
+            AgentRole role,
+            String failedProvider,
+            String failedStatus,
+            String activeProvider,
+            ProviderFallbackSideEffectSafety sideEffectSafety,
+            ProviderWorkRisk workRisk
+    ) {
         ProviderCapabilityProfile primary = catalog.resolve(failedProvider);
         ProviderCapabilityProfile fallback = catalog.resolve(activeProvider);
-        ProviderWorkRisk workRisk = ProviderCapabilityCatalog.workRiskForRole(role);
+        ProviderWorkRisk effectiveRisk = workRisk == null
+                ? ProviderCapabilityCatalog.workRiskForRole(role)
+                : workRisk;
         ProviderCapabilityProfile.ProviderFailureClass failureClass =
                 ProviderCapabilityProfile.parseFailure(failedStatus);
-        return gate.evaluate(primary, fallback, workRisk, failureClass, sideEffectSafety);
+        return gate.evaluate(primary, fallback, effectiveRisk, failureClass, sideEffectSafety);
     }
 }

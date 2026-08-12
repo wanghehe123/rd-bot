@@ -1,8 +1,10 @@
 package com.wish.rd.bootstrap.oracle;
 
-import com.wish.rd.engine.oracle.AssertionEvaluationContext;
-import com.wish.rd.engine.oracle.AssertionOutcome;
-import com.wish.rd.engine.oracle.AssertionResult;
+import com.wish.rd.bootstrap.oracle.impl.JdbcSqlExistsProbe;
+import com.wish.rd.bootstrap.oracle.impl.SqlRowExistsAssertionRunner;
+import com.wish.rd.engine.oracle.model.AssertionEvaluationContext;
+import com.wish.rd.engine.oracle.model.AssertionOutcome;
+import com.wish.rd.engine.oracle.model.AssertionResult;
 import com.wish.rd.engine.oracle.model.AssertionSpec;
 import com.wish.rd.engine.oracle.model.AssertionType;
 import org.junit.jupiter.api.Test;
@@ -12,6 +14,7 @@ import javax.sql.DataSource;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.ResultSet;
+import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.Duration;
@@ -24,6 +27,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -35,7 +39,8 @@ class JdbcSqlExistsProbeTest {
     @Test
     void shouldReturnTrueWhenResultSetHasRow() throws Exception {
         ResultSet resultSet = mock(ResultSet.class);
-        when(resultSet.next()).thenReturn(true);
+        stubSingleColumnSnapshot(resultSet);
+        when(resultSet.next()).thenReturn(true, false);
         Statement statement = mock(Statement.class);
         when(statement.executeQuery(anyString())).thenReturn(resultSet);
         Connection connection = mock(Connection.class);
@@ -53,6 +58,7 @@ class JdbcSqlExistsProbeTest {
     @Test
     void shouldReturnFalseWhenResultSetEmpty() throws Exception {
         ResultSet resultSet = mock(ResultSet.class);
+        stubSingleColumnSnapshot(resultSet);
         when(resultSet.next()).thenReturn(false);
         Statement statement = mock(Statement.class);
         when(statement.executeQuery(anyString())).thenReturn(resultSet);
@@ -74,13 +80,14 @@ class JdbcSqlExistsProbeTest {
                 SQLException.class,
                 () -> new JdbcSqlExistsProbe(dataSource).exists("SELECT 1", Duration.ofSeconds(1))
         );
-        assertTrue(thrown.getMessage().contains("SQL_ROW_EXISTS"));
+        assertTrue(thrown.getMessage().contains("Host SQL probe failed"));
     }
 
     @Test
     void shouldDriveSqlRowExistsRunnerEndToEnd() throws Exception {
         AtomicInteger calls = new AtomicInteger();
         ResultSet resultSet = mock(ResultSet.class);
+        stubSingleColumnSnapshot(resultSet);
         when(resultSet.next()).thenAnswer(invocation -> calls.getAndIncrement() == 0);
         Statement statement = mock(Statement.class);
         when(statement.executeQuery(anyString())).thenReturn(resultSet);
@@ -110,5 +117,50 @@ class JdbcSqlExistsProbeTest {
         );
 
         assertEquals(AssertionOutcome.PASSED, result.outcome());
+    }
+
+    @Test
+    void shouldRejectCommentBeforeOpeningDatabaseConnection() throws Exception {
+        DataSource dataSource = mock(DataSource.class);
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new JdbcSqlExistsProbe(dataSource).exists("SELECT 1 -- hidden statement", Duration.ofSeconds(1))
+        );
+
+        verify(dataSource, never()).getConnection();
+    }
+
+    @Test
+    void shouldUseReadOnlyTransactionAndControlledSearchPath() throws Exception {
+        ResultSet resultSet = mock(ResultSet.class);
+        stubSingleColumnSnapshot(resultSet);
+        when(resultSet.next()).thenReturn(true, false);
+        Statement statement = mock(Statement.class);
+        when(statement.executeQuery(anyString())).thenReturn(resultSet);
+        Connection connection = mock(Connection.class);
+        when(connection.createStatement()).thenReturn(statement);
+        when(connection.getAutoCommit()).thenReturn(true);
+        when(connection.isReadOnly()).thenReturn(false);
+        DataSource dataSource = mock(DataSource.class);
+        when(dataSource.getConnection()).thenReturn(connection);
+
+        assertTrue(new JdbcSqlExistsProbe(dataSource).exists("SELECT 1 FROM public.rd_tasks", Duration.ofSeconds(1)));
+
+        verify(connection).setAutoCommit(false);
+        verify(connection).setReadOnly(true);
+        verify(statement).execute("SET TRANSACTION READ ONLY");
+        verify(statement).execute("SET LOCAL search_path TO public");
+        verify(connection).rollback();
+        verify(connection).setReadOnly(false);
+        verify(connection).setAutoCommit(true);
+    }
+
+    private static void stubSingleColumnSnapshot(ResultSet resultSet) throws SQLException {
+        ResultSetMetaData metadata = mock(ResultSetMetaData.class);
+        when(resultSet.getMetaData()).thenReturn(metadata);
+        when(metadata.getColumnCount()).thenReturn(1);
+        when(metadata.getColumnLabel(1)).thenReturn("value");
+        when(resultSet.getObject(1)).thenReturn(1);
     }
 }

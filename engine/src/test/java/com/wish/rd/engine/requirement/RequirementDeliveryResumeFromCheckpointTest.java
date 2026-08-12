@@ -15,13 +15,13 @@ import com.wish.rd.engine.requirement.model.RequirementDeliveryReviewResult;
 import com.wish.rd.engine.requirement.model.RequirementPullRequestPublication;
 import com.wish.rd.engine.requirement.publication.RequirementOperationId;
 import com.wish.rd.engine.requirement.publication.RequirementPublicationLedger;
-import com.wish.rd.engine.requirement.publication.RequirementPublicationPrepareCommand;
 import com.wish.rd.engine.requirement.publication.RequirementPublicationReconcilePort;
 import com.wish.rd.engine.requirement.publication.RequirementPublicationReconcilePort.BranchHeadQuery;
 import com.wish.rd.engine.requirement.publication.RequirementPublicationReconcilePort.MatchedOpenPullRequest;
 import com.wish.rd.engine.requirement.publication.RequirementPublicationReconcilePort.ReconcileQuery;
 import com.wish.rd.engine.requirement.publication.impl.InMemoryRequirementPublicationStore;
 import com.wish.rd.engine.requirement.publication.model.RequirementPublication;
+import com.wish.rd.engine.requirement.publication.model.RequirementPublicationPrepareCommand;
 import com.wish.rd.engine.requirement.publication.model.RequirementPublicationStatus;
 import com.wish.rd.engine.requirement.review.AiDeliveryReviewEngine;
 import com.wish.rd.engine.requirement.review.AiReviewModelPort;
@@ -195,7 +195,7 @@ class RequirementDeliveryResumeFromCheckpointTest {
     }
 
     @Test
-    void resumePullRequestPublicationReusesExistingPreparedPublication() {
+    void resumePullRequestPublicationFinalizesExistingPreparedPublicationAfterBranchConfirmation() {
         AtomicLong now = new AtomicLong(1_784_000_000_000L);
         SnowflakeIdGenerator ids = new SnowflakeIdGenerator(1, 1, now::getAndIncrement);
         InMemoryRdTaskStore taskStore = new InMemoryRdTaskStore();
@@ -213,6 +213,7 @@ class RequirementDeliveryResumeFromCheckpointTest {
         RequirementPublication seeded = ledger.prepare(new RequirementPublicationPrepareCommand(
                 operationId, task.taskId(), "stage-seed", task.baseBranch(), workBranch, patchSha));
         AtomicInteger publisherCalls = new AtomicInteger();
+        AtomicInteger branchCalls = new AtomicInteger();
         RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
                 registry, materials,
                 request -> {
@@ -237,15 +238,20 @@ class RequirementDeliveryResumeFromCheckpointTest {
                 TaskRetryCheckpointStatus.DISPATCHED, "", 110L);
         engine.setTaskRetryCheckpointStore(checkpoints);
         engine.setPublicationLedger(ledger);
+        engine.setBranchPublisher(command -> {
+            branchCalls.incrementAndGet();
+            return RequirementBranchPublication.success(command.taskId(), "resume-branch-sha", "{}");
+        });
 
         RequirementDeliveryResult result = engine.submit(task.taskId());
 
         assertEquals(RdTaskStatus.COMPLETED, result.status());
+        assertEquals(1, branchCalls.get());
         assertEquals(1, publisherCalls.get());
         RequirementPublication after = publicationStore.findByOperationId(operationId).orElseThrow();
         assertEquals(seeded.id(), after.id());
-        assertEquals(1, after.version());
-        assertEquals(RequirementPublicationStatus.PREPARED, after.status());
+        assertEquals(4, after.version());
+        assertEquals(RequirementPublicationStatus.COMMITTED, after.status());
     }
 
     @Test
@@ -420,7 +426,8 @@ class RequirementDeliveryResumeFromCheckpointTest {
             ) {
                 branchHeadCalls.incrementAndGet();
                 assertEquals(workBranch, query.workBranch());
-                return new RequirementPublicationReconcilePort.RemoteBranchHead.Present("remote-head-121");
+                return new RequirementPublicationReconcilePort.RemoteBranchHead.Present(
+                        "remote-head-121", operationId, patchSha);
             }
         });
         InMemoryTaskRetryCheckpointStore checkpoints = new InMemoryTaskRetryCheckpointStore();
@@ -624,10 +631,13 @@ class RequirementDeliveryResumeFromCheckpointTest {
             }
 
             @Override
-            public Optional<String> findRemoteBranchHead(BranchHeadQuery query) {
+            public RequirementPublicationReconcilePort.RemoteBranchHead resolveRemoteBranchHead(
+                    BranchHeadQuery query
+            ) {
                 branchHeadCalls.incrementAndGet();
                 assertEquals(workBranch, query.workBranch());
-                return Optional.of("cafebabe");
+                return new RequirementPublicationReconcilePort.RemoteBranchHead.Present(
+                        "cafebabe", operationId, patchSha);
             }
         });
         InMemoryTaskRetryCheckpointStore checkpoints = new InMemoryTaskRetryCheckpointStore();

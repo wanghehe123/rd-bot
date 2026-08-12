@@ -91,7 +91,7 @@ class MultiAgentRequirementDeliveryRealSmokePayloadTest {
                         entry("rd.multi-agent.smoke.environment-id", "local-machine"),
                         entry("rd.multi-agent.smoke.executed-by", "payload-test"),
                         entry("rd.multi-agent.smoke.base-url", "http://127.0.0.1:18080"),
-                        entry("rd.multi-agent.smoke.postgres-url", "jdbc:postgresql://127.0.0.1:5432/ragent"),
+                        entry("rd.multi-agent.smoke.postgres-url", "jdbc:postgresql://127.0.0.1:5432/rdbot"),
                         entry("rd.multi-agent.smoke.postgres-user", "postgres"),
                         entry("rd.multi-agent.smoke.postgres-password", "postgres"),
                         entry("rd.multi-agent.smoke.repository-url",

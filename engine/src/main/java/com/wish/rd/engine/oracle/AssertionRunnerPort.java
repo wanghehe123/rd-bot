@@ -1,6 +1,8 @@
 package com.wish.rd.engine.oracle;
 
 import com.wish.rd.engine.oracle.model.AssertionSpec;
+import com.wish.rd.engine.oracle.model.AssertionEvaluationContext;
+import com.wish.rd.engine.oracle.model.AssertionResult;
 
 /**
  * Executes one Host-owned assertion against a prepared evaluation context.

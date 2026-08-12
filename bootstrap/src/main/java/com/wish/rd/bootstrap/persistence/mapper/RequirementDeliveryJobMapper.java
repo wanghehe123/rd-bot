@@ -91,8 +91,12 @@ public interface RequirementDeliveryJobMapper extends BaseMapper<RequirementDeli
             WHERE (status IN ('PENDING', 'FAILED_RETRYABLE') AND attempt_no < max_attempts)
                OR (status = 'RUNNING' AND lease_until <= #{now})
             ORDER BY updated_at, id
+            LIMIT #{limit}
             """)
-    List<RequirementDeliveryJobRow> recoverable(@Param("now") OffsetDateTime now);
+    List<RequirementDeliveryJobRow> recoverable(
+            @Param("now") OffsetDateTime now,
+            @Param("limit") int limit
+    );
 
     @Select("""
             SELECT * FROM rd_requirement_delivery_jobs

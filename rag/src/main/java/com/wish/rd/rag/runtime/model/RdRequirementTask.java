@@ -1,5 +1,7 @@
 package com.wish.rd.rag.runtime.model;
 
+import com.fasterxml.jackson.databind.JsonNode;
+
 import java.util.List;
 
 /**
@@ -34,6 +36,9 @@ import java.util.List;
  * @param updateTimeEpochMillis 更新时间
  * @param paused                是否暂停
  * @param tokenBudgetOverride   任务 token 预算覆盖额度，0 表示使用项目默认或不限制
+ * @param version               乐观并发版本
+ * @param fencingToken          单调 fencing token，拒绝租约失效后的旧写者
+ * @param hostAssertionBundle   Host-owned structured assertion input; null keeps legacy text-only acceptance
  */
 public record RdRequirementTask(
         String taskId,
@@ -61,7 +66,10 @@ public record RdRequirementTask(
         long createTimeEpochMillis,
         long updateTimeEpochMillis,
         boolean paused,
-        long tokenBudgetOverride
+        long tokenBudgetOverride,
+        long version,
+        long fencingToken,
+        JsonNode hostAssertionBundle
 ) implements RdTask {
 
     public static final String TASK_TYPE = "REQUIREMENT";
@@ -96,6 +104,80 @@ public record RdRequirementTask(
         if (tokenBudgetOverride < 0L) {
             throw new IllegalArgumentException("tokenBudgetOverride must not be negative");
         }
+        version = Math.max(0L, version);
+        fencingToken = Math.max(0L, fencingToken);
+        hostAssertionBundle = copyHostAssertionBundle(hostAssertionBundle);
+    }
+
+    /**
+     * Backward-compatible constructor for snapshots that predate structured Host assertions.
+     *
+     * @param taskId task identifier
+     * @param taskType task type
+     * @param sourceType source type
+     * @param sourceId source identifier
+     * @param sourceUrl source URL
+     * @param priority task priority
+     * @param status task status
+     * @param title task title
+     * @param projectId project identifier
+     * @param projectKey project key
+     * @param projectName project name
+     * @param repositoryUrl repository URL
+     * @param repoOwner repository owner
+     * @param repoName repository name
+     * @param baseBranch base branch
+     * @param workBranch work branch
+     * @param expectedResult expected result
+     * @param acceptanceCriteriaJson human-readable acceptance criteria JSON
+     * @param promptSnapshot prompt snapshot
+     * @param executionResultJson execution result JSON
+     * @param pullRequestUrl pull request URL
+     * @param errorMessage error message
+     * @param createTimeEpochMillis creation time
+     * @param updateTimeEpochMillis update time
+     * @param paused paused marker
+     * @param tokenBudgetOverride token budget override
+     * @param version optimistic version
+     * @param fencingToken fencing token
+     */
+    public RdRequirementTask(
+            String taskId,
+            String taskType,
+            String sourceType,
+            String sourceId,
+            String sourceUrl,
+            String priority,
+            RdTaskStatus status,
+            String title,
+            String projectId,
+            String projectKey,
+            String projectName,
+            String repositoryUrl,
+            String repoOwner,
+            String repoName,
+            String baseBranch,
+            String workBranch,
+            String expectedResult,
+            String acceptanceCriteriaJson,
+            String promptSnapshot,
+            String executionResultJson,
+            String pullRequestUrl,
+            String errorMessage,
+            long createTimeEpochMillis,
+            long updateTimeEpochMillis,
+            boolean paused,
+            long tokenBudgetOverride,
+            long version,
+            long fencingToken
+    ) {
+        this(
+                taskId, taskType, sourceType, sourceId, sourceUrl, priority, status, title,
+                projectId, projectKey, projectName, repositoryUrl, repoOwner, repoName,
+                baseBranch, workBranch, expectedResult, acceptanceCriteriaJson, promptSnapshot,
+                executionResultJson, pullRequestUrl, errorMessage, createTimeEpochMillis,
+                updateTimeEpochMillis, paused, tokenBudgetOverride, version, fencingToken, null
+        );
     }
 
     /** Backward-compatible constructor for persisted task snapshots without a token override. */
@@ -130,7 +212,75 @@ public record RdRequirementTask(
                 taskId, taskType, sourceType, sourceId, sourceUrl, priority, status, title,
                 projectId, projectKey, projectName, repositoryUrl, repoOwner, repoName, baseBranch, workBranch,
                 expectedResult, acceptanceCriteriaJson, promptSnapshot, executionResultJson, pullRequestUrl,
-                errorMessage, createTimeEpochMillis, updateTimeEpochMillis, paused, 0L
+                errorMessage, createTimeEpochMillis, updateTimeEpochMillis, paused, 0L, 0L, 0L
+        );
+    }
+
+    /**
+     * Backward-compatible constructor for callers that provide project metadata and a token budget
+     * but predate task version and fencing metadata.
+     *
+     * @param taskId task identifier
+     * @param taskType task type
+     * @param sourceType source type
+     * @param sourceId source identifier
+     * @param sourceUrl source URL
+     * @param priority task priority
+     * @param status task status
+     * @param title task title
+     * @param projectId project identifier
+     * @param projectKey project key
+     * @param projectName project name
+     * @param repositoryUrl repository URL
+     * @param repoOwner repository owner
+     * @param repoName repository name
+     * @param baseBranch base branch
+     * @param workBranch work branch
+     * @param expectedResult expected result
+     * @param acceptanceCriteriaJson acceptance criteria JSON
+     * @param promptSnapshot prompt snapshot
+     * @param executionResultJson execution result JSON
+     * @param pullRequestUrl pull request URL
+     * @param errorMessage error message
+     * @param createTimeEpochMillis creation timestamp
+     * @param updateTimeEpochMillis update timestamp
+     * @param paused paused marker
+     * @param tokenBudgetOverride token budget override
+     */
+    public RdRequirementTask(
+            String taskId,
+            String taskType,
+            String sourceType,
+            String sourceId,
+            String sourceUrl,
+            String priority,
+            RdTaskStatus status,
+            String title,
+            String projectId,
+            String projectKey,
+            String projectName,
+            String repositoryUrl,
+            String repoOwner,
+            String repoName,
+            String baseBranch,
+            String workBranch,
+            String expectedResult,
+            String acceptanceCriteriaJson,
+            String promptSnapshot,
+            String executionResultJson,
+            String pullRequestUrl,
+            String errorMessage,
+            long createTimeEpochMillis,
+            long updateTimeEpochMillis,
+            boolean paused,
+            long tokenBudgetOverride
+    ) {
+        this(
+                taskId, taskType, sourceType, sourceId, sourceUrl, priority, status, title,
+                projectId, projectKey, projectName, repositoryUrl, repoOwner, repoName,
+                baseBranch, workBranch, expectedResult, acceptanceCriteriaJson, promptSnapshot,
+                executionResultJson, pullRequestUrl, errorMessage, createTimeEpochMillis,
+                updateTimeEpochMillis, paused, tokenBudgetOverride, 0L, 0L
         );
     }
 
@@ -184,6 +334,8 @@ public record RdRequirementTask(
                 createTimeEpochMillis,
                 updateTimeEpochMillis,
                 paused,
+                0L,
+                0L,
                 0L
         );
     }
@@ -230,7 +382,10 @@ public record RdRequirementTask(
                 createTimeEpochMillis,
                 createTimeEpochMillis,
                 false,
-                safeCommand.tokenBudgetOverride()
+                safeCommand.tokenBudgetOverride(),
+                0L,
+                0L,
+                safeCommand.hostAssertionBundle()
         );
     }
 
@@ -268,7 +423,10 @@ public record RdRequirementTask(
                 createTimeEpochMillis,
                 updateTimeEpochMillis,
                 newPaused,
-                tokenBudgetOverride
+                tokenBudgetOverride,
+                version,
+                fencingToken,
+                hostAssertionBundle
         );
     }
 
@@ -317,7 +475,56 @@ public record RdRequirementTask(
                 createTimeEpochMillis,
                 updateTimeEpochMillis,
                 paused,
-                tokenBudgetOverride
+                tokenBudgetOverride,
+                version,
+                fencingToken,
+                hostAssertionBundle
+        );
+    }
+
+    /**
+     * 返回替换管理台可编辑字段后的新快照，保留项目、验收标准、运行状态及并发元数据。
+     *
+     * @param newTitle 新展示标题，空值保留原值
+     * @param newPriority 新优先级，空值保留原值
+     * @param updateTimeEpochMillis 更新时间
+     * @return 编辑后的需求任务快照
+     */
+    public RdRequirementTask withEditedFields(
+            String newTitle,
+            String newPriority,
+            long updateTimeEpochMillis
+    ) {
+        return new RdRequirementTask(
+                taskId,
+                taskType,
+                sourceType,
+                sourceId,
+                sourceUrl,
+                newPriority == null || newPriority.isBlank() ? priority : newPriority.strip().toUpperCase(),
+                status,
+                newTitle == null || newTitle.isBlank() ? title : newTitle.strip(),
+                projectId,
+                projectKey,
+                projectName,
+                repositoryUrl,
+                repoOwner,
+                repoName,
+                baseBranch,
+                workBranch,
+                expectedResult,
+                acceptanceCriteriaJson,
+                promptSnapshot,
+                executionResultJson,
+                pullRequestUrl,
+                errorMessage,
+                createTimeEpochMillis,
+                updateTimeEpochMillis,
+                paused,
+                tokenBudgetOverride,
+                version,
+                fencingToken,
+                hostAssertionBundle
         );
     }
 
@@ -354,8 +561,47 @@ public record RdRequirementTask(
                 createTimeEpochMillis,
                 updateTimeEpochMillis,
                 paused,
-                tokenBudgetOverride
+                tokenBudgetOverride,
+                version,
+                fencingToken,
+                hostAssertionBundle
         );
+    }
+
+    /**
+     * Returns a snapshot carrying persistence-layer concurrency metadata.
+     *
+     * @param newVersion new optimistic version
+     * @param newFencingToken new fencing token
+     * @return snapshot with updated concurrency metadata
+     */
+    public RdRequirementTask withConcurrency(long newVersion, long newFencingToken) {
+        return new RdRequirementTask(
+                taskId, taskType, sourceType, sourceId, sourceUrl, priority, status, title,
+                projectId, projectKey, projectName, repositoryUrl, repoOwner, repoName,
+                baseBranch, workBranch, expectedResult, acceptanceCriteriaJson, promptSnapshot,
+                executionResultJson, pullRequestUrl, errorMessage, createTimeEpochMillis,
+                updateTimeEpochMillis, paused, tokenBudgetOverride, newVersion, newFencingToken,
+                hostAssertionBundle
+        );
+    }
+
+    /**
+     * Returns whether this requirement has an explicit Host assertion contract input.
+     *
+     * @return true when structured assertion input was supplied at task creation
+     */
+    public boolean hasHostAssertionBundle() {
+        return hostAssertionBundle != null && !hostAssertionBundle.isNull();
+    }
+
+    /**
+     * Returns a defensive structured-input copy so callers cannot mutate task state in place.
+     *
+     * @return Host assertion definition or null for legacy text-only tasks
+     */
+    public JsonNode hostAssertionBundle() {
+        return hostAssertionBundle == null ? null : hostAssertionBundle.deepCopy();
     }
 
     private static String normalizePriority(String value) {
@@ -390,5 +636,9 @@ public record RdRequirementTask(
 
     private static String safe(String value) {
         return value == null ? "" : value.strip();
+    }
+
+    private static JsonNode copyHostAssertionBundle(JsonNode value) {
+        return value == null || value.isNull() ? null : value.deepCopy();
     }
 }

@@ -9,6 +9,7 @@ import com.wish.rd.exec.repair.alert.model.RepairAlert;
 import com.wish.rd.exec.repair.alert.RepairAlertSinkPort;
 import com.wish.rd.exec.repair.alert.model.RepairAlertType;
 import com.wish.rd.exec.repair.alert.RepairExecutionWatchdog;
+import com.wish.rd.exec.repair.alert.BudgetCurrencyConverter;
 import com.wish.rd.exec.repair.execution.model.RepairArtifact;
 import com.wish.rd.exec.repair.execution.model.RepairArtifactType;
 import com.wish.rd.exec.repair.execution.model.RepairExecutionResult;
@@ -17,6 +18,8 @@ import com.wish.rd.exec.repair.execution.model.RepairJobCommand;
 import com.wish.rd.exec.repair.model.ModelCircuitBreakerPolicy;
 import com.wish.rd.exec.repair.model.ModelHealthState;
 import com.wish.rd.exec.repair.health.ModelHealthStore;
+import com.wish.rd.exec.repair.health.impl.InMemoryModelHealthStateStore;
+import com.wish.rd.exec.repair.provider.ProviderFallbackPreflightPort;
 import com.wish.rd.exec.repair.result.StructuredResultValidator;
 import com.wish.rd.exec.repair.security.model.ExecutionAllowlistPolicy;
 import org.junit.jupiter.api.Test;
@@ -32,6 +35,11 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -862,7 +870,7 @@ class DockerClaudeCodeExecutorTest {
     }
 
     @Test
-    void shouldFallbackToNextProviderWhenAttemptFailsValidation() {
+    void shouldFallbackToNextProviderWhenAttemptFailsValidation() throws Exception {
         MultiAttemptRunner runner = new MultiAttemptRunner(List.of(
                 Attempt.missingResult(),
                 Attempt.success()
@@ -873,19 +881,54 @@ class DockerClaudeCodeExecutorTest {
                 List.of(
                         provider("deepseek", Map.of("ANTHROPIC_BASE_URL", "https://api.deepseek.com/anthropic")),
                         provider("anthropic", Map.of("ANTHROPIC_API_KEY", ""))
-                )
+                ),
+                new ModelHealthStore(ModelCircuitBreakerPolicy.disabled()),
+                AuthEnvironmentResolverForTests.missing(),
+                request -> ProviderFallbackPreflightPort.Decision.allow("clean Host attempt")
         );
 
-        RepairExecutionResult result = executor.execute(command());
+        RepairExecutionResult result = executor.execute(command(
+                "task-1001",
+                Map.of("repositoryPublishRequired", "false"),
+                Map.of(
+                        "workflowTaskId", "task-1001",
+                        "stageRunId", "stage-coding-1",
+                        "agentRole", "CODING_AGENT"
+                )
+        ));
 
         assertEquals(RepairExecutionStatus.SUCCESS, result.status());
         assertEquals(2, runner.requests().size());
         assertEquals("deepseek", runner.requests().get(0).env().get("RD_CLAUDE_PROVIDER_NAME"));
         assertEquals("anthropic", runner.requests().get(1).env().get("RD_CLAUDE_PROVIDER_NAME"));
+        Path firstRepoMount = hostMountFor(runner.requests().get(0), "/work/repo");
+        Path fallbackRepoMount = hostMountFor(runner.requests().get(1), "/work/repo");
+        assertFalse(firstRepoMount.equals(fallbackRepoMount),
+                "a provider switch must use a distinct repository workspace");
+        assertTrue(fallbackRepoMount.toString().contains("provider-attempts"));
         assertEquals("anthropic", result.dockerMetadataJson().get("provider"));
-        assertTrue(result.dockerMetadataJson().get("providerAttemptsJson").contains("\"deepseek\""));
-        assertTrue(result.dockerMetadataJson().get("providerAttemptsJson").contains("\"FAILED_VALIDATION\""));
-        assertTrue(result.dockerMetadataJson().get("providerAttemptsJson").contains("\"anthropic\""));
+        JsonNode providerAttempts = OBJECT_MAPPER.readTree(
+                result.dockerMetadataJson().get("providerAttemptsJson"));
+        assertEquals(2, providerAttempts.size());
+        assertEquals("deepseek", providerAttempts.get(0).path("provider").asText());
+        assertEquals("FAILED_VALIDATION", providerAttempts.get(0).path("status").asText());
+        assertEquals("anthropic", providerAttempts.get(1).path("provider").asText());
+        assertFalse(providerAttempts.get(0).path("attemptId").asText().isBlank());
+        assertFalse(providerAttempts.get(1).path("attemptId").asText().isBlank());
+        assertFalse(providerAttempts.get(0).path("attemptId").asText()
+                .equals(providerAttempts.get(1).path("attemptId").asText()));
+        Path fallbackAttemptManifest = fallbackRepoMount.getParent().resolve("provider-attempt.json");
+        assertTrue(Files.isRegularFile(fallbackAttemptManifest));
+        JsonNode persistedAttempt = OBJECT_MAPPER.readTree(fallbackAttemptManifest.toFile());
+        assertEquals(providerAttempts.get(1).path("attemptId").asText(),
+                persistedAttempt.path("attemptId").asText());
+        assertEquals("anthropic", persistedAttempt.path("provider").asText());
+        assertEquals("stage-coding-1", persistedAttempt.path("stageRunId").asText());
+        JsonNode fallbackSafety = OBJECT_MAPPER.readTree(
+                result.dockerMetadataJson().get("providerFallbackSafety"));
+        assertEquals("EXPLICIT_CLEAN_ATTEMPT", fallbackSafety.path("state").asText());
+        assertEquals(providerAttempts.get(1).path("attemptId").asText(),
+                fallbackSafety.path("attemptId").asText());
     }
 
     @Test
@@ -907,6 +950,79 @@ class DockerClaudeCodeExecutorTest {
         assertEquals("Need repository access", result.summary());
         assertEquals(1, runner.requests().size());
         assertEquals("deepseek", result.dockerMetadataJson().get("provider"));
+    }
+
+    @Test
+    void shouldBlockCodingFallbackBeforeInvokingAlternateProviderWhenHostPreflightDeniesIt() {
+        MultiAttemptRunner runner = new MultiAttemptRunner(List.of(
+                Attempt.missingResult(),
+                Attempt.success()
+        ));
+        DockerClaudeCodeExecutor executor = executor(
+                runner,
+                COMMAND,
+                List.of(
+                        provider("deepseek", Map.of()),
+                        provider("anthropic", Map.of())
+                ),
+                new ModelHealthStore(ModelCircuitBreakerPolicy.disabled()),
+                AuthEnvironmentResolverForTests.missing(),
+                request -> ProviderFallbackPreflightPort.Decision.block(
+                        "publication state is UNKNOWN_REMOTE_RESULT")
+        );
+
+        RepairExecutionResult result = executor.execute(command(
+                "task-provider-preflight",
+                Map.of("repositoryPublishRequired", "false"),
+                Map.of(
+                        "workflowTaskId", "task-provider-preflight",
+                        "stageRunId", "stage-coding-1",
+                        "agentRole", "CODING_AGENT"
+                )
+        ));
+
+        assertEquals(RepairExecutionStatus.FAILED, result.status());
+        assertEquals(1, runner.requests().size(), "alternate provider must not be invoked");
+        assertTrue(result.errorMessage().contains("UNKNOWN_REMOTE_RESULT"));
+        assertTrue(result.dockerMetadataJson().get("providerAttemptsJson")
+                .contains("BLOCKED_POLICY"));
+    }
+
+    @Test
+    void shouldSendHostClassifiedHighRiskWorkToFallbackPreflight() {
+        MultiAttemptRunner runner = new MultiAttemptRunner(List.of(
+                Attempt.missingResult(),
+                Attempt.success()
+        ));
+        ProviderFallbackPreflightPort.Request[] observed = new ProviderFallbackPreflightPort.Request[1];
+        DockerClaudeCodeExecutor executor = executor(
+                runner,
+                COMMAND,
+                List.of(provider("deepseek", Map.of()), provider("anthropic", Map.of())),
+                new ModelHealthStore(ModelCircuitBreakerPolicy.disabled()),
+                AuthEnvironmentResolverForTests.missing(),
+                request -> {
+                    observed[0] = request;
+                    return ProviderFallbackPreflightPort.Decision.block("human approval required");
+                }
+        );
+
+        executor.execute(command(
+                "task-security-fallback",
+                Map.of("repositoryPublishRequired", "false"),
+                Map.of(
+                        "workflowTaskId", "task-security-fallback",
+                        "stageRunId", "stage-coding-security",
+                        "agentRole", "CODING_AGENT",
+                        "title", "Rotate authentication credentials",
+                        "expectedResult", "Update authorization and secret handling",
+                        "acceptanceCriteriaJson", "[\"privacy boundary remains enforced\"]"
+                )
+        ));
+
+        assertNotNull(observed[0]);
+        assertTrue(observed[0].highRiskWork());
+        assertEquals(1, runner.requests().size());
     }
 
     @Test
@@ -935,7 +1051,7 @@ class DockerClaudeCodeExecutorTest {
     }
 
     @Test
-    void shouldProbeFirstProviderWhenAllProvidersAreCircuitOpen() {
+    void shouldFailClosedWhenAllProvidersAreCircuitOpen() {
         MultiAttemptRunner runner = new MultiAttemptRunner(List.of(Attempt.success()));
         ModelHealthStore healthStore = enabledHealthStore(2);
         open(healthStore, "deepseek", 2);
@@ -952,12 +1068,55 @@ class DockerClaudeCodeExecutorTest {
 
         RepairExecutionResult result = executor.execute(command());
 
-        assertEquals(RepairExecutionStatus.SUCCESS, result.status());
-        assertEquals(1, runner.requests().size());
-        assertEquals("deepseek", runner.requests().getFirst().env().get("RD_CLAUDE_PROVIDER_NAME"));
-        assertFalse(result.errorMessage().contains("all Claude Code providers are unavailable by circuit breaker"));
+        assertEquals(RepairExecutionStatus.FAILED, result.status());
+        assertEquals(0, runner.requests().size());
+        assertTrue(result.errorMessage().contains("all Claude Code providers are unavailable by circuit breaker"));
         assertTrue(result.dockerMetadataJson().get("providerAttemptsJson").contains("SKIPPED_CIRCUIT_OPEN"));
-        assertTrue(result.dockerMetadataJson().get("providerAttemptsJson").contains("\"SUCCESS\""));
+    }
+
+    @Test
+    void shouldAllowOnlyOneSharedHalfOpenProbeAcrossExecutors() throws Exception {
+        InMemoryModelHealthStateStore sharedState = new InMemoryModelHealthStateStore();
+        ModelCircuitBreakerPolicy policy = new ModelCircuitBreakerPolicy(true, 1, 10L);
+        ModelHealthStore firstHealth = new ModelHealthStore(policy, sharedState);
+        ModelHealthStore secondHealth = new ModelHealthStore(policy, sharedState);
+        open(firstHealth, "deepseek", 1);
+        Thread.sleep(25L);
+
+        CountDownLatch firstProviderStarted = new CountDownLatch(1);
+        CountDownLatch releaseFirstProvider = new CountDownLatch(1);
+        BlockingRunner firstRunner = new BlockingRunner(firstProviderStarted, releaseFirstProvider);
+        MultiAttemptRunner secondRunner = new MultiAttemptRunner(List.of(Attempt.success()));
+        DockerClaudeCodeExecutor firstExecutor = executor(
+                firstRunner,
+                COMMAND,
+                List.of(provider("deepseek", Map.of())),
+                firstHealth
+        );
+        DockerClaudeCodeExecutor secondExecutor = executor(
+                secondRunner,
+                COMMAND,
+                List.of(provider("deepseek", Map.of())),
+                secondHealth
+        );
+
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            Future<RepairExecutionResult> first = pool.submit(() -> firstExecutor.execute(command("task-half-open-a")));
+            assertTrue(firstProviderStarted.await(5, TimeUnit.SECONDS));
+
+            RepairExecutionResult second = secondExecutor.execute(command("task-half-open-b"));
+
+            assertEquals(RepairExecutionStatus.FAILED, second.status());
+            assertEquals(0, secondRunner.requests().size());
+            assertTrue(second.errorMessage().contains("all Claude Code providers are unavailable by circuit breaker"));
+            releaseFirstProvider.countDown();
+            assertEquals(RepairExecutionStatus.SUCCESS, first.get(5, TimeUnit.SECONDS).status());
+            assertEquals(1, firstRunner.invocationCount());
+        } finally {
+            releaseFirstProvider.countDown();
+            pool.shutdownNow();
+        }
     }
 
     @Test
@@ -1303,6 +1462,24 @@ class DockerClaudeCodeExecutorTest {
             ModelHealthStore healthStore,
             DockerClaudeCodeExecutor.AuthEnvironmentResolver authEnvironmentResolver
     ) {
+        return executor(
+                runner,
+                command,
+                providers,
+                healthStore,
+                authEnvironmentResolver,
+                ProviderFallbackPreflightPort.unavailable()
+        );
+    }
+
+    private DockerClaudeCodeExecutor executor(
+            ContainerRunnerPort runner,
+            List<String> command,
+            List<ClaudeCodeModelProvider> providers,
+            ModelHealthStore healthStore,
+            DockerClaudeCodeExecutor.AuthEnvironmentResolver authEnvironmentResolver,
+            ProviderFallbackPreflightPort providerFallbackPreflight
+    ) {
         DockerClaudeCodeExecutor.Configuration configuration = new DockerClaudeCodeExecutor.Configuration(
                 "rd-bot/claude-code:test",
                 "rd-bot/claude-code-qa:test",
@@ -1335,7 +1512,9 @@ class DockerClaudeCodeExecutorTest {
                 healthStore,
                 DockerExecutionRegistry.noop(),
                 ExecutionAllowlistPolicy.disabled(),
-                authEnvironmentResolver
+                authEnvironmentResolver,
+                new BudgetCurrencyConverter(BudgetCurrencyConverter.DEFAULT_CNY_PER_USD),
+                providerFallbackPreflight
         );
     }
 
@@ -1482,6 +1661,16 @@ class DockerClaudeCodeExecutorTest {
                 .filter(candidate -> name.equals(candidate.name()))
                 .findFirst()
                 .orElseThrow();
+    }
+
+    private static Path hostMountFor(ContainerRunRequest request, String containerPath) {
+        return request.mounts().entrySet().stream()
+                .filter(entry -> containerPath.equals(entry.getValue())
+                        || (containerPath + ":ro").equals(entry.getValue()))
+                .map(Map.Entry::getKey)
+                .map(Path::of)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("missing mount for " + containerPath));
     }
 
     private static String validResultJson(String status) {
@@ -1881,6 +2070,59 @@ class DockerClaudeCodeExecutorTest {
 
         private List<ContainerRunRequest> requests() {
             return List.copyOf(requests);
+        }
+    }
+
+    private static final class BlockingRunner implements ContainerRunnerPort {
+
+        private final CountDownLatch started;
+        private final CountDownLatch release;
+        private int invocationCount;
+
+        private BlockingRunner(CountDownLatch started, CountDownLatch release) {
+            this.started = started;
+            this.release = release;
+        }
+
+        @Override
+        public ContainerRunResult run(ContainerRunRequest request) throws IOException {
+            invocationCount++;
+            started.countDown();
+            try {
+                if (!release.await(5, TimeUnit.SECONDS)) {
+                    throw new IOException("timed out waiting to release half-open probe");
+                }
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new IOException("half-open probe interrupted", exception);
+            }
+            Files.createDirectories(request.outputDirectory());
+            Path resultPath = request.outputDirectory().resolve("result.json");
+            Path patchPath = request.outputDirectory().resolve("patch.diff");
+            Path testLogPath = request.outputDirectory().resolve("test.log");
+            Path eventsPath = request.outputDirectory().resolve("claude-events.jsonl");
+            Path dockerMetaPath = request.outputDirectory().resolve("docker-meta.json");
+            Files.writeString(resultPath, validResultJson("SUCCESS"), StandardCharsets.UTF_8);
+            Files.writeString(patchPath, "diff --git a/src/main/java/App.java b/src/main/java/App.java\n", StandardCharsets.UTF_8);
+            Files.writeString(testLogPath, "BUILD SUCCESS\n", StandardCharsets.UTF_8);
+            Files.writeString(eventsPath, "{\"type\":\"done\"}\n", StandardCharsets.UTF_8);
+            Files.writeString(dockerMetaPath, "{\"runner\":\"blocking\"}\n", StandardCharsets.UTF_8);
+            return new ContainerRunResult(
+                    0,
+                    1L,
+                    "stdout",
+                    "",
+                    resultPath,
+                    patchPath,
+                    testLogPath,
+                    eventsPath,
+                    dockerMetaPath,
+                    Map.of("runner", "blocking")
+            );
+        }
+
+        private int invocationCount() {
+            return invocationCount;
         }
     }
 

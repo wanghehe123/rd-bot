@@ -4,8 +4,11 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wish.rd.engine.agent.model.AgentRole;
 import com.wish.rd.engine.retrieval.iterative.IterativeRetrievalLoop;
+import com.wish.rd.engine.retrieval.iterative.IterativeRetrievalPolicy;
 import com.wish.rd.engine.retrieval.iterative.RetrievalIterationLimits;
 import com.wish.rd.engine.retrieval.iterative.RetrievalIterationState;
+import com.wish.rd.engine.retrieval.iterative.RetrievalRoundAudit;
+import com.wish.rd.engine.retrieval.iterative.RetrievalRoundAuditStore;
 import com.wish.rd.engine.retrieval.iterative.RetrievalStopReason;
 import com.wish.rd.engine.retrieval.model.ChannelAudit;
 import com.wish.rd.engine.retrieval.model.RetrievalOutcome;
@@ -34,6 +37,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
+import java.util.function.Consumer;
 
 /**
  * Runs one project-scoped requirement retrieval attempt and applies deterministic role evidence gates.
@@ -56,13 +60,35 @@ public final class DeepRetrievalOrchestrator {
 
     private final RetrievalRunLifecycle lifecycle;
     private final RequirementKnowledgeSearchPort searchPort;
+    private final IterativeRetrievalPolicy defaultIterativePolicy;
+    private final RetrievalRoundAuditStore roundAuditStore;
 
     public DeepRetrievalOrchestrator(
             RetrievalRunLifecycle lifecycle,
             RequirementKnowledgeSearchPort searchPort
     ) {
+        this(lifecycle, searchPort, IterativeRetrievalPolicy.disabled(), RetrievalRoundAuditStore.noop());
+    }
+
+    /**
+     * Creates an orchestrator with explicit iterative policy and audit persistence.
+     *
+     * @param lifecycle retrieval run lifecycle
+     * @param searchPort scoped knowledge search port
+     * @param defaultIterativePolicy policy used by {@link #retrieveWithPolicy}
+     * @param roundAuditStore append-only per-round audit store
+     */
+    public DeepRetrievalOrchestrator(
+            RetrievalRunLifecycle lifecycle,
+            RequirementKnowledgeSearchPort searchPort,
+            IterativeRetrievalPolicy defaultIterativePolicy,
+            RetrievalRoundAuditStore roundAuditStore
+    ) {
         this.lifecycle = Objects.requireNonNull(lifecycle, "lifecycle must not be null");
         this.searchPort = searchPort == null ? RequirementKnowledgeSearchPort.noop() : searchPort;
+        this.defaultIterativePolicy = defaultIterativePolicy == null
+                ? IterativeRetrievalPolicy.disabled() : defaultIterativePolicy;
+        this.roundAuditStore = roundAuditStore == null ? RetrievalRoundAuditStore.noop() : roundAuditStore;
     }
 
     public RetrievalOutcome retrieve(
@@ -75,6 +101,38 @@ public final class DeepRetrievalOrchestrator {
             int topK
     ) {
         return retrieveOnce(task, materials, consumerType, role, stageRunId, upstreamClues, topK);
+    }
+
+    /**
+     * Selects single-pass or iterative retrieval according to an explicit opt-in policy.
+     *
+     * @param task requirement task
+     * @param materials task materials
+     * @param consumerType retrieval consumer
+     * @param role role requesting evidence
+     * @param stageRunId stage attempt identifier
+     * @param upstreamClues query-only clues from the prior role
+     * @param topK candidate bound
+     * @param policy explicit policy; null means the constructor policy
+     * @return retrieval outcome with a non-empty stop reason for iterative mode
+     */
+    public RetrievalOutcome retrieveWithPolicy(
+            RdRequirementTask task,
+            List<TaskMaterial> materials,
+            RetrievalConsumerType consumerType,
+            AgentRole role,
+            String stageRunId,
+            String upstreamClues,
+            int topK,
+            IterativeRetrievalPolicy policy
+    ) {
+        IterativeRetrievalPolicy selected = policy == null ? defaultIterativePolicy : policy;
+        if (!selected.isEnabled()) {
+            return retrieve(task, materials, consumerType, role, stageRunId, upstreamClues, topK);
+        }
+        return retrieveIterative(
+                task, materials, consumerType, role, stageRunId, upstreamClues, topK, selected.limits()
+        );
     }
 
     /**
@@ -94,12 +152,20 @@ public final class DeepRetrievalOrchestrator {
             RetrievalIterationLimits limits
     ) {
         RetrievalIterationLimits bound = limits == null ? RetrievalIterationLimits.defaults() : limits;
+        RetrievalScope fixedScope = safeScope(Objects.requireNonNull(task, "task must not be null"));
         AtomicReference<String> clues = new AtomicReference<>(safe(upstreamClues));
         AtomicReference<RetrievalOutcome> last = new AtomicReference<>();
         long startedAt = System.currentTimeMillis();
         RetrievalStopReason stop = new IterativeRetrievalLoop().run(bound, startedAt, before -> {
+            String roundQuery = query(task, role, clues.get());
+            AtomicReference<List<String>> candidateIds = new AtomicReference<>(List.of());
             RetrievalOutcome outcome = retrieveOnce(
-                    task, materials, consumerType, role, stageRunId, clues.get(), topK
+                    task, materials, consumerType, role, stageRunId, clues.get(), topK, fixedScope,
+                    candidates -> candidateIds.set(candidates.stream()
+                            .map(RoleContextEvidence::evidenceId)
+                            .filter(id -> id != null && !id.isBlank())
+                            .distinct()
+                            .toList())
             );
             last.set(outcome);
             Set<String> selectedIds = outcome.selectedEvidence().stream()
@@ -120,6 +186,15 @@ public final class DeepRetrievalOrchestrator {
             if (!gateSatisfied && !outcome.missingEvidenceTypes().isEmpty()) {
                 clues.set(refineClues(clues.get(), outcome.missingEvidenceTypes()));
             }
+            RetrievalStopReason roundStop = new com.wish.rd.engine.retrieval.iterative.IterativeRetrievalStopGate()
+                    .decide(assessed, bound);
+            roundAuditStore.append(new RetrievalRoundAudit(
+                    outcome.runId() + ":round:" + assessed.round(),
+                    task.taskId(), outcome.runId(), assessed.round(), roundQuery,
+                    candidateIds.get(), selectedIds.stream().toList(), outcome.missingEvidenceTypes(),
+                    assessed.informationGain(), assessed.cumulativeTokens(), assessed.elapsedMillis(),
+                    roundStop.name(), scopeFingerprint(fixedScope), System.currentTimeMillis()
+            ));
             return assessed;
         });
         RetrievalOutcome outcome = last.get();
@@ -138,6 +213,34 @@ public final class DeepRetrievalOrchestrator {
             String upstreamClues,
             int topK
     ) {
+        return retrieveOnce(task, materials, consumerType, role, stageRunId, upstreamClues, topK, null);
+    }
+
+    private RetrievalOutcome retrieveOnce(
+            RdRequirementTask task,
+            List<TaskMaterial> materials,
+            RetrievalConsumerType consumerType,
+            AgentRole role,
+            String stageRunId,
+            String upstreamClues,
+            int topK,
+            RetrievalScope fixedScope
+    ) {
+        return retrieveOnce(task, materials, consumerType, role, stageRunId, upstreamClues, topK,
+                fixedScope, ignored -> { });
+    }
+
+    private RetrievalOutcome retrieveOnce(
+            RdRequirementTask task,
+            List<TaskMaterial> materials,
+            RetrievalConsumerType consumerType,
+            AgentRole role,
+            String stageRunId,
+            String upstreamClues,
+            int topK,
+            RetrievalScope fixedScope,
+            Consumer<List<RoleContextEvidence>> candidateCapture
+    ) {
         Objects.requireNonNull(task, "task must not be null");
         RetrievalConsumerType consumer = consumerType == null
                 ? RetrievalConsumerType.REQUIREMENT_BASE : consumerType;
@@ -145,7 +248,7 @@ public final class DeepRetrievalOrchestrator {
             throw new IllegalArgumentException("role is required for AGENT_ROLE retrieval");
         }
         List<TaskMaterial> safeMaterials = materials == null ? List.of() : List.copyOf(materials);
-        RetrievalScope scope = safeScope(task);
+        RetrievalScope scope = fixedScope == null ? safeScope(task) : fixedScope;
         String query = query(task, role, upstreamClues);
         RetrievalRun run = lifecycle.start(
                 task.taskId(), consumer, role == null ? "" : role.name(), safe(stageRunId), query,
@@ -186,6 +289,9 @@ public final class DeepRetrievalOrchestrator {
                 role, upstreamClues, Math.max(task.createTimeEpochMillis(), task.updateTimeEpochMillis())
         );
         List<RoleContextEvidence> candidates = mergeCandidates(roots, searchResult.candidates(), handoffCandidates);
+        if (candidateCapture != null) {
+            candidateCapture.accept(candidates);
+        }
         List<RoleContextEvidence> nonRootCandidates = new ArrayList<>(
                 searchResult.candidates() == null ? List.of() : searchResult.candidates());
         nonRootCandidates.addAll(handoffCandidates);
@@ -542,6 +648,15 @@ public final class DeepRetrievalOrchestrator {
                 + "\n仓库: " + repositoryFingerprint(task)
                 + (safe(upstreamClues).isBlank() ? "" : "\n上游线索(仅用于检索): " + bounded(upstreamClues, 2_000)))
                 .strip();
+    }
+
+    private String scopeFingerprint(RetrievalScope scope) {
+        if (scope == null) {
+            return "";
+        }
+        return String.join(",", scope.knowledgeBaseIds())
+                + "|" + scope.repositoryFingerprint()
+                + "|projectRequired=" + scope.projectScopeRequired();
     }
 
     private String repositoryFingerprint(RdRequirementTask task) {

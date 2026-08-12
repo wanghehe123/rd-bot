@@ -49,6 +49,155 @@ class RdTaskFencingConcurrencyTest {
     }
 
     @Test
+    void staleStageSnapshotCannotRefreshVersionBeforeValidatingCas() {
+        InMemoryRdTaskStore store = new InMemoryRdTaskStore();
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                store, new InMemoryRdTaskStatusEventStore(), SnowflakeIdGenerator.defaultGenerator());
+        RdRequirementTask staleWorker = driveToExecuting(registry, "fence-stage-snapshot");
+
+        registry.markRequirementValidating(staleWorker.taskId(), "{\"peer\":true}");
+
+        assertThrows(IllegalStateException.class, () -> registry.transitionRequirementFenced(
+                staleWorker,
+                RdTaskStatus.VALIDATING,
+                staleWorker.promptSnapshot(),
+                "{\"stale\":true}",
+                "",
+                ""
+        ));
+        assertEquals(RdTaskStatus.VALIDATING, registry.getTask(staleWorker.taskId()).status());
+    }
+
+    @Test
+    void zeroFenceStageSnapshotIsRejectedBeforeTaskOrTimelineMutation() {
+        InMemoryRdTaskStore store = new InMemoryRdTaskStore();
+        InMemoryRdTaskStatusEventStore events = new InMemoryRdTaskStatusEventStore();
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                store, events, SnowflakeIdGenerator.defaultGenerator());
+        RdRequirementTask persisted = registry.createRequirementTask(new CreateRequirementTaskCommand(
+                "zero-fence-stage", "P1", "https://github.com/example/repo.git",
+                "example", "repo", "main", "ok", List.of("accepted"), false));
+        RdRequirementTask legacySnapshot = persisted.withConcurrency(persisted.version(), 0L);
+        int timelineBefore = events.listByTask(persisted.taskId()).size();
+
+        assertThrows(IllegalArgumentException.class, () -> registry.transitionRequirementFenced(
+                legacySnapshot, RdTaskStatus.MATERIAL_COLLECTING, "", "", "", ""));
+
+        assertEquals(persisted, registry.getRequirementTask(persisted.taskId()));
+        assertEquals(timelineBefore, events.listByTask(persisted.taskId()).size());
+    }
+
+    @Test
+    void metadataEditFencesOutStaleRequirementStageSnapshot() {
+        InMemoryRdTaskStore store = new InMemoryRdTaskStore();
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                store, new InMemoryRdTaskStatusEventStore(), SnowflakeIdGenerator.defaultGenerator());
+        RdRequirementTask staleWorker = registry.createRequirementTask(new CreateRequirementTaskCommand(
+                "原始需求", "P1", "ADMIN", "source-fence", "https://example.test/req/fence",
+                "project-fence", "PROJ-FENCE", "项目 Fence",
+                "https://github.com/example/repo.git", "owner", "repo", "main",
+                "交付结果", List.of("保留验收标准"), List.of(), false, 256L));
+        long originalVersion = staleWorker.version();
+        long originalFencingToken = staleWorker.fencingToken();
+
+        RdRequirementTask edited = (RdRequirementTask) registry.updateTaskMetadata(
+                staleWorker.taskId(), "编辑后的需求", "P0", "ignored-ticket-title");
+
+        assertEquals("编辑后的需求", edited.title());
+        assertEquals("P0", edited.priority());
+        assertEquals("project-fence", edited.projectId());
+        assertEquals("[\"保留验收标准\"]", edited.acceptanceCriteriaJson());
+        assertEquals(originalVersion + 1L, edited.version());
+        assertEquals(originalFencingToken + 1L, edited.fencingToken());
+
+        assertThrows(IllegalStateException.class, () -> registry.transitionRequirementFenced(
+                staleWorker,
+                RdTaskStatus.MATERIAL_COLLECTING,
+                "stale prompt",
+                "{\"stale\":true}",
+                "",
+                ""));
+
+        RdRequirementTask persisted = (RdRequirementTask) registry.getTask(staleWorker.taskId());
+        assertEquals(RdTaskStatus.CREATED, persisted.status());
+        assertEquals("编辑后的需求", persisted.title());
+        assertEquals("P0", persisted.priority());
+        assertEquals("project-fence", persisted.projectId());
+        assertEquals("[\"保留验收标准\"]", persisted.acceptanceCriteriaJson());
+        assertEquals(edited.version(), persisted.version());
+        assertEquals(edited.fencingToken(), persisted.fencingToken());
+    }
+
+    @Test
+    void taskSnapshotCarriesVersionAndFencingTokenAcrossCasAdvance() {
+        InMemoryRdTaskStore store = new InMemoryRdTaskStore();
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                store,
+                new InMemoryRdTaskStatusEventStore(),
+                SnowflakeIdGenerator.defaultGenerator()
+        );
+        RdRequirementTask created = driveToExecuting(registry, "fence-snapshot");
+
+        assertTrue(created.version() > 0L);
+        assertTrue(created.fencingToken() > 0L);
+
+        RdRequirementTask validating = registry.markRequirementValidating(
+                created.taskId(), "{\"ok\":true}");
+
+        assertEquals(created.version() + 1L, validating.version());
+        assertTrue(validating.fencingToken() > created.fencingToken());
+        assertEquals(validating.version(), store.findVersion(created.taskId()).orElseThrow());
+        assertEquals(validating.fencingToken(), store.findFencingToken(created.taskId()).orElseThrow());
+    }
+
+    @Test
+    void stalePublicationFinalizeUsesOriginalFencingSnapshotAndDoesNotAppendAnEvent() {
+        InMemoryRdTaskStore store = new InMemoryRdTaskStore();
+        InMemoryRdTaskStatusEventStore events = new InMemoryRdTaskStatusEventStore();
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                store,
+                events,
+                SnowflakeIdGenerator.defaultGenerator()
+        );
+        RdRequirementTask executing = driveToExecuting(registry, "fence-publication");
+        RdRequirementTask validating = registry.markRequirementValidating(executing.taskId(), "{\"validation\":true}");
+        RdRequirementTask prCreating = registry.markRequirementPrCreating(validating.taskId(), "{\"review\":true}");
+        int eventCountBeforeStaleFinalize = events.listByTask(prCreating.taskId()).size();
+
+        registry.markRequirementFailedNeedsHuman(
+                prCreating.taskId(), "operator intervened", "{\"reason\":\"race\"}");
+
+        assertThrows(IllegalStateException.class, () -> registry.markRequirementCommittedFenced(
+                prCreating.taskId(),
+                prCreating.version(),
+                prCreating.status(),
+                prCreating.fencingToken(),
+                "https://github.com/example/waimai/pull/42",
+                "{\"status\":\"SUCCESS\"}"
+        ));
+        assertEquals(RdTaskStatus.FAILED_NEEDS_HUMAN, registry.getTask(prCreating.taskId()).status());
+        assertEquals(eventCountBeforeStaleFinalize + 1, events.listByTask(prCreating.taskId()).size());
+    }
+
+    @Test
+    void zeroFencePublicationFinalizeIsRejectedBeforeTaskOrTimelineMutation() {
+        InMemoryRdTaskStore store = new InMemoryRdTaskStore();
+        InMemoryRdTaskStatusEventStore events = new InMemoryRdTaskStatusEventStore();
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(store, events, SnowflakeIdGenerator.defaultGenerator());
+        RdRequirementTask executing = driveToExecuting(registry, "fence-publication-zero");
+        RdRequirementTask validating = registry.markRequirementValidating(executing.taskId(), "{\"validation\":true}");
+        RdRequirementTask prCreating = registry.markRequirementPrCreating(validating.taskId(), "{\"review\":true}");
+        int timelineBefore = events.listByTask(prCreating.taskId()).size();
+
+        assertThrows(IllegalArgumentException.class, () -> registry.markRequirementCommittedFenced(
+                prCreating.taskId(), prCreating.version(), prCreating.status(), 0L,
+                "https://github.com/example/waimai/pull/43", "{\"status\":\"SUCCESS\"}"));
+
+        assertEquals(prCreating, registry.getRequirementTask(prCreating.taskId()));
+        assertEquals(timelineBefore, events.listByTask(prCreating.taskId()).size());
+    }
+
+    @Test
     void cancelVersusNeedsHumanRaceAllowsExactlyOneWinner() throws Exception {
         InMemoryRdTaskStore store = new InMemoryRdTaskStore();
         RagStreamTaskRegistry registry = new RagStreamTaskRegistry(

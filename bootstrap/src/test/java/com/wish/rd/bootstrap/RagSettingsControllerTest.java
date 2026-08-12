@@ -31,7 +31,7 @@ class RagSettingsControllerTest {
     private MockMvc mockMvc;
 
     @Test
-    void exposesRagentStyleRuntimeSettings() throws Exception {
+    void exposesRuntimeSettings() throws Exception {
         mockMvc.perform(get("/rag/settings"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.upload.maxFileSize").value(52428800))
