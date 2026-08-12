@@ -274,17 +274,16 @@ public class GitHubCodePlatformAdapter implements CodePlatformPort, PullRequestM
             return false;
         }
         String haystack = body == null ? "" : body.toLowerCase();
-        return haystack.contains("no commit found") || haystack.isBlank();
+        return haystack.contains("no commit found");
     }
 
     private static boolean isConfirmedMissingGitRefCli(GitHubCliResult result) {
         String stderr = result.stderr() == null ? "" : result.stderr().toLowerCase();
         String stdout = result.stdout() == null ? "" : result.stdout().toLowerCase();
         String haystack = stderr + " " + stdout;
-        return haystack.contains("404")
-                || haystack.contains("422")
-                || haystack.contains("not found")
-                || haystack.contains("no commit found");
+        return haystack.contains("no commit found")
+                || haystack.contains("http 404")
+                || haystack.contains("http 422");
     }
 
     private String authorizationHeader() {
@@ -447,7 +446,7 @@ public class GitHubCodePlatformAdapter implements CodePlatformPort, PullRequestM
                 sha = root.path("object").path("sha").asText("");
             }
             if (sha.isBlank()) {
-                return Optional.empty();
+                throw new IllegalStateException("GitHub branch head response did not include a commit sha");
             }
             String commitMessage = root.path("commit").path("message").asText("");
             Map<String, String> metadata = new LinkedHashMap<>();

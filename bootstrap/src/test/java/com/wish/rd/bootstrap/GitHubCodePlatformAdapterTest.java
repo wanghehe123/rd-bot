@@ -259,6 +259,59 @@ class GitHubCodePlatformAdapterTest {
     }
 
     @Test
+    void shouldThrowWhenBranchHeadUnprocessableIsNotAMissingCommit() {
+        GitHubCodePlatformProperties properties = realPatProperties();
+        properties.setAllowedRepositories(List.of("acme/order"));
+        RecordingSender sender = new RecordingSender(422, """
+                {"message":"Validation Failed"}
+                """);
+        GitHubCodePlatformAdapter adapter = new GitHubCodePlatformAdapter(properties, OBJECT_MAPPER, sender);
+
+        IllegalStateException thrown = assertThrows(IllegalStateException.class, () -> adapter.findBranchHead(
+                new FindBranchHeadCommand("acme", "order", "requirement/missing")));
+        assertTrue(thrown.getMessage().contains("422"));
+    }
+
+    @Test
+    void shouldThrowWhenBranchHeadUnprocessableBodyIsBlank() {
+        GitHubCodePlatformProperties properties = realPatProperties();
+        properties.setAllowedRepositories(List.of("acme/order"));
+        RecordingSender sender = new RecordingSender(422, "");
+        GitHubCodePlatformAdapter adapter = new GitHubCodePlatformAdapter(properties, OBJECT_MAPPER, sender);
+
+        assertThrows(IllegalStateException.class, () -> adapter.findBranchHead(
+                new FindBranchHeadCommand("acme", "order", "requirement/missing")));
+    }
+
+    @Test
+    void shouldThrowWhenSuccessfulBranchHeadResponseHasNoSha() {
+        GitHubCodePlatformProperties properties = realPatProperties();
+        properties.setAllowedRepositories(List.of("acme/order"));
+        RecordingSender sender = new RecordingSender(200, "{}");
+        GitHubCodePlatformAdapter adapter = new GitHubCodePlatformAdapter(properties, OBJECT_MAPPER, sender);
+
+        IllegalStateException thrown = assertThrows(IllegalStateException.class, () -> adapter.findBranchHead(
+                new FindBranchHeadCommand("acme", "order", "requirement/missing")));
+        assertTrue(thrown.getMessage().toLowerCase().contains("sha"));
+    }
+
+    @Test
+    void ghCliShouldThrowWhenExecutableIsMissing() {
+        GitHubCodePlatformProperties properties = realGhCliProperties();
+        RecordingCliRunner cliRunner = new RecordingCliRunner(127, "", "gh: command not found");
+        GitHubCodePlatformAdapter adapter = new GitHubCodePlatformAdapter(
+                properties,
+                OBJECT_MAPPER,
+                new RecordingSender("{}"),
+                cliRunner
+        );
+
+        IllegalStateException thrown = assertThrows(IllegalStateException.class, () -> adapter.findBranchHead(
+                new FindBranchHeadCommand("acme", "order", "requirement/missing")));
+        assertTrue(thrown.getMessage().contains("command not found"));
+    }
+
+    @Test
     void realAdapterShouldReadPullRequestMergedStatusWithoutNetworkInTests() {
         GitHubCodePlatformProperties properties = realPatProperties();
         properties.setAllowedRepositories(List.of("acme/order"));

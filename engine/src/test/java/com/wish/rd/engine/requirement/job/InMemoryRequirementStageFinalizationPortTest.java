@@ -822,6 +822,53 @@ class InMemoryRequirementStageFinalizationPortTest {
     }
 
     @Test
+    void publicationFailureWithoutProvenanceStoreFailsClosed() {
+        long now = 1_784_800_360_000L;
+        String taskId = "task-publication-missing-store";
+        InMemoryRdTaskStore taskStore = new InMemoryRdTaskStore();
+        InMemoryRdTaskStatusEventStore events = new InMemoryRdTaskStatusEventStore();
+        taskStore.saveRequirementTask(RdRequirementTask.created(taskId, new CreateRequirementTaskCommand(
+                "Task title", "P1", "https://example.invalid/repo.git", "owner", "repo", "main",
+                "deliver", List.of("criterion"), false), now));
+        InMemoryRequirementPublicationStore publications = new InMemoryRequirementPublicationStore();
+        InMemoryRequirementPolicyRunStore policyRuns = new InMemoryRequirementPolicyRunStore();
+        policyRuns.createOrGet(new RequirementPolicyRun(
+                "policy-1", taskId, 1L, 1L, "{}", RequirementPolicyRun.canonicalJsonDigest("{}"),
+                "", "", "", RequirementPolicyRunState.PLAN_READY,
+                1L, 1L, null, null, "", "", "", 0L, "", "", 0L, 0L, now, now));
+        InMemoryRequirementStageCommandStore commands = new InMemoryRequirementStageCommandStore();
+        RequirementStageCommand pending = RequirementStageCommand.pending(
+                "command-publication-missing-store", taskId, 1L, 1L, "REQUIREMENT_DELIVERY", "PUBLICATION",
+                0, 3, now + 60_000L, ScheduleResourceClass.GENERIC, Set.of(ScheduleResourceClass.GENERIC),
+                "project-1", "", "P1", "policy-1", "", 0L, "", now);
+        commands.enqueue(pending);
+        RequirementStageCommand claimed = commands.claim(pending.commandId(), "worker-1", now, 30_000L)
+                .orElseThrow();
+        InMemoryRequirementStageFinalizationPort finalizer = new InMemoryRequirementStageFinalizationPort(
+                commands, new InMemoryRequirementDeliveryJobStore(), taskStore,
+                new CoordinatedRdTaskStatePersistence(taskStore, events),
+                new SnowflakeIdGenerator(1, 1, () -> now), publications, policyRuns);
+        RequirementStageExecutionPlan plan = new RequirementStageExecutionPlan(
+                RequirementStageExecutionPlan.CURRENT_SCHEMA_VERSION, taskId, 1L, 1L, RdTaskStatus.VALIDATING,
+                List.of(RequirementTaskMutation.statusTransition(
+                        RdTaskStatus.VALIDATING, RdTaskStatus.FAILED_RETRYABLE, "", "{}", "",
+                        "publication is waiting for remote reconciliation; do not replay push/PR", "")),
+                CommandDisposition.RETRYABLE_TECHNICAL_FAILURE, ContinuationSpec.terminal(),
+                new ExternalEffectReceipt(
+                        ExternalEffectReceipt.Kind.PUBLICATION, "op-1", "UNKNOWN_REMOTE_RESULT", "{}"));
+        RequirementStageFinalization marker = finalizer.recordOutcome(
+                finalizer.prepare(claimed, "worker-1", RdTaskStatus.VALIDATING, now),
+                claimed, "worker-1", plan, now + 1L);
+
+        IllegalStateException thrown = assertThrows(IllegalStateException.class, () -> finalizer.finalize(
+                new RequirementStageFinalizationPort.FinalizationCommand(
+                        marker, claimed, "worker-1", plan, null, null,
+                        RequirementStageFinalizationPort.JobDisposition.NONE,
+                        RequirementStageFinalizationPort.TaskMutationDisposition.APPLY, now + 2L)));
+        assertTrue(thrown.getMessage().contains("provenance"));
+    }
+
+    @Test
     void exhaustionIsANoOpWhenTheTaskFailureAndProvenanceAreAlreadyDurable() {
         ExhaustionFixture fixture = ExhaustionFixture.checkpointBoundRole();
         RequirementStageFinalizationPort.ExhaustionResult first = fixture.finalizer.exhaustCommand(fixture.command());

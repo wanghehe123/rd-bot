@@ -207,7 +207,7 @@ public RepairContextPackage prepareContext(RepairRagRequest request) {
 
 - 【强制】每次新的任务终态失败必须在同一最终化事务写入一条可解析的 `rd_task_failure_provenance`。技术耗尽走 `exhaustCommand`；计划内的发布失败走 `finalize()` 且 `failedStage=PUBLICATION:<operationId>`、`failurePhase=PR_PUBLICATION`。禁止只靠错误字符串或“角色都成功所以猜 CONTEXT”。
 - 【强制】`GET /retry-preview` 必须复用 `failure-recovery` 的权威 snapshot，不得另走一套无 provenance 的启发式解析。
-- 【强制】GitHub `GET /repos/{owner}/{repo}/commits/{ref}` 在发布预检中：HTTP 404，或 422 且 body/stderr 含 `No commit found`，表示分支确认缺席，允许 push；不得记为 `UNKNOWN_REMOTE_RESULT`。超时、5xx、连接中断仍为未知，禁止重放。
+- 【强制】GitHub `GET /repos/{owner}/{repo}/commits/{ref}` 在发布预检中：HTTP 404，或 422 且 body/stderr 含 `No commit found`（CLI 同等 `HTTP 404`/`HTTP 422`），表示分支确认缺席，允许 push；不得记为 `UNKNOWN_REMOTE_RESULT`。空白 422、其它 4xx、超时、5xx、连接中断、2xx 无 SHA、以及 `command not found` 仍为未知，禁止重放。
 - 【强制】宿主 QA 只从 `dockerMetadataJson` 读取 docs-only 判定键（`QaExecutionMetadataKeys`）。Pi 必须把这些键写入该通道；写入 `githubMetadataJson` / `repositoryMetadata` 不算。提示词、bridge、宿主三处不一致即协议裂缝。
 - 【强制】验证与反例见 `docs/superpowers/specs/2026-08-13-requirement-publication-preflight-and-retry-provenance-spec.md`。
 

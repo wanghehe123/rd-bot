@@ -617,13 +617,13 @@ public final class InMemoryRequirementStageFinalizationPort implements Requireme
         } else {
             completed = stageCommandStore.complete(command.stageCommand(), command.leaseOwner(), command.nowEpochMillis());
         }
+        recordPublicationFailureProvenance(command, marker, deferRetryableMutation);
         if (deferRetryableMutation) {
             return new FinalizationResult(marker, completed, next);
         }
         RequirementStageFinalization finalized = marker.finalized(
                 command.outcome(), next == null ? "" : next.commandId(), command.nowEpochMillis());
         finalizations.put(key(marker.commandId(), marker.attemptNo()), finalized);
-        recordPublicationFailureProvenance(command, finalized, deferRetryableMutation);
         return new FinalizationResult(finalized, completed, next);
     }
 
@@ -632,13 +632,14 @@ public final class InMemoryRequirementStageFinalizationPort implements Requireme
             RequirementStageFinalization finalized,
             boolean deferRetryableMutation
     ) {
-        if (deferRetryableMutation || failureProvenanceStore == null) {
-            return;
-        }
         RequirementStageCommand stageCommand = command.stageCommand();
         String stage = stageCommand.stage();
         if (!"PUBLICATION".equals(stage) && !stage.startsWith("PUBLICATION:")) {
             return;
+        }
+        if (failureProvenanceStore == null) {
+            throw new IllegalStateException("terminal publication failure provenance persistence is unavailable: "
+                    + stageCommand.commandId());
         }
         if (finalized.outcomeStatus() != RdTaskStatus.FAILED_RETRYABLE
                 && finalized.outcomeStatus() != RdTaskStatus.FAILED_NEEDS_HUMAN) {

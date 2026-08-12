@@ -33,8 +33,8 @@
 
 `GitHubCodePlatformAdapter.findBranchHead`（HTTP 与 `GH_CLI_LOCAL_SMOKE`）：
 
-- 确认缺席 → `Optional.empty()` → `RemoteBranchHead.Absent` → 允许 push：HTTP **404**；HTTP **422** 且 body 含 `no commit found`（空 body 的 422 同样视为缺席）；CLI stderr/stdout 含 `404` / `422` / `not found` / `no commit found`。
-- 仍为未知 → 抛错 → `markPreparedPublicationUnknown`：超时、5xx、连接中断、其它 4xx。禁止重放 push/PR。
+- 确认缺席 → `Optional.empty()` → `RemoteBranchHead.Absent` → 允许 push：HTTP **404**；HTTP **422** 且 body 含 `no commit found`；CLI stderr/stdout 含 `no commit found` 或 `HTTP 404` / `HTTP 422`。
+- 仍为未知 → 抛错 → `markPreparedPublicationUnknown`：空白 422、其它 4xx、超时、5xx、连接中断、2xx 无 SHA、`command not found`。禁止把裸 `not found` 当成缺席。禁止重放 push/PR。
 
 远端已有 head 但 operation/patch 标记不匹配 → `NEEDS_HUMAN`，不是 Unknown。
 
