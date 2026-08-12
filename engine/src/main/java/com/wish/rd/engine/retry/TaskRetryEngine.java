@@ -13,6 +13,10 @@ import com.wish.rd.engine.retry.model.TaskFailurePhase;
 import com.wish.rd.engine.retry.model.TaskRetryCheckpoint;
 import com.wish.rd.engine.retry.model.TaskRetryCheckpointStatus;
 import com.wish.rd.engine.retry.model.TaskRetryCommand;
+import com.wish.rd.engine.retry.model.InitializeRequirementRetryCommand;
+import com.wish.rd.engine.retry.model.RequirementRetryDispatchResult;
+import com.wish.rd.engine.retry.model.TaskRetryAttemptBinding;
+import com.wish.rd.engine.retry.model.TaskRetryRoute;
 import com.wish.rd.engine.retry.model.TaskRetryPoint;
 import com.wish.rd.rag.retrieval.run.RetrievalRunStore;
 import com.wish.rd.rag.runtime.TaskMaterialStore;
@@ -55,6 +59,8 @@ public final class TaskRetryEngine {
     private AgentStageArtifactStore artifactStore = AgentStageArtifactStore.noop();
     private final TaskRetryPointResolver resolver;
     private final TaskRetryDispatcherPort dispatcher;
+    private RequirementRetryDispatchTransactionPort retryDispatchTransactionPort;
+    private TaskRetryAttemptBindingStore retryAttemptBindingStore;
     private final Supplier<String> idSupplier;
     private final LongSupplier clock;
 
@@ -197,6 +203,20 @@ public final class TaskRetryEngine {
                 : interruptedStageRecoveryService;
     }
 
+    /** Wires the checkpoint-bound initialization transaction when the durable adapter is present. */
+    @Autowired(required = false)
+    public void setRequirementRetryDispatchTransactionPort(
+            RequirementRetryDispatchTransactionPort retryDispatchTransactionPort
+    ) {
+        this.retryDispatchTransactionPort = retryDispatchTransactionPort;
+    }
+
+    /** Wires exact retry attempt bindings for role and direct AI first commands. */
+    @Autowired(required = false)
+    public void setTaskRetryAttemptBindingStore(TaskRetryAttemptBindingStore retryAttemptBindingStore) {
+        this.retryAttemptBindingStore = retryAttemptBindingStore;
+    }
+
     private InterruptedStageRecoveryService rebuildInterruptedStageRecoveryService() {
         return new InterruptedStageRecoveryService(
                 workspaceRecoveryPort,
@@ -206,11 +226,15 @@ public final class TaskRetryEngine {
         );
     }
 
-    /** Returns the current retry point without changing task or attempt state. */
+    /**
+     * Returns the current retry point without changing task or attempt state.
+     *
+     * <p>Preview uses the same authoritative snapshot as {@link #retry(String, String)} so a
+     * publication failure that is visible on {@code /failure-recovery} cannot 409 on
+     * {@code /retry-preview} merely because it has no agent-stage row.
+     */
     public TaskRetryPoint preview(String taskId) {
-        RdRequirementTask task = taskPort.getRequirementTask(taskId);
-        return resolver.resolve(task, stageRunStore.listByTask(taskId),
-                retrievalRunStore.listByTask(taskId), aiReviewRunStore.listByTask(taskId));
+        return failureRecoveryService.snapshot(taskId).retryPoint();
     }
 
     /**
@@ -251,8 +275,20 @@ public final class TaskRetryEngine {
                 .mapToInt(TaskRetryCheckpoint::attemptNo).max().orElse(0) + 1;
         String idempotencyKey = taskId + ":" + point.sourceTaskVersion() + ":"
                 + point.failurePhase() + ":" + (point.retryFromRole() == null ? "" : point.retryFromRole().name());
+        // Legacy resolver points may still carry the task fence without a durable command/stage
+        // pair. Checkpoint creation requires that audit-only shape to use fence 0 explicitly.
+        TaskRetryPoint checkpointPoint = point.failedStageCommandId().isBlank()
+                ? new TaskRetryPoint(
+                        point.taskId(), point.failurePhase(), point.retryFromRole(),
+                        point.failedStageRunId(), point.failedRetrievalRunId(), point.failedAiReviewRunId(),
+                        point.reason(), point.sourceTaskVersion(), 0L, "", "", "", "", "")
+                : point;
         TaskRetryCheckpoint proposed = TaskRetryCheckpoint.created(
-                nextId(), point, attemptNo, idempotencyKey, snapshot.sourceTaskStatus(), safeCommand, now());
+                nextId(), checkpointPoint, attemptNo, idempotencyKey, snapshot.sourceTaskStatus(),
+                safeCommand, now());
+        if (retryDispatchTransactionPort != null) {
+            return initializeCheckpointBoundRetry(currentTask, point, proposed);
+        }
         TaskRetryCheckpointStore.CreateResult created = checkpointStore.createOrGet(proposed);
         if (!created.created()) {
             validateExistingCheckpoint(created.checkpoint(), safeCommand);
@@ -274,6 +310,89 @@ public final class TaskRetryEngine {
             compensateTask(taskId, exception);
             throw exception;
         }
+    }
+
+    private TaskRetryCheckpoint initializeCheckpointBoundRetry(
+            RdRequirementTask sourceTask,
+            TaskRetryPoint point,
+            TaskRetryCheckpoint proposed
+    ) {
+        TaskRetryRoute route = new TaskRetryRoutePlanner().plan(point);
+        List<AgentStageRun> preparedStageRuns = new ArrayList<>();
+        try {
+            long now = now();
+            long deadline = now > Long.MAX_VALUE - 600_000L ? Long.MAX_VALUE : now + 600_000L;
+            RequirementRetryDispatchResult initialized = retryDispatchTransactionPort.initialize(proposed, checkpoint -> {
+                List<TaskRetryAttemptBinding> bindings = preparePrimaryBindings(
+                        checkpoint, point, route, preparedStageRuns);
+                String targetBindingId = targetBindingId(route, bindings);
+                return new InitializeRequirementRetryCommand(
+                        checkpoint, route, nextId(), 3, deadline,
+                        sourceTask.projectId(), "", sourceTask.priority(), targetBindingId, bindings, now);
+            });
+            try {
+                dispatcher.dispatchCheckpoint(initialized.checkpoint().checkpointId());
+            } catch (RuntimeException ignored) {
+                // Initialization is durable before scheduling. The worker recovery loop may claim the same command.
+            }
+            return initialized.checkpoint();
+        } catch (RuntimeException exception) {
+            compensatePreparedStages(preparedStageRuns, exception);
+            TaskRetryCheckpoint latest = checkpointStore.find(proposed.checkpointId()).orElse(null);
+            if (latest != null && !latest.status().isTerminal()) {
+                failCheckpoint(latest, exception);
+            }
+            compensateTask(point.taskId(), exception);
+            throw exception;
+        }
+    }
+
+    private List<TaskRetryAttemptBinding> preparePrimaryBindings(
+            TaskRetryCheckpoint checkpoint,
+            TaskRetryPoint point,
+            TaskRetryRoute route,
+            List<AgentStageRun> preparedStageRuns
+    ) {
+        if (route.primaryAttemptKind() == null) {
+            return List.of();
+        }
+        if (retryAttemptBindingStore == null) {
+            throw new IllegalStateException("checkpoint-bound retry attempt bindings are not configured");
+        }
+        if (route.primaryAttemptKind() == com.wish.rd.engine.retry.model.TaskRetryAttemptKind.AGENT_STAGE) {
+            AgentRole role = AgentRole.valueOf(route.role());
+            createRoleAttemptsFrom(point.taskId(), role, preparedStageRuns);
+            List<TaskRetryAttemptBinding> bindings = new ArrayList<>();
+            for (AgentStageRun stage : preparedStageRuns) {
+                bindings.add(new TaskRetryAttemptBinding(nextId(), checkpoint.checkpointId(),
+                        com.wish.rd.engine.retry.model.TaskRetryAttemptKind.AGENT_STAGE, stage.role(),
+                        stage.stageRunId(), "", stage.attemptNo(), 0));
+            }
+            if (bindings.stream().noneMatch(binding -> binding.role() == role)) {
+                throw new IllegalStateException("retry route did not create its primary role attempt: " + role);
+            }
+            return List.copyOf(bindings);
+        }
+        if (point.failedAiReviewRunId().isBlank()) {
+            throw new IllegalStateException("direct AI retry has no failed review identity");
+        }
+        var review = aiReviewRunStore.retry(point.failedAiReviewRunId(), nextId(), now());
+        return List.of(new TaskRetryAttemptBinding(nextId(), checkpoint.checkpointId(),
+                com.wish.rd.engine.retry.model.TaskRetryAttemptKind.AI_REVIEW, null,
+                review.runId(), "", review.attemptNo(), 0));
+    }
+
+    private static String targetBindingId(TaskRetryRoute route, List<TaskRetryAttemptBinding> bindings) {
+        if (route.primaryAttemptKind() == null) {
+            return "";
+        }
+        return bindings.stream()
+                .filter(binding -> binding.kind() == route.primaryAttemptKind())
+                .filter(binding -> route.role().equals(binding.role() == null ? "REQUIREMENT_DELIVERY"
+                        : binding.role().name()))
+                .map(TaskRetryAttemptBinding::bindingId)
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException("retry route primary binding is missing"));
     }
 
     private void validateCommand(TaskFailureRecoverySnapshot snapshot, TaskRetryCommand command) {
@@ -300,6 +419,21 @@ public final class TaskRetryEngine {
         if (expectedSourceTaskVersion > 0L && expectedSourceTaskVersion != retryPoint.sourceTaskVersion()) {
             throw new IllegalStateException("retry failure source version changed: expected "
                     + expectedSourceTaskVersion + " but was " + retryPoint.sourceTaskVersion());
+        }
+        String expectedCommandId = command.expectedFailedStageCommandId();
+        if (!expectedCommandId.isBlank() && !expectedCommandId.equals(retryPoint.failedStageCommandId())) {
+            throw new IllegalStateException("retry failure command changed: expected " + expectedCommandId
+                    + " but was " + retryPoint.failedStageCommandId());
+        }
+        String expectedStage = command.expectedFailedStage();
+        if (!expectedStage.isBlank() && !expectedStage.equals(retryPoint.failedStage())) {
+            throw new IllegalStateException("retry failure command stage changed: expected " + expectedStage
+                    + " but was " + retryPoint.failedStage());
+        }
+        long expectedFence = command.expectedSourceFencingToken();
+        if (expectedFence > 0L && expectedFence != retryPoint.sourceFencingToken()) {
+            throw new IllegalStateException("retry failure source fence changed: expected "
+                    + expectedFence + " but was " + retryPoint.sourceFencingToken());
         }
         List<String> evidenceMaterialIds = command.evidenceMaterialIds();
         Set<String> uniqueMaterialIds = new HashSet<>(evidenceMaterialIds);
@@ -366,7 +500,9 @@ public final class TaskRetryEngine {
         }
         return new TaskRetryPoint(point.taskId(), point.failurePhase(), overrideRole,
                 point.failedStageRunId(), point.failedRetrievalRunId(), point.failedAiReviewRunId(),
-                point.reason(), point.sourceTaskVersion());
+                point.reason(), point.sourceTaskVersion(), point.sourceFencingToken(),
+                point.failedStageCommandId(), point.failedStage(), point.sourcePolicyRunId(),
+                point.sourcePlanDigest(), point.publicationOperationId());
     }
 
     private void validateExistingCheckpoint(TaskRetryCheckpoint checkpoint, TaskRetryCommand command) {

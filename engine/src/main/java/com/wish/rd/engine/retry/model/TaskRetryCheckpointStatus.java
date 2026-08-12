@@ -4,6 +4,7 @@ package com.wish.rd.engine.retry.model;
 public enum TaskRetryCheckpointStatus {
     CREATED,
     DISPATCHED,
+    WAITING_APPROVAL,
     SUCCEEDED,
     FAILED_RETRYABLE,
     FAILED_NEEDS_HUMAN,

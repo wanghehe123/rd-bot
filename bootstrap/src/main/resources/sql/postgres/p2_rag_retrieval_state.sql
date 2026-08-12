@@ -33,6 +33,33 @@ CREATE INDEX IF NOT EXISTS idx_rd_rag_retrieval_runs_task
 CREATE INDEX IF NOT EXISTS idx_rd_rag_retrieval_runs_status
     ON rd_rag_retrieval_runs (status, lease_until, updated_at);
 
+-- Immutable audit for opt-in iterative retrieval rounds. Query/evidence IDs are bounded
+-- projections; full content remains in retrieval artifacts.
+CREATE TABLE IF NOT EXISTS rd_retrieval_round_audits (
+    id                         BIGINT PRIMARY KEY,
+    task_id                    BIGINT NOT NULL,
+    run_id                     BIGINT NOT NULL REFERENCES rd_rag_retrieval_runs(id) ON DELETE CASCADE,
+    round_no                   INTEGER NOT NULL,
+    query_preview              TEXT NOT NULL DEFAULT '',
+    candidate_evidence_ids_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+    selected_evidence_ids_json  JSONB NOT NULL DEFAULT '[]'::jsonb,
+    missing_evidence_types_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+    information_gain           INTEGER NOT NULL DEFAULT 0,
+    cumulative_tokens          BIGINT NOT NULL DEFAULT 0,
+    elapsed_ms                 BIGINT NOT NULL DEFAULT 0,
+    stop_reason                VARCHAR(64) NOT NULL DEFAULT '',
+    scope_fingerprint          VARCHAR(512) NOT NULL DEFAULT '',
+    recorded_at                TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uk_rd_retrieval_round_audit_run_round UNIQUE (run_id, round_no),
+    CONSTRAINT ck_rd_retrieval_round_audit_round CHECK (round_no > 0),
+    CONSTRAINT ck_rd_retrieval_round_audit_information_gain CHECK (information_gain >= 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_rd_retrieval_round_audits_task
+    ON rd_retrieval_round_audits (task_id, recorded_at, id);
+CREATE INDEX IF NOT EXISTS idx_rd_retrieval_round_audits_run
+    ON rd_retrieval_round_audits (run_id, round_no, id);
+
 CREATE TABLE IF NOT EXISTS rd_rag_retrieval_events (
     id BIGINT PRIMARY KEY,
     run_id BIGINT NOT NULL REFERENCES rd_rag_retrieval_runs(id) ON DELETE CASCADE,

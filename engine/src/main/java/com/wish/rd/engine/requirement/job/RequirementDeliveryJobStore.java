@@ -23,6 +23,14 @@ public interface RequirementDeliveryJobStore {
     List<RequirementDeliveryJob> recoverable(long now);
 
     /**
+     * Returns a bounded recovery page. Implementations should push the limit into the durable
+     * query; the default keeps source compatibility for lightweight stores.
+     */
+    default List<RequirementDeliveryJob> recoverable(long now, int limit) {
+        return recoverable(now).stream().limit(Math.max(1, limit)).toList();
+    }
+
+    /**
      * Returns non-expired RUNNING jobs used for fair-schedule in-flight accounting.
      * Expired leases are excluded (they appear in {@link #recoverable(long)} instead).
      *

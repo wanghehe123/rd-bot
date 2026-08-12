@@ -83,6 +83,14 @@ public final class InMemoryRequirementDeliveryJobStore implements RequirementDel
     }
 
     @Override
+    public synchronized List<RequirementDeliveryJob> recoverable(long now, int limit) {
+        return jobsById.values().stream()
+                .filter(job -> recoverableCandidate(job, now))
+                .limit(Math.max(1, limit))
+                .toList();
+    }
+
+    @Override
     public synchronized List<RequirementDeliveryJob> listInFlight(long now) {
         return jobsById.values().stream()
                 .filter(job -> job.status() == RequirementDeliveryJobStatus.RUNNING)

@@ -12,8 +12,11 @@ import com.wish.rd.engine.requirement.review.model.AiReviewDecision;
 import com.wish.rd.engine.requirement.review.model.AiReviewRun;
 import com.wish.rd.engine.requirement.review.model.AiReviewRunStatus;
 import com.wish.rd.engine.retry.impl.InMemoryTaskRetryCheckpointStore;
+import com.wish.rd.engine.retry.impl.InMemoryTaskRetryFailureProvenanceStore;
+import com.wish.rd.engine.retry.model.TaskFailurePhase;
 import com.wish.rd.engine.retry.model.TaskRetryCommand;
 import com.wish.rd.engine.retry.model.TaskRetryCheckpointStatus;
+import com.wish.rd.engine.retry.model.TaskRetryFailureProvenance;
 import com.wish.rd.rag.retrieval.run.model.EvidenceQualityDecision;
 import com.wish.rd.rag.retrieval.run.model.RetrievalConsumerType;
 import com.wish.rd.rag.retrieval.run.model.RetrievalRun;
@@ -37,6 +40,68 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class TaskRetryEngineTest {
+
+    @Test
+    void rejectsStaleExactCommandStageAndFenceGuardsBeforeCreatingACheckpoint() {
+        InMemoryAgentStageRunStore stages = new InMemoryAgentStageRunStore();
+        stages.save(stage("coding-1", AgentRole.CODING_AGENT, 1, AgentStageStatus.FAILED_RETRYABLE));
+        InMemoryRetrievalRunStore retrievals = new InMemoryRetrievalRunStore();
+        InMemoryAiReviewRunStore reviews = new InMemoryAiReviewRunStore();
+        InMemoryTaskRetryCheckpointStore checkpoints = new InMemoryTaskRetryCheckpointStore();
+        FakeTaskPort tasks = new FakeTaskPort(task(RdTaskStatus.FAILED_NEEDS_HUMAN, "{}"));
+        InMemoryTaskRetryFailureProvenanceStore provenance = new InMemoryTaskRetryFailureProvenanceStore();
+        provenance.save(new TaskRetryFailureProvenance(
+                "provenance-1", "task-1", "command-17", 2,
+                "ROLE_EXECUTION:CODING_AGENT", TaskFailurePhase.AGENT_ROLE,
+                RdTaskStatus.FAILED_NEEDS_HUMAN, 300L, 400L,
+                "coding-1", "", "", "policy-1", "sha256:" + "a".repeat(64), "",
+                "TECHNICAL_EXHAUSTED", 500L));
+        TaskFailureRecoveryService recovery = new TaskFailureRecoveryService(
+                tasks, stages, new InMemoryAgentStageArtifactStore(), retrievals, reviews, checkpoints,
+                provenance, new TaskRetryPointResolver(), new TaskFailureDiagnosticParser());
+        TaskRetryEngine engine = new TaskRetryEngine(
+                tasks, stages, retrievals, reviews, checkpoints, new InMemoryTaskMaterialStore(), recovery,
+                new TaskRetryPointResolver(), (taskId, point) -> { }, () -> "retry-1", () -> 1_000L);
+
+        assertThrows(IllegalStateException.class, () -> engine.retry(
+                "task-1", "USER", guardedCommand("command-old", "ROLE_EXECUTION:CODING_AGENT", 400L)));
+        assertThrows(IllegalStateException.class, () -> engine.retry(
+                "task-1", "USER", guardedCommand("command-17", "ROLE_EXECUTION:QA_AGENT", 400L)));
+        assertThrows(IllegalStateException.class, () -> engine.retry(
+                "task-1", "USER", guardedCommand("command-17", "ROLE_EXECUTION:CODING_AGENT", 399L)));
+        assertEquals(List.of(), checkpoints.listByTask("task-1"));
+    }
+
+    @Test
+    void previewUsesAuthoritativePublicationProvenanceWhenNoAgentStageFailed() {
+        InMemoryAgentStageRunStore stages = new InMemoryAgentStageRunStore();
+        InMemoryRetrievalRunStore retrievals = new InMemoryRetrievalRunStore();
+        InMemoryAiReviewRunStore reviews = new InMemoryAiReviewRunStore();
+        InMemoryTaskRetryCheckpointStore checkpoints = new InMemoryTaskRetryCheckpointStore();
+        FakeTaskPort tasks = new FakeTaskPort(task(RdTaskStatus.FAILED_RETRYABLE, "{}"));
+        InMemoryTaskRetryFailureProvenanceStore provenance = new InMemoryTaskRetryFailureProvenanceStore();
+        String operationId = "sha256:" + "b".repeat(64);
+        provenance.save(new TaskRetryFailureProvenance(
+                "provenance-pub", "task-1", "command-pub", 3,
+                "PUBLICATION:" + operationId, TaskFailurePhase.PR_PUBLICATION,
+                RdTaskStatus.FAILED_RETRYABLE, 300L, 400L,
+                "", "", "", "policy-1", "sha256:" + "a".repeat(64), operationId,
+                "UNKNOWN_REMOTE_RESULT", 500L));
+        TaskFailureRecoveryService recovery = new TaskFailureRecoveryService(
+                tasks, stages, new InMemoryAgentStageArtifactStore(), retrievals, reviews, checkpoints,
+                provenance, new TaskRetryPointResolver(), new TaskFailureDiagnosticParser());
+        TaskRetryEngine engine = new TaskRetryEngine(
+                tasks, stages, retrievals, reviews, checkpoints, new InMemoryTaskMaterialStore(), recovery,
+                new TaskRetryPointResolver(), (taskId, point) -> { }, () -> "retry-1", () -> 1_000L);
+
+        var point = engine.preview("task-1");
+
+        assertEquals(TaskFailurePhase.PR_PUBLICATION, point.failurePhase());
+        assertEquals("PUBLICATION:" + operationId, point.failedStage());
+        assertEquals(operationId, point.publicationOperationId());
+        assertThrows(IllegalStateException.class, () -> new TaskRetryPointResolver().resolve(
+                tasks.getRequirementTask("task-1"), List.of(), List.of(), List.of()));
+    }
 
     @Test
     void createsNewAttemptsFromFailedCodingRoleAndDispatchesOnce() {
@@ -519,6 +584,12 @@ class TaskRetryEngineTest {
                         status.name().startsWith("FAILED") ? "failed" : "", 100L + attempt);
     }
 
+    private TaskRetryCommand guardedCommand(String commandId, String stage, long fence) {
+        return new TaskRetryCommand(
+                "coding-1", "", "", 300L, "", List.of(), "",
+                commandId, stage, fence);
+    }
+
     private RetrievalRun retrievalRun(String runId) {
         return new RetrievalRun(
                 runId, "task-1", RetrievalConsumerType.REQUIREMENT_BASE, "", "", 1, "",
@@ -533,7 +604,7 @@ class TaskRetryEngineTest {
                 "task-1", "REQUIREMENT", "ADMIN", "source", "", "P1", status,
                 "订单状态筛选", "project-1", "waimai", "外卖项目", "https://github.example/waimai",
                 "owner", "repo", "main", "feature/status", "支持状态筛选", "[\"筛选正确\"]",
-                "prompt", resultJson, "", "failed", 10L, 300L, false);
+                "prompt", resultJson, "", "failed", 10L, 300L, false, 0L, 300L, 400L);
     }
 
     private static final class FakeTaskPort implements TaskRetryTaskPort {
@@ -551,14 +622,16 @@ class TaskRetryEngineTest {
         @Override
         public RdRequirementTask markRecovering(String taskId, String reason) {
             task = task.withState(RdTaskStatus.RECOVERING, "", "", "", reason,
-                    task.updateTimeEpochMillis() + 1L);
+                    task.updateTimeEpochMillis() + 1L)
+                    .withConcurrency(task.version() + 1L, task.fencingToken() + 1L);
             return task;
         }
 
         @Override
         public RdRequirementTask markRetryPreparationFailed(String taskId, String reason) {
             task = task.withState(RdTaskStatus.FAILED_RETRYABLE, "", task.executionResultJson(), "", reason,
-                    task.updateTimeEpochMillis() + 1L);
+                    task.updateTimeEpochMillis() + 1L)
+                    .withConcurrency(task.version() + 1L, task.fencingToken() + 1L);
             return task;
         }
     }

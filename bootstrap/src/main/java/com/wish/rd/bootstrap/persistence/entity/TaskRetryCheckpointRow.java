@@ -22,6 +22,18 @@ public class TaskRetryCheckpointRow {
     public String idempotencyKey;
     public String sourceTaskStatus;
     public Long sourceTaskVersion;
+    public Long sourceFencingToken;
+    public Long failedStageCommandId;
+    public String failedStage;
+    public Long sourcePolicyRunId;
+    public Long policyRunId;
+    public String sourcePlanDigest;
+    public String authorizationPlanDigest;
+    public String publicationOperationId;
+    public Long dispatchTaskVersion;
+    public Long dispatchFencingToken;
+    public Long dispatchCommandId;
+    public Long businessGeneration;
     @TableField("operator_note")
     public String operatorNote;
     @TableField("evidence_material_ids")

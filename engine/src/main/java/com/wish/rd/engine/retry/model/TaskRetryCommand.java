@@ -10,7 +10,10 @@ public record TaskRetryCommand(
         long expectedSourceTaskVersion,
         String operatorNote,
         List<String> evidenceMaterialIds,
-        String retryFromRoleOverride
+        String retryFromRoleOverride,
+        String expectedFailedStageCommandId,
+        String expectedFailedStage,
+        long expectedSourceFencingToken
 ) {
 
     private static final int MAX_NOTE_LENGTH = 8_000;
@@ -37,6 +40,26 @@ public record TaskRetryCommand(
             throw new IllegalArgumentException("evidenceMaterialIds must not contain blank values");
         }
         retryFromRoleOverride = safe(retryFromRoleOverride);
+        expectedFailedStageCommandId = safe(expectedFailedStageCommandId);
+        expectedFailedStage = safe(expectedFailedStage);
+        if (expectedSourceFencingToken < 0L) {
+            throw new IllegalArgumentException("expectedSourceFencingToken must not be negative");
+        }
+    }
+
+    /** Keeps callers created before exact command/stage/fence guards source-compatible. */
+    public TaskRetryCommand(
+            String expectedFailedStageRunId,
+            String expectedFailedRetrievalRunId,
+            String expectedFailedAiReviewRunId,
+            long expectedSourceTaskVersion,
+            String operatorNote,
+            List<String> evidenceMaterialIds,
+            String retryFromRoleOverride
+    ) {
+        this(expectedFailedStageRunId, expectedFailedRetrievalRunId, expectedFailedAiReviewRunId,
+                expectedSourceTaskVersion, operatorNote, evidenceMaterialIds, retryFromRoleOverride,
+                "", "", 0L);
     }
 
     /** Keeps callers without a retry-from-role override source-compatible. */

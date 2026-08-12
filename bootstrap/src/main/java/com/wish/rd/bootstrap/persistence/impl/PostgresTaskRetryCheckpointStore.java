@@ -52,7 +52,9 @@ public class PostgresTaskRetryCheckpointStore implements TaskRetryCheckpointStor
             throw new IllegalStateException("retry checkpoint conflict without existing row: "
                     + checkpoint.idempotencyKey());
         }
-        return new CreateResult(toCheckpoint(existing), false);
+        TaskRetryCheckpoint effective = toCheckpoint(existing);
+        requireSameReplayIdentity(checkpoint, effective);
+        return new CreateResult(effective, false);
     }
 
     @Override
@@ -66,7 +68,8 @@ public class PostgresTaskRetryCheckpointStore implements TaskRetryCheckpointStor
         return mapper.selectList(new QueryWrapper<TaskRetryCheckpointRow>()
                         .eq("task_id", PostgresPersistenceSupport.parseId(taskId))
                         .in("status", TaskRetryCheckpointStatus.CREATED.name(),
-                                TaskRetryCheckpointStatus.DISPATCHED.name()))
+                                TaskRetryCheckpointStatus.DISPATCHED.name(),
+                                TaskRetryCheckpointStatus.WAITING_APPROVAL.name()))
                 .stream()
                 .max(Comparator.comparing((TaskRetryCheckpointRow row) -> row.attemptNo)
                         .thenComparing(row -> row.createdAt)
@@ -107,20 +110,44 @@ public class PostgresTaskRetryCheckpointStore implements TaskRetryCheckpointStor
         return updated;
     }
 
+    @Override
+    @Transactional
+    public TaskRetryCheckpoint dispatch(
+            String checkpointId,
+            long dispatchTaskVersion,
+            long dispatchFencingToken,
+            String dispatchCommandId,
+            long nowEpochMillis
+    ) {
+        TaskRetryCheckpoint current = find(checkpointId)
+                .orElseThrow(() -> new NoSuchElementException("retry checkpoint not found: " + checkpointId));
+        TaskRetryCheckpoint updated = current.dispatched(
+                dispatchTaskVersion, dispatchFencingToken, dispatchCommandId, nowEpochMillis);
+        if (mapper.dispatch(toRow(updated)) != 1) {
+            throw new IllegalStateException("retry checkpoint dispatch compare-and-set failed: " + checkpointId);
+        }
+        return updated;
+    }
+
     private static void ensureTransition(TaskRetryCheckpointStatus source, TaskRetryCheckpointStatus target) {
         if (source == null || target == null || source.isTerminal()) {
             throw new IllegalStateException("terminal or null retry checkpoint cannot transition");
         }
-        boolean allowed = source == TaskRetryCheckpointStatus.CREATED
-                ? target == TaskRetryCheckpointStatus.DISPATCHED
-                    || target == TaskRetryCheckpointStatus.FAILED_RETRYABLE
-                    || target == TaskRetryCheckpointStatus.FAILED_NEEDS_HUMAN
-                    || target == TaskRetryCheckpointStatus.CANCELLED
-                : source == TaskRetryCheckpointStatus.DISPATCHED
-                    && (target == TaskRetryCheckpointStatus.SUCCEEDED
-                    || target == TaskRetryCheckpointStatus.FAILED_RETRYABLE
-                    || target == TaskRetryCheckpointStatus.FAILED_NEEDS_HUMAN
-                    || target == TaskRetryCheckpointStatus.CANCELLED);
+        boolean allowed = (source == TaskRetryCheckpointStatus.CREATED
+                && (target == TaskRetryCheckpointStatus.DISPATCHED
+                || target == TaskRetryCheckpointStatus.FAILED_RETRYABLE
+                || target == TaskRetryCheckpointStatus.FAILED_NEEDS_HUMAN
+                || target == TaskRetryCheckpointStatus.CANCELLED))
+                || (source == TaskRetryCheckpointStatus.DISPATCHED
+                && (target == TaskRetryCheckpointStatus.WAITING_APPROVAL
+                || target == TaskRetryCheckpointStatus.SUCCEEDED
+                || target == TaskRetryCheckpointStatus.FAILED_RETRYABLE
+                || target == TaskRetryCheckpointStatus.FAILED_NEEDS_HUMAN
+                || target == TaskRetryCheckpointStatus.CANCELLED))
+                || (source == TaskRetryCheckpointStatus.WAITING_APPROVAL
+                && (target == TaskRetryCheckpointStatus.DISPATCHED
+                || target == TaskRetryCheckpointStatus.FAILED_NEEDS_HUMAN
+                || target == TaskRetryCheckpointStatus.CANCELLED));
         if (!allowed) {
             throw new IllegalStateException("illegal retry checkpoint transition: " + source + " -> " + target);
         }
@@ -139,6 +166,19 @@ public class PostgresTaskRetryCheckpointStore implements TaskRetryCheckpointStor
         row.idempotencyKey = checkpoint.idempotencyKey();
         row.sourceTaskStatus = checkpoint.sourceTaskStatus().name();
         row.sourceTaskVersion = checkpoint.sourceTaskVersion();
+        row.sourceFencingToken = checkpoint.sourceFencingToken();
+        row.failedStageCommandId = nullableId(checkpoint.failedStageCommandId());
+        row.failedStage = checkpoint.failedStage();
+        row.sourcePolicyRunId = nullableId(checkpoint.sourcePolicyRunId());
+        row.policyRunId = nullableId(checkpoint.policyRunId());
+        row.sourcePlanDigest = checkpoint.sourcePlanDigest();
+        row.authorizationPlanDigest = checkpoint.authorizationPlanDigest();
+        row.publicationOperationId = checkpoint.publicationOperationId().isBlank()
+                ? null : checkpoint.publicationOperationId();
+        row.dispatchTaskVersion = checkpoint.dispatchTaskVersion();
+        row.dispatchFencingToken = checkpoint.dispatchFencingToken();
+        row.dispatchCommandId = nullableId(checkpoint.dispatchCommandId());
+        row.businessGeneration = checkpoint.businessGeneration();
         row.operatorNote = checkpoint.operatorNote();
         row.evidenceMaterialIdsJson = writeEvidenceMaterialIds(checkpoint.evidenceMaterialIds());
         row.status = checkpoint.status().name();
@@ -162,6 +202,14 @@ public class PostgresTaskRetryCheckpointStore implements TaskRetryCheckpointStor
                 safe(row.idempotencyKey),
                 enumValue(RdTaskStatus.class, row.sourceTaskStatus, RdTaskStatus.FAILED_RETRYABLE),
                 row.sourceTaskVersion == null ? 0L : row.sourceTaskVersion,
+                row.sourceFencingToken == null ? 0L : row.sourceFencingToken,
+                PostgresPersistenceSupport.idString(row.failedStageCommandId), safe(row.failedStage),
+                PostgresPersistenceSupport.idString(row.sourcePolicyRunId), PostgresPersistenceSupport.idString(row.policyRunId),
+                safe(row.sourcePlanDigest), safe(row.authorizationPlanDigest), safe(row.publicationOperationId),
+                row.dispatchTaskVersion == null ? 0L : row.dispatchTaskVersion,
+                row.dispatchFencingToken == null ? 0L : row.dispatchFencingToken,
+                PostgresPersistenceSupport.idString(row.dispatchCommandId),
+                row.businessGeneration == null ? 0L : row.businessGeneration,
                 safe(row.operatorNote),
                 readEvidenceMaterialIds(row.evidenceMaterialIdsJson),
                 enumValue(TaskRetryCheckpointStatus.class, row.status, TaskRetryCheckpointStatus.CREATED),
@@ -210,5 +258,30 @@ public class PostgresTaskRetryCheckpointStore implements TaskRetryCheckpointStor
 
     private static String safe(String value) {
         return value == null ? "" : value.strip();
+    }
+
+    /** Proposed ids and lifecycle fields may differ on a replay; source/route input may not. */
+    private static void requireSameReplayIdentity(TaskRetryCheckpoint requested, TaskRetryCheckpoint existing) {
+        boolean same = requested.taskId().equals(existing.taskId())
+                && requested.failurePhase() == existing.failurePhase()
+                && requested.retryFromRole() == existing.retryFromRole()
+                && requested.failedStageRunId().equals(existing.failedStageRunId())
+                && requested.failedRetrievalRunId().equals(existing.failedRetrievalRunId())
+                && requested.failedAiReviewRunId().equals(existing.failedAiReviewRunId())
+                && requested.attemptNo() == existing.attemptNo()
+                && requested.sourceTaskStatus() == existing.sourceTaskStatus()
+                && requested.sourceTaskVersion() == existing.sourceTaskVersion()
+                && requested.sourceFencingToken() == existing.sourceFencingToken()
+                && requested.failedStageCommandId().equals(existing.failedStageCommandId())
+                && requested.failedStage().equals(existing.failedStage())
+                && requested.sourcePolicyRunId().equals(existing.sourcePolicyRunId())
+                && requested.sourcePlanDigest().equals(existing.sourcePlanDigest())
+                && requested.publicationOperationId().equals(existing.publicationOperationId())
+                && requested.operatorNote().equals(existing.operatorNote())
+                && requested.evidenceMaterialIds().equals(existing.evidenceMaterialIds())
+                && requested.reason().equals(existing.reason());
+        if (!same) {
+            throw new IllegalStateException("retry checkpoint idempotency conflict has different immutable source or route");
+        }
     }
 }

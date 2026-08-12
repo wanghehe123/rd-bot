@@ -25,6 +25,15 @@ public interface TaskRetryCheckpointStore {
             long nowEpochMillis
     );
 
+    /** Atomically records the exact first command and advances a newly-created checkpoint. */
+    TaskRetryCheckpoint dispatch(
+            String checkpointId,
+            long dispatchTaskVersion,
+            long dispatchFencingToken,
+            String dispatchCommandId,
+            long nowEpochMillis
+    );
+
     record CreateResult(TaskRetryCheckpoint checkpoint, boolean created) {
     }
 }

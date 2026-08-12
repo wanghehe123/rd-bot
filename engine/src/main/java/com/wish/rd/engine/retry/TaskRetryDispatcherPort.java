@@ -7,4 +7,9 @@ import com.wish.rd.engine.retry.model.TaskRetryPoint;
 public interface TaskRetryDispatcherPort {
 
     void dispatch(String taskId, TaskRetryPoint retryPoint);
+
+    /** Wakes the already-persisted first command of one exact checkpoint generation. */
+    default void dispatchCheckpoint(String checkpointId) {
+        throw new UnsupportedOperationException("checkpoint-bound retry dispatch is not configured: " + checkpointId);
+    }
 }

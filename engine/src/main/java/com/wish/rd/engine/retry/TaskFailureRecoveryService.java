@@ -7,6 +7,7 @@ import com.wish.rd.engine.agent.model.AgentStageRun;
 import com.wish.rd.engine.requirement.review.AiReviewRunStore;
 import com.wish.rd.engine.retry.model.TaskFailureDiagnostic;
 import com.wish.rd.engine.retry.model.TaskFailureRecoverySnapshot;
+import com.wish.rd.engine.retry.model.TaskRetryFailureProvenance;
 import com.wish.rd.engine.retry.model.TaskRetryPoint;
 import com.wish.rd.rag.retrieval.run.RetrievalRunStore;
 import com.wish.rd.rag.runtime.model.RdRequirementTask;
@@ -28,6 +29,7 @@ public final class TaskFailureRecoveryService {
     private final RetrievalRunStore retrievalRunStore;
     private final AiReviewRunStore aiReviewRunStore;
     private final TaskRetryCheckpointStore checkpointStore;
+    private final TaskRetryFailureProvenanceStore failureProvenanceStore;
     private final TaskRetryPointResolver resolver;
     private final TaskFailureDiagnosticParser parser;
 
@@ -48,7 +50,8 @@ public final class TaskFailureRecoveryService {
             AgentStageArtifactStore artifactStore,
             RetrievalRunStore retrievalRunStore,
             AiReviewRunStore aiReviewRunStore,
-            TaskRetryCheckpointStore checkpointStore
+            TaskRetryCheckpointStore checkpointStore,
+            TaskRetryFailureProvenanceStore failureProvenanceStore
     ) {
         this(
                 taskPort,
@@ -57,9 +60,24 @@ public final class TaskFailureRecoveryService {
                 retrievalRunStore,
                 aiReviewRunStore,
                 checkpointStore,
+                failureProvenanceStore,
                 new TaskRetryPointResolver(),
                 new TaskFailureDiagnosticParser()
         );
+    }
+
+    /** Compatibility constructor for memory/tests configured before durable provenance existed. */
+    public TaskFailureRecoveryService(
+            TaskRetryTaskPort taskPort,
+            AgentStageRunStore stageRunStore,
+            AgentStageArtifactStore artifactStore,
+            RetrievalRunStore retrievalRunStore,
+            AiReviewRunStore aiReviewRunStore,
+            TaskRetryCheckpointStore checkpointStore
+    ) {
+        this(taskPort, stageRunStore, artifactStore, retrievalRunStore, aiReviewRunStore,
+                checkpointStore, TaskRetryFailureProvenanceStore.unavailable(),
+                new TaskRetryPointResolver(), new TaskFailureDiagnosticParser());
     }
 
     /**
@@ -81,6 +99,7 @@ public final class TaskFailureRecoveryService {
             RetrievalRunStore retrievalRunStore,
             AiReviewRunStore aiReviewRunStore,
             TaskRetryCheckpointStore checkpointStore,
+            TaskRetryFailureProvenanceStore failureProvenanceStore,
             TaskRetryPointResolver resolver,
             TaskFailureDiagnosticParser parser
     ) {
@@ -90,8 +109,25 @@ public final class TaskFailureRecoveryService {
         this.retrievalRunStore = Objects.requireNonNull(retrievalRunStore, "retrievalRunStore must not be null");
         this.aiReviewRunStore = Objects.requireNonNull(aiReviewRunStore, "aiReviewRunStore must not be null");
         this.checkpointStore = Objects.requireNonNull(checkpointStore, "checkpointStore must not be null");
+        this.failureProvenanceStore = Objects.requireNonNull(
+                failureProvenanceStore, "failureProvenanceStore must not be null");
         this.resolver = resolver == null ? new TaskRetryPointResolver() : resolver;
         this.parser = parser == null ? new TaskFailureDiagnosticParser() : parser;
+    }
+
+    /** Compatibility constructor for tests that intentionally exercise the legacy pure resolver. */
+    public TaskFailureRecoveryService(
+            TaskRetryTaskPort taskPort,
+            AgentStageRunStore stageRunStore,
+            AgentStageArtifactStore artifactStore,
+            RetrievalRunStore retrievalRunStore,
+            AiReviewRunStore aiReviewRunStore,
+            TaskRetryCheckpointStore checkpointStore,
+            TaskRetryPointResolver resolver,
+            TaskFailureDiagnosticParser parser
+    ) {
+        this(taskPort, stageRunStore, artifactStore, retrievalRunStore, aiReviewRunStore,
+                checkpointStore, TaskRetryFailureProvenanceStore.unavailable(), resolver, parser);
     }
 
     /**
@@ -103,12 +139,18 @@ public final class TaskFailureRecoveryService {
     public TaskFailureRecoverySnapshot snapshot(String taskId) {
         RdRequirementTask task = taskPort.getRequirementTask(taskId);
         List<AgentStageRun> stages = stageRunStore.listByTask(taskId);
-        TaskRetryPoint point = resolver.resolve(
-                task,
-                stages,
-                retrievalRunStore.listByTask(taskId),
-                aiReviewRunStore.listByTask(taskId)
-        );
+        var retrievals = retrievalRunStore.listByTask(taskId);
+        var reviews = aiReviewRunStore.listByTask(taskId);
+        TaskRetryFailureProvenance provenance = failureProvenanceStore.findExact(
+                task.taskId(), task.status(), task.version(), task.fencingToken()).orElse(null);
+        TaskRetryPoint point;
+        if (provenance != null) {
+            point = resolver.resolve(task, provenance, stages, retrievals, reviews);
+        } else if (failureProvenanceStore.authoritative()) {
+            throw new IllegalStateException("RETRY_POINT_AMBIGUOUS: " + task.taskId());
+        } else {
+            point = resolver.resolve(task, stages, retrievals, reviews);
+        }
         AgentStageRun failedStage = findStage(stages, point.failedStageRunId());
         AgentStageArtifact resultArtifact = findResultArtifact(task.taskId(), failedStage);
         String resultJson = resultArtifact == null
