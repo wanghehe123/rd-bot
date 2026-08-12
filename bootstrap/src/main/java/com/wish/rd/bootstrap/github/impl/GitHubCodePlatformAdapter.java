@@ -53,6 +53,10 @@ public class GitHubCodePlatformAdapter implements CodePlatformPort, PullRequestM
     private static final Base64.Encoder BASE64_URL = Base64.getUrlEncoder().withoutPadding();
     private static final Pattern MARKDOWN_LINK_PATTERN = Pattern.compile("\\[[^]]*]\\((https?://[^)\\s]+)\\)");
     private static final Pattern HTTP_URL_PATTERN = Pattern.compile("https?://[^\\s)]+");
+    private static final Pattern OPERATION_MARKER_PATTERN =
+            Pattern.compile("(?m)^rd-operation-id:\\s*(\\S+)\\s*$");
+    private static final Pattern CANDIDATE_PATCH_MARKER_PATTERN =
+            Pattern.compile("(?m)^rd-candidate-patch-sha256:\\s*(\\S+)\\s*$");
 
     private final GitHubCodePlatformProperties properties;
     private final ObjectMapper objectMapper;
@@ -194,7 +198,7 @@ public class GitHubCodePlatformAdapter implements CodePlatformPort, PullRequestM
         }
         GitHubHttpRequest request = findBranchHeadHttpRequest(command, authorizationHeader());
         GitHubHttpResponse response = sender.send(request);
-        if (response.statusCode() == 404) {
+        if (isConfirmedMissingGitRef(response.statusCode(), response.body())) {
             return Optional.empty();
         }
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
@@ -255,6 +259,32 @@ public class GitHubCodePlatformAdapter implements CodePlatformPort, PullRequestM
         String stderr = result.stderr().isBlank() ? "" : ": " + result.stderr();
         throw new IllegalStateException("GitHub gh api " + action + " failed with exit code "
                 + result.exitCode() + stderr);
+    }
+
+    /**
+     * GitHub GET /commits/{ref} returns 404 or 422 "No commit found for SHA"
+     * when the branch does not exist yet. That is confirmed absence, not an
+     * unknown remote result.
+     */
+    private static boolean isConfirmedMissingGitRef(int statusCode, String body) {
+        if (statusCode == 404) {
+            return true;
+        }
+        if (statusCode != 422) {
+            return false;
+        }
+        String haystack = body == null ? "" : body.toLowerCase();
+        return haystack.contains("no commit found") || haystack.isBlank();
+    }
+
+    private static boolean isConfirmedMissingGitRefCli(GitHubCliResult result) {
+        String stderr = result.stderr() == null ? "" : result.stderr().toLowerCase();
+        String stdout = result.stdout() == null ? "" : result.stdout().toLowerCase();
+        String haystack = stderr + " " + stdout;
+        return haystack.contains("404")
+                || haystack.contains("422")
+                || haystack.contains("not found")
+                || haystack.contains("no commit found");
     }
 
     private String authorizationHeader() {
@@ -372,10 +402,11 @@ public class GitHubCodePlatformAdapter implements CodePlatformPort, PullRequestM
             FindBranchHeadCommand command,
             String authorizationHeader
     ) {
+        // The commit endpoint supplies both the branch tip SHA and its message markers.
         // path() percent-encodes slashes so feature/x becomes feature%2Fx in the URL path.
         return new GitHubHttpRequest(
                 "GET",
-                apiUrl("/repos/%s/%s/git/ref/heads/%s".formatted(
+                apiUrl("/repos/%s/%s/commits/%s".formatted(
                         path(command.repoOwner()),
                         path(command.repoName()),
                         path(command.branch())
@@ -390,7 +421,7 @@ public class GitHubCodePlatformAdapter implements CodePlatformPort, PullRequestM
         GitHubCliResult result = cliRunner.run(List.of(
                 properties.getGhCliCommand(),
                 "api",
-                "repos/%s/%s/git/ref/heads/%s".formatted(
+                "repos/%s/%s/commits/%s".formatted(
                         command.repoOwner(),
                         command.repoName(),
                         encodedBranch
@@ -399,8 +430,7 @@ public class GitHubCodePlatformAdapter implements CodePlatformPort, PullRequestM
                 "GET"
         ));
         if (result.exitCode() != 0) {
-            String stderr = result.stderr() == null ? "" : result.stderr().toLowerCase();
-            if (stderr.contains("404") || stderr.contains("not found")) {
+            if (isConfirmedMissingGitRefCli(result)) {
                 return Optional.empty();
             }
             ensureSuccessfulCliResult("get branch head", result);
@@ -411,23 +441,37 @@ public class GitHubCodePlatformAdapter implements CodePlatformPort, PullRequestM
     private Optional<BranchHeadResult> toBranchHeadResult(FindBranchHeadCommand command, String body) {
         try {
             JsonNode root = objectMapper.readTree(body == null || body.isBlank() ? "{}" : body);
-            String sha = root.path("object").path("sha").asText("");
+            String sha = root.path("sha").asText("");
+            if (sha.isBlank()) {
+                // Keep parsing old /git/ref responses while a provider rollout is in progress.
+                sha = root.path("object").path("sha").asText("");
+            }
             if (sha.isBlank()) {
                 return Optional.empty();
             }
+            String commitMessage = root.path("commit").path("message").asText("");
+            Map<String, String> metadata = new LinkedHashMap<>();
+            metadata.put("provider", "github");
+            metadata.put("repository", command.repoOwner() + "/" + command.repoName());
+            metadata.put("branch", command.branch());
+            metadata.put("ref", root.path("ref").asText("refs/heads/" + command.branch()));
+            metadata.put("source", "branch-commit-lookup");
+            metadata.put("commitMessage", commitMessage);
+            metadata.put("operationId", commitMarker(commitMessage, OPERATION_MARKER_PATTERN));
+            metadata.put("candidatePatchSha256", commitMarker(commitMessage, CANDIDATE_PATCH_MARKER_PATTERN));
             return Optional.of(new BranchHeadResult(
                     sha,
-                    Map.of(
-                            "provider", "github",
-                            "repository", command.repoOwner() + "/" + command.repoName(),
-                            "branch", command.branch(),
-                            "ref", root.path("ref").asText(""),
-                            "source", "branch-head-lookup"
-                    )
+                    metadata
             ));
         } catch (JsonProcessingException exception) {
             throw new IllegalStateException("failed to parse GitHub branch head response", exception);
         }
+    }
+
+    private static String commitMarker(String commitMessage, Pattern pattern) {
+        String message = commitMessage == null ? "" : commitMessage;
+        Matcher matcher = pattern.matcher(message);
+        return matcher.find() ? matcher.group(1).strip() : "";
     }
 
     private Optional<PullRequestResult> toOpenPullRequestResult(FindOpenPullRequestCommand command, String body) {

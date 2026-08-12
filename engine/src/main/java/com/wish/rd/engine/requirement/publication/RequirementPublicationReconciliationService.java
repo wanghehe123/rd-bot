@@ -58,6 +58,12 @@ public final class RequirementPublicationReconciliationService {
                                 ));
                 if (branchHead instanceof RequirementPublicationReconcilePort.RemoteBranchHead.Present present
                         && !present.commitSha().isBlank()) {
+                    if (!present.matches(snapshot.operationId(), snapshot.candidatePatchSha256())) {
+                        return ledger.markNeedsHuman(
+                                operationId,
+                                "remote branch markers do not match publication operation or candidate patch"
+                        );
+                    }
                     ledger.reconcileBranchConfirmed(operationId, present.commitSha());
                 } else if (branchHead instanceof RequirementPublicationReconcilePort.RemoteBranchHead.Absent) {
                     return ledger.reconcileResetPrepared(operationId);

@@ -93,16 +93,25 @@ public final class EngineRequirementPublicationReconcileAdapter
                 || query.workBranch().isBlank()) {
             return new RemoteBranchHead.Unavailable();
         }
-        Optional<String> tip = codePlatform.findBranchHead(new FindBranchHeadCommand(
-                        query.repoOwner(),
-                        query.repoName(),
-                        query.workBranch()
-                ))
-                .map(BranchHeadResult::commitSha)
-                .filter(sha -> sha != null && !sha.isBlank());
+        Optional<BranchHeadResult> branchHead = codePlatform.findBranchHead(new FindBranchHeadCommand(
+                query.repoOwner(),
+                query.repoName(),
+                query.workBranch()
+        )).filter(head -> head.commitSha() != null && !head.commitSha().isBlank());
         // CodePlatform empty means confirmed absence (e.g. GitHub 404); transport errors throw.
-        return tip.<RemoteBranchHead>map(RemoteBranchHead.Present::new)
+        return branchHead.<RemoteBranchHead>map(head -> new RemoteBranchHead.Present(
+                        head.commitSha(),
+                        metadata(head, "operationId"),
+                        metadata(head, "candidatePatchSha256")
+                ))
                 .orElseGet(RemoteBranchHead.Absent::new);
+    }
+
+    private static String metadata(BranchHeadResult head, String key) {
+        if (head == null || head.metadata() == null) {
+            return "";
+        }
+        return safe(head.metadata().get(key));
     }
 
     private static boolean markersMatch(String prBody, String taskId, String operationId) {

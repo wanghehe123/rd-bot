@@ -56,6 +56,17 @@ public class PostgresRequirementPublicationStore implements RequirementPublicati
     }
 
     @Override
+    public Optional<RequirementPublication> findLatestByTaskId(String taskId) {
+        String normalizedTaskId = safe(taskId);
+        if (normalizedTaskId.isBlank()) {
+            return Optional.empty();
+        }
+        return Optional.ofNullable(mapper.selectLatestByTaskId(
+                PostgresPersistenceSupport.parseId(normalizedTaskId)
+        )).map(this::toPublication);
+    }
+
+    @Override
     public List<RequirementPublication> findDueForReconcile(long beforeEpochMillis, int limit) {
         int capped = Math.max(0, limit);
         if (capped == 0) {

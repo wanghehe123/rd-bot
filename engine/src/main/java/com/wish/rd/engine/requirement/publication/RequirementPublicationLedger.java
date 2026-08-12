@@ -1,6 +1,7 @@
 package com.wish.rd.engine.requirement.publication;
 
 import com.wish.rd.engine.requirement.publication.model.RequirementPublication;
+import com.wish.rd.engine.requirement.publication.model.RequirementPublicationPrepareCommand;
 import com.wish.rd.engine.requirement.publication.model.RequirementPublicationReplayDecision;
 import com.wish.rd.engine.requirement.publication.model.RequirementPublicationStatus;
 
@@ -267,10 +268,20 @@ public final class RequirementPublicationLedger {
     }
 
     /**
+     * Finds the newest publication state associated with one requirement task.
+     *
+     * @param taskId RD requirement task id
+     * @return latest publication when the task has produced a remote-side-effect intent
+     */
+    public Optional<RequirementPublication> findLatestByTaskId(String taskId) {
+        return store.findLatestByTaskId(taskId == null ? "" : taskId.strip());
+    }
+
+    /**
      * Pushes next_reconcile_at forward while status remains UNKNOWN_REMOTE_RESULT.
      *
      * @param operationId unique operation identity
-     * @param delayMillis delay from now
+     * @param delayMillis minimum delay after the later of now and the current schedule
      * @return updated publication
      */
     public RequirementPublication deferReconcile(String operationId, long delayMillis) {
@@ -278,7 +289,8 @@ public final class RequirementPublicationLedger {
         requireStatus(current, RequirementPublicationStatus.UNKNOWN_REMOTE_RESULT);
         long now = now();
         long delay = Math.max(1_000L, delayMillis);
-        return store.save(current.withNextReconcileAt(now + delay, now));
+        long base = Math.max(now, current.nextReconcileAtEpochMillis());
+        return store.save(current.withNextReconcileAt(base + delay, now));
     }
 
     private RequirementPublication require(String operationId) {

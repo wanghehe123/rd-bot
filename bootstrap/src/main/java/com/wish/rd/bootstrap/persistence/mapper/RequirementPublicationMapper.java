@@ -29,6 +29,39 @@ public interface RequirementPublicationMapper extends BaseMapper<RequirementPubl
     @Select("SELECT * FROM rd_requirement_publications WHERE operation_id = #{operationId} LIMIT 1")
     RequirementPublicationRow selectByOperationId(String operationId);
 
+    /** Locks one publication receipt for the enclosing stage-finalization transaction. */
+    @Select("""
+            SELECT * FROM rd_requirement_publications
+             WHERE operation_id = #{operationId}
+             FOR UPDATE
+            """)
+    RequirementPublicationRow selectByOperationIdForUpdate(
+            @org.apache.ibatis.annotations.Param("operationId") String operationId
+    );
+
+    /** Advances only the exact PR-confirmed publication receipt locked by the finalizer. */
+    @Update("""
+            UPDATE rd_requirement_publications
+               SET status = 'COMMITTED', version = version + 1, updated_at = #{updatedAt}
+             WHERE id = #{id} AND operation_id = #{operationId} AND task_id = #{taskId}
+               AND status = 'PR_CONFIRMED' AND version = #{expectedVersion}
+            """)
+    int commitConfirmedReceipt(
+            @org.apache.ibatis.annotations.Param("id") String id,
+            @org.apache.ibatis.annotations.Param("operationId") String operationId,
+            @org.apache.ibatis.annotations.Param("taskId") Long taskId,
+            @org.apache.ibatis.annotations.Param("expectedVersion") Integer expectedVersion,
+            @org.apache.ibatis.annotations.Param("updatedAt") java.time.OffsetDateTime updatedAt
+    );
+
+    @Select("""
+            SELECT * FROM rd_requirement_publications
+             WHERE task_id = #{taskId}
+             ORDER BY updated_at DESC, id DESC
+             LIMIT 1
+            """)
+    RequirementPublicationRow selectLatestByTaskId(@org.apache.ibatis.annotations.Param("taskId") Long taskId);
+
     @Select("""
             SELECT * FROM rd_requirement_publications
              WHERE status = 'UNKNOWN_REMOTE_RESULT'

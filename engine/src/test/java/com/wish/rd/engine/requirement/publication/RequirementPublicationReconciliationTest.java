@@ -8,11 +8,13 @@ import com.wish.rd.engine.requirement.publication.RequirementPublicationReconcil
 import com.wish.rd.engine.requirement.publication.RequirementPublicationReconcilePort.RemoteBranchHead;
 import com.wish.rd.engine.requirement.publication.impl.InMemoryRequirementPublicationStore;
 import com.wish.rd.engine.requirement.publication.model.RequirementPublication;
+import com.wish.rd.engine.requirement.publication.model.RequirementPublicationPrepareCommand;
 import com.wish.rd.engine.requirement.publication.model.RequirementPublicationReplayDecision;
 import com.wish.rd.engine.requirement.publication.model.RequirementPublicationStatus;
 import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -36,6 +38,24 @@ class RequirementPublicationReconciliationTest {
         assertEquals(first.id(), second.id());
         assertEquals(1, store.findByOperationId("op-1").orElseThrow().version());
         assertEquals(RequirementPublicationReplayDecision.ALLOW_PUSH, ledger.decideReplay("op-1"));
+    }
+
+    @Test
+    void shouldFindLatestPublicationForTaskByUpdateTimeThenId() {
+        AtomicLong clock = new AtomicLong(10L);
+        RequirementPublicationLedger taskLedger = new RequirementPublicationLedger(
+                new InMemoryRequirementPublicationStore(),
+                clock::getAndIncrement,
+                new IncrementingIdGenerator()
+        );
+        taskLedger.prepare(command("op-first", "task-latest", "patch-first"));
+        taskLedger.prepare(command("op-second", "task-latest", "patch-second"));
+        taskLedger.markUnknownRemoteResult("op-first", "push timed out");
+
+        RequirementPublication latest = taskLedger.findLatestByTaskId("task-latest").orElseThrow();
+
+        assertEquals("op-first", latest.operationId());
+        assertEquals(RequirementPublicationStatus.UNKNOWN_REMOTE_RESULT, latest.status());
     }
 
     @Test
@@ -173,6 +193,33 @@ class RequirementPublicationReconciliationTest {
     }
 
     @Test
+    void shouldEscalateUnknownWhenRemoteBranchHasNoOperationMarkers() {
+        ledger.prepare(command("op-unmarked", "task-unmarked", "patch-unmarked"));
+        ledger.markUnknownRemoteResult("op-unmarked", "GitHub push timed out");
+
+        RequirementPublicationReconciliationService service = new RequirementPublicationReconciliationService(
+                ledger,
+                new RequirementPublicationReconcilePort() {
+                    @Override
+                    public Optional<MatchedOpenPullRequest> findMatchingOpenPullRequest(ReconcileQuery query) {
+                        return Optional.empty();
+                    }
+
+                    @Override
+                    public RemoteBranchHead resolveRemoteBranchHead(BranchHeadQuery query) {
+                        return new RemoteBranchHead.Present("unmarked-remote-head");
+                    }
+                }
+        );
+
+        RequirementPublication reconciled = service.reconcileUnknown(
+                "op-unmarked", "task-unmarked", "acme", "repo");
+
+        assertEquals(RequirementPublicationStatus.NEEDS_HUMAN, reconciled.status());
+        assertEquals(RequirementPublicationReplayDecision.NEEDS_HUMAN, ledger.decideReplay("op-unmarked"));
+    }
+
+    @Test
     void shouldMarkNeedsHumanWhenRemoteConflictCannotAutoResolve() {
         ledger.prepare(command("op-10", "task-10", "patch-jjj"));
         ledger.markBranchConfirmed("op-10", "abc123");
@@ -237,6 +284,24 @@ class RequirementPublicationReconciliationTest {
                 .noneMatch(item -> "op-7".equals(item.operationId())));
     }
 
+    @Test
+    void shouldAdvanceUnknownReconcileDeadlineWhenClockHasNotAdvanced() {
+        AtomicLong clock = new AtomicLong(1_000L);
+        RequirementPublicationLedger fixedClockLedger = new RequirementPublicationLedger(
+                new InMemoryRequirementPublicationStore(),
+                clock::get,
+                new IncrementingIdGenerator()
+        );
+        fixedClockLedger.prepare(command("op-monotonic", "task-monotonic", "patch-monotonic"));
+        RequirementPublication first = fixedClockLedger.markUnknownRemoteResult(
+                "op-monotonic", "GitHub push timed out");
+
+        RequirementPublication deferred = fixedClockLedger.deferReconcile("op-monotonic", 30_000L);
+
+        assertEquals(RequirementPublicationStatus.UNKNOWN_REMOTE_RESULT, deferred.status());
+        assertTrue(deferred.nextReconcileAtEpochMillis() > first.nextReconcileAtEpochMillis());
+    }
+
     private static RequirementPublicationPrepareCommand command(
             String operationId,
             String taskId,
@@ -250,5 +315,16 @@ class RequirementPublicationReconciliationTest {
                 "fix/" + taskId,
                 patchSha
         );
+    }
+
+    private static final class IncrementingIdGenerator implements RequirementPublicationLedger.IdGenerator {
+
+        private int value;
+
+        @Override
+        public String nextId() {
+            value += 1;
+            return "publication-" + value;
+        }
     }
 }

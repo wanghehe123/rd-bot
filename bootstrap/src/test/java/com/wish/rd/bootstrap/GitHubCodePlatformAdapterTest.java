@@ -174,9 +174,33 @@ class GitHubCodePlatformAdapterTest {
         assertEquals(1, sender.requests().size());
         GitHubCodePlatformAdapter.GitHubHttpRequest request = sender.requests().getFirst();
         assertEquals("GET", request.method());
-        assertTrue(request.url().contains("/repos/acme/order/git/ref/heads/"));
+        assertTrue(request.url().contains("/repos/acme/order/commits/"));
         assertTrue(request.url().contains("requirement%2Ftask-1001")
                 || request.url().contains("requirement/task-1001"));
+    }
+
+    @Test
+    void shouldExposePublicationMarkersFromRemoteBranchCommit() {
+        GitHubCodePlatformProperties properties = realPatProperties();
+        properties.setAllowedRepositories(List.of("acme/order"));
+        RecordingSender sender = new RecordingSender("""
+                {
+                  "sha":"cafebabe0123456789",
+                  "commit":{
+                    "message":"RD-Bot requirement task-1001\\n\\nrd-operation-id: op-1001\\nrd-candidate-patch-sha256: patch-1001"
+                  }
+                }
+                """);
+        GitHubCodePlatformAdapter adapter = new GitHubCodePlatformAdapter(properties, OBJECT_MAPPER, sender);
+
+        BranchHeadResult found = adapter.findBranchHead(new FindBranchHeadCommand(
+                "acme", "order", "requirement/task-1001"
+        )).orElseThrow();
+
+        assertEquals("cafebabe0123456789", found.commitSha());
+        assertEquals("op-1001", found.metadata().get("operationId"));
+        assertEquals("patch-1001", found.metadata().get("candidatePatchSha256"));
+        assertTrue(sender.requests().getFirst().url().contains("/commits/"));
     }
 
     @Test
@@ -192,6 +216,46 @@ class GitHubCodePlatformAdapterTest {
 
         assertTrue(found.isEmpty());
         assertEquals(1, sender.requests().size());
+    }
+
+    @Test
+    void shouldReturnEmptyWhenBranchHeadCommitIsUnprocessable() {
+        GitHubCodePlatformProperties properties = realPatProperties();
+        properties.setAllowedRepositories(List.of("acme/order"));
+        RecordingSender sender = new RecordingSender(422, """
+                {"message":"No commit found for SHA: requirement/missing"}
+                """);
+        GitHubCodePlatformAdapter adapter = new GitHubCodePlatformAdapter(properties, OBJECT_MAPPER, sender);
+
+        Optional<BranchHeadResult> found = adapter.findBranchHead(new FindBranchHeadCommand(
+                "acme", "order", "requirement/missing"
+        ));
+
+        assertTrue(found.isEmpty());
+        assertEquals(1, sender.requests().size());
+    }
+
+    @Test
+    void ghCliShouldTreatUnprocessableBranchHeadAsAbsence() {
+        GitHubCodePlatformProperties properties = realGhCliProperties();
+        RecordingCliRunner cliRunner = new RecordingCliRunner(
+                1,
+                "",
+                "gh: No commit found for SHA: requirement/missing (HTTP 422)"
+        );
+        GitHubCodePlatformAdapter adapter = new GitHubCodePlatformAdapter(
+                properties,
+                OBJECT_MAPPER,
+                new RecordingSender("{}"),
+                cliRunner
+        );
+
+        Optional<BranchHeadResult> found = adapter.findBranchHead(new FindBranchHeadCommand(
+                "acme", "order", "requirement/missing"
+        ));
+
+        assertTrue(found.isEmpty());
+        assertEquals(1, cliRunner.commands().size());
     }
 
     @Test
@@ -579,18 +643,32 @@ class GitHubCodePlatformAdapterTest {
 
     private static final class RecordingCliRunner implements GitHubCodePlatformAdapter.GitHubCliRunner {
 
+        private final int exitCode;
+        private final String stderr;
         private final List<String> responseBodies;
         private final List<List<String>> commands = new java.util.ArrayList<>();
 
         private RecordingCliRunner(String... responseBodies) {
+            this.exitCode = 0;
+            this.stderr = "";
             this.responseBodies = List.of(responseBodies);
+        }
+
+        private RecordingCliRunner(int exitCode, String stdout, String stderr) {
+            this.exitCode = exitCode;
+            this.stderr = stderr == null ? "" : stderr;
+            this.responseBodies = List.of(stdout == null ? "" : stdout);
         }
 
         @Override
         public GitHubCodePlatformAdapter.GitHubCliResult run(List<String> command) {
             int responseIndex = Math.min(commands.size(), responseBodies.size() - 1);
             commands.add(List.copyOf(command));
-            return new GitHubCodePlatformAdapter.GitHubCliResult(0, responseBodies.get(responseIndex), "");
+            return new GitHubCodePlatformAdapter.GitHubCliResult(
+                    exitCode,
+                    responseBodies.get(responseIndex),
+                    this.stderr
+            );
         }
 
         private List<List<String>> commands() {

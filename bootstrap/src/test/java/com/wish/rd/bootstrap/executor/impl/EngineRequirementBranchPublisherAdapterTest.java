@@ -2,6 +2,7 @@ package com.wish.rd.bootstrap.executor.impl;
 
 import com.wish.rd.engine.requirement.model.RequirementBranchPublication;
 import com.wish.rd.engine.requirement.model.RequirementBranchPublishCommand;
+import com.wish.rd.engine.requirement.publication.RequirementOperationId;
 import com.wish.rd.exec.repair.docker.RepairWorkspaceFactory;
 import com.wish.rd.exec.repair.docker.RepairWorkspaceRepositoryPort;
 import com.wish.rd.exec.repair.docker.model.RepairWorkspace;
@@ -64,6 +65,13 @@ class EngineRequirementBranchPublisherAdapterTest {
         assertEquals("waimai", publishedJob.repoName());
         assertEquals("true", publishedJob.policyJson().get("applyCandidatePatch"));
         assertEquals("PUBLISH", publishedJob.policyJson().get("repositoryDeliveryMode"));
+        String candidatePatchSha256 = sha256(PATCH_BYTES);
+        assertEquals("task-1", publishedJob.policyJson().get("requirementPublicationTaskId"));
+        assertEquals(candidatePatchSha256,
+                publishedJob.policyJson().get("requirementPublicationCandidatePatchSha256"));
+        assertEquals(RequirementOperationId.of(
+                        "task-1", "main", "requirement/task-1", candidatePatchSha256),
+                publishedJob.policyJson().get("requirementPublicationOperationId"));
         assertEquals(1, publishedJob.attachments().size());
         assertEquals("candidate-patch.diff", publishedJob.attachments().getFirst().filename());
         assertTrue(publishedJob.taskId().endsWith("-publish"));
@@ -102,8 +110,7 @@ class EngineRequirementBranchPublisherAdapterTest {
     }
 
     private String deliveryResultJson() throws Exception {
-        String sha256 = HexFormat.of().formatHex(
-                MessageDigest.getInstance("SHA-256").digest(PATCH_BYTES));
+        String sha256 = sha256(PATCH_BYTES);
         String codingResultJson = ("{\"stageArtifacts\":[{\"type\":\"PATCH_DIFF\",\"name\":\"patch.diff\","
                 + "\"uri\":\"" + PATCH_URI + "\",\"metadataJson\":{\"candidatePatch\":\"true\","
                 + "\"sha256\":\"" + sha256 + "\",\"bytes\":" + PATCH_BYTES.length + "}}]}")
@@ -111,6 +118,10 @@ class EngineRequirementBranchPublisherAdapterTest {
         return "{\"deliveryReview\":{\"approved\":true},\"multiAgentStages\":["
                 + "{\"role\":\"CODING_AGENT\",\"success\":true,\"resultJson\":\"" + codingResultJson + "\"},"
                 + "{\"role\":\"QA_AGENT\",\"success\":true,\"resultJson\":\"{}\"}]}";
+    }
+
+    private static String sha256(byte[] bytes) throws Exception {
+        return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
     }
 
     private static final class RecordingWorkspaceRepository implements RepairWorkspaceRepositoryPort {

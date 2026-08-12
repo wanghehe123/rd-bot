@@ -7,6 +7,8 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.wish.rd.engine.requirement.RequirementBranchPublisherPort;
 import com.wish.rd.engine.requirement.model.RequirementBranchPublication;
 import com.wish.rd.engine.requirement.model.RequirementBranchPublishCommand;
+import com.wish.rd.engine.requirement.publication.RequirementOperationId;
+import com.wish.rd.engine.requirement.publication.RequirementPublicationIntentFactory;
 import com.wish.rd.exec.repair.docker.RepairWorkspaceFactory;
 import com.wish.rd.exec.repair.docker.RepairWorkspaceRepositoryPort;
 import com.wish.rd.exec.repair.docker.RepairWorkspaceRepositoryPort.RepositoryOperationResult;
@@ -31,6 +33,10 @@ public final class EngineRequirementBranchPublisherAdapter implements Requiremen
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     private static final String CODING_ROLE = "CODING_AGENT";
     private static final String QA_ROLE = "QA_AGENT";
+    private static final String REQUIREMENT_PUBLICATION_TASK_ID = "requirementPublicationTaskId";
+    private static final String REQUIREMENT_PUBLICATION_OPERATION_ID = "requirementPublicationOperationId";
+    private static final String REQUIREMENT_PUBLICATION_CANDIDATE_PATCH_SHA256 =
+            "requirementPublicationCandidatePatchSha256";
 
     private final RoleHandoffAttachmentResolver handoffAttachmentResolver;
     private final RepairWorkspaceFactory workspaceFactory;
@@ -67,6 +73,14 @@ public final class EngineRequirementBranchPublisherAdapter implements Requiremen
             return RequirementBranchPublication.failure(
                     command.taskId(), "reviewed delivery result does not carry a verified candidate patch");
         }
+        String candidatePatchSha256 = RequirementPublicationIntentFactory
+                .candidatePatchSha256(command.deliveryResultJson());
+        if (candidatePatchSha256.isBlank()) {
+            return RequirementBranchPublication.failure(
+                    command.taskId(), "reviewed delivery result does not carry candidate patch identity");
+        }
+        String operationId = RequirementOperationId.of(
+                command.taskId(), command.baseBranch(), command.workBranch(), candidatePatchSha256);
         RepairJobCommand job = new RepairJobCommand(
                 "branch-publish-" + command.taskId(),
                 command.taskId() + "-publish",
@@ -83,7 +97,10 @@ public final class EngineRequirementBranchPublisherAdapter implements Requiremen
                         "bridge", "engine-requirement-branch-publisher",
                         "repositoryPublishRequired", "true",
                         "repositoryDeliveryMode", "PUBLISH",
-                        "applyCandidatePatch", "true"
+                        "applyCandidatePatch", "true",
+                        REQUIREMENT_PUBLICATION_TASK_ID, command.taskId(),
+                        REQUIREMENT_PUBLICATION_OPERATION_ID, operationId,
+                        REQUIREMENT_PUBLICATION_CANDIDATE_PATCH_SHA256, candidatePatchSha256
                 ),
                 List.of(candidatePatch)
         );

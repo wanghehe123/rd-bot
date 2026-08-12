@@ -26,6 +26,17 @@ public interface RequirementPublicationStore {
     Optional<RequirementPublication> findByOperationId(String operationId);
 
     /**
+     * Finds the most recently updated publication for one requirement task.
+     *
+     * <p>Provider fallback uses this bounded lookup to fail closed when the last
+     * remote side effect is unresolved or requires human intervention.
+     *
+     * @param taskId RD requirement task id
+     * @return latest publication ordered by update time and immutable id, when present
+     */
+    Optional<RequirementPublication> findLatestByTaskId(String taskId);
+
+    /**
      * Lists UNKNOWN_REMOTE_RESULT publications whose next reconcile time is due.
      *
      * @param beforeEpochMillis inclusive upper bound for next_reconcile_at

@@ -1,9 +1,11 @@
 package com.wish.rd.bootstrap.executor.impl;
 
 import com.wish.rd.bootstrap.threading.RdBotThreadPoolConfiguration;
+import com.wish.rd.engine.requirement.publication.RequirementPublicationContinuationPort;
 import com.wish.rd.engine.requirement.publication.RequirementPublicationReconciliationService;
 import com.wish.rd.engine.requirement.publication.RequirementPublicationStore;
 import com.wish.rd.engine.requirement.publication.model.RequirementPublication;
+import com.wish.rd.engine.requirement.publication.model.RequirementPublicationContinuation;
 import com.wish.rd.engine.requirement.publication.model.RequirementPublicationStatus;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
 import com.wish.rd.rag.runtime.model.RdRequirementTask;
@@ -44,6 +46,7 @@ public class RequirementPublicationReconcileScheduler {
     private final RequirementPublicationReconciliationService reconciliationService;
     private final RagStreamTaskRegistry taskRegistry;
     private final AsyncTaskExecutor maintenanceExecutor;
+    private final RequirementPublicationContinuationPort continuationPort;
     private final LongSupplier clock;
     private final AtomicBoolean syncRunning = new AtomicBoolean(false);
 
@@ -52,7 +55,7 @@ public class RequirementPublicationReconcileScheduler {
             RequirementPublicationReconciliationService reconciliationService,
             RagStreamTaskRegistry taskRegistry
     ) {
-        this(publicationStore, reconciliationService, taskRegistry, null, System::currentTimeMillis);
+        this(publicationStore, reconciliationService, taskRegistry, null, null, System::currentTimeMillis);
     }
 
     @Autowired
@@ -61,9 +64,11 @@ public class RequirementPublicationReconcileScheduler {
             RequirementPublicationReconciliationService reconciliationService,
             RagStreamTaskRegistry taskRegistry,
             @Qualifier(RdBotThreadPoolConfiguration.MAINTENANCE_EXECUTOR_BEAN)
-            AsyncTaskExecutor maintenanceExecutor
+            AsyncTaskExecutor maintenanceExecutor,
+            RequirementPublicationContinuationPort continuationPort
     ) {
-        this(publicationStore, reconciliationService, taskRegistry, maintenanceExecutor, System::currentTimeMillis);
+        this(publicationStore, reconciliationService, taskRegistry, maintenanceExecutor, continuationPort,
+                System::currentTimeMillis);
     }
 
     public RequirementPublicationReconcileScheduler(
@@ -73,11 +78,24 @@ public class RequirementPublicationReconcileScheduler {
             AsyncTaskExecutor maintenanceExecutor,
             LongSupplier clock
     ) {
+        this(publicationStore, reconciliationService, taskRegistry, maintenanceExecutor, null, clock);
+    }
+
+    public RequirementPublicationReconcileScheduler(
+            RequirementPublicationStore publicationStore,
+            RequirementPublicationReconciliationService reconciliationService,
+            RagStreamTaskRegistry taskRegistry,
+            AsyncTaskExecutor maintenanceExecutor,
+            RequirementPublicationContinuationPort continuationPort,
+            LongSupplier clock
+    ) {
         this.publicationStore = Objects.requireNonNull(publicationStore, "publicationStore must not be null");
         this.reconciliationService = Objects.requireNonNull(
                 reconciliationService, "reconciliationService must not be null");
         this.taskRegistry = Objects.requireNonNull(taskRegistry, "taskRegistry must not be null");
         this.maintenanceExecutor = maintenanceExecutor;
+        this.continuationPort = Objects.requireNonNull(
+                continuationPort, "continuationPort must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
     }
 
@@ -131,6 +149,16 @@ public class RequirementPublicationReconcileScheduler {
                     task.repoName()
             );
             RequirementPublication after = publicationStore.findByOperationId(publication.operationId()).orElse(null);
+            if (after != null && shouldContinue(after)) {
+                continuationPort.enqueue(new RequirementPublicationContinuation(
+                        after.operationId(),
+                        task.taskId(),
+                        task.version(),
+                        task.fencingToken(),
+                        task.projectId(),
+                        task.priority()
+                ));
+            }
             if (after != null && after.status() == RequirementPublicationStatus.UNKNOWN_REMOTE_RESULT) {
                 reconciliationService.deferIfStillUnknown(publication.operationId());
             }
@@ -142,5 +170,10 @@ public class RequirementPublicationReconcileScheduler {
                 // Keep the row due; next tick will retry.
             }
         }
+    }
+
+    private static boolean shouldContinue(RequirementPublication publication) {
+        return publication.status() == RequirementPublicationStatus.BRANCH_CONFIRMED
+                || publication.status() == RequirementPublicationStatus.PR_CONFIRMED;
     }
 }

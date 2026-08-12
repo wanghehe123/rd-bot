@@ -6,6 +6,7 @@ import com.wish.rd.engine.requirement.publication.RequirementPublicationReconcil
 import com.wish.rd.engine.requirement.publication.RequirementPublicationReconcilePort.RemoteBranchHead;
 import com.wish.rd.engine.requirement.publication.impl.InMemoryRequirementPublicationStore;
 import com.wish.rd.engine.requirement.publication.model.RequirementPublication;
+import com.wish.rd.engine.requirement.publication.model.RequirementPublicationPrepareCommand;
 import com.wish.rd.engine.requirement.publication.model.RequirementPublicationReplayDecision;
 import com.wish.rd.engine.requirement.publication.model.RequirementPublicationStatus;
 import org.junit.jupiter.api.DisplayName;

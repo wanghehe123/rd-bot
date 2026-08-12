@@ -15,8 +15,10 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class PostgresRequirementPublicationStoreTest {
@@ -80,6 +82,23 @@ class PostgresRequirementPublicationStoreTest {
 
         assertThrows(IllegalStateException.class, () ->
                 store.save(initial.withBranchConfirmed("stale", 3_000L)));
+    }
+
+    @Test
+    void findLatestByTaskIdMapsTheNewestPublicationAndSkipsBlankTaskIds() {
+        RequirementPublicationMapper mapper = mock(RequirementPublicationMapper.class);
+        RequirementPublication latest = prepared("pub-latest", "op-latest", "9001")
+                .withBranchConfirmed("remote-latest", 2_000L);
+        when(mapper.selectLatestByTaskId(9001L)).thenReturn(row(latest));
+        PostgresRequirementPublicationStore store = new PostgresRequirementPublicationStore(mapper);
+
+        RequirementPublication found = store.findLatestByTaskId("9001").orElseThrow();
+
+        assertEquals("op-latest", found.operationId());
+        assertEquals(RequirementPublicationStatus.BRANCH_CONFIRMED, found.status());
+        assertEquals("remote-latest", found.remoteHeadSha());
+        verify(mapper).selectLatestByTaskId(9001L);
+        assertTrue(store.findLatestByTaskId(" ").isEmpty());
     }
 
     private static RequirementPublication prepared(String id, String operationId, String taskId) {

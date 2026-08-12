@@ -1,6 +1,8 @@
 package com.wish.rd.bootstrap.persistence;
 
 import com.wish.rd.engine.requirement.publication.RequirementPublicationLedger;
+import com.wish.rd.engine.requirement.publication.RequirementPublicationCommitPort;
+import com.wish.rd.engine.requirement.publication.RequirementPublicationContinuationPort;
 import com.wish.rd.engine.requirement.publication.RequirementPublicationReconcilePort;
 import com.wish.rd.engine.requirement.publication.RequirementPublicationReconciliationService;
 import com.wish.rd.engine.requirement.publication.RequirementPublicationStore;
@@ -36,7 +38,9 @@ public class PostgresRequirementPublicationConfiguration {
     @ConditionalOnMissingBean(RequirementPublicationReconciliationService.class)
     RequirementPublicationReconciliationService requirementPublicationReconciliationService(
             ObjectProvider<RequirementPublicationLedger> ledgerProvider,
-            ObjectProvider<RequirementPublicationReconcilePort> reconcilerProvider
+            ObjectProvider<RequirementPublicationReconcilePort> reconcilerProvider,
+            ObjectProvider<RequirementPublicationCommitPort> commitPortProvider,
+            ObjectProvider<RequirementPublicationContinuationPort> continuationPortProvider
     ) {
         RequirementPublicationLedger ledger = ledgerProvider.getIfAvailable();
         if (ledger == null) {
@@ -47,6 +51,14 @@ public class PostgresRequirementPublicationConfiguration {
         if (reconciler == null) {
             throw new IllegalStateException(
                     "PostgreSQL requirement publication requires a publication reconciliation service");
+        }
+        if (commitPortProvider.getIfAvailable() == null) {
+            throw new IllegalStateException(
+                    "PostgreSQL requirement publication requires an atomic publication commit port");
+        }
+        if (continuationPortProvider.getIfAvailable() == null) {
+            throw new IllegalStateException(
+                    "PostgreSQL requirement publication requires a publication continuation port");
         }
         return new RequirementPublicationReconciliationService(ledger, reconciler);
     }

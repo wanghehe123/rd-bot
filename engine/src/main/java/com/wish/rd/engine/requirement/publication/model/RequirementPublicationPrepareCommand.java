@@ -1,4 +1,4 @@
-package com.wish.rd.engine.requirement.publication;
+package com.wish.rd.engine.requirement.publication.model;
 
 /**
  * Command that creates or reuses a publication intent before any remote write.

@@ -1,9 +1,9 @@
 package com.wish.rd.bootstrap.executor;
 
 import com.wish.rd.engine.requirement.publication.RequirementPublicationLedger;
-import com.wish.rd.engine.requirement.publication.RequirementPublicationPrepareCommand;
 import com.wish.rd.engine.requirement.publication.RequirementPublicationStore;
 import com.wish.rd.engine.requirement.publication.impl.InMemoryRequirementPublicationStore;
+import com.wish.rd.engine.requirement.publication.model.RequirementPublicationPrepareCommand;
 import com.wish.rd.engine.requirement.publication.model.RequirementPublicationStatus;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;

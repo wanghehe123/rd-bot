@@ -9,6 +9,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Comparator;
 
 /**
  * Thread-safe in-memory publication ledger used by focused tests and local demos.
@@ -32,6 +33,18 @@ public final class InMemoryRequirementPublicationStore implements RequirementPub
     @Override
     public synchronized Optional<RequirementPublication> findByOperationId(String operationId) {
         return Optional.ofNullable(byOperationId.get(safe(operationId)));
+    }
+
+    @Override
+    public synchronized Optional<RequirementPublication> findLatestByTaskId(String taskId) {
+        String normalizedTaskId = safe(taskId);
+        if (normalizedTaskId.isBlank()) {
+            return Optional.empty();
+        }
+        return byOperationId.values().stream()
+                .filter(publication -> normalizedTaskId.equals(publication.taskId()))
+                .max(Comparator.comparingLong(RequirementPublication::updateTimeEpochMillis)
+                        .thenComparing(RequirementPublication::id));
     }
 
     @Override

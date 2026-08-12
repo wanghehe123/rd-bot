@@ -66,14 +66,50 @@ public interface RequirementPublicationReconcilePort {
     sealed interface RemoteBranchHead {
 
         /**
-         * Branch tip observed.
+         * Branch tip observed together with the immutable markers carried by its
+         * commit message. A SHA by itself is not evidence that this publication's
+         * candidate patch owns the branch.
          *
-         * @param commitSha tip SHA
+         * @param commitSha              tip SHA
+         * @param operationId            {@code rd-operation-id} commit marker
+         * @param candidatePatchSha256   {@code rd-candidate-patch-sha256} commit marker
          */
-        record Present(String commitSha) implements RemoteBranchHead {
+        record Present(String commitSha, String operationId, String candidatePatchSha256)
+                implements RemoteBranchHead {
 
             public Present {
-                commitSha = commitSha == null ? "" : commitSha.strip();
+                commitSha = safe(commitSha);
+                operationId = safe(operationId);
+                candidatePatchSha256 = safe(candidatePatchSha256);
+            }
+
+            /**
+             * Backward-compatible construction for legacy adapters. The missing
+             * marker values intentionally do not satisfy {@link #matches}.
+             *
+             * @param commitSha tip SHA
+             */
+            public Present(String commitSha) {
+                this(commitSha, "", "");
+            }
+
+            /**
+             * Verifies that this branch was created for the exact publication
+             * operation and candidate patch currently being reconciled.
+             *
+             * @param expectedOperationId expected immutable operation id
+             * @param expectedCandidatePatchSha256 expected candidate patch hash
+             * @return {@code true} only when both markers match exactly
+             */
+            public boolean matches(String expectedOperationId, String expectedCandidatePatchSha256) {
+                return !operationId.isBlank()
+                        && !candidatePatchSha256.isBlank()
+                        && operationId.equals(safe(expectedOperationId))
+                        && candidatePatchSha256.equals(safe(expectedCandidatePatchSha256));
+            }
+
+            private static String safe(String value) {
+                return value == null ? "" : value.strip();
             }
         }
 
