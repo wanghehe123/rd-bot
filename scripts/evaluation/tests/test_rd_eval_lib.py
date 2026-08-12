@@ -480,7 +480,7 @@ class RdEvalLibTest(unittest.TestCase):
         judge_metrics = [m for m in result["metrics"] if m["name"] == "faithfulness"]
         self.assertEqual(judge_metrics[0]["status"], "SKIPPED")
 
-    def test_ragas_thresholds_match_ragenteval_reference(self):
+    def test_ragas_thresholds_match_rag_eval_reference(self):
         class LowJudge(lib.JudgeProvider):
             name = "low-judge"
             enabled = True
@@ -1377,7 +1377,7 @@ raise SystemExit("expected ValueError for impossible budget")
 
         self.assertEqual(updated["metrics"][0]["value"], 0.9)
 
-    def test_rag_http_record_contains_ragenteval_core_fields(self):
+    def test_rag_http_record_contains_rag_eval_core_fields(self):
         sample = {
             "sample_id": "S-RAG",
             "suite": "rag",
@@ -1418,7 +1418,7 @@ raise SystemExit("expected ValueError for impossible budget")
         self.assertEqual(record["reference"], "应回答状态推进原因")
         self.assertEqual(record["trace_id"], "tr1")
 
-    def test_rag_metrics_include_ragenteval_style_k_family(self):
+    def test_rag_metrics_include_rag_eval_style_k_family(self):
         samples = [
             {
                 "sample_id": "S-RAG",

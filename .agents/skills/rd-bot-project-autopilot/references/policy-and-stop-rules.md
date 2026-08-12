@@ -58,8 +58,11 @@ creates a new task or repeats a write by itself.
 Known active task states are observed within the deadline. `WAITING_APPROVAL`,
 `FAILED_NEEDS_HUMAN`, `REJECTED`, and `MERGED` map to `WAITING_HUMAN`.
 `CANCELLED`, `DEAD_LETTERED`, and `DELETED` map to `BOUNDED_STOP`. Unknown task
-or evaluation states map to `WAITING_HUMAN`. Only `FAILED_RETRYABLE` in an
-allowed failure phase may use the single retry budget.
+or evaluation states map to `WAITING_HUMAN`. `FAILED_RETRYABLE` in an allowed
+failure phase may use the single retry budget. `FAILED_NEEDS_HUMAN` may use that
+same single budget only after an operator records a task-bound `RESUME` decision;
+the guarded retry preview, live opt-ins, intent-before-POST ordering, and phase
+allowlist still apply.
 
 ## Evidence and redaction
 

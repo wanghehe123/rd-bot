@@ -243,6 +243,9 @@ class SafeRdBotClient:
                 error_body = exc.read(MAX_RESPONSE_BYTES + 1)
             except OSError:
                 error_body = b""
+            finally:
+                exc.close()
+            self._record_request(method, path, query_payload, int(exc.code))
             if len(error_body) > MAX_RESPONSE_BYTES:
                 preview = "<response too large>"
             else:
@@ -261,6 +264,10 @@ class SafeRdBotClient:
             parsed = json.loads(response_body.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ApiResponseError("response is not valid JSON") from exc
+        self._record_request(method, path, query_payload, status)
+        return parsed
+
+    def _record_request(self, method: str, path: str, query_payload: Any, status: int) -> None:
         if self.request_ledger:
             self.request_ledger(
                 {
@@ -271,7 +278,6 @@ class SafeRdBotClient:
                     "timestamp": _utc_now(),
                 }
             )
-        return parsed
 
     @staticmethod
     def _read_bounded(response: Any) -> bytes:

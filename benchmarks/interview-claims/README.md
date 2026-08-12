@@ -31,5 +31,10 @@ metrics.json                     # declared metrics + confidence rules
 bash benchmarks/interview-claims/runners/verify-package.sh
 ```
 
+The checked-in `raw/offline-repro-001/` run is a non-zero deterministic package replay
+for all frozen cases in both modes. It is intentionally marked `pending-reproduction`
+because `datasets/v0` does not contain relevance labels or provider outputs; it must not
+be presented as Recall/MRR/NDCG evidence.
+
 Linked fault IDs must also appear in
 `docs/superpowers/qa/fault-injection-matrix.md`.

@@ -40,6 +40,11 @@ directly from `PLAN_READY` without touching GitHub or RD-Bot.
 `RESUME` decision. Approval-required, unknown, or ambiguous external states always enter
 `WAITING_HUMAN`; the Skill never guesses or retries a write.
 
+An operator-authorized provider recovery may resume one `FAILED_NEEDS_HUMAN`
+task into `OBSERVING` and spend the task's only retry budget when the persisted
+`RESUME` decision cites that exact task ID. This does not expand the write
+allowlist or bypass retry-preview validation and live double opt-in.
+
 ## Identity and resume
 
 Every plan title is prefixed with the exact marker

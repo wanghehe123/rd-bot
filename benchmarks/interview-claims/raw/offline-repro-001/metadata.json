@@ -1,0 +1,22 @@
+{
+  "budget": null,
+  "commands": [
+    "python3 runners/run-evaluation.py"
+  ],
+  "configHash": "ed0ad1e4369b7e2d8a2d11c7b180543f2917b8a3e6a7db56f6a1de6b056703df",
+  "datasetPath": "benchmarks/interview-claims/datasets/v0/cases.jsonl",
+  "datasetSha256": "2642f55f6ed4c3e7c35d3f6679845dd23ca9c1664654e4e757f7c0f3b1f088cc",
+  "datasetVersion": "v0",
+  "dirtyTreeHash": "92f84c6e36ab98fb212c367052dbfc2a9e751e58b90b48f88d676a30482dd1e7",
+  "gitCommit": "6116570c3b6c86e53ed9beff66a34ae3e100d22b",
+  "model": "unspecified",
+  "runCount": 1,
+  "runId": "offline-repro-001",
+  "sampleCount": 8,
+  "startedAt": "2026-08-08T14:28:31.539835+00:00",
+  "status": "pending-reproduction",
+  "temperature": null,
+  "toolVersions": {
+    "python": "3.14.6"
+  }
+}

@@ -1,0 +1,87 @@
+{
+  "datasetVersion": "v0",
+  "iterative": {
+    "evidenceCoverage": {
+      "count": 0,
+      "mean": null,
+      "stdev": null
+    },
+    "latency": {
+      "count": 0,
+      "p50Ms": null,
+      "p95Ms": null
+    },
+    "mrr": {
+      "count": 0,
+      "mean": null,
+      "stdev": null
+    },
+    "ndcg": {
+      "count": 0,
+      "mean": null,
+      "stdev": null
+    },
+    "recallAtK": {
+      "count": 0,
+      "mean": null,
+      "stdev": null
+    },
+    "refusalCorrectness": {
+      "accuracy": null,
+      "count": 0
+    },
+    "sampleCount": 8,
+    "scoredCount": 0,
+    "status": "pending-reproduction",
+    "unsupportedMetrics": [
+      "Recall@K",
+      "MRR",
+      "NDCG",
+      "evidenceCoverage",
+      "latency"
+    ]
+  },
+  "runId": "offline-repro-001",
+  "singlePass": {
+    "evidenceCoverage": {
+      "count": 0,
+      "mean": null,
+      "stdev": null
+    },
+    "latency": {
+      "count": 0,
+      "p50Ms": null,
+      "p95Ms": null
+    },
+    "mrr": {
+      "count": 0,
+      "mean": null,
+      "stdev": null
+    },
+    "ndcg": {
+      "count": 0,
+      "mean": null,
+      "stdev": null
+    },
+    "recallAtK": {
+      "count": 0,
+      "mean": null,
+      "stdev": null
+    },
+    "refusalCorrectness": {
+      "accuracy": null,
+      "count": 0
+    },
+    "sampleCount": 8,
+    "scoredCount": 0,
+    "status": "pending-reproduction",
+    "unsupportedMetrics": [
+      "Recall@K",
+      "MRR",
+      "NDCG",
+      "evidenceCoverage",
+      "latency"
+    ]
+  },
+  "topK": 5
+}

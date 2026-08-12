@@ -40,6 +40,14 @@ class HttpContractTest(unittest.TestCase):
         with self.assertRaisesRegex(ApiResponseError, "HTTP 500"):
             self.client.get_project("7480000000000000000")
         self.assertEqual(len(self.server.requests), 2)
+        self.assertEqual([entry["status"] for entry in self.ledger], [409, 500])
+        self.assertEqual(
+            [set(entry) for entry in self.ledger],
+            [
+                {"method", "path", "requestSha256", "status", "timestamp"},
+                {"method", "path", "requestSha256", "status", "timestamp"},
+            ],
+        )
 
     def test_post_connection_failure_is_marked_ambiguous(self) -> None:
         closed = SafeRdBotClient(

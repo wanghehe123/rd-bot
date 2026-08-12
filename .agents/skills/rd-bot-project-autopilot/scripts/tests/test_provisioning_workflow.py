@@ -7,10 +7,10 @@ from pathlib import Path
 from typing import Any
 
 from scripts.github_client import GitHubTransportError
-from scripts.iteration_state import ManifestStore, RunStatus, create_provision_manifest
+from scripts.iteration_state import ManifestError, ManifestStore, RunStatus, create_provision_manifest
 from scripts.provisioning import build_provision_plan
 from scripts.rd_bot_client import ApiTransportError
-from scripts.workflow import ProjectProvisioningWorkflow, WorkflowError
+from scripts.workflow import AutopilotWorkflow, ProjectProvisioningWorkflow, WorkflowError
 
 
 PROJECT_ID = "7480000000000000000"
@@ -177,6 +177,28 @@ class ProjectProvisioningWorkflowTest(unittest.TestCase):
             [document["sha256"] for document in self.plan["documents"]],
             [source["sha256"] for source in result["provisioning"]["resources"]["sources"]],
         )
+
+    def test_provisioned_run_can_freeze_its_first_iteration_plan_once(self) -> None:
+        result = ProjectProvisioningWorkflow(
+            self.store,
+            self.github,
+            self.rd_bot,
+            live_enabled=True,
+        ).provision()
+        self.assertEqual(RunStatus.READY.value, result["status"])
+
+        iteration_plan = {
+            **self.plan["iterationPlan"],
+            "materials": [],
+            "tokenBudgetOverride": 20_000,
+        }
+        frozen = AutopilotWorkflow(self.store, None).freeze_plan(iteration_plan)
+
+        self.assertEqual(RunStatus.READY.value, frozen["status"])
+        self.assertEqual(1, len(frozen["iterations"]))
+        self.assertEqual(20_000, frozen["iterations"][0]["plan"]["tokenBudgetOverride"])
+        with self.assertRaisesRegex(ManifestError, "cannot freeze plan from READY"):
+            AutopilotWorkflow(self.store, None).freeze_plan(iteration_plan)
 
     def test_ambiguous_github_create_reconciles_once_without_a_second_write(self) -> None:
         self.github.create_error = GitHubTransportError("timeout", ambiguous=True)

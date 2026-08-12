@@ -6,6 +6,16 @@
     "requireRawRunForNumericClaim": true,
     "unreproducedLabel": "待复现"
   },
+  "runs": [
+    {
+      "runId": "offline-repro-001",
+      "status": "pending-reproduction",
+      "sampleCount": 8,
+      "rawPath": "raw/offline-repro-001",
+      "reportPath": "reports/offline-repro-001.html",
+      "note": "Deterministic package replay records both modes; dataset has no relevance labels, so ranking metrics remain null."
+    }
+  ],
   "claims": [
     {
       "claimId": "pilot-4-of-4",

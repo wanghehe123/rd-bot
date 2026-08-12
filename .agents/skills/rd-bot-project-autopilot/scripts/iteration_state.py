@@ -1201,7 +1201,12 @@ class ManifestStore:
         if _active_task_count(manifest) >= MAX_ACTIVE_TASKS:
             raise ManifestError("cannot plan another iteration while an active task exists")
         current = RunStatus(manifest["status"])
-        if current not in {RunStatus.PLANNING, RunStatus.LEARNING}:
+        provisioned_first_iteration = (
+            manifest.get("schemaVersion") == "rd-bot-autopilot/v2"
+            and current == RunStatus.READY
+            and not manifest["iterations"]
+        )
+        if current not in {RunStatus.PLANNING, RunStatus.LEARNING} and not provisioned_first_iteration:
             raise ManifestError(f"cannot freeze plan from {current.value}")
         if iteration_no != len(manifest["iterations"]) + 1 or iteration_no > MAX_ITERATIONS:
             raise ManifestError("iteration number exceeds hard limit or is not sequential")

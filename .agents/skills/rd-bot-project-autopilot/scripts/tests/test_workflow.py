@@ -370,6 +370,22 @@ class WorkflowRetryEvaluationTest(unittest.TestCase):
         self.assertEqual(result["status"], RunStatus.OBSERVING.value)
         self.assertEqual(result["iterations"][0]["retryCount"], 1)
 
+    def test_human_resume_allows_one_bounded_retry_from_failed_needs_human(self) -> None:
+        self.client.detail = detail(status="FAILED_NEEDS_HUMAN")
+        waiting = self.workflow.observe(1)
+        self.assertEqual(waiting["status"], RunStatus.WAITING_HUMAN.value)
+        task_id = waiting["iterations"][0]["taskId"]
+        self.store.record_decision(
+            "RESUME",
+            "operator authorized one bounded retry after provider recovery",
+            [task_id],
+        )
+
+        result = self.workflow.retry(1)
+
+        self.assertEqual(result["status"], RunStatus.OBSERVING.value)
+        self.assertEqual(result["iterations"][0]["retryCount"], 1)
+
     def test_retry_ambiguous_history_zero_or_multiple_waits(self) -> None:
         self.client.detail = detail(status="FAILED_RETRYABLE")
         self.workflow.observe(1)

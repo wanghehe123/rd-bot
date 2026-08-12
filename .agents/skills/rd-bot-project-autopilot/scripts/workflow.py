@@ -343,8 +343,16 @@ class AutopilotWorkflow:
             raise WorkflowError("retry requires OBSERVING status")
         item = _iteration(manifest, iteration_no)
         task_id = str(item.get("taskId") or "")
-        if item.get("taskStatus") != "FAILED_RETRYABLE":
-            raise WorkflowError("retry requires FAILED_RETRYABLE task status")
+        task_status = str(item.get("taskStatus") or "")
+        decision = item.get("decision")
+        human_resume_authorized = (
+            task_status == "FAILED_NEEDS_HUMAN"
+            and isinstance(decision, Mapping)
+            and decision.get("decision") == "RESUME"
+            and task_id in decision.get("evidenceIds", [])
+        )
+        if task_status != "FAILED_RETRYABLE" and not human_resume_authorized:
+            raise WorkflowError("retry requires FAILED_RETRYABLE or an explicit task-bound RESUME decision")
         if item.get("retryCount", 0) >= 1:
             raise WorkflowError("retry budget exhausted")
         try:
