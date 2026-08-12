@@ -48,7 +48,22 @@ docs/superpowers/*
 !docs/superpowers/qa/*.md
 !docs/superpowers/specs/
 docs/superpowers/specs/*
-!docs/superpowers/specs/*.md
+!docs/superpowers/specs/2026-07-13-rd-task-stage-retry-and-ai-delivery-review-design.md
+!docs/superpowers/specs/2026-07-14-failure-recovery-workbench-design.md
+!docs/superpowers/specs/2026-07-26-pi-agent-runtime-integration-design.md
+!docs/superpowers/specs/2026-07-27-rd-bot-project-autopilot-design.md
+!docs/superpowers/specs/2026-07-27-rd-bot-project-autopilot-provisioning-design.md
+!docs/superpowers/specs/2026-07-28-pi-qa-protocol-and-workspace-hygiene-spec.md
+!docs/superpowers/specs/2026-07-28-qa-evidence-reference-and-production-mode-spec.md
+!docs/superpowers/specs/2026-07-30-evaluation-v2-coding-ablation-design.md
+!docs/superpowers/specs/2026-08-01-role-context-canary-opencode-go-evidence.md
+!docs/superpowers/specs/2026-08-01-role-context-p0-p2-implementation-acceptance.md
+!docs/superpowers/specs/2026-08-01-role-context-p3-0-decision-and-risk-acceptance.md
+!docs/superpowers/specs/2026-08-01-role-context-p3-v3-host-materialization-checklist.md
+!docs/superpowers/specs/2026-08-01-role-context-uncertain-items-historical-validation.md
+!docs/superpowers/specs/2026-08-02-redis-stream-repair-queue-migration-spec.md
+!docs/superpowers/specs/2026-08-12-ragent-docker-postgres-bootstrap-spec.md
+!docs/superpowers/specs/2026-08-13-requirement-publication-preflight-and-retry-provenance-spec.md
 
 # ===== 生成产物 / 本地输出 =====
 lark-output/
