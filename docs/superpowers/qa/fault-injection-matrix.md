@@ -1,33 +1,49 @@
 # Fault Injection Matrix (WP-0)
 
-Status: **stub**  
-Date: 2026-08-04  
-Purpose: map each remediation work package to at least one **fail** sample and one **success** sample. Fill “fixture / command” as experiments land.
+Status: **WP-1 through WP-6 evidence recorded; Sol review pending**
 
-| ID | Fault | When | Expected system behavior | Success sample | Owning WP | Fixture / command |
-|---|---|---|---|---|---|---|
-| F-PUB-01 | Process crash after local commit, before push | PREPARED | Resume may push once; no duplicate patch apply when head matches | Branch confirmed without re-apply | WP-1 | TBD (needs workspace apply fixture) |
-| F-PUB-02 | Process crash after successful push | BRANCH_CONFIRMED | Skip push; allow create/reuse PR | Resume creates or reuses PR | WP-1 | RequirementPublicationCrashWindowAcceptanceTest#fPub02 |
-| F-PUB-03 | GitHub POST 201 then DB write fails | after PR create | Ledger/PR lookup reuses open PR with markers | `findOpenPullRequest` + markers | WP-1 | CrashWindowAcceptanceTest#fPub03 + publisher adapter tests |
-| F-PUB-04 | GitHub POST timeout / 5xx (PR may or may not exist) | BRANCH_CONFIRMED | `UNKNOWN_REMOTE_RESULT`; no blind replay | Scheduler/resume reconciles | WP-1 | timeout → UNKNOWN tests |
-| F-PUB-05 | Push timeout (branch may or may not exist) | PREPARED | UNKNOWN; Present→BRANCH_CONFIRMED; Absent→PREPARED; Unavailable→WAIT | `findBranchHead` / resolveRemoteBranchHead | WP-1 | CrashWindowAcceptanceTest#fPub05* |
-| F-PUB-06 | Open PR exists with mismatched markers | create PR | Ledger+task → NEEDS_HUMAN; do not overwrite | mismatch → FAILED_NEEDS_HUMAN | WP-1 | EngineTest#shouldEscalateNeedsHumanWhenOpenPullRequestMarkersConflict |
-| F-PUB-07 | Dual instance same `operation_id` | prepare | Unique constraint / idempotent insert | single publication row | WP-1 | Postgres insertPrepared test |
-| F-SEC-01 | Malicious repo reads host env secrets | Pi coding container | Long-lived key not injected when relay enabled | opaque lease + fail-closed without issuer | WP-2 | DockerPiAgentExecutorTest lease + fail-closed |
-| F-SEC-02 | Agent writes outside `/work` | container run | read-only root + tmpfs | hardened docker args | WP-2 | ProcessContainerRunnerTest |
-| F-SEC-03 | Reviewer/Architect/QA mutates repo | role mount | `/work/repo:ro` (Pi+Claude) | DockerPi/Claude executor tests | WP-2 | existing |
-| F-SEC-04 | Default egress / model call | network mode | Review/Architect always `none`; Coding/QA `none` when relay ON, else configured (`bridge`) | role + relay network tests | WP-2 | DockerPiAgentExecutorTest network cases |
-| F-ORACLE-01 | Agent self-reports pass without host assert | QA result | Host rejects missing/mutated AssertionSpec hash; missing runner UNSUPPORTED | AssertionSpecIntegrityTest + HostOwnedAssertionGateTest | WP-3 | gate + File/HTTP/SQL runners |
-| F-ORACLE-02 | Missing QA evidence refs | result submit | Host + bridge pre-validation reject | protocol tests | WP-2/3 | protocol.test.mjs |
-| F-ORACLE-03 | Tampered hostAssertionBundle hash | QA success path | HostOwnedAssertionGate integrity fail → QA protocol invalid | HostOwnedAssertionGateTest#shouldRejectTamperedHash | WP-3 | unit |
-| F-CAS-01 | Stale task writer after concurrent update | task status write | DB version CAS rejects | PostgresRdTaskStoreCasTest + InMemoryRdTaskStoreCasTest + RagStreamTaskRegistryCancelCasTest | WP-4 | cancel path on CAS; other transitions still blind upsert |
-| F-LOCK-01 | Redis lock lease expiry mid-publish | delivery lock | No silent double publication (ledger absorbs) | ledger + lock interaction TBD | WP-1/4 | TBD |
-| F-PROV-01 | Provider 429 / 5xx mid-stage | role execute | Retry/degrade policy audited; high-risk never silent | ProviderFallbackGateTest + ProviderFallbackSideEffectSafetyTest + RequirementAgentStageOrchestratorTest#host_rejects_coding_fallback_onto_generation_only_provider | WP-5 | Host gate wired post-attempt; Redis half-open / clean workspace switch still TBD |
-| F-SCHED-01 | 100 long tasks, mixed priority | dispatch | No permanent project starvation | FairScheduleSelectorTest + FairRequirementDeliveryClaimPlannerTest + RequirementDeliveryDispatchServiceTest#recoverSkipsProjectWhenInFlightAlreadyAtCap | WP-6 | recover() plans with listInFlight project caps |
-| F-RAG-01 | Retrieval loop without stop | deep retrieval | Bounded rounds + stop condition | IterativeRetrievalStopGateTest + IterativeRetrievalLoopTest + DeepRetrievalOrchestratorTest#iterativeRetrievalStopsAtMaxRoundsWhenGateNeverSatisfied | WP-7 | stop gate + retrieveIterative; default retrieve remains single-shot |
+Run date: 2026-08-09
 
-## How to extend
+Base/current HEAD: `6116570c3b6c86e53ed9beff66a34ae3e100d22b`; completion changes are uncommitted. WP-7/WP-8 are out of scope.
 
-1. Add a row before claiming a resume metric that depends on that fault.
-2. Link “Fixture / command” to a test class or script path that is green on a recorded commit.
-3. Keep fail and success samples paired for every WP acceptance report.
+Every in-scope work package has at least one success case and one fault case. Test method names below are the durable repository pointers; aggregate commands and environment are in `interview-scenario-acceptance-plan.md`.
+
+| ID | Injected fault or boundary | Expected behavior | Paired success evidence | Owning WP | Fixture / test pointer |
+|---|---|---|---|---|---|
+| F-PUB-01 | Push succeeds, caller sees timeout, concurrent replay follows | One remote commit/operation; exact markers permit reuse, mismatch fails closed | Reconcile resumes the operation-keyed continuation once | WP-1 | `RequirementPublicationBareGitCrashWindowAcceptanceTest#timeoutAfterPushAndConcurrentReplaysLeaveOneRemoteCommitAndOneLedgerOperation` |
+| F-PUB-02 | GitHub create succeeds before local DB finalization | Open PR is found by operation/patch markers; no blind POST replay | Task snapshot, event, and publication finalize atomically | WP-1 | `RequirementPublicationCrashWindowAcceptanceTest#fPub03Github201ThenDbMissReconcileReusesOpenPr`; `PostgresRequirementPublicationContinuationRealSmokeTest#publicationCommitRollsBackTaskEventWhenLedgerFinalizationFails` |
+| F-PUB-03 | Branch/PR markers conflict or remote lookup is unavailable | Conflict becomes `NEEDS_HUMAN`; unavailable lookup remains unknown and waits | Matching operation and patch markers advance reconciliation | WP-1 | `RequirementPublicationReconciliationTest` marker-conflict/unavailable cases |
+| F-PUB-04 | Two instances enqueue the same reconciled operation | Unique operation-keyed continuation admits one durable command | Exactly one fenced command is claimable | WP-1 | `PostgresRequirementPublicationContinuationRealSmokeTest#concurrentOperationKeyedContinuationsPersistOneFencedStageCommand` |
+| F-SEC-01 | Pi tries direct public egress on its task network | Direct egress fails; only the trusted relay sidecar has outbound access | Valid opaque lease reaches the configured upstream through the real sidecar | WP-2 | `PiRealDockerIsolationAcceptanceTest` network/relay probes |
+| F-SEC-02 | Reviewer writes repo, rootfs, or unmounted Host path | Writes fail while the bounded output path remains writable | Structured output survives for collection | WP-2 | `PiRealDockerIsolationAcceptanceTest` reviewer mount probe |
+| F-SEC-03 | Fork, memory pressure, or timeout exceeds limits | PID/memory boundary terminates work; timeout cleans Pi, relay, and network | Normal bounded reviewer execution settles | WP-2 | `PiRealDockerIsolationAcceptanceTest` PID/OOM/timeout probes |
+| F-SEC-04 | Lease is reused across task or stage; secret is searched in diagnostics | Cross-scope request returns 401; raw secret is absent from env/inspect/log/artifact/metadata | Correct task-stage-provider lease is accepted once within policy | WP-2 | `PiRealDockerIsolationAcceptanceTest` lease-scope and secret probes |
+| F-ORACLE-01 | Agent omits or tampers with frozen bundle hash or changes workspace/spec | Host rejects missing/mismatched echo and Agent-controlled execution context | Host loads canonical frozen CURRENT and REGRESSION bundles | WP-3 | `HostOwnedAssertionGateFrozenBundleTest` |
+| F-ORACLE-02 | Command exits 0 but HTTP JSONPath or SQL semantic value is wrong | Assertion fails based on semantic result | Matching HTTP/SQL value passes through the same Host runner | WP-3 | `HttpJsonPathAssertionRunnerTest`; `SqlSemanticAssertionRunnerTest` |
+| F-ORACLE-03 | Candidate patch digest, SQL grammar, selector, route, or probe output is hostile | Clean verifier/runner rejects before unsafe execution | Verified patch replays in separate scope workspaces; hardened browser probe returns visible route state | WP-3 | `CleanHostVerifierWorkspaceFactoryTest`; SQL/browser runner tests |
+| F-CAS-01 | Worker A writes after worker B advanced version/fencing | PostgreSQL predicate rejects stale write; no stale timeline event commits | Fresh CAS updates snapshot/event and increments version/fencing | WP-4 | `RdTaskFencingConcurrencyTest`; `PostgresRdTaskStateAtomicRealSmokeTest` |
+| F-CAS-02 | Requirement pause uses legacy bug-fix-only API | Regression reproduces ClassCastException after persistence, then generic API returns one coherent 200 response | Real HTTP pause returns 200; DB shows `paused=t`, version 1, fencing 2, CREATED+PAUSED events | WP-4 | `RdTaskControllerTest#shouldPauseRequirementTaskThroughAdminApi`; task `7492061439520280576` |
+| F-PROV-01 | 429/5xx opens shared circuit and two instances probe HALF_OPEN | Redis grants only one HALF_OPEN lease; the other instance is denied | Success closes shared circuit | WP-5 | `RedisModelHealthStateStoreIntegrationTest#shouldAllowOnlyOneHalfOpenProbeAcrossInstances` |
+| F-PROV-02 | Fallback Provider lacks tools/capability, work is high risk, or remote side effect is unknown | Return policy wait/human decision; do not silently degrade or replay | Capable Provider with explicit clean attempt and safe side-effect state may run | WP-5 | `ProviderFallbackPolicyEnforcerTest`; `ProviderFallbackSideEffectSafetyTest`; orchestrator tests |
+| F-PROV-03 | Production Redis authority is unavailable | Application context fails closed instead of registering an implicit JVM state store | Explicit memory mode is allowed only for isolated tests/local memory mode | WP-5 | `ModelHealthStoreConfigurationTest` |
+| F-SCHED-01 | Two workers claim the same due command; a lease expires | `FOR UPDATE SKIP LOCKED` admits one claimant; retry/dead-letter is bounded | Fresh command completes and enqueues the next bounded stage | WP-6 | `PostgresRequirementStageCommandRealSmokeTest`; `RequirementStageCommandStoreTest` |
+| F-SCHED-02 | 100 mixed long tasks span five projects/priorities under 429/5xx pressure | Every active project receives service; P0 is bounded; aging serves P2; queue/retries remain bounded | Resource and queue metrics report accepted service | WP-6 | `RequirementFairSchedulingSimulationTest#servesEveryProjectWithBoundedPriorityLatencyAndBackpressure` |
+| F-SCHED-03 | Project/provider/Docker/browser quota is exhausted or a local executor rejects work | Work is delayed/requeued without sleeping in a worker or losing the durable command | Recovery and another instance can complete the shared command/future | WP-6 | `RequirementDeliveryDispatchServiceTest`; `FairScheduleSelectorTest` |
+
+## Image and protocol identity
+
+| Artifact | Recorded identity |
+|---|---|
+| `rd-bot/pi-agent:local` | `sha256:65dbcfb3ccccf771b973dad541a387b7c0b34cd28dc2d168bebda7edfa1dff76` |
+| `rd-bot/pi-agent-qa:local` | `sha256:4cab5c27e85fb21169ef47cdf402b97bf8b4450de5b52a3f50d504132ffd927a` |
+| `rd-pi-bridge.mjs` | `332329f013825d164c48e5e60493238106cec7829d8b56d6608cd33bffc7fb8e` |
+| `host-browser-probe.mjs` | `ca31db17210e908ede0b7ff535365d5cda38cfc33fafaa74df238c0bb6b232a0` |
+| `protocol.mjs` | `084a4e7036cc96f0f10338429783cfb310bc8ef1588df1c9587fde93728024b3` |
+| `result-tool.mjs` | `639a4af9cc1959ef5351e502350d64d278d973fb8ef60eb06274c8be7ffd5371` |
+
+## Evidence rules
+
+1. Re-run the referenced class against the recorded infrastructure before changing a claim to production-wide wording.
+2. Keep raw credentials out of commands and reports; record variable names and redacted injection only.
+3. Add a new fail/success pair before expanding an in-scope behavior.
+4. Do not add WP-7/WP-8 or resume metrics to this matrix without a separately authorized run.

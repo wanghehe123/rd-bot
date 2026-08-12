@@ -43,7 +43,7 @@
 
 ### 1.2 组件注册与配置【强制】
 
-- 【强制】业务编排、领域服务、控制器、外部适配器必须优先使用注解式组件注册，严格对齐 ragent 风格：
+- 【强制】业务编排、领域服务、控制器、外部适配器必须优先使用注解式组件注册：
   - REST 入口使用 `@RestController`。
   - 业务编排类（如 `*Engine`）使用 `@Service`。
   - 外部适配器、限流器、存储适配等基础组件使用 `@Component` 或语义更明确的 stereotype。
@@ -179,11 +179,11 @@ public RepairContextPackage prepareContext(RepairRagRequest request) {
 - 【强制】`RdTaskStatus` 虽为共享枚举，合法边必须按 `RdTaskType` 分图校验；需求任务不得走 BugFix 的 `SEARCHING` 捷径。
 - 【强制】任务快照与对应状态事件必须通过同一个事务端口写入；PostgreSQL 实现必须使用 `@Transactional`，禁止先改快照、后补事件。
 - 【强制】任务写锁使用 task ID 粒度；工单幂等创建使用 ticket ID 粒度。禁止用全局注册表锁串行化不同任务。
-- 【强制】需求交付派发先写 `rd_requirement_delivery_jobs`，再提交线程池。Worker 必须通过条件更新获得租约；进程重启后恢复 PENDING、FAILED_RETRYABLE 与租约过期的 RUNNING 作业。
+- 【强制】普通需求交付（含 umbrella 提交）先写 `rd_requirement_delivery_jobs`，再提交线程池。Worker 必须通过条件更新获得租约；进程重启后恢复 PENDING、FAILED_RETRYABLE 与租约过期的 RUNNING 作业。**窄化例外**：checkpoint-bound 阶段重试以初始化事务同写的 `rd_requirement_stage_commands` 为唯一派发真值，不得为该重试凭空创建第二个 umbrella job，除非既有运行时路径明确需要它；提交后的调度器只能按 checkpoint 记录的 command ID 唤醒该行。
 - 【强制】阶段重试必须创建新的 `attemptNo`；`FAILED_RETRYABLE` 是旧 attempt 的终态，不得把旧记录改写为 `RECOVERING`。
 - 【强制】达到派发重试上限时，作业与主任务都进入 `DEAD_LETTERED` 并保留失败原因。
 - 【强制】既有 `AgentStageRun` 的状态推进和元数据保存都必须使用 `WHERE id = ? AND status = ?` 的数据库 CAS；只有首次插入允许 upsert。影响行数不为 1 必须抛出 stale write，禁止旧快照复活已取消或已失败阶段。
-- 【强制】重试准备或派发失败必须补偿本轮新建 Attempt、retry checkpoint 与主任务状态；主任务不得遗留在 `RECOVERING`。补偿失败不能覆盖原始异常，应作为 suppressed error 保留。
+- 【强制】checkpoint-bound 重试必须区分提交边界：(a) 初始化事务提交前的任一失败，必须整体回滚本轮 checkpoint、任务/状态事件、旧 attempt 的终态化、新 attempt/binding、policy 与首个 stage command；任务不得遗留在 `RECOVERING`；(b) 初始化事务提交后，本地调度拒绝不是“准备失败”，已提交的 `DISPATCHED` checkpoint、`RECOVERING` 任务和 `PENDING` stage command 仍是权威真值，必须按精确 command ID 恢复，不能补偿或回退。仅当同一原子事务证明该持久化 command 不可用时，才允许补偿；补偿失败不能覆盖原始异常，应作为 suppressed error 保留。
 - 【强制】delivery job 已持久化后即使本地线程池拒绝，也必须保留可恢复的 `PENDING` 真值；不得把“未进入当前 JVM 线程池”等同于“未提交”。
 
 ### 3.5.4 管理台任务项目筛选【强制】
@@ -202,6 +202,14 @@ public RepairContextPackage prepareContext(RepairRagRequest request) {
   重复 API、数据库字段或内存真值。
 - 【强制】改动该交互时，至少覆盖 URL 归一、具体项目请求参数、所有项目回退、以及操作后
   范围保持的前端测试，并运行 `npm run typecheck` 与 `npm run build`。
+
+### 3.5.5 失败 provenance、发布预检与 QA 元数据通道【强制】
+
+- 【强制】每次新的任务终态失败必须在同一最终化事务写入一条可解析的 `rd_task_failure_provenance`。技术耗尽走 `exhaustCommand`；计划内的发布失败走 `finalize()` 且 `failedStage=PUBLICATION:<operationId>`、`failurePhase=PR_PUBLICATION`。禁止只靠错误字符串或“角色都成功所以猜 CONTEXT”。
+- 【强制】`GET /retry-preview` 必须复用 `failure-recovery` 的权威 snapshot，不得另走一套无 provenance 的启发式解析。
+- 【强制】GitHub `GET /repos/{owner}/{repo}/commits/{ref}` 在发布预检中：HTTP 404，或 422 且 body/stderr 含 `No commit found`，表示分支确认缺席，允许 push；不得记为 `UNKNOWN_REMOTE_RESULT`。超时、5xx、连接中断仍为未知，禁止重放。
+- 【强制】宿主 QA 只从 `dockerMetadataJson` 读取 docs-only 判定键（`QaExecutionMetadataKeys`）。Pi 必须把这些键写入该通道；写入 `githubMetadataJson` / `repositoryMetadata` 不算。提示词、bridge、宿主三处不一致即协议裂缝。
+- 【强制】验证与反例见 `docs/superpowers/specs/2026-08-13-requirement-publication-preflight-and-retry-provenance-spec.md`。
 
 ### 3.6 聚合根（Aggregate Root）【强制用于"强一致实体群"】
 

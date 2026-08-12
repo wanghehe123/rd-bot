@@ -1,0 +1,144 @@
+{
+  "schemaVersion": 1,
+  "runId": "2026-08-09-p0-p1-completion",
+  "scope": ["WP-1", "WP-2", "WP-3", "WP-4", "WP-5", "WP-6"],
+  "outOfScope": ["WP-7", "WP-8"],
+  "baseSha": "6116570c3b6c86e53ed9beff66a34ae3e100d22b",
+  "currentHead": "6116570c3b6c86e53ed9beff66a34ae3e100d22b",
+  "worktree": "dirty-uncommitted",
+  "runtime": {
+    "maven": "3.9.11",
+    "java": "23.0.2",
+    "node": "v24.12.0",
+    "docker": "29.1.3",
+    "os": "macOS 26.3.1 arm64"
+  },
+  "infrastructure": {
+    "postgres": "127.0.0.1:55432/rdbot_acceptance",
+    "redis": "127.0.0.1:6379",
+    "httpAcceptancePort": 18081,
+    "secretInjection": "runtime environment; values redacted"
+  },
+  "verification": {
+    "focusedMaven": {
+      "tests": 239,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "modules": {"rag": 11, "engine": 80, "exec": 45, "bootstrap": 103}
+    },
+    "piNode": {"tests": 80, "failures": 0},
+    "realDocker": {
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "piImageId": "sha256:65dbcfb3ccccf771b973dad541a387b7c0b34cd28dc2d168bebda7edfa1dff76",
+      "qaImageId": "sha256:4cab5c27e85fb21169ef47cdf402b97bf8b4450de5b52a3f50d504132ffd927a"
+    },
+    "realPostgres": {"tests": 4, "failures": 0, "errors": 0, "skipped": 0},
+    "realRedis": {
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "halfOpen": {"firstInstanceAllowed": true, "secondInstanceAllowed": false}
+    },
+    "fullReactor": {
+      "initialRun": {
+        "status": "failed",
+        "tests": 1769,
+        "failures": 4,
+        "errors": 26,
+        "skipped": 45,
+        "modules": {"rag": 155, "engine": 358, "exec": 252, "skill": 7, "bootstrap": 997},
+        "inScopeFailuresUnderInvestigation": [
+          "RequirementPublicationReconcileSchedulerTest#shouldDeferWhenRemoteEvidenceStillMissing",
+          "RequirementDeliveryDispatchServiceWiringTest#shouldUseTheGeneralSchedulerWhenRedisStreamAddsAnotherTaskScheduler",
+          "two package-isolation policy failures"
+        ],
+        "outOfScopeErrorsUnderInvestigation": [
+          "CodingBenchmarkTrialStore context cascade",
+          "LocalPython rag-retrieval.jsonl"
+        ]
+      },
+      "intermediateRun": {
+        "status": "failed",
+        "tests": 1769,
+        "failures": 3,
+        "errors": 26,
+        "skipped": 45,
+        "remainingInScopeFailure": "PostgresAgentStageArtifactStoreTest concurrent-winner assertion"
+      },
+      "finalRun": {
+        "status": "failed-out-of-scope-only",
+        "tests": 1769,
+        "failures": 2,
+        "errors": 26,
+        "skipped": 45,
+        "inScopeFailures": 0,
+        "residualFailures": [
+          "ImplementationPackageIsolationPolicyTest: WP-7 InMemoryRetrievalRoundAuditStore",
+          "ModelPackageIsolationPolicyTest: five WP-7 retrieval model types and one WP-8 benchmark model type"
+        ],
+        "residualErrors": [
+          "25 Spring-context errors rooted at missing WP-8 CodingBenchmarkTrialStore in memory mode",
+          "one WP-7 LocalPython rag-retrieval.jsonl fixture error"
+        ]
+      }
+    }
+  },
+  "httpAcceptance": {
+    "taskId": "7492061439520280576",
+    "requests": [
+      {"method": "POST", "path": "/admin/rd-tasks/requirements", "status": 200},
+      {"method": "GET", "path": "/admin/rd-tasks/7492061439520280576", "status": 200},
+      {"method": "POST", "path": "/admin/rd-tasks/7492061439520280576/pause", "status": 200},
+      {"method": "GET", "path": "/admin/rd-tasks/7492061439520280576", "status": 200, "assertion": "paused=true"},
+      {"method": "GET", "path": "/admin/rd-tasks/7492061439520280576/timeline", "status": 200, "assertion": "CREATED then PAUSED"}
+    ],
+    "postgresSnapshot": {
+      "status": "CREATED",
+      "paused": true,
+      "version": 1,
+      "fencingToken": 2,
+      "statusEvents": ["CREATED", "PAUSED"],
+      "materialRows": 1,
+      "materialContentHash": "sha256:b7ba5e3651a041dc5d4a959ac7b3c08aa9411c1be1c1379b354c228ba075991b"
+    }
+  },
+  "acceptanceDefect": {
+    "initialStatus": 500,
+    "symptom": "pause committed paused=true before response ClassCastException",
+    "rootCause": "RdTaskController used bug-fix-only RagStreamTaskRegistry.pause for a requirement task",
+    "redTest": "RdTaskControllerTest#shouldPauseRequirementTaskThroughAdminApi",
+    "fix": "call existing generic pauseTask method",
+    "green": {"targeted": "1/1", "controllerClass": "33/33", "realHttp": "5/5 status checks"}
+  },
+  "fullSuiteDefects": [
+    {
+      "test": "RequirementPublicationReconcileSchedulerTest#shouldDeferWhenRemoteEvidenceStillMissing",
+      "rootCause": "mixed real and injected clocks allowed a non-monotonic equal retry deadline",
+      "fix": "defer from max(now,currentNextReconcileAt)",
+      "result": "scheduler 5/5; focused engine wave 53/53"
+    },
+    {
+      "test": "RequirementDeliveryDispatchServiceWiringTest#shouldUseTheGeneralSchedulerWhenRedisStreamAddsAnotherTaskScheduler",
+      "rootCause": "test inherited postgres mode without an authoritative stage-command store",
+      "fix": "explicit memory mode for the scheduler-coexistence test only; production fail-closed behavior unchanged",
+      "result": "wiring 4/4"
+    },
+    {
+      "test": "PostgresAgentStageArtifactStoreTest#saveImmutableConcurrentDifferentHashShouldRetainFirstWriterAndThrowSecond",
+      "rootCause": "test assumed fixture submission order determines the atomic insert winner",
+      "fix": "assert the actual committed hash wins and the different rejected hash conflicts",
+      "result": "targeted 5/5 repeated; class 6/6"
+    }
+  ],
+  "protocolHashes": {
+    "rd-pi-bridge.mjs": "332329f013825d164c48e5e60493238106cec7829d8b56d6608cd33bffc7fb8e",
+    "host-browser-probe.mjs": "ca31db17210e908ede0b7ff535365d5cda38cfc33fafaa74df238c0bb6b232a0",
+    "protocol.mjs": "084a4e7036cc96f0f10338429783cfb310bc8ef1588df1c9587fde93728024b3",
+    "result-tool.mjs": "639a4af9cc1959ef5351e502350d64d278d973fb8ef60eb06274c8be7ffd5371"
+  }
+}

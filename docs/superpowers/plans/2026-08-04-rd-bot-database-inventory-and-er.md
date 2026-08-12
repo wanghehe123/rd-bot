@@ -27,7 +27,7 @@
 | `p5_qa_evidence.sql` | QA 配置和证据对象 | 2 |
 | `p6_evaluation_data_quality.sql` | 对既有经验表追加数据质量字段 | 0 |
 | `p7_project_runtime_profiles.sql` | 项目运行时角色配置 | 1 |
-| `p8_default_qa_v2.sql` | 默认 QA 配置更新 | 0 |
+| `p8_zz_default_qa_v2.sql` | 默认 QA 配置更新 | 0 |
 | `p8_pi_agent_runtime.sql` | Provider、执行 Profile、Tool Policy、扩展和私有产物 | 11 |
 | `p9_default_qa_v2_gate.sql` | 默认 QA 配置更新 | 0 |
 | `p10_skill_hub.sql` | Skill 目录和角色绑定 | 2 |

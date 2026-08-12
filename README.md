@@ -156,28 +156,39 @@ PENDING → CONTEXT_READY → DISPATCHING → RUNNING
 
 ### 环境要求
 
-| 依赖 | 版本 |
-|------|------|
+| 依赖 | 版本 / 说明 |
+|------|-------------|
 | JDK | 21+ |
-| PostgreSQL | 14+ |
-| Redis | 6+（锁 + Redis Stream 队列） |
-| Docker | 20+ |
+| Docker + Docker Compose | 20+ / Compose v2；`docker compose up` 拉起 Postgres（含 **pgvector**）、Redis、MinIO |
 | Node.js | 18+（前端开发，可选） |
+
+> **安全**：`/admin` 当前**无鉴权**。仅在本机或可信网络使用；详见 [SECURITY.md](SECURITY.md)。
 
 ### 本地启动
 
 ```bash
-# 1. 初始化数据库（按需执行 sql/postgres 下脚本）
-docker exec -i postgres psql -U postgres -d rdbot < bootstrap/src/main/resources/sql/postgres/init.sql
-
-# 2. 构建
+docker compose up -d
+./scripts/bootstrap-db.sh
+cp bootstrap/src/main/resources/application-local.example.yaml \
+  bootstrap/src/main/resources/application-local.yaml
+# optional: cp .env.example .env.local   # then export $(grep -v '^#' .env.local | xargs)
 ./mvnw install -DskipTests
-
-# 3. 启动后端（默认 18080）
-./mvnw -pl bootstrap spring-boot:run
-
-# 4. 管理台
+# application-local.yaml is gitignored and excluded from the boot jar — load it explicitly:
+SPRING_PROFILES_ACTIVE=local \
+SPRING_CONFIG_ADDITIONAL_LOCATION=optional:file:./bootstrap/src/main/resources/application-local.yaml \
+  ./mvnw -pl bootstrap spring-boot:run
 open http://127.0.0.1:18080/admin/
+```
+
+Compose 默认：数据库 **`rdbot`**（`postgres` / `postgres`）、Redis `6379`、MinIO `9000`（`rustfsadmin` / `rustfsadmin`）。迁移细节见 `bootstrap/src/main/resources/sql/postgres/README.md`。本地 profile 默认关闭 Agent Docker 运行时与飞书监听，适合先冒烟管理台。
+
+**完整 Agent 交付**前再构建 Pi 镜像，并打开运行时 / 白名单 / Provider Key（见下方环境变量）：
+
+```bash
+docker build -f bootstrap/src/main/resources/executor/pi/Dockerfile \
+  -t rd-bot/pi-agent:local bootstrap/src/main/resources/executor/pi
+docker build -f bootstrap/src/main/resources/executor/pi/Dockerfile.qa \
+  -t rd-bot/pi-agent-qa:local bootstrap/src/main/resources/executor/pi
 ```
 
 ### 前端开发
@@ -189,17 +200,36 @@ cd frontend && npm install && npm run dev
 
 ### 常用环境变量
 
+本地 profile 的连接串以 `application-local.yaml` 为准；也可覆盖：
+
 ```bash
 export POSTGRES_URL="jdbc:postgresql://127.0.0.1:5432/rdbot"
 export POSTGRES_USERNAME="postgres"
-export POSTGRES_PASSWORD="your-password"
+export POSTGRES_PASSWORD="postgres"
 export RD_REPAIR_QUEUE_MODE=redis-stream   # 或 memory
 export RD_EXECUTOR_AGENT_RUNTIME_ENABLED=true
 export RD_EXECUTOR_PI_IMAGE=rd-bot/pi-agent:local
 export RD_EXECUTOR_PI_QA_IMAGE=rd-bot/pi-agent-qa:local
-export GITHUB_PAT="..."
-# Provider keys：OPENCODE_API_KEY / DEEPSEEK_API_KEY / LONGCAT_API_KEY 等
 ```
+
+**完整 Agent 交付另需密钥与仓库白名单**（否则仅管理台冒烟）：
+
+```bash
+export GITHUB_PAT="..."                    # 或 GH_TOKEN；创建 PR / clone
+# Provider API keys（按 execution profile 实际引用，常见）：
+export OPENCODE_API_KEY="..."
+export DEEPSEEK_API_KEY="..."
+export LONGCAT_API_KEY="..."
+export MINIMAX_API_KEY="..."
+# Docker 执行面仓库 / 分支白名单（application.yaml → rd.executor.docker.security）
+export RD_EXECUTOR_DOCKER_ALLOWED_REPOSITORY_URL="https://github.com/your-org/your-repo.git"
+export RD_EXECUTOR_DOCKER_ALLOWED_REPOSITORY="your-org/your-repo"
+export RD_EXECUTOR_DOCKER_ALLOWED_BASE_BRANCH="main"
+export RD_EXECUTOR_DOCKER_ALLOWED_WORK_BRANCH="repair/*"
+export RD_EXECUTOR_DOCKER_ALLOWED_REQUIREMENT_BRANCH="requirement/*"
+```
+
+可选：`.env.example` 可复制为 `.env` 供 Compose / shell 引用。维护者私有启动脚本见 `scripts/owner/`（非贡献者必需）。
 
 改动 Pi bridge（`bootstrap/src/main/resources/executor/pi`）后需重建镜像，否则容器仍用旧规则。
 

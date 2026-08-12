@@ -7,7 +7,7 @@
 | 状态 | `EVIDENCE / 历史任务交叉验证` |
 | 对应方案 | `docs/superpowers/specs/2026-08-01-role-context-optimization-validation-and-improvement-plan.markdown` 第 12 节 |
 | 验证日期 | 2026-08-01 |
-| 证据来源 | 管理台 API `http://127.0.0.1:18080` + PostgreSQL `ragent`（docker `postgres`） |
+| 证据来源 | 管理台 API `http://127.0.0.1:18080` + PostgreSQL `rdbot`（docker `postgres`） |
 | 仓库 HEAD | `0f91e781bcc51ef888923218d19bb907bfe4c55b`（`main` ahead 63；工作树仍有未提交改动） |
 | 方法 | 只读查询历史 MERGED 任务；不改代码、不重跑任务、不写库 |
 
@@ -285,7 +285,7 @@ curl -s "http://127.0.0.1:18080/admin/rd-tasks/$TID/execution-overview" | jq .
 curl -s "http://127.0.0.1:18080/admin/rd-tasks/$TID/role-prompts" | jq '.stagePrompts[] | {role,attemptNo,status,promptLen:.prompt.contentLength,used:.context.usedChars,max:.context.maxChars}'
 
 # DB
-docker exec postgres psql -U postgres -d ragent -c "
+docker exec postgres psql -U postgres -d rdbot -c "
 SELECT runtime_type, count(*) FROM rd_agent_execution_profile_snapshots
 WHERE task_id IN (7487805148849377280,7487656533929627648,7487668615836209152,7487549960595050496)
 GROUP BY 1;

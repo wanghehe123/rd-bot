@@ -1,8 +1,8 @@
 # Pi QA 协议与工作区卫生护栏
 
 日期：2026-07-28
-状态：已实施并在本地后端加载
-范围：Pi 运行时的 QA 结果提交、事件留存、任务级依赖缓存、重试并发隔离与受控清理。
+状态：已实施。2026-08-13 私有仓 docs-only 冒烟验证了 Pi 主路径；两条 aspirational mount 测试仍红。
+范围：Pi 运行时的 QA 结果提交、事件留存、任务级依赖缓存、重试并发隔离、provider compat 与 QA 元数据通道。
 
 ## 1. 问题
 
@@ -69,6 +69,15 @@ sequenceDiagram
   不得由 bridge 伪造浏览器、命令或回归证据。
 - 不能自动回退到另一运行时。需要人工重试时，保留失败 Attempt 和规范化事件作为证据。
 
+### 3.1.1 Provider compat 与 QA 元数据通道
+
+- `opencode-go` 不接受 `developer` 角色。必须把
+  `compat: { supportsDeveloperRole: false, supportsReasoningEffort: false }` 放在
+  **`models[0]`**。写在 provider 根上会被 Pi `applyExtension` 丢掉，表现为 HTTP 400。
+- 宿主 docs-only 判定只读 `dockerMetadataJson`。Pi 必须把 `QaExecutionMetadataKeys`
+  写入该通道，细节见 QA spec §3.3。改 bridge 或 QA skill 后重建
+  `Dockerfile` 与 `Dockerfile.qa`。
+
 ### 3.2 缓存、日志与清理
 
 - 缓存只允许任务本地目录：`cache/ -> /work/cache`。注入
@@ -94,13 +103,11 @@ sequenceDiagram
 
 ## 4. 验收标准
 
-- [ ] `DockerPiAgentExecutorTest` 覆盖缓存环境、旧输出清理和共享工作区的并发序列化；
-      第二个 attempt 在第一个完成前不得进入 `RepairWorkspaceFactory.create(...)`。
-- [ ] Bridge Node 测试验证私有原始事件日志上限不会丢失规范化事件，并暴露截断统计。
-- [ ] `PiAgentExecutorPropertiesTest` 证明 Spring 配置把上限传入 Pi executor。
-- [ ] QA role 的完整结果协议在 bridge 与 Java 宿主两侧均 fail-closed；没有真实证据时
-      不能形成通过交付。
-- [ ] 重试 UI/后端拒绝下游跳过，并将操作员选择的起点持久化到 checkpoint。
+- [x] 成功路径要求同时存在 `RESULT_SUBMITTED` 与 `AGENT_SETTLED`；诊断分别记录缺失项，不把聚合缺失写成顺序违规。
+- [x] Bridge 对 settled-without-submit 最多一次恢复提示；`rd_submit_result` 在容器内 fail-closed。
+- [x] `/work/cache` 与 raw-event 上限由 executor 注入；新 attempt 只清 `output/`。
+- [ ] `DockerPiAgentExecutorTest` 两条 aspirational 仍红：QA 只读 repo mount、QA 独立 candidate workspace 且保留任务 cache。不要为变绿而改生产行为。
+- [x] 2026-08-13 GitHub 私有仓 docs-only 冒烟已跑通完整角色→QA→PR；见 publication/provenance spec。
 
 ## 5. 验证命令
 
