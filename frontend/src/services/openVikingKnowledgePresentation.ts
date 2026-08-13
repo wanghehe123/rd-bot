@@ -331,3 +331,209 @@ export const SUMMARY_PROJECTION_STATUSES = [
   "DELETING",
   "DELETED"
 ] as const;
+
+/** 对齐 InventoryCategory.values() 声明顺序（计划 D5）。 */
+export const INVENTORY_CATEGORIES = [
+  "TOMBSTONE",
+  "SUPERSEDED",
+  "DUPLICATE_UNRESOLVED",
+  "EXCLUDED_BASE_INACTIVE",
+  "EXCLUDED_LOCAL_ONLY",
+  "EXCLUDED_EMPTY",
+  "FAILED",
+  "IN_SYNC",
+  "PROJECTING",
+  "PENDING_BACKFILL"
+] as const;
+
+export type InventoryCategory = (typeof INVENTORY_CATEGORIES)[number];
+
+export type InventoryCategorySeverity = "healthy" | "attention" | "blocked";
+
+/** InventoryCategoryCounts 的 camelCase 字段；HTTP InventoryView 则用枚举 name() 做 key。 */
+export type InventoryCategoryCountKey =
+  | "tombstone"
+  | "superseded"
+  | "duplicateUnresolved"
+  | "excludedBaseInactive"
+  | "excludedLocalOnly"
+  | "excludedEmpty"
+  | "failed"
+  | "inSync"
+  | "projecting"
+  | "pendingBackfill";
+
+export type InventoryCategoryCounts = Record<InventoryCategoryCountKey, number>;
+
+const INVENTORY_CATEGORY_LABELS: Record<InventoryCategory, string> = {
+  TOMBSTONE: "墓碑",
+  SUPERSEDED: "已被取代",
+  DUPLICATE_UNRESOLVED: "未解决重复身份",
+  EXCLUDED_BASE_INACTIVE: "知识库非活动",
+  EXCLUDED_LOCAL_ONLY: "手工本地覆盖",
+  EXCLUDED_EMPTY: "内容为空",
+  FAILED: "投影失败",
+  IN_SYNC: "已同步",
+  PROJECTING: "投影中",
+  PENDING_BACKFILL: "待回填"
+};
+
+const INVENTORY_CATEGORY_SEVERITY: Record<InventoryCategory, InventoryCategorySeverity> = {
+  TOMBSTONE: "healthy",
+  SUPERSEDED: "healthy",
+  DUPLICATE_UNRESOLVED: "blocked",
+  EXCLUDED_BASE_INACTIVE: "attention",
+  EXCLUDED_LOCAL_ONLY: "attention",
+  EXCLUDED_EMPTY: "attention",
+  FAILED: "blocked",
+  IN_SYNC: "healthy",
+  PROJECTING: "attention",
+  PENDING_BACKFILL: "attention"
+};
+
+const INVENTORY_COUNT_KEY_BY_CATEGORY: Record<InventoryCategory, InventoryCategoryCountKey> = {
+  TOMBSTONE: "tombstone",
+  SUPERSEDED: "superseded",
+  DUPLICATE_UNRESOLVED: "duplicateUnresolved",
+  EXCLUDED_BASE_INACTIVE: "excludedBaseInactive",
+  EXCLUDED_LOCAL_ONLY: "excludedLocalOnly",
+  EXCLUDED_EMPTY: "excludedEmpty",
+  FAILED: "failed",
+  IN_SYNC: "inSync",
+  PROJECTING: "projecting",
+  PENDING_BACKFILL: "pendingBackfill"
+};
+
+const INVENTORY_SEVERITY_CLASS: Record<InventoryCategorySeverity, string> = {
+  healthy: "border-green-200 bg-green-50 text-green-700",
+  attention: "border-amber-200 bg-amber-50 text-amber-800",
+  blocked: "border-red-200 bg-red-50 text-red-800"
+};
+
+export const SUM_MISMATCH_WARNING =
+  "分类计数之和与文档总数不一致。存在未被归入任何分类的文档，当前分类表不能当作完整账本。";
+
+export const DUPLICATE_RESOLVE_CONFLICT_MESSAGE = "数据已变化，请刷新后重试";
+
+export const DEFAULT_INVENTORY_BACKFILL_LIMIT = 20;
+
+const BACKFILL_STATUS_LABELS: Record<string, string> = {
+  APPLIED: "已回填",
+  SKIPPED_ALREADY_BOUND: "已有绑定，已跳过",
+  SKIPPED_NOT_ELIGIBLE: "不符合条件，已跳过",
+  SKIPPED_CONCURRENT_MODIFICATION: "并发修改，已跳过",
+  FAILED: "失败"
+};
+
+export type DuplicateResolveLoserInput = {
+  documentId?: string | null;
+  rowVersion?: number | null;
+};
+
+export type DuplicateResolveGroupInput = {
+  identityKey?: string | null;
+  proposedSurvivorDocumentId?: string | null;
+  members?: DuplicateResolveLoserInput[] | null;
+};
+
+export type DuplicateResolveRequest = {
+  identityKey: string;
+  survivorDocumentId: string;
+  losers: Array<{ documentId: string; expectedRowVersion: number }>;
+};
+
+export function inventoryCategoryLabel(category?: string | null): string {
+  const normalized = (category ?? "").trim().toUpperCase();
+  if (!normalized) {
+    return "未知分类";
+  }
+  return INVENTORY_CATEGORY_LABELS[normalized as InventoryCategory] ?? normalized;
+}
+
+export function inventoryCategorySeverity(category?: string | null): InventoryCategorySeverity {
+  const normalized = (category ?? "").trim().toUpperCase();
+  return INVENTORY_CATEGORY_SEVERITY[normalized as InventoryCategory] ?? "attention";
+}
+
+export function inventorySeverityClass(severity?: InventoryCategorySeverity | null): string {
+  return INVENTORY_SEVERITY_CLASS[severity ?? "attention"] ?? INVENTORY_SEVERITY_CLASS.attention;
+}
+
+export function inventorySumMismatchWarning(sumMatchesTotal: boolean): string {
+  return sumMatchesTotal ? "" : SUM_MISMATCH_WARNING;
+}
+
+export function inventoryCategoryCountKey(category: InventoryCategory): InventoryCategoryCountKey {
+  return INVENTORY_COUNT_KEY_BY_CATEGORY[category];
+}
+
+export function countForInventoryCategory(
+  categories: Partial<InventoryCategoryCounts> | Record<string, number> | null | undefined,
+  category: InventoryCategory
+): number {
+  if (!categories) {
+    return 0;
+  }
+  const enumValue = (categories as Record<string, number>)[category];
+  if (typeof enumValue === "number" && Number.isFinite(enumValue)) {
+    return Math.max(0, enumValue);
+  }
+  const camelValue = (categories as Partial<InventoryCategoryCounts>)[INVENTORY_COUNT_KEY_BY_CATEGORY[category]];
+  if (typeof camelValue === "number" && Number.isFinite(camelValue)) {
+    return Math.max(0, camelValue);
+  }
+  return 0;
+}
+
+export function inventoryCategoryRows(
+  categories: Partial<InventoryCategoryCounts> | Record<string, number> | null | undefined
+): Array<{ category: InventoryCategory; label: string; count: number; severity: InventoryCategorySeverity }> {
+  return INVENTORY_CATEGORIES.map((category) => ({
+    category,
+    label: inventoryCategoryLabel(category),
+    count: countForInventoryCategory(categories, category),
+    severity: inventoryCategorySeverity(category)
+  }));
+}
+
+export function backfillStatusLabel(status?: string | null): string {
+  const normalized = (status ?? "").trim().toUpperCase();
+  if (!normalized) {
+    return "未知结果";
+  }
+  return BACKFILL_STATUS_LABELS[normalized] ?? normalized;
+}
+
+export function mapDuplicateResolveConflictMessage(error: unknown): string {
+  if (extractHttpStatus(error) === 409) {
+    return DUPLICATE_RESOLVE_CONFLICT_MESSAGE;
+  }
+  const message = extractServerMessage(error);
+  return message || "解决重复身份失败";
+}
+
+export function buildDuplicateResolveRequest(group: DuplicateResolveGroupInput): DuplicateResolveRequest {
+  const identityKey = (group.identityKey ?? "").trim();
+  const survivorDocumentId = (group.proposedSurvivorDocumentId ?? "").trim();
+  if (!identityKey) {
+    throw new Error("缺少来源身份键，无法构造解决请求");
+  }
+  if (!survivorDocumentId) {
+    throw new Error("缺少提出的存活文档，无法构造解决请求");
+  }
+  const members = group.members ?? [];
+  const losers = members.filter((member) => (member.documentId ?? "").trim() !== survivorDocumentId);
+  if (losers.length === 0) {
+    throw new Error("没有可取代的成员，无法构造解决请求");
+  }
+  const resolved: DuplicateResolveRequest["losers"] = [];
+  for (const loser of losers) {
+    const documentId = (loser.documentId ?? "").trim();
+    const rowVersion = loser.rowVersion;
+    if (!documentId || rowVersion == null || !Number.isFinite(rowVersion)) {
+      throw new Error("被取代文档缺少 expectedRowVersion，无法构造解决请求");
+    }
+    resolved.push({ documentId, expectedRowVersion: rowVersion });
+  }
+  return { identityKey, survivorDocumentId, losers: resolved };
+}

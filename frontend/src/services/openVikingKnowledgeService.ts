@@ -237,3 +237,145 @@ export function requeueOpenVikingDeadLetter(
 export function reconcileOpenViking(kbId: string): Promise<OpenVikingReconcile> {
   return postData<OpenVikingReconcile>(`${openVikingBase(kbId)}/reconcile`, {});
 }
+
+/**
+ * 对齐 InventoryView。categories 的键是 InventoryCategory.name()
+ * （TOMBSTONE…），不是 InventoryCategoryCounts 的 camelCase 字段。
+ */
+export interface OpenVikingInventory {
+  categories: Record<string, number>;
+  documentTotal: number;
+  sumMatchesTotal: boolean;
+  pendingBackfillRemaining: number;
+  inFlightOperations: number;
+}
+
+/** 对齐 KeysetPageView：候选用 after 游标，不是 offset 的 page/total。 */
+export interface OpenVikingKeysetPage<T> {
+  records: T[];
+  size: number;
+  after: string;
+}
+
+/** 对齐 ListView：重复组与漂移只有 records + size。 */
+export interface OpenVikingListView<T> {
+  records: T[];
+  size: number;
+}
+
+/** 对齐 CandidateView。 */
+export interface OpenVikingInventoryCandidate {
+  documentId: string;
+  sourceName: string;
+  chunkCount: number;
+  checksum: string;
+  syncVersion: number;
+  rowVersion: number;
+  sourceIdentityKey: string;
+}
+
+/** 对齐 DuplicateMemberView / DuplicateIdentityMember。没有 sourceName / hasBinding。 */
+export interface OpenVikingDuplicateMember {
+  documentId: string;
+  lastSyncedAtEpochMillis: number;
+  createdAtEpochMillis: number;
+  rowVersion: number;
+}
+
+/** 对齐 DuplicateGroupView。 */
+export interface OpenVikingDuplicateGroup {
+  identityKey: string;
+  proposedSurvivorDocumentId: string;
+  members: OpenVikingDuplicateMember[];
+}
+
+/** 对齐 DriftView。desiredState 是 ExternalKnowledgeDesiredState.name()。 */
+export interface OpenVikingInventoryDrift {
+  documentId: string;
+  remoteUri: string;
+  desiredState: string;
+}
+
+/** 对齐 BackfillOutcomeView。status 是 InventoryBackfillStatus.name()。 */
+export interface OpenVikingBackfillOutcome {
+  documentId: string;
+  status: string;
+  reason: string;
+}
+
+/** 对齐 BackfillReportView。stopReason 是 in-flight cap 文案；failed 计入 FAILED 状态。 */
+export interface OpenVikingBackfillReport {
+  attempted: number;
+  applied: number;
+  skippedAlreadyBound: number;
+  skippedNotEligible: number;
+  skippedConcurrentModification: number;
+  failed: number;
+  stopReason: string;
+  outcomes: OpenVikingBackfillOutcome[];
+}
+
+/** 对齐 ResolveRequest / SupersedeTarget。 */
+export interface OpenVikingDuplicateResolveRequest {
+  identityKey: string;
+  survivorDocumentId: string;
+  losers: Array<{ documentId: string; expectedRowVersion: number }>;
+}
+
+/** 对齐 ResolveView。 */
+export interface OpenVikingInventorySupersede {
+  applied: boolean;
+  status: string;
+  message: string;
+}
+
+export function getOpenVikingInventory(kbId: string): Promise<OpenVikingInventory> {
+  return getData<OpenVikingInventory>(`${openVikingBase(kbId)}/inventory`);
+}
+
+export function getOpenVikingInventoryCandidates(
+  kbId: string,
+  query: { after?: string; size?: number } = {}
+): Promise<OpenVikingKeysetPage<OpenVikingInventoryCandidate>> {
+  return getData<OpenVikingKeysetPage<OpenVikingInventoryCandidate>>(
+    `${openVikingBase(kbId)}/inventory/candidates`,
+    {
+      after: query.after || undefined,
+      size: query.size ?? 20
+    }
+  );
+}
+
+export function getOpenVikingInventoryDuplicates(
+  kbId: string,
+  query: { size?: number } = {}
+): Promise<OpenVikingListView<OpenVikingDuplicateGroup>> {
+  return getData<OpenVikingListView<OpenVikingDuplicateGroup>>(`${openVikingBase(kbId)}/inventory/duplicates`, {
+    size: query.size ?? 50
+  });
+}
+
+export function getOpenVikingInventoryDrift(
+  kbId: string,
+  query: { size?: number } = {}
+): Promise<OpenVikingListView<OpenVikingInventoryDrift>> {
+  return getData<OpenVikingListView<OpenVikingInventoryDrift>>(`${openVikingBase(kbId)}/inventory/drift`, {
+    size: query.size ?? 50
+  });
+}
+
+export function backfillOpenVikingInventory(
+  kbId: string,
+  body: { limit: number }
+): Promise<OpenVikingBackfillReport> {
+  return postData<OpenVikingBackfillReport>(`${openVikingBase(kbId)}/inventory/backfill`, {
+    limit: body.limit
+  });
+}
+
+export function resolveOpenVikingDuplicates(
+  kbId: string,
+  body: OpenVikingDuplicateResolveRequest
+): Promise<OpenVikingInventorySupersede> {
+  return postData<OpenVikingInventorySupersede>(`${openVikingBase(kbId)}/inventory/duplicates/resolve`, body);
+}
