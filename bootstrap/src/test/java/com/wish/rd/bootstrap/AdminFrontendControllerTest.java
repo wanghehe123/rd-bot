@@ -36,6 +36,11 @@ class AdminFrontendControllerTest {
         mockMvc.perform(get("/admin/knowledge/kb-1/docs/doc-1"))
                 .andExpect(status().isOk())
                 .andExpect(content().string(containsString(ADMIN_TITLE)));
+
+        mockMvc.perform(get("/admin/knowledge/123/openviking").accept(MediaType.TEXT_HTML))
+                .andExpect(status().isOk())
+                .andExpect(content().string(containsString(ADMIN_TITLE)))
+                .andExpect(content().string(containsString("id=\"root\"")));
     }
 
     @Test

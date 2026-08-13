@@ -84,3 +84,53 @@ test("only bypasses real task SPA routes while proxying nested task content APIs
     assert.equal(bypass?.(navigation(apiPath)), undefined, `${apiPath} must reach Spring Boot`);
   }
 });
+
+test("bypasses OpenViking knowledge SPA navigation but never nested knowledge-base APIs", () => {
+  type ProxyEntry = {
+    target?: string;
+    bypass?: (request: {
+      method?: string;
+      url?: string;
+      headers: Record<string, string>;
+    }) => string | undefined;
+  };
+  const proxy = viteConfig.server?.proxy as Record<string, string | ProxyEntry> | undefined;
+  const knowledgeBaseProxy = proxy?.["/admin/knowledge-base"];
+  assert.equal(typeof knowledgeBaseProxy, "string", "/admin/knowledge-base must always reach Spring Boot");
+  assert.equal(knowledgeBaseProxy, "http://127.0.0.1:18080");
+
+  const knowledgeSpaKey = Object.keys(proxy || {}).find((key) => key.includes("/admin/knowledge") && key.includes("^"));
+  assert.equal(typeof knowledgeSpaKey, "string");
+  const knowledgeSpa = proxy?.[knowledgeSpaKey as string] as ProxyEntry;
+  assert.equal(knowledgeSpa.target, "http://127.0.0.1:18080");
+  const bypass = knowledgeSpa.bypass;
+  assert.equal(typeof bypass, "function");
+
+  const navigation = (url: string) => ({
+    method: "GET",
+    url,
+    headers: { accept: "text/html,application/xhtml+xml" }
+  });
+  assert.equal(bypass?.(navigation("/admin/knowledge")), "/admin/knowledge");
+  assert.equal(bypass?.(navigation("/admin/knowledge/123")), "/admin/knowledge/123");
+  assert.equal(bypass?.(navigation("/admin/knowledge/123/docs/doc-1")), "/admin/knowledge/123/docs/doc-1");
+  assert.equal(bypass?.(navigation("/admin/knowledge/123/openviking")), "/admin/knowledge/123/openviking");
+  assert.equal(bypass?.(navigation("/admin/knowledge/123/openviking/")), "/admin/knowledge/123/openviking/");
+
+  for (const apiPath of [
+    "/admin/knowledge-base/123/openviking/overview",
+    "/admin/knowledge-base/123/openviking/documents",
+    "/admin/knowledge-base/123/openviking/documents/2001",
+    "/admin/knowledge-base/123/openviking/tree",
+    "/admin/knowledge-base/123/openviking/health",
+    "/admin/knowledge-base/123/openviking/dead-letters",
+    "/admin/knowledge-base/123/openviking/tombstones",
+    "/admin/knowledge-base/123/openviking/documents/2001/retry",
+    "/admin/knowledge-base/123/openviking/documents/2001/verify",
+    "/admin/knowledge-base/123/openviking/documents/2001/rebuild",
+    "/admin/knowledge-base/123/openviking/dead-letters/8101/requeue",
+    "/admin/knowledge-base/123/openviking/reconcile"
+  ]) {
+    assert.equal(bypass?.(navigation(apiPath)), undefined, `${apiPath} must not match the knowledge SPA bypass`);
+  }
+});

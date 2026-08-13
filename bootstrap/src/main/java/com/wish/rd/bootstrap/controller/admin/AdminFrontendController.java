@@ -25,6 +25,7 @@ public final class AdminFrontendController {
             "/admin/knowledge",
             "/admin/knowledge/{knowledgeBaseId}",
             "/admin/knowledge/{knowledgeBaseId}/docs/{documentId}",
+            "/admin/knowledge/{knowledgeBaseId}/openviking",
             "/admin/rd-tasks",
             "/admin/rd-tasks/{taskId}",
             "/admin/projects",

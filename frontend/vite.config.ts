@@ -17,6 +17,12 @@ export function isRdTaskSpaNavigation(request: IncomingMessage): boolean {
   return /^\/admin\/rd-tasks(?:\/[0-9]+)?\/?$/.test(pathname);
 }
 
+export function isKnowledgeSpaNavigation(request: IncomingMessage): boolean {
+  if (!isHtmlNavigation(request)) return false;
+  const pathname = new URL(request.url || "", "http://localhost").pathname;
+  return /^\/admin\/knowledge(?:\/[^/]+(?:\/docs\/[^/]+|\/openviking)?)?\/?$/.test(pathname);
+}
+
 export default defineConfig({
   base: "/admin/",
   plugins: [react()],
@@ -51,6 +57,10 @@ export default defineConfig({
       "/admin/evaluations": {
         target: backendTarget,
         bypass: (request) => isHtmlNavigation(request) ? request.url : undefined
+      },
+      "^/admin/knowledge(?:/|$)": {
+        target: backendTarget,
+        bypass: (request) => isKnowledgeSpaNavigation(request) ? request.url : undefined
       },
       "/admin/knowledge-base": backendTarget,
       "/users": backendTarget,
