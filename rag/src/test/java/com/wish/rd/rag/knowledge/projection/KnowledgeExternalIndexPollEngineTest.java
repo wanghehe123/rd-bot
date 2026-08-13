@@ -9,12 +9,15 @@ import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeObservedState
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeOperationStatus;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeOperationType;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeProjectionStatus;
+import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeRemoval;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeSubmission;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeTaskSnapshot;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeTaskState;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeUpsertCommand;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeVerification;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeVersionMarker;
+import com.wish.rd.rag.knowledge.projection.model.ExternalResourceProbe;
+import com.wish.rd.rag.knowledge.projection.model.ExternalTreeListing;
 import com.wish.rd.rag.knowledge.projection.model.KnowledgeExternalIndexBinding;
 import com.wish.rd.rag.knowledge.projection.model.KnowledgeExternalIndexOperation;
 import com.wish.rd.rag.knowledge.projection.model.ProjectionWorkerSettings;
@@ -155,12 +158,78 @@ class KnowledgeExternalIndexPollEngineTest {
 
         fixture.engine.runOnce(NOW);
 
-        assertEquals(ExternalKnowledgeOperationStatus.SUCCEEDED, fixture.operation().status(),
-                "work the remote already did must still be observed, not discarded");
+        assertEquals(ExternalKnowledgeOperationStatus.SUPERSEDED, fixture.operation().status(),
+                "a late upsert must not count as the current desired version");
         KnowledgeExternalIndexBinding binding = fixture.binding();
         assertEquals(1L, binding.observedVersion());
         assertEquals(ExternalKnowledgeProjectionStatus.DRIFTED, binding.projectionStatus(),
                 "observed v1 under desired v2 is drift, not in sync");
+        assertNotEquals(ExternalKnowledgeProjectionStatus.IN_SYNC, binding.projectionStatus());
+    }
+
+    @Test
+    void shouldMarkDeletedWhenTheRemoteResourceIsAbsent() {
+        Fixture fixture = Fixture.awaitingDelete();
+        fixture.port.onProbe = uri -> ExternalResourceProbe.absent();
+
+        assertEquals(1, fixture.engine.runOnce(NOW));
+
+        assertEquals(ExternalKnowledgeOperationStatus.SUCCEEDED, fixture.operation().status());
+        KnowledgeExternalIndexBinding binding = fixture.binding();
+        assertEquals(ExternalKnowledgeObservedState.ABSENT, binding.observedState());
+        assertEquals(ExternalKnowledgeProjectionStatus.DELETED, binding.projectionStatus());
+        assertEquals(2L, binding.desiredVersion(), "the poller must never touch desired state");
+        assertEquals(NOW, binding.lastVerifiedAtEpochMillis());
+    }
+
+    @Test
+    void shouldKeepWaitingWhenTheDeletedResourceIsStillPresent() {
+        Fixture fixture = Fixture.awaitingDelete();
+        fixture.port.onProbe = uri -> ExternalResourceProbe.present(java.util.Map.of("rd.owner", "rd-bot"));
+
+        assertEquals(0, fixture.engine.runOnce(NOW));
+
+        KnowledgeExternalIndexOperation waiting = fixture.operation();
+        assertEquals(ExternalKnowledgeOperationStatus.VERIFYING, waiting.status());
+        assertTrue(waiting.nextVisibleAtEpochMillis() > NOW, "an unfinished delete must be re-scheduled");
+        assertTrue(waiting.leaseOwner().isBlank());
+        assertEquals(ExternalKnowledgeProjectionStatus.DELETING, fixture.binding().projectionStatus());
+        assertEquals(ExternalKnowledgeObservedState.READY, fixture.binding().observedState(),
+                "a still-present resource must not be recorded as absent");
+    }
+
+    @Test
+    void shouldNotResurrectADeletedDocumentWhenALateUpsertVerifies() {
+        Fixture fixture = Fixture.awaitingRemote();
+        fixture.setDesired(ExternalKnowledgeDesiredState.ABSENT, 2L);
+
+        fixture.engine.runOnce(NOW);
+
+        assertEquals(ExternalKnowledgeOperationStatus.SUPERSEDED, fixture.operation().status(),
+                "v1 arriving late must not revive a document whose desired state is already ABSENT");
+        KnowledgeExternalIndexBinding binding = fixture.binding();
+        assertNotEquals(ExternalKnowledgeProjectionStatus.IN_SYNC, binding.projectionStatus());
+        assertEquals(ExternalKnowledgeProjectionStatus.DRIFTED, binding.projectionStatus());
+        assertEquals(ExternalKnowledgeDesiredState.ABSENT, binding.desiredState());
+        assertEquals(2L, binding.desiredVersion());
+    }
+
+    @Test
+    void shouldDeferWithoutWritingObservationWhenInspectResourceThrows() {
+        Fixture fixture = Fixture.awaitingDelete();
+        fixture.port.onProbe = uri -> {
+            throw new IllegalStateException("attrs unavailable");
+        };
+        long bindingVersion = fixture.binding().rowVersion();
+
+        assertEquals(0, fixture.engine.runOnce(NOW));
+
+        KnowledgeExternalIndexOperation waiting = fixture.operation();
+        assertEquals(ExternalKnowledgeOperationStatus.VERIFYING, waiting.status());
+        assertTrue(waiting.nextVisibleAtEpochMillis() > NOW);
+        assertEquals(bindingVersion, fixture.binding().rowVersion(),
+                "a failed probe must not write any observation");
+        assertEquals(ExternalKnowledgeProjectionStatus.DELETING, fixture.binding().projectionStatus());
     }
 
     @Test
@@ -210,11 +279,13 @@ class KnowledgeExternalIndexPollEngineTest {
         private final List<ExternalKnowledgeUpsertCommand> submitted = new ArrayList<>();
         private final List<String> inspected = new ArrayList<>();
         private final List<ExternalKnowledgeVersionMarker> verified = new ArrayList<>();
+        private final List<String> probed = new ArrayList<>();
         private Function<String, ExternalKnowledgeTaskSnapshot> onInspect = taskId ->
                 new ExternalKnowledgeTaskSnapshot(taskId, ExternalKnowledgeTaskState.COMPLETED, "completed",
                         0L, 0L, ExternalIndexFailureClass.NONE, "", "");
         private Function<ExternalKnowledgeVersionMarker, ExternalKnowledgeVerification> onVerify =
                 marker -> ExternalKnowledgeVerification.passed();
+        private Function<String, ExternalResourceProbe> onProbe = uri -> ExternalResourceProbe.absent();
 
         @Override
         public boolean ready() {
@@ -240,19 +311,20 @@ class KnowledgeExternalIndexPollEngineTest {
         }
 
         @Override
-        public com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeRemoval removeResource(
+        public ExternalKnowledgeRemoval removeResource(
                 String remoteUri, boolean recursive, String expectedOwnedRoot
         ) {
             throw new AssertionError("the poll engine must never delete");
         }
 
         @Override
-        public com.wish.rd.rag.knowledge.projection.model.ExternalResourceProbe inspectResource(String remoteUri) {
-            throw new UnsupportedOperationException("not implemented in this fixture");
+        public ExternalResourceProbe inspectResource(String remoteUri) {
+            probed.add(remoteUri);
+            return onProbe.apply(remoteUri);
         }
 
         @Override
-        public com.wish.rd.rag.knowledge.projection.model.ExternalTreeListing listTree(String ownedRootUri) {
+        public ExternalTreeListing listTree(String ownedRootUri) {
             throw new AssertionError("the poll engine must never list the remote tree");
         }
     }
@@ -285,6 +357,26 @@ class KnowledgeExternalIndexPollEngineTest {
             return withOperation(ExternalKnowledgeOperationStatus.UNKNOWN_REMOTE_RESULT, "", publishedAt);
         }
 
+        static Fixture awaitingDelete() {
+            Fixture fixture = new Fixture();
+            fixture.bindings.save(new KnowledgeExternalIndexBinding(
+                    KnowledgeExternalIndexBinding.OPENVIKING, "2001", "1001", ROOT, "rd-bot:1001:2001",
+                    ExternalKnowledgeDesiredState.ABSENT, 2L, CHECKSUM,
+                    ExternalKnowledgeObservedState.READY, 1L, CHECKSUM,
+                    ExternalKnowledgeProjectionStatus.DELETING, "8001", "", "",
+                    NOW - 5_000L, NOW - 5_000L, "", "", 0L, NOW, NOW));
+            fixture.outbox.enqueue(new KnowledgeExternalIndexOperation(
+                    "7001",
+                    "OPENVIKING:doc:2001:2:DELETE_DOCUMENT",
+                    KnowledgeExternalIndexBinding.OPENVIKING,
+                    ExternalKnowledgeOperationType.DELETE_DOCUMENT,
+                    "1001", "2001", 2L, CHECKSUM, ROOT, "5001", "",
+                    ExternalKnowledgeOperationStatus.VERIFYING,
+                    "", "OPENVIKING:doc:2001:2:DELETE_DOCUMENT#1", "", 0L, 1, 8,
+                    NOW - 5_000L, NOW - 5_000L, "", "", 0L, NOW, NOW));
+            return fixture;
+        }
+
         private static Fixture withOperation(
                 ExternalKnowledgeOperationStatus status,
                 String remoteTaskId,
@@ -310,10 +402,14 @@ class KnowledgeExternalIndexPollEngineTest {
         }
 
         void setDesiredVersion(long desiredVersion) {
+            setDesired(binding().desiredState(), desiredVersion);
+        }
+
+        void setDesired(ExternalKnowledgeDesiredState desiredState, long desiredVersion) {
             KnowledgeExternalIndexBinding current = binding();
             bindings.save(new KnowledgeExternalIndexBinding(
                     current.provider(), current.documentId(), current.knowledgeBaseId(), current.remoteUri(),
-                    current.ownershipMarker(), current.desiredState(), desiredVersion, current.desiredChecksum(),
+                    current.ownershipMarker(), desiredState, desiredVersion, current.desiredChecksum(),
                     current.observedState(), current.observedVersion(), current.observedChecksum(),
                     current.projectionStatus(), current.activeOperationId(), current.remoteTaskId(),
                     current.semanticConfigFingerprint(), current.lastSubmittedAtEpochMillis(),

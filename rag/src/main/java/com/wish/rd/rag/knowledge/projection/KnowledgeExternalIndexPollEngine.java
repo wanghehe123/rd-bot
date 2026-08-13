@@ -3,12 +3,15 @@ package com.wish.rd.rag.knowledge.projection;
 import com.wish.rd.rag.knowledge.projection.model.ExternalIndexFailureClass;
 import com.wish.rd.rag.knowledge.projection.model.ProjectionWorkerSettings;
 import com.wish.rd.rag.knowledge.projection.model.ExternalIndexSettleCommand;
+import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeDesiredState;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeObservedState;
+import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeOperationType;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeProjectionStatus;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeTaskSnapshot;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeTaskState;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeVerification;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeVersionMarker;
+import com.wish.rd.rag.knowledge.projection.model.ExternalResourceProbe;
 import com.wish.rd.rag.knowledge.projection.model.KnowledgeExternalIndexBinding;
 import com.wish.rd.rag.knowledge.projection.model.KnowledgeExternalIndexOperation;
 import com.wish.rd.rag.knowledge.projection.model.ProjectionSettleBundle;
@@ -28,8 +31,8 @@ import java.util.function.Supplier;
  *   <li>永不重发。UNKNOWN 只能靠 {@code verifyResource} 这类只读查询收敛。</li>
  *   <li>{@code task completed} 不等于检索就绪。只有版本核验通过，
  *       才允许把 {@code observed_version} 推到 desired。</li>
- *   <li>已发出的行不会因为 desired 前进而被作废。远端已经做了的事必须先被观测，
- *       否则账本会记着一份从没核对过的远端状态。</li>
+ *   <li>晚完成的低版本 upsert 若发现 desired 已是 ABSENT 或更高版本，只能记
+ *       {@code DRIFTED}/{@code SUPERSEDED}，永远不得把已删除文档写回 {@code IN_SYNC}。</li>
  * </ul>
  *
  * <p>租约是每轮一把的短租约，settle 后立刻释放；崩溃最多让一行等一个租约周期。
@@ -87,6 +90,9 @@ public final class KnowledgeExternalIndexPollEngine {
     private boolean advance(KnowledgeExternalIndexOperation claimed, String owner, long nowEpochMillis) {
         Optional<KnowledgeExternalIndexBinding> found = bindingStore.findByProviderAndDocumentId(
                 claimed.provider(), claimed.documentId());
+        if (isDelete(claimed)) {
+            return convergeDelete(claimed, found.orElse(null), owner, nowEpochMillis);
+        }
         if (found.isEmpty()) {
             park(claimed, null, owner, nowEpochMillis, "MISSING_BINDING",
                     "no projection binding for document " + claimed.documentId());
@@ -97,6 +103,58 @@ public final class KnowledgeExternalIndexPollEngine {
             return convergeByVerification(claimed, binding, owner, nowEpochMillis, false);
         }
         return inspectTask(claimed, binding, owner, nowEpochMillis);
+    }
+
+    /**
+     * 删除只靠 {@code inspectResource} 确认缺席。资源还在就继续等，
+     * 查询失败只推迟、不写观测——一次 attrs 故障不能把墓碑提前标成已删除。
+     */
+    private boolean convergeDelete(
+            KnowledgeExternalIndexOperation claimed,
+            KnowledgeExternalIndexBinding binding,
+            String owner,
+            long nowEpochMillis
+    ) {
+        if (binding == null && claimed.operationType() != ExternalKnowledgeOperationType.DELETE_KNOWLEDGE_BASE) {
+            park(claimed, null, owner, nowEpochMillis, "MISSING_BINDING",
+                    "no projection binding for document " + claimed.documentId());
+            return false;
+        }
+        String remoteUri = binding == null || binding.remoteUri().isBlank()
+                ? claimed.remoteUri()
+                : binding.remoteUri();
+        ExternalResourceProbe probe;
+        try {
+            probe = indexPort.inspectResource(remoteUri);
+        } catch (RuntimeException ex) {
+            log.warn("resource inspect threw for {}: {}", remoteUri, ex.toString());
+            defer(claimed, binding, owner, nowEpochMillis, "INSPECT_THREW", "the adapter threw while probing");
+            return false;
+        }
+        if (!probe.failureClass().success()) {
+            defer(claimed, binding, owner, nowEpochMillis, probe.errorCode(), probe.errorMessage());
+            return false;
+        }
+        if (probe.exists()) {
+            defer(claimed, binding, owner, nowEpochMillis, "", "");
+            return false;
+        }
+        KnowledgeExternalIndexBinding observation = binding == null
+                ? null
+                : observation(
+                        binding,
+                        ExternalKnowledgeObservedState.ABSENT,
+                        0L,
+                        "",
+                        ExternalKnowledgeProjectionStatus.DELETED,
+                        "",
+                        "",
+                        nowEpochMillis,
+                        "",
+                        "",
+                        nowEpochMillis);
+        return settle(claimed, owner, ExternalIndexSettleCommand.succeeded(), observation, nowEpochMillis)
+                .isPresent();
     }
 
     private boolean inspectTask(
@@ -200,13 +258,30 @@ public final class KnowledgeExternalIndexPollEngine {
             String owner,
             long nowEpochMillis
     ) {
-        boolean current = binding.desiredVersion() == claimed.syncVersion();
+        boolean superseded = binding.desiredState() == ExternalKnowledgeDesiredState.ABSENT
+                || binding.desiredVersion() > claimed.syncVersion();
+        if (superseded) {
+            KnowledgeExternalIndexBinding observation = observation(
+                    binding,
+                    ExternalKnowledgeObservedState.DRIFTED,
+                    claimed.syncVersion(),
+                    claimed.checksum(),
+                    ExternalKnowledgeProjectionStatus.DRIFTED,
+                    "",
+                    claimed.remoteTaskId(),
+                    nowEpochMillis,
+                    "",
+                    "",
+                    nowEpochMillis);
+            return settle(claimed, owner, ExternalIndexSettleCommand.superseded(), observation, nowEpochMillis)
+                    .isPresent();
+        }
         KnowledgeExternalIndexBinding observation = observation(
                 binding,
                 ExternalKnowledgeObservedState.READY,
                 claimed.syncVersion(),
                 claimed.checksum(),
-                current ? ExternalKnowledgeProjectionStatus.IN_SYNC : ExternalKnowledgeProjectionStatus.DRIFTED,
+                ExternalKnowledgeProjectionStatus.IN_SYNC,
                 "",
                 claimed.remoteTaskId(),
                 nowEpochMillis,
@@ -238,9 +313,14 @@ public final class KnowledgeExternalIndexPollEngine {
             return;
         }
         long nextVisibleAt = nowEpochMillis + settings.pollIntervalForAge(age);
-        ExternalIndexSettleCommand command = claimed.remoteTaskId().isBlank()
-                ? ExternalIndexSettleCommand.unknownRemote(nextVisibleAt, errorCode, errorMessage)
-                : ExternalIndexSettleCommand.stillWaiting(nextVisibleAt, errorCode, errorMessage);
+        ExternalIndexSettleCommand command;
+        if (isDelete(claimed)) {
+            command = ExternalIndexSettleCommand.stillVerifying(nextVisibleAt, errorCode, errorMessage);
+        } else if (claimed.remoteTaskId().isBlank()) {
+            command = ExternalIndexSettleCommand.unknownRemote(nextVisibleAt, errorCode, errorMessage);
+        } else {
+            command = ExternalIndexSettleCommand.stillWaiting(nextVisibleAt, errorCode, errorMessage);
+        }
         settle(claimed, owner, command, null, nowEpochMillis);
     }
 
@@ -353,5 +433,10 @@ public final class KnowledgeExternalIndexPollEngine {
 
     private static String blankTo(String value, String fallback) {
         return value == null || value.isBlank() ? fallback : value;
+    }
+
+    private static boolean isDelete(KnowledgeExternalIndexOperation operation) {
+        return operation.operationType() == ExternalKnowledgeOperationType.DELETE_DOCUMENT
+                || operation.operationType() == ExternalKnowledgeOperationType.DELETE_KNOWLEDGE_BASE;
     }
 }

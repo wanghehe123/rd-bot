@@ -129,6 +129,24 @@ public record ExternalIndexSettleCommand(
     }
 
     /**
+     * 删除仍未确认缺席，或核验查询失败。保持 {@code VERIFYING} 并释放本轮租约。
+     *
+     * @param nextVisibleAtEpochMillis 下次查询时间
+     * @param errorCode                本次观测到的错误码，空串表示无新错误
+     * @param errorMessage             已脱敏的说明
+     * @return settle 意图
+     */
+    public static ExternalIndexSettleCommand stillVerifying(
+            long nextVisibleAtEpochMillis,
+            String errorCode,
+            String errorMessage
+    ) {
+        return new ExternalIndexSettleCommand(
+                ExternalKnowledgeOperationStatus.VERIFYING, LeaseDisposition.RELEASE,
+                "", "", nextVisibleAtEpochMillis, 0L, errorCode, errorMessage, false, false, false);
+    }
+
+    /**
      * 远端可能已收到请求但结果不可知，必须靠查询收敛，禁止重放。
      *
      * @param nextVisibleAtEpochMillis 下次查询时间
