@@ -151,6 +151,46 @@ public record KnowledgeExternalIndexOperation(
     }
 
     /**
+     * 把死信重新放回收敛路径。未发出的行回到提交侧并清零预算；
+     * 已越过发送边界的行只交给 Poller，attempt 不清零。
+     *
+     * @param nowEpochMillis 当前时间
+     * @return 新行
+     */
+    public KnowledgeExternalIndexOperation requeued(long nowEpochMillis) {
+        boolean crossed = crossedSendBoundary();
+        return new KnowledgeExternalIndexOperation(
+                eventId,
+                idempotencyKey,
+                provider,
+                operationType,
+                knowledgeBaseId,
+                documentId,
+                syncVersion,
+                checksum,
+                remoteUri,
+                revisionId,
+                payloadRef,
+                crossed
+                        ? ExternalKnowledgeOperationStatus.UNKNOWN_REMOTE_RESULT
+                        : ExternalKnowledgeOperationStatus.PENDING,
+                remoteTaskId,
+                remoteOperationId,
+                "",
+                0L,
+                crossed ? attemptCount : 0,
+                maxAttempts,
+                nowEpochMillis,
+                publishedAtEpochMillis,
+                lastErrorCode,
+                lastErrorMessage,
+                rowVersion + 1L,
+                createdAtEpochMillis,
+                nowEpochMillis
+        );
+    }
+
+    /**
      * 为一次轮询迭代加短租约。不改状态、不消耗提交预算，
      * 但推进 {@code rowVersion} 让任何在途的旧写入 CAS 失败。
      *

@@ -175,4 +175,28 @@ public interface KnowledgeExternalIndexOutboxMapper extends BaseMapper<Knowledge
             @Param("refundAttempt") boolean refundAttempt,
             @Param("now") OffsetDateTime now
     );
+
+    /**
+     * 人工把死信重新放回收敛路径。未越过发送边界才回到 PENDING 并清零 attempt；
+     * 已经发出去的行只能进 UNKNOWN_REMOTE_RESULT，禁止再走提交路径。
+     */
+    @Select("""
+            UPDATE knowledge_external_index_outbox
+               SET status = CASE WHEN remote_operation_id = '' THEN 'PENDING' ELSE 'UNKNOWN_REMOTE_RESULT' END,
+                   attempt_count = CASE WHEN remote_operation_id = '' THEN 0 ELSE attempt_count END,
+                   lease_owner = '',
+                   lease_until = NULL,
+                   next_visible_at = #{now},
+                   row_version = row_version + 1,
+                   updated_at = #{now}
+             WHERE event_id = #{eventId}
+               AND status = 'DEAD_LETTER'
+               AND row_version = #{expectedRowVersion}
+            RETURNING *
+            """)
+    KnowledgeExternalIndexOutboxRow requeueDeadLetter(
+            @Param("eventId") long eventId,
+            @Param("expectedRowVersion") long expectedRowVersion,
+            @Param("now") OffsetDateTime now
+    );
 }

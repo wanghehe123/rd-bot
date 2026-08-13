@@ -118,6 +118,23 @@ public final class InMemoryKnowledgeExternalIndexOutboxStore implements Knowledg
     }
 
     @Override
+    public synchronized Optional<KnowledgeExternalIndexOperation> requeueDeadLetter(
+            String eventId,
+            long expectedRowVersion,
+            long nowEpochMillis
+    ) {
+        KnowledgeExternalIndexOperation current = operations.get(eventId);
+        if (current == null
+                || current.status() != ExternalKnowledgeOperationStatus.DEAD_LETTER
+                || current.rowVersion() != expectedRowVersion) {
+            return Optional.empty();
+        }
+        KnowledgeExternalIndexOperation next = current.requeued(nowEpochMillis);
+        operations.put(eventId, next);
+        return Optional.of(next);
+    }
+
+    @Override
     public synchronized List<KnowledgeExternalIndexOperation> listByDocumentId(String documentId) {
         return operations.values().stream()
                 .filter(operation -> operation.documentId().equals(documentId))

@@ -67,6 +67,23 @@ public interface KnowledgeExternalIndexOutboxStore {
 
     Optional<KnowledgeExternalIndexOperation> findById(String eventId);
 
+    /**
+     * 人工把死信重新放回收敛路径。CAS：必须仍是 {@code DEAD_LETTER} 且 row_version 匹配。
+     *
+     * <p>未越过发送边界的行回到 {@code PENDING} 并清零 attempt；已经发出去的行只能进
+     * {@code UNKNOWN_REMOTE_RESULT}，由 Poller 查询收敛，禁止再走提交路径。
+     *
+     * @param eventId            行 ID
+     * @param expectedRowVersion 期望 rowVersion
+     * @param nowEpochMillis     当前时间
+     * @return CAS 成功时返回新行
+     */
+    Optional<KnowledgeExternalIndexOperation> requeueDeadLetter(
+            String eventId,
+            long expectedRowVersion,
+            long nowEpochMillis
+    );
+
     List<KnowledgeExternalIndexOperation> listByDocumentId(String documentId);
 
     List<KnowledgeExternalIndexOperation> listAll();

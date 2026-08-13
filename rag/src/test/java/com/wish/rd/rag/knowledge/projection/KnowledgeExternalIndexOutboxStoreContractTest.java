@@ -8,6 +8,8 @@ import com.wish.rd.rag.knowledge.projection.model.KnowledgeExternalIndexBinding;
 import com.wish.rd.rag.knowledge.projection.model.KnowledgeExternalIndexOperation;
 import org.junit.jupiter.api.Test;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Optional;
 
@@ -180,6 +182,73 @@ class KnowledgeExternalIndexOutboxStoreContractTest {
     }
 
     @Test
+    void shouldRequeueAnUnsentDeadLetterOntoTheSubmitPath() {
+        InMemoryKnowledgeExternalIndexOutboxStore store = new InMemoryKnowledgeExternalIndexOutboxStore();
+        KnowledgeExternalIndexOperation dead = enqueueDeadLetter(store, "", 3);
+
+        KnowledgeExternalIndexOperation requeued = store.requeueDeadLetter(dead.eventId(), dead.rowVersion(), NOW + 10L)
+                .orElseThrow();
+
+        assertEquals(ExternalKnowledgeOperationStatus.PENDING, requeued.status());
+        assertEquals(0, requeued.attemptCount());
+        assertEquals(NOW + 10L, requeued.nextVisibleAtEpochMillis());
+        assertTrue(requeued.leaseOwner().isBlank());
+        assertEquals(0L, requeued.leaseUntilEpochMillis());
+        assertEquals(dead.rowVersion() + 1L, requeued.rowVersion());
+        assertEquals(1, store.claimBatch("worker-a", NOW + 10L, NOW + 10L + LEASE, 10).size());
+    }
+
+    @Test
+    void shouldRequeueASentDeadLetterOntoQueryConvergenceNeverTheSubmitPath() {
+        InMemoryKnowledgeExternalIndexOutboxStore store = new InMemoryKnowledgeExternalIndexOutboxStore();
+        KnowledgeExternalIndexOperation dead = enqueueDeadLetter(store, "op-sent", 5);
+
+        KnowledgeExternalIndexOperation requeued = store.requeueDeadLetter(dead.eventId(), dead.rowVersion(), NOW)
+                .orElseThrow();
+
+        assertEquals(ExternalKnowledgeOperationStatus.UNKNOWN_REMOTE_RESULT, requeued.status(),
+                "a row that crossed the send boundary must not return to the submit path");
+        assertEquals(5, requeued.attemptCount(), "query convergence must not reset the attempt budget");
+        assertEquals("op-sent", requeued.remoteOperationId());
+        assertTrue(requeued.leaseOwner().isBlank());
+        assertTrue(store.claimBatch("worker-a", NOW, NOW + LEASE, 10).isEmpty(),
+                "requeue of a sent row must stay off the submit path");
+        assertEquals(1, store.claimPollBatch("poller-1", NOW, NOW + 5_000L, 10).size());
+    }
+
+    @Test
+    void shouldRejectDeadLetterRequeueWhenTheRowVersionDoesNotMatch() {
+        InMemoryKnowledgeExternalIndexOutboxStore store = new InMemoryKnowledgeExternalIndexOutboxStore();
+        KnowledgeExternalIndexOperation dead = enqueueDeadLetter(store, "", 1);
+
+        assertTrue(store.requeueDeadLetter(dead.eventId(), dead.rowVersion() + 1L, NOW).isEmpty());
+        assertEquals(ExternalKnowledgeOperationStatus.DEAD_LETTER,
+                store.findById(dead.eventId()).orElseThrow().status());
+        assertEquals(dead.rowVersion(), store.findById(dead.eventId()).orElseThrow().rowVersion());
+    }
+
+    @Test
+    void requeueSqlMustCasDeadLettersAndOnlyResetAttemptsOnTheUnsentBranch() throws Exception {
+        Path mapper = Path.of(System.getProperty("user.dir")).getParent().resolve(
+                "bootstrap/src/main/java/com/wish/rd/bootstrap/persistence/mapper/KnowledgeExternalIndexOutboxMapper.java");
+        String sql = Files.readString(mapper);
+        int method = sql.indexOf("requeueDeadLetter(");
+        assertTrue(method > 0, "postgres must implement requeueDeadLetter");
+        int select = sql.lastIndexOf("@Select", method);
+        String requeueSql = sql.substring(select, method);
+        assertTrue(requeueSql.contains("status = 'DEAD_LETTER'"));
+        assertTrue(requeueSql.contains("row_version = #{expectedRowVersion}"));
+        assertTrue(requeueSql.contains("UNKNOWN_REMOTE_RESULT"));
+        assertTrue(requeueSql.contains("remote_operation_id = ''")
+                        || requeueSql.contains("remote_operation_id=''"),
+                "only the unsent branch may return to PENDING");
+        assertFalse(requeueSql.contains("SET status = 'PENDING'"),
+                "a sent row must never be assigned PENDING by an unconditional SET");
+        assertTrue(requeueSql.contains("THEN 0") || requeueSql.contains("THEN 0,"),
+                "the unsent branch must clear attempt_count");
+    }
+
+    @Test
     void shouldPreserveRemoteCorrelationAcrossLaterSettles() {
         InMemoryKnowledgeExternalIndexOutboxStore store = new InMemoryKnowledgeExternalIndexOutboxStore();
         KnowledgeExternalIndexOperation claimed = claimOne(store, "worker-a");
@@ -211,6 +280,42 @@ class KnowledgeExternalIndexOutboxStoreContractTest {
     ) {
         store.enqueue(pending("9001", 8));
         return store.claimBatch(owner, NOW, NOW + LEASE, 10).getFirst();
+    }
+
+    private static KnowledgeExternalIndexOperation enqueueDeadLetter(
+            InMemoryKnowledgeExternalIndexOutboxStore store,
+            String remoteOperationId,
+            int attemptCount
+    ) {
+        KnowledgeExternalIndexOperation dead = new KnowledgeExternalIndexOperation(
+                "7001",
+                "OPENVIKING:doc:9001:1:UPSERT_DOCUMENT",
+                KnowledgeExternalIndexBinding.OPENVIKING,
+                ExternalKnowledgeOperationType.UPSERT_DOCUMENT,
+                "1001",
+                "9001",
+                1L,
+                "a".repeat(64),
+                "viking://resources/rd-bot/kb/1001/documents/9001",
+                "5001",
+                "",
+                ExternalKnowledgeOperationStatus.DEAD_LETTER,
+                remoteOperationId.isBlank() ? "" : "task-1",
+                remoteOperationId,
+                "",
+                0L,
+                attemptCount,
+                8,
+                NOW,
+                remoteOperationId.isBlank() ? 0L : NOW - 1_000L,
+                "DEAD",
+                "exhausted",
+                4L,
+                NOW,
+                NOW
+        );
+        store.enqueue(dead);
+        return dead;
     }
 
     private static KnowledgeExternalIndexOperation pending(String documentId, int maxAttempts) {

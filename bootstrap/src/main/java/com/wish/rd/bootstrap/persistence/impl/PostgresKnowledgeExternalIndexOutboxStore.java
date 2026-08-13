@@ -128,6 +128,20 @@ public final class PostgresKnowledgeExternalIndexOutboxStore implements Knowledg
     }
 
     @Override
+    public Optional<KnowledgeExternalIndexOperation> requeueDeadLetter(
+            String eventId,
+            long expectedRowVersion,
+            long nowEpochMillis
+    ) {
+        KnowledgeExternalIndexOutboxRow row = mapper.requeueDeadLetter(
+                PostgresPersistenceSupport.parseId(eventId),
+                expectedRowVersion,
+                PostgresPersistenceSupport.toDateTime(nowEpochMillis)
+        );
+        return Optional.ofNullable(row).map(this::toOperation);
+    }
+
+    @Override
     public List<KnowledgeExternalIndexOperation> listByDocumentId(String documentId) {
         return mapper.selectList(new QueryWrapper<KnowledgeExternalIndexOutboxRow>()
                         .eq("document_id", PostgresPersistenceSupport.parseId(documentId)))
