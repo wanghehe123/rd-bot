@@ -26,6 +26,7 @@ Scripts are applied in **numeric** `pN_` order (then filename). `p10` runs after
 | 9 | `p9_default_qa_v2_gate.sql` |
 | 10 | `p10_skill_hub.sql` |
 | 11 | `p11_openviking_projection.sql` |
+| 12 | `p12_openviking_reconcile.sql` |
 
 Skip `README.md` and any non-`.sql` files.
 
