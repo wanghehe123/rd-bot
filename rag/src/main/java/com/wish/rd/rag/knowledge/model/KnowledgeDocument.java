@@ -149,6 +149,10 @@ public record KnowledgeDocument(
     }
 
     public KnowledgeDocument withEnabled(boolean newEnabled) {
+        return withAvailability(newEnabled, syncVersion);
+    }
+
+    public KnowledgeDocument withAvailability(boolean newEnabled, long newSyncVersion) {
         return copy(
                 sourceName,
                 knowledgeType,
@@ -161,7 +165,7 @@ public record KnowledgeDocument(
                 rawPreview,
                 lastSyncedAtEpochMillis,
                 nextRefreshAtEpochMillis,
-                syncVersion,
+                newSyncVersion,
                 currentRevisionId,
                 sourceIdentityKey,
                 deletedAtEpochMillis,

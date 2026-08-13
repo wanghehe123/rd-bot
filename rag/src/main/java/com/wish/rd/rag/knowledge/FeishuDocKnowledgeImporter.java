@@ -19,11 +19,11 @@ import com.wish.rd.rag.knowledge.model.WriteKnowledgeDocumentCommand;
 @Component
 public final class FeishuDocKnowledgeImporter {
 
-    private final KnowledgeWorkspace workspace;
+    private final KnowledgeDocumentMutationPort mutations;
     private final FeishuDocumentClient documentClient;
 
-    public FeishuDocKnowledgeImporter(KnowledgeWorkspace workspace, FeishuDocumentClient documentClient) {
-        this.workspace = workspace;
+    public FeishuDocKnowledgeImporter(KnowledgeDocumentMutationPort mutations, FeishuDocumentClient documentClient) {
+        this.mutations = mutations;
         this.documentClient = documentClient;
     }
 
@@ -37,7 +37,7 @@ public final class FeishuDocKnowledgeImporter {
         FeishuDocumentSnapshot snapshot = documentClient.fetch(command.source());
         String sourceToken = snapshot.sourceToken().isBlank() ? extractToken(command.source()) : snapshot.sourceToken();
         String sourceUrl = snapshot.sourceUrl().isBlank() ? command.source() : snapshot.sourceUrl();
-        return workspace.writeDocumentIfChanged(
+        return mutations.writeDocumentIfChanged(
                 new WriteKnowledgeDocumentCommand(
                         command.knowledgeBaseId(),
                         snapshot.title(),

@@ -47,4 +47,14 @@ public final class InMemoryKnowledgeDocumentRevisionStore implements KnowledgeDo
         found.sort((left, right) -> Long.compare(left.syncVersion(), right.syncVersion()));
         return List.copyOf(found);
     }
+
+    @Override
+    public synchronized List<KnowledgeDocumentRevision> listAll() {
+        return List.copyOf(revisions.values());
+    }
+
+    @Override
+    public synchronized void delete(String id) {
+        revisions.remove(id);
+    }
 }

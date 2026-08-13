@@ -27,7 +27,7 @@ class FeishuDocKnowledgeImporterTest {
                 "# P0\n知识库生产化与 PostgreSQL 持久化。",
                 1_780_000_000_000L
         );
-        FeishuDocKnowledgeImporter importer = new FeishuDocKnowledgeImporter(workspace, client);
+        FeishuDocKnowledgeImporter importer = new FeishuDocKnowledgeImporter(workspace.mutations(), client);
 
         KnowledgeDocument first = importer.importDocument(new FeishuDocImportCommand(
                 base.id(),

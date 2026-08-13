@@ -231,14 +231,22 @@ public RepairContextPackage prepareContext(RepairRagRequest request) {
 - 【强制】同一知识库内，同一外部来源身份（`source_type + source_token`，否则规范化 `source_url`）只保留一个可见 `documentId`。内容变化原地更新并递增 `sync_version`，写入不可变 `KnowledgeDocumentRevision`。相同 canonical checksum 不得新增 revision，也不得递增 `sync_version`。
 - 【强制】`rechunkDocument` 只重建本地 chunk/vector，不得改 `documentId` 或 `sync_version`。手工 `createChunk`/`updateChunk` 必须标记 `rd.projection_mode=LOCAL_ONLY_OVERRIDE`，不得伪装成已同步到 OpenViking。
 - 【强制】文档删除是软删除：保留墓碑行与原文，移出向量；默认列表/`getDocument` 隐藏墓碑。知识库删除进入 `DELETING`，`listBases`/`getBase` 隐藏，`inspectBase` 仍可见。HTTP `DELETE` 仍返回 `{deleted:true}`。
-- 【强制】PostgreSQL `p11_openviking_projection.sql` 增加身份/revision/软删除列与 `knowledge_document_revisions`（`ON DELETE RESTRICT`）。禁止在 WP-6 存量重复组审计完成前创建 `(knowledge_base_id, source_identity_key)` 的 active-only 唯一索引。禁止在本 WP 加入 binding/outbox 表。
-- 【强制】验证：`./mvnw -pl rag -am -Dtest=KnowledgeDocumentIdentityMutationTest,FeishuDocKnowledgeImporterTest,KnowledgeWorkspacePersistenceTest -Dsurefire.failIfNoSpecifiedTests=false test`；
+- 【强制】PostgreSQL `p11_openviking_projection.sql` 增加身份/revision/软删除列与 `knowledge_document_revisions`（`ON DELETE RESTRICT`）。禁止在 WP-6 存量重复组审计完成前创建 `(knowledge_base_id, source_identity_key)` 的 active-only 唯一索引。
+
+### 3.5.8 知识 mutation 事务与 OpenViking Outbox【强制】
+
+- 【强制】文档 source mutation 必须通过 `KnowledgeDocumentMutationEngine` 组 bundle，再由 `KnowledgeMutationTransactionPort` 在同一 PostgreSQL 事务提交 document + revision + chunks/vectors + binding + outbox。事务内禁止调用 OpenViking、模型、对象存储或执行器。
+- 【强制】相同 canonical checksum 不入新 Outbox。`rechunkDocument`、手工 chunk CRUD、重命名/类型与分块启停不写 UPSERT/DELETE 事件。禁用文档递增 `sync_version` 并写 `ABSENT`/`DELETE_DOCUMENT`；重新启用递增版本并写 `PRESENT`/`UPSERT_DOCUMENT`。删除文档递增 `sync_version` 并写 `desired_state=ABSENT` 与 `DELETE_DOCUMENT` PENDING。删除知识库写 `DELETE_KNOWLEDGE_BASE`，`sync_version` 与 `DELETING` 行一致。
+- 【强制】Outbox 以 `UNIQUE(idempotency_key)` 与 `(provider, document_id, sync_version, operation_type)` 吸收重复入队；终端行不得静默 insert-ignore。claim 使用 `FOR UPDATE SKIP LOCKED`；settle 必须匹配 `event_id + status + lease_owner + row_version` 且 lease 未过期。过期 owner 不得 settle。
+- 【强制】提交成功后唤醒 Worker；线程池拒绝不得回滚，operation 保持 `PENDING`。生产 Controller / Feishu importer / RefreshScheduler / IngestionAdminRegistry 禁止组合 Store 写入，也不得直接调用 `workspace.writeDocument/deleteDocument/createChunk/rechunkDocument`。
+- 【强制】`p11_openviking_projection.sql` 含 `knowledge_external_index_bindings`（FK `ON DELETE RESTRICT`）与 `knowledge_external_index_outbox`（无 documents/bases FK、无 CASCADE）。禁止在 WP-6 前创建 source identity 的 active-only 唯一索引。
+- 【强制】验证：`./mvnw -pl rag -am -Dtest=KnowledgeMutationTransactionPortTest,KnowledgeDocumentMutationEngineTest,KnowledgeDocumentIdentityMutationTest -Dsurefire.failIfNoSpecifiedTests=false test`；
   `./mvnw -pl engine -am -Dtest=KnowledgeAdminFlowTest -Dsurefire.failIfNoSpecifiedTests=false test`；
-  `./mvnw -pl bootstrap -am -Dtest=RuntimeComponentRegistrationPolicyTest,OpenVikingProjectionSqlPolicyTest -Dsurefire.failIfNoSpecifiedTests=false test`。
+  `./mvnw -pl bootstrap -am -Dtest=OpenVikingProjectionSqlPolicyTest,OpenVikingProductionBoundaryPolicyTest,RuntimeComponentRegistrationPolicyTest -Dsurefire.failIfNoSpecifiedTests=false test`。
 
 ### 3.6 聚合根（Aggregate Root）【强制用于"强一致实体群"】
 
-- **已落地**：`KnowledgeWorkspace` 是知识域聚合根，统一管理 知识库→文档→分块→向量 的级联一致性（删除知识库进入 `DELETING` 并对下属文档软删除、移出向量；更新文档同步刷新分块与向量库）。
+- **已落地**：`KnowledgeDocumentMutationEngine` 是知识写入聚合根，经 `KnowledgeMutationTransactionPort` 提交 document/revision/chunks/vectors/binding/outbox。`KnowledgeWorkspace` 是查询 facade，mutation 方法委托 Engine。
 - 【强制】聚合内的跨实体一致性操作必须通过聚合根方法完成，外部不得绕过根直接改子实体。
 
 ### 3.7 值对象与不可变性（Value Object）【强制】

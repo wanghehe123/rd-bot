@@ -30,7 +30,7 @@ class KnowledgeDocumentIdentityMutationTest {
         KnowledgeWorkspace workspace = KnowledgeWorkspace.inMemory();
         KnowledgeBase base = workspace.createBase(new CreateKnowledgeBaseCommand("身份", "WP-1"));
         AtomicReference<FeishuDocumentSnapshot> snapshot = new AtomicReference<>(snapshot("1", "first body RD_WP1_V1"));
-        FeishuDocKnowledgeImporter importer = new FeishuDocKnowledgeImporter(workspace, source -> snapshot.get());
+        FeishuDocKnowledgeImporter importer = new FeishuDocKnowledgeImporter(workspace.mutations(), source -> snapshot.get());
 
         KnowledgeDocument first = importDoc(importer, base.id());
         snapshot.set(snapshot("2", "second body RD_WP1_V2"));
@@ -54,7 +54,7 @@ class KnowledgeDocumentIdentityMutationTest {
         KnowledgeWorkspace workspace = KnowledgeWorkspace.inMemory();
         KnowledgeBase base = workspace.createBase(new CreateKnowledgeBaseCommand("身份", "WP-1"));
         AtomicReference<FeishuDocumentSnapshot> snapshot = new AtomicReference<>(snapshot("10", "same body RD_WP1_SAME"));
-        FeishuDocKnowledgeImporter importer = new FeishuDocKnowledgeImporter(workspace, source -> snapshot.get());
+        FeishuDocKnowledgeImporter importer = new FeishuDocKnowledgeImporter(workspace.mutations(), source -> snapshot.get());
 
         KnowledgeDocument first = importDoc(importer, base.id());
         snapshot.set(snapshot("11", "same body RD_WP1_SAME"));

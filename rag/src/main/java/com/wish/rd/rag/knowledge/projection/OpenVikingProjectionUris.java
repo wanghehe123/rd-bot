@@ -41,6 +41,17 @@ public final class OpenVikingProjectionUris {
     }
 
     /**
+     * 构造知识库专属根，带尾斜杠。
+     *
+     * @param knowledgeBaseId 知识库数字 ID
+     * @return {@code viking://resources/rd-bot/kb/{kbId}/}
+     */
+    public static String knowledgeBaseRoot(String knowledgeBaseId) {
+        String kbId = requireNumericId("knowledgeBaseId", knowledgeBaseId);
+        return OWNED_ROOT + "kb/" + kbId + "/";
+    }
+
+    /**
      * 构造 L2 规范 Markdown 文件 URI。
      *
      * @param knowledgeBaseId 知识库数字 ID

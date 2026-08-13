@@ -28,7 +28,7 @@ class KnowledgeRefreshSchedulerTest {
         KnowledgeBase base = workspace.createBase(new CreateKnowledgeBaseCommand("RD 文档", "飞书导入"));
         KnowledgeDocument document = dueFeishuDocument(workspace, base.id(), "1");
         RecordingMetricSink sink = new RecordingMetricSink();
-        FeishuDocKnowledgeImporter importer = new FeishuDocKnowledgeImporter(workspace, source -> new FeishuDocumentSnapshot(
+        FeishuDocKnowledgeImporter importer = new FeishuDocKnowledgeImporter(workspace.mutations(), source -> new FeishuDocumentSnapshot(
                 "W7bzwwbAciPkqZkECSXc146znfb",
                 "https://my.feishu.cn/wiki/W7bzwwbAciPkqZkECSXc146znfb",
                 "P0 知识库生产化",
@@ -55,7 +55,7 @@ class KnowledgeRefreshSchedulerTest {
         KnowledgeBase base = workspace.createBase(new CreateKnowledgeBaseCommand("RD 文档", "飞书导入"));
         KnowledgeDocument document = dueFeishuDocument(workspace, base.id(), "1");
         RecordingMetricSink sink = new RecordingMetricSink();
-        FeishuDocKnowledgeImporter importer = new FeishuDocKnowledgeImporter(workspace, source -> {
+        FeishuDocKnowledgeImporter importer = new FeishuDocKnowledgeImporter(workspace.mutations(), source -> {
             throw new IllegalStateException("feishu unavailable");
         });
         KnowledgeRefreshScheduler scheduler = new KnowledgeRefreshScheduler(workspace, importer, sink);

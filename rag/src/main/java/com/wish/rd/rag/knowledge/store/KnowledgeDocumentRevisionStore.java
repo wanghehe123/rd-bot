@@ -15,4 +15,8 @@ public interface KnowledgeDocumentRevisionStore {
     Optional<KnowledgeDocumentRevision> findByDocumentIdAndChecksum(String documentId, String checksum);
 
     List<KnowledgeDocumentRevision> listByDocumentId(String documentId);
+
+    List<KnowledgeDocumentRevision> listAll();
+
+    void delete(String id);
 }

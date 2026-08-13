@@ -115,7 +115,7 @@ public final class IngestionAdminRegistry {
         String taskId = idGenerator.nextIdString();
         long startedAt = System.currentTimeMillis();
         try {
-            KnowledgeDocument document = workspace.writeDocument(
+            KnowledgeDocument document = workspace.mutations().writeDocument(
                     pipeline.toPipelineDefinition(),
                     new IngestionTaskCommand(
                             taskId,

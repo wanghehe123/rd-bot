@@ -52,6 +52,21 @@ public final class PostgresKnowledgeDocumentRevisionStore implements KnowledgeDo
                 .toList();
     }
 
+    @Override
+    public List<KnowledgeDocumentRevision> listAll() {
+        return mapper.selectList(null)
+                .stream()
+                .sorted(Comparator.comparing((KnowledgeDocumentRevisionRow row) -> row.createdAt)
+                        .thenComparing(row -> row.id))
+                .map(this::toRevision)
+                .toList();
+    }
+
+    @Override
+    public void delete(String id) {
+        mapper.deleteById(PostgresPersistenceSupport.parseId(id));
+    }
+
     private KnowledgeDocumentRevisionRow toRow(KnowledgeDocumentRevision revision) {
         KnowledgeDocumentRevisionRow row = new KnowledgeDocumentRevisionRow();
         row.id = PostgresPersistenceSupport.parseId(revision.id());

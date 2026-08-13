@@ -95,7 +95,7 @@ public final class KnowledgeAdminController {
 
     @DeleteMapping("/knowledge-base/{knowledgeBaseId}")
     public DeleteResponse deleteKnowledgeBase(@PathVariable("knowledgeBaseId") String knowledgeBaseId) {
-        workspace.deleteBase(knowledgeBaseId);
+        workspace.mutations().deleteBase(knowledgeBaseId);
         return new DeleteResponse(true);
     }
 
@@ -104,7 +104,7 @@ public final class KnowledgeAdminController {
             @PathVariable("knowledgeBaseId") String knowledgeBaseId,
             @RequestBody WriteKnowledgeDocumentRequest request
     ) {
-        return workspace.writeDocument(new WriteKnowledgeDocumentCommand(
+        return workspace.mutations().writeDocument(new WriteKnowledgeDocumentCommand(
                 knowledgeBaseId,
                 request.sourceName(),
                 request.knowledgeType(),
@@ -172,7 +172,7 @@ public final class KnowledgeAdminController {
 
     @DeleteMapping("/knowledge-base/docs/{documentId}")
     public DeleteResponse deleteDocument(@PathVariable("documentId") String documentId) {
-        workspace.deleteDocument(documentId);
+        workspace.mutations().deleteDocument(documentId);
         return new DeleteResponse(true);
     }
 
@@ -199,7 +199,7 @@ public final class KnowledgeAdminController {
             @RequestBody KnowledgeChunkCreateRequest request
     ) {
         int chunkIndex = request.index() == null ? 0 : request.index();
-        return workspace.createChunk(documentId, request.chunkId(), chunkIndex, request.content());
+        return workspace.mutations().createChunk(documentId, request.chunkId(), chunkIndex, request.content());
     }
 
     @PutMapping("/knowledge-base/docs/{documentId}/chunks/{chunkId}")
@@ -208,7 +208,7 @@ public final class KnowledgeAdminController {
             @PathVariable("chunkId") String chunkId,
             @RequestBody KnowledgeChunkUpdateRequest request
     ) {
-        return workspace.updateChunk(documentId, chunkId, request.content());
+        return workspace.mutations().updateChunk(documentId, chunkId, request.content());
     }
 
     @DeleteMapping("/knowledge-base/docs/{documentId}/chunks/{chunkId}")
@@ -316,7 +316,7 @@ public final class KnowledgeAdminController {
                 : request.chunkingMode();
         int chunkSize = request == null ? 0 : request.chunkSize();
         int overlapSize = request == null ? 0 : request.overlapSize();
-        return workspace.rechunkDocument(documentId, mode, chunkSize, overlapSize);
+        return workspace.mutations().rechunkDocument(documentId, mode, chunkSize, overlapSize);
     }
 
     /**
@@ -349,7 +349,7 @@ public final class KnowledgeAdminController {
                 chunkSize,
                 overlapSize
         );
-        return workspace.writeDocument(command, KnowledgeDocumentSource.local());
+        return workspace.mutations().writeDocument(command, KnowledgeDocumentSource.local());
     }
 
     @GetMapping("/admin/overview")
