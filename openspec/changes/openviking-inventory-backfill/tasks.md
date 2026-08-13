@@ -22,10 +22,10 @@
 
 ## Stage C：前端存量审计页签
 
-- [ ] C1 `frontend/src/services/openVikingKnowledgeService.ts` 增加六个接口与类型；`openVikingKnowledgePresentation.ts` 增加分类标签、严重度着色与求和校验失败文案。
-- [ ] C2 `frontend/src/pages/admin/knowledge/OpenVikingKnowledgePage.tsx` 新增「存量审计」页签：分类计数表与求和校验徽标、回填一批（默认 20，执行后重新拉取账本）、重复分组卡片（提出的存活文档 + 二次确认 + 回传 `expectedRowVersion`）、漂移列表。
-- [ ] C3 新增 `frontend/test/openVikingInventoryPresentation.test.ts` 覆盖标签映射、求和校验失败告警、resolve 请求体必须带 `expectedRowVersion`。
-- [ ] C4 运行 `cd frontend && node --experimental-strip-types --test test/*.test.ts && npm run typecheck && npm run build`。
+- [x] C1 `frontend/src/services/openVikingKnowledgeService.ts` 增加六个接口与类型；`openVikingKnowledgePresentation.ts` 增加分类标签、严重度着色与求和校验失败文案。
+- [x] C2 `frontend/src/pages/admin/knowledge/OpenVikingKnowledgePage.tsx` 新增「存量审计」页签：分类计数表与求和校验徽标、回填一批（默认 20，执行后重新拉取账本）、重复分组卡片（提出的存活文档 + 二次确认 + 回传 `expectedRowVersion`）、漂移列表。
+- [x] C3 新增 `frontend/test/openVikingInventoryPresentation.test.ts` 覆盖标签映射、求和校验失败告警、resolve 请求体必须带 `expectedRowVersion`。
+- [x] C4 运行 `cd frontend && node --experimental-strip-types --test test/*.test.ts && npm run typecheck && npm run build`。
 
 ## Stage D：唯一索引门与重复预检
 
