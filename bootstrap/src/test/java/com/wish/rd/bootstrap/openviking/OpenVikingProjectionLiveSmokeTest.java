@@ -14,6 +14,8 @@ import com.wish.rd.rag.knowledge.projection.impl.InMemoryKnowledgeExternalIndexO
 import com.wish.rd.rag.knowledge.projection.impl.InMemoryKnowledgeProjectionSettleAdapter;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeDesiredState;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeObservedState;
+import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeRemoval;
+import com.wish.rd.rag.knowledge.projection.model.ExternalResourceProbe;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeOperationStatus;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeOperationType;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeProjectionStatus;
@@ -38,8 +40,9 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * WP-3 端到端真机验证：Outbox 一行 PENDING，经 Worker/Poller 收敛到 version-verified
- * {@code IN_SYNC}，然后更新到 v2 再次收敛。
+ * WP-3/WP-4 端到端真机验证：Outbox 一行 PENDING，经 Worker/Poller 收敛到 version-verified
+ * {@code IN_SYNC}，更新到 v2 再次收敛，最后在适配器层验证真实容器的删除假设
+ * （rm 幂等、probe 404 即 absent）。
  *
  * <p>默认跳过。先 {@code scripts/openviking/up.sh}，再加 {@code -Drd.openviking.smoke=true}。
  * 只在 {@code viking://resources/rd-bot/wp0-contract/{runId}/} 下创建与删除资源。
@@ -102,6 +105,26 @@ class OpenVikingProjectionLiveSmokeTest {
                     "uri", OpenVikingProjectionUris.l2ContentUri(
                             documentRoot, OpenVikingProjectionUris.SOURCE_FILE_NAME)));
             assertTrue(read.path("result").asText().contains("RD_WP3_LIVE_V2"));
+
+            // WP-4 真机验证：删除路径依赖的三个远端假设——rm 受理即幂等、probe 404 表示
+            // absent 而非失败、重复删除 count=0。引擎侧的删除状态机（发送边界、DELETING→
+            // DELETED、防复活）由单测钉住；生产命名空间的引擎级删除由全栈验收覆盖，
+            // 合同冒烟只允许写 wp0-contract 根，因此这里在适配器层直接验证。
+            ExternalKnowledgeRemoval removed = harness.indexPort.removeResource(
+                    documentRoot, true, OpenVikingProjectionUris.OWNED_ROOT);
+            assertTrue(removed.removed(),
+                    () -> "live delete failed: " + removed.errorCode() + " " + removed.errorMessage());
+            assertTrue(removed.deletedCount() >= 1, "first delete must remove at least one entry");
+
+            ExternalResourceProbe probe = harness.indexPort.inspectResource(documentRoot);
+            assertTrue(probe.failureClass().success(),
+                    () -> "probe after delete must not fail: " + probe.errorCode() + " " + probe.errorMessage());
+            assertFalse(probe.exists(), "the document root must be absent after the delete");
+
+            ExternalKnowledgeRemoval again = harness.indexPort.removeResource(
+                    documentRoot, true, OpenVikingProjectionUris.OWNED_ROOT);
+            assertTrue(again.removed(), "repeat delete must stay idempotent");
+            assertEquals(0, again.deletedCount(), "repeat delete must find nothing left to remove");
         } finally {
             cleanup.delete("/api/v1/fs", OpenVikingContractHttp.query(
                     "uri", OpenVikingProjectionUris.requireCleanupUri(runRoot.replaceAll("/+$", ""), runRoot),
