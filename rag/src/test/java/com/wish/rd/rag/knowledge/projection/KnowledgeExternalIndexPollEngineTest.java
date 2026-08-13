@@ -238,6 +238,23 @@ class KnowledgeExternalIndexPollEngineTest {
             verified.add(marker);
             return onVerify.apply(marker);
         }
+
+        @Override
+        public com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeRemoval removeResource(
+                String remoteUri, boolean recursive, String expectedOwnedRoot
+        ) {
+            throw new AssertionError("the poll engine must never delete");
+        }
+
+        @Override
+        public com.wish.rd.rag.knowledge.projection.model.ExternalResourceProbe inspectResource(String remoteUri) {
+            throw new UnsupportedOperationException("not implemented in this fixture");
+        }
+
+        @Override
+        public com.wish.rd.rag.knowledge.projection.model.ExternalTreeListing listTree(String ownedRootUri) {
+            throw new AssertionError("the poll engine must never list the remote tree");
+        }
     }
 
     private static final class Fixture {

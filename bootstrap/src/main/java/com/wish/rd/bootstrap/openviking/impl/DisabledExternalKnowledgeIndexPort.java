@@ -2,12 +2,15 @@ package com.wish.rd.bootstrap.openviking.impl;
 
 import com.wish.rd.rag.knowledge.projection.ExternalKnowledgeIndexPort;
 import com.wish.rd.rag.knowledge.projection.model.ExternalIndexFailureClass;
+import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeRemoval;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeSubmission;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeTaskSnapshot;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeTaskState;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeUpsertCommand;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeVerification;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeVersionMarker;
+import com.wish.rd.rag.knowledge.projection.model.ExternalResourceProbe;
+import com.wish.rd.rag.knowledge.projection.model.ExternalTreeListing;
 
 /**
  * 未配置外部索引时的端口。永远 {@code ready() == false}，Worker/Poller 因此完全不动作。
@@ -39,6 +42,24 @@ public final class DisabledExternalKnowledgeIndexPort implements ExternalKnowled
     @Override
     public ExternalKnowledgeVerification verifyResource(ExternalKnowledgeVersionMarker marker) {
         return ExternalKnowledgeVerification.unavailable(
+                ExternalIndexFailureClass.CONFIGURATION_BLOCKED, "PROJECTION_DISABLED", REASON);
+    }
+
+    @Override
+    public ExternalKnowledgeRemoval removeResource(String remoteUri, boolean recursive, String expectedOwnedRoot) {
+        return ExternalKnowledgeRemoval.failed(
+                ExternalIndexFailureClass.CONFIGURATION_BLOCKED, "PROJECTION_DISABLED", REASON, false);
+    }
+
+    @Override
+    public ExternalResourceProbe inspectResource(String remoteUri) {
+        return ExternalResourceProbe.unavailable(
+                ExternalIndexFailureClass.CONFIGURATION_BLOCKED, "PROJECTION_DISABLED", REASON);
+    }
+
+    @Override
+    public ExternalTreeListing listTree(String ownedRootUri) {
+        return ExternalTreeListing.failed(
                 ExternalIndexFailureClass.CONFIGURATION_BLOCKED, "PROJECTION_DISABLED", REASON);
     }
 }

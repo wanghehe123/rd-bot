@@ -7,12 +7,15 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.wish.rd.rag.knowledge.projection.ExternalKnowledgeIndexPort;
 import com.wish.rd.rag.knowledge.projection.OpenVikingProjectionUris;
 import com.wish.rd.rag.knowledge.projection.model.ExternalIndexFailureClass;
+import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeRemoval;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeSubmission;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeTaskSnapshot;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeTaskState;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeUpsertCommand;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeVerification;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeVersionMarker;
+import com.wish.rd.rag.knowledge.projection.model.ExternalResourceProbe;
+import com.wish.rd.rag.knowledge.projection.model.ExternalTreeListing;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -49,6 +52,8 @@ public final class OpenVikingRestIndexAdapter implements ExternalKnowledgeIndexP
     private static final String PATH_TEMP_UPLOAD = "/api/v1/resources/temp_upload";
     private static final String PATH_RESOURCES = "/api/v1/resources";
     private static final String PATH_TASKS = "/api/v1/tasks/";
+    private static final String PATH_FS = "/api/v1/fs";
+    private static final String PATH_LS = "/api/v1/fs/ls";
     private static final String PATH_ATTRS = "/api/v1/fs/attrs";
     private static final String PATH_ABSTRACT = "/api/v1/content/abstract";
     private static final String PATH_OVERVIEW = "/api/v1/content/overview";
@@ -241,6 +246,97 @@ public final class OpenVikingRestIndexAdapter implements ExternalKnowledgeIndexP
                 : ExternalKnowledgeVerification.mismatched(failed);
     }
 
+    @Override
+    public ExternalKnowledgeRemoval removeResource(String remoteUri, boolean recursive, String expectedOwnedRoot) {
+        if (!OpenVikingProjectionUris.isWithinOwnedRoot(remoteUri, expectedOwnedRoot)
+                || !OpenVikingProjectionUris.isWithinOwnedRoot(remoteUri, ownedRoot)) {
+            return ExternalKnowledgeRemoval.failed(
+                    ExternalIndexFailureClass.CONFIGURATION_BLOCKED,
+                    "ROOT_NOT_OWNED",
+                    "refusing to write outside the owned namespace",
+                    false);
+        }
+        OpenVikingResponse deleted = exchange.delete(PATH_FS, Map.of(
+                "uri", remoteUri,
+                "recursive", recursive ? "true" : "false"));
+        if (deleted.transportFailed()) {
+            return ExternalKnowledgeRemoval.failed(
+                    OpenVikingErrorTranslator.classifyTransport(deleted.transportFailure(), deleted.requestIssued()),
+                    "TRANSPORT_FAILURE",
+                    describe(deleted),
+                    deleted.requestIssued());
+        }
+        if (!deleted.successful()) {
+            return ExternalKnowledgeRemoval.failed(
+                    OpenVikingErrorTranslator.classify(deleted.status(), deleted.body()),
+                    firstNonBlank(OpenVikingErrorTranslator.errorCode(deleted.body()), "DELETE_FAILED"),
+                    describe(deleted),
+                    deleted.requestIssued());
+        }
+        int deletedCount = Math.max(0, deleted.result().path("estimated_deleted_count").asInt(0));
+        return ExternalKnowledgeRemoval.accepted(deletedCount);
+    }
+
+    @Override
+    public ExternalResourceProbe inspectResource(String remoteUri) {
+        OpenVikingResponse attrs = exchange.get(PATH_ATTRS, Map.of("uri", remoteUri == null ? "" : remoteUri));
+        if (attrs.transportFailed()) {
+            return ExternalResourceProbe.unavailable(
+                    OpenVikingErrorTranslator.classifyTransport(attrs.transportFailure(), attrs.requestIssued()),
+                    "TRANSPORT_FAILURE",
+                    describe(attrs));
+        }
+        if (attrs.status() == 404) {
+            return ExternalResourceProbe.absent();
+        }
+        if (!attrs.successful()) {
+            return ExternalResourceProbe.unavailable(
+                    OpenVikingErrorTranslator.classify(attrs.status(), attrs.body()),
+                    firstNonBlank(OpenVikingErrorTranslator.errorCode(attrs.body()), "ATTRS_UNAVAILABLE"),
+                    describe(attrs));
+        }
+        return ExternalResourceProbe.present(parseTags(attrs.result().path("attrs").path("tags")));
+    }
+
+    @Override
+    public ExternalTreeListing listTree(String ownedRootUri) {
+        if (!OpenVikingProjectionUris.isWithinOwnedRoot(ownedRootUri, ownedRoot)) {
+            return ExternalTreeListing.failed(
+                    ExternalIndexFailureClass.CONFIGURATION_BLOCKED,
+                    "ROOT_NOT_OWNED",
+                    "refusing to list outside the owned namespace");
+        }
+        OpenVikingResponse listed = exchange.get(PATH_LS, Map.of("uri", ownedRootUri));
+        if (listed.transportFailed()) {
+            return ExternalTreeListing.failed(
+                    OpenVikingErrorTranslator.classifyTransport(listed.transportFailure(), listed.requestIssued()),
+                    "TRANSPORT_FAILURE",
+                    describe(listed));
+        }
+        if (!listed.successful()) {
+            return ExternalTreeListing.failed(
+                    OpenVikingErrorTranslator.classify(listed.status(), listed.body()),
+                    firstNonBlank(OpenVikingErrorTranslator.errorCode(listed.body()), "LS_FAILED"),
+                    describe(listed));
+        }
+        JsonNode result = listed.result();
+        if (!result.isArray()) {
+            return ExternalTreeListing.failed(
+                    ExternalIndexFailureClass.MALFORMED_SUCCESS,
+                    "LS_NOT_ARRAY",
+                    "fs/ls returned 2xx without an entry array");
+        }
+        List<ExternalTreeListing.Entry> entries = new ArrayList<>();
+        for (JsonNode node : result) {
+            String uri = node.path("uri").asText("");
+            String name = firstNonBlank(node.path("rel_path").asText(""), lastSegment(uri));
+            boolean directory = node.path("isDir").asBoolean(false) || node.path("is_dir").asBoolean(false);
+            String owner = firstNonBlank(node.path("owner").asText(""), tagValue(node.path("tags"), "rd.owner"));
+            entries.add(new ExternalTreeListing.Entry(uri, name, directory, owner));
+        }
+        return ExternalTreeListing.of(entries);
+    }
+
     /**
      * temp_upload 的失败分类。它写的是临时区，没有触碰我们的资源根，
      * 因此即使 5xx 也只是"没发出去"，可以安全重投；把它归为未知会白白冻结一行。
@@ -287,6 +383,49 @@ public final class OpenVikingRestIndexAdapter implements ExternalKnowledgeIndexP
 
     private static String firstNonBlank(String value, String fallback) {
         return value == null || value.isBlank() ? fallback : value;
+    }
+
+    private static String lastSegment(String uri) {
+        if (uri == null || uri.isBlank()) {
+            return "";
+        }
+        String stripped = uri.endsWith("/") ? uri.substring(0, uri.length() - 1) : uri;
+        int slash = stripped.lastIndexOf('/');
+        return slash < 0 ? stripped : stripped.substring(slash + 1);
+    }
+
+    private static Map<String, String> parseTags(JsonNode tagsNode) {
+        Map<String, String> tags = new LinkedHashMap<>();
+        if (tagsNode == null || tagsNode.isMissingNode() || tagsNode.isNull()) {
+            return tags;
+        }
+        if (tagsNode.isObject()) {
+            tagsNode.fields().forEachRemaining(entry -> tags.put(entry.getKey(), entry.getValue().asText("")));
+            return tags;
+        }
+        if (tagsNode.isArray()) {
+            for (JsonNode tag : tagsNode) {
+                putTag(tags, tag.asText(""));
+            }
+            return tags;
+        }
+        putTag(tags, tagsNode.asText(""));
+        return tags;
+    }
+
+    private static String tagValue(JsonNode tagsNode, String key) {
+        return parseTags(tagsNode).getOrDefault(key, "");
+    }
+
+    private static void putTag(Map<String, String> tags, String raw) {
+        if (raw == null || raw.isBlank()) {
+            return;
+        }
+        int separator = raw.indexOf('=');
+        if (separator <= 0) {
+            return;
+        }
+        tags.put(raw.substring(0, separator), raw.substring(separator + 1));
     }
 
     private static String sha256(String value) {

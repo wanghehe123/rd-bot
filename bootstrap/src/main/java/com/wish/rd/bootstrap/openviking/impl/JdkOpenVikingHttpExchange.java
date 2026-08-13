@@ -60,6 +60,11 @@ public final class JdkOpenVikingHttpExchange implements OpenVikingHttpExchange {
     }
 
     @Override
+    public OpenVikingResponse delete(String path, Map<String, String> query) {
+        return exchange("DELETE", path, query, null, null);
+    }
+
+    @Override
     public OpenVikingResponse postJson(String path, Object body) {
         try {
             return exchange("POST", path, Map.of(), "application/json", OBJECT_MAPPER.writeValueAsBytes(body));

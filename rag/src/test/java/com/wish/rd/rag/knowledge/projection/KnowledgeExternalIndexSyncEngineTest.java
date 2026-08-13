@@ -205,6 +205,23 @@ class KnowledgeExternalIndexSyncEngineTest {
         ) {
             throw new UnsupportedOperationException("the submit worker must not verify");
         }
+
+        @Override
+        public com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeRemoval removeResource(
+                String remoteUri, boolean recursive, String expectedOwnedRoot
+        ) {
+            throw new UnsupportedOperationException("not implemented in this fixture");
+        }
+
+        @Override
+        public com.wish.rd.rag.knowledge.projection.model.ExternalResourceProbe inspectResource(String remoteUri) {
+            throw new UnsupportedOperationException("the submit worker must not inspect");
+        }
+
+        @Override
+        public com.wish.rd.rag.knowledge.projection.model.ExternalTreeListing listTree(String ownedRootUri) {
+            throw new UnsupportedOperationException("the submit worker must not list");
+        }
     }
 
     private static final class Fixture {

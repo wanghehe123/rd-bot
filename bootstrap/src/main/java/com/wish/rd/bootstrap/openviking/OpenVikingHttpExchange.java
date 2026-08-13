@@ -12,6 +12,15 @@ public interface OpenVikingHttpExchange {
 
     OpenVikingResponse get(String path, Map<String, String> query);
 
+    /**
+     * 删除远端资源。查询参数必须包含冻结合同的 {@code uri} 与 {@code recursive}。
+     *
+     * @param path  路径，合同固定为 {@code /api/v1/fs}
+     * @param query 查询参数
+     * @return 响应
+     */
+    OpenVikingResponse delete(String path, Map<String, String> query);
+
     OpenVikingResponse postJson(String path, Object body);
 
     /**

@@ -7,12 +7,15 @@ import com.wish.rd.bootstrap.openviking.impl.OpenVikingRestIndexAdapter;
 import com.wish.rd.bootstrap.openviking.model.OpenVikingResponse;
 import com.wish.rd.rag.knowledge.projection.OpenVikingProjectionUris;
 import com.wish.rd.rag.knowledge.projection.model.ExternalIndexFailureClass;
+import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeRemoval;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeSubmission;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeTaskSnapshot;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeTaskState;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeUpsertCommand;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeVerification;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeVersionMarker;
+import com.wish.rd.rag.knowledge.projection.model.ExternalResourceProbe;
+import com.wish.rd.rag.knowledge.projection.model.ExternalTreeListing;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -247,6 +250,97 @@ class OpenVikingRestIndexAdapterTest {
     }
 
     @Test
+    void shouldRemoveAResourceAndReadDeletedCountFromTheFrozenEnvelope() throws Exception {
+        FakeExchange exchange = new FakeExchange();
+        exchange.enqueue("DELETE /api/v1/fs", 200, fixture("delete.json"));
+
+        ExternalKnowledgeRemoval removal = adapter(exchange).removeResource(ROOT, true, OpenVikingProjectionUris.OWNED_ROOT);
+
+        assertTrue(removal.removed());
+        assertEquals(3, removal.deletedCount());
+        assertEquals(ExternalIndexFailureClass.NONE, removal.failureClass());
+        assertTrue(removal.requestIssued());
+        assertEquals(ROOT, exchange.queries.get("DELETE /api/v1/fs").get("uri"));
+        assertEquals("true", exchange.queries.get("DELETE /api/v1/fs").get("recursive"));
+    }
+
+    @Test
+    void shouldTreatAZeroDeletedCountAsAnIdempotentSuccess() throws Exception {
+        FakeExchange exchange = new FakeExchange();
+        exchange.enqueue("DELETE /api/v1/fs", 200, fixture("delete_idempotent.json"));
+
+        ExternalKnowledgeRemoval removal = adapter(exchange).removeResource(ROOT, true, OpenVikingProjectionUris.OWNED_ROOT);
+
+        assertTrue(removal.removed(), "repeating a delete is success, not a missing-resource failure");
+        assertEquals(0, removal.deletedCount());
+        assertEquals(ExternalIndexFailureClass.NONE, removal.failureClass());
+    }
+
+    @Test
+    void shouldRefuseToDeleteOutsideTheOwnedRootWithoutIssuingARequest() {
+        FakeExchange exchange = new FakeExchange();
+        exchange.enqueue("DELETE /api/v1/fs", 200, """
+                {"result":{"estimated_deleted_count":9}}""");
+
+        ExternalKnowledgeRemoval removal = adapter(exchange).removeResource(
+                "viking://resources/rd-bot/kb/9999/documents/1",
+                true,
+                "viking://resources/rd-bot/kb/1001/");
+
+        assertEquals(ExternalIndexFailureClass.CONFIGURATION_BLOCKED, removal.failureClass());
+        assertFalse(removal.removed());
+        assertFalse(removal.requestIssued());
+        assertTrue(exchange.calls.isEmpty(), "an out-of-root URI must never reach the wire");
+    }
+
+    @Test
+    void shouldPreserveRequestIssuedOnADeleteTransportFailure() {
+        FakeExchange notSent = new FakeExchange();
+        notSent.enqueueTransportFailure("DELETE /api/v1/fs", new ConnectException("refused"), false);
+        ExternalKnowledgeRemoval neverIssued = adapter(notSent).removeResource(
+                ROOT, false, OpenVikingProjectionUris.OWNED_ROOT);
+        assertFalse(neverIssued.requestIssued());
+        assertEquals(ExternalIndexFailureClass.RETRYABLE_NOT_SENT, neverIssued.failureClass());
+
+        FakeExchange issued = new FakeExchange();
+        issued.enqueueTransportFailure("DELETE /api/v1/fs", new IOException("read timeout"), true);
+        ExternalKnowledgeRemoval maybeApplied = adapter(issued).removeResource(
+                ROOT, false, OpenVikingProjectionUris.OWNED_ROOT);
+        assertTrue(maybeApplied.requestIssued());
+        assertEquals(ExternalIndexFailureClass.UNKNOWN_REMOTE_RESULT, maybeApplied.failureClass());
+        assertFalse(maybeApplied.removed(), "an unknown delete must not be treated as success");
+    }
+
+    @Test
+    void shouldReportAMissingResourceAsAbsentRatherThanACallFailure() throws Exception {
+        FakeExchange exchange = new FakeExchange();
+        exchange.enqueue("GET /api/v1/fs/attrs", 404, fixture("stat_not_found.json"));
+
+        ExternalResourceProbe probe = adapter(exchange).inspectResource(ROOT);
+
+        assertFalse(probe.exists());
+        assertTrue(probe.tags().isEmpty());
+        assertEquals(ExternalIndexFailureClass.NONE, probe.failureClass(),
+                "404 on attrs is a negative observation, not a failed call");
+    }
+
+    @Test
+    void shouldListTreeEntriesFromTheFrozenLsEnvelope() throws Exception {
+        FakeExchange exchange = new FakeExchange();
+        exchange.enqueue("GET /api/v1/fs/ls", 200, fixture("fs_ls.json"));
+
+        ExternalTreeListing listing = adapter(exchange).listTree(OpenVikingProjectionUris.OWNED_ROOT);
+
+        assertEquals(ExternalIndexFailureClass.NONE, listing.failureClass());
+        assertEquals(1, listing.entries().size());
+        ExternalTreeListing.Entry entry = listing.entries().getFirst();
+        assertTrue(entry.uri().contains("source_v2.md"));
+        assertEquals("source_v2.md", entry.name());
+        assertFalse(entry.directory());
+        assertEquals("viking://resources/rd-bot/", exchange.queries.get("GET /api/v1/fs/ls").get("uri"));
+    }
+
+    @Test
     void shouldNotBeReadyWhenTheEmbeddingBackendIsDown() throws Exception {
         ObjectNode degraded = (ObjectNode) MAPPER.readTree(fixture("ready.json"));
         degraded.put("status", "degraded");
@@ -315,6 +409,7 @@ class OpenVikingRestIndexAdapterTest {
 
         private final Map<String, Deque<OpenVikingResponse>> responses = new LinkedHashMap<>();
         private final Map<String, Object> bodies = new LinkedHashMap<>();
+        private final Map<String, Map<String, String>> queries = new LinkedHashMap<>();
         private final List<String> calls = new ArrayList<>();
         private final List<byte[]> uploads = new ArrayList<>();
 
@@ -336,7 +431,14 @@ class OpenVikingRestIndexAdapterTest {
 
         @Override
         public OpenVikingResponse get(String path, Map<String, String> query) {
+            queries.put("GET " + path, Map.copyOf(query));
             return answer("GET " + path);
+        }
+
+        @Override
+        public OpenVikingResponse delete(String path, Map<String, String> query) {
+            queries.put("DELETE " + path, Map.copyOf(query));
+            return answer("DELETE " + path);
         }
 
         @Override
