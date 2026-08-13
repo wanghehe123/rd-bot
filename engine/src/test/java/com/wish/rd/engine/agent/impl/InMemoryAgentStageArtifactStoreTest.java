@@ -58,11 +58,14 @@ class InMemoryAgentStageArtifactStoreTest {
         }
 
         assertNotNull(winner.get());
-        assertEquals("sha256:first", winner.get().contentHash());
         assertNotNull(loserError.get());
         assertEquals(IllegalStateException.class, loserError.get().getClass());
         assertEquals("immutable artifact conflict: 7478000000000000202", loserError.get().getMessage());
         assertEquals(1, store.listByTask(first.taskId()).size());
+        // 两个线程真正在竞争，谁先落地由调度决定；可断言的不变量是"只有一个赢家，
+        // 且留在库里的就是赢家那份"，而不是某个固定的 hash。
+        assertEquals(winner.get().contentHash(), store.listByTask(first.taskId()).get(0).contentHash());
+        assertEquals(winner.get().contentPreview(), store.listByTask(first.taskId()).get(0).contentPreview());
     }
 
     @Test
