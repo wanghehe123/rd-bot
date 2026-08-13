@@ -9,6 +9,7 @@ import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeObservedState
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeOperationStatus;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeOperationType;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeProjectionStatus;
+import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeRemoval;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeSubmission;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeUpsertCommand;
 import com.wish.rd.rag.knowledge.projection.model.KnowledgeExternalIndexBinding;
@@ -34,9 +35,8 @@ import java.util.function.Supplier;
  * <p>Worker 只写 observed 侧字段。desired 由本地 mutation 事务拥有，
  * 两者在同一行上并发推进，绝不能互相覆盖。
  *
- * <p>WP-3 只实现 {@link ExternalKnowledgeOperationType#UPSERT_DOCUMENT}。
- * 删除类操作会被挂起为 {@code NEEDS_HUMAN}：先做一个可见且不循环的信号，
- * 而不是让它在队列里空转，也不是让一个未验证 ownership 的删除路径提前上线。
+ * <p>删除与重建走同一条发送边界：先落 {@code remote_operation_id}，再调远端。
+ * {@code path_busy}/429/连接失败只允许 {@code RETRY_WAIT}，不得把删除标成成功。
  */
 public final class KnowledgeExternalIndexSyncEngine {
 
@@ -92,11 +92,19 @@ public final class KnowledgeExternalIndexSyncEngine {
     }
 
     private boolean dispatch(KnowledgeExternalIndexOperation claimed, String owner, long nowEpochMillis) {
-        if (claimed.operationType() != ExternalKnowledgeOperationType.UPSERT_DOCUMENT) {
-            park(claimed, owner, nowEpochMillis, "UNSUPPORTED_OPERATION",
-                    "operation type is not implemented yet: " + claimed.operationType());
-            return false;
-        }
+        return switch (claimed.operationType()) {
+            case UPSERT_DOCUMENT, REBUILD_DOCUMENT -> dispatchUpsert(claimed, owner, nowEpochMillis);
+            case DELETE_DOCUMENT -> dispatchDelete(claimed, owner, nowEpochMillis, false);
+            case DELETE_KNOWLEDGE_BASE -> dispatchKnowledgeBaseDelete(claimed, owner, nowEpochMillis);
+            default -> {
+                park(claimed, owner, nowEpochMillis, "UNSUPPORTED_OPERATION",
+                        "operation type is not implemented yet: " + claimed.operationType());
+                yield false;
+            }
+        };
+    }
+
+    private boolean dispatchUpsert(KnowledgeExternalIndexOperation claimed, String owner, long nowEpochMillis) {
         Optional<KnowledgeExternalIndexBinding> found = bindingStore.findByProviderAndDocumentId(
                 claimed.provider(), claimed.documentId());
         if (found.isEmpty()) {
@@ -105,7 +113,6 @@ public final class KnowledgeExternalIndexSyncEngine {
             return false;
         }
         KnowledgeExternalIndexBinding binding = found.get();
-
         if (binding.desiredVersion() > claimed.syncVersion()
                 || binding.desiredState() != ExternalKnowledgeDesiredState.PRESENT) {
             settle(claimed, owner, ExternalIndexSettleCommand.superseded(), null, nowEpochMillis);
@@ -128,15 +135,8 @@ public final class KnowledgeExternalIndexSyncEngine {
             return false;
         }
 
-        String sendMarker = claimed.idempotencyKey() + "#" + claimed.attemptCount();
-        Optional<KnowledgeExternalIndexOperation> sending = settle(
-                claimed,
-                owner,
-                ExternalIndexSettleCommand.aboutToSend(sendMarker, nowEpochMillis),
-                observation(binding, ExternalKnowledgeProjectionStatus.PROCESSING, claimed.eventId(),
-                        binding.remoteTaskId(), nowEpochMillis, binding.lastVerifiedAtEpochMillis(), "", "",
-                        nowEpochMillis),
-                nowEpochMillis);
+        Optional<KnowledgeExternalIndexOperation> sending = persistSendIntent(
+                claimed, binding, ExternalKnowledgeProjectionStatus.PROCESSING, owner, nowEpochMillis);
         if (sending.isEmpty()) {
             return false;
         }
@@ -144,6 +144,152 @@ public final class KnowledgeExternalIndexSyncEngine {
         ExternalKnowledgeSubmission submission = submitSafely(command);
         applyOutcome(sending.get(), binding, command, submission, owner, nowEpochMillis);
         return true;
+    }
+
+    private boolean dispatchDelete(
+            KnowledgeExternalIndexOperation claimed,
+            String owner,
+            long nowEpochMillis,
+            boolean recursive
+    ) {
+        Optional<KnowledgeExternalIndexBinding> found = bindingStore.findByProviderAndDocumentId(
+                claimed.provider(), claimed.documentId());
+        if (found.isEmpty()) {
+            park(claimed, owner, nowEpochMillis, "MISSING_BINDING",
+                    "no projection binding for document " + claimed.documentId());
+            return false;
+        }
+        KnowledgeExternalIndexBinding binding = found.get();
+        if (binding.desiredVersion() > claimed.syncVersion()
+                || binding.desiredState() != ExternalKnowledgeDesiredState.ABSENT) {
+            settle(claimed, owner, ExternalIndexSettleCommand.superseded(), null, nowEpochMillis);
+            return false;
+        }
+        if (siblingInFlight(claimed)) {
+            settle(claimed, owner, ExternalIndexSettleCommand.deferredLocally(
+                            nowEpochMillis + settings.pollBackoffMillis(1),
+                            "SIBLING_IN_FLIGHT",
+                            "another version of the same document is still awaiting a remote outcome"),
+                    null, nowEpochMillis);
+            return false;
+        }
+        String root = claimed.remoteUri().isBlank() ? binding.remoteUri() : claimed.remoteUri();
+        String ownedRoot = OpenVikingProjectionUris.knowledgeBaseRoot(claimed.knowledgeBaseId());
+        if (!root.equals(binding.remoteUri())
+                || !OpenVikingProjectionUris.isWithinOwnedRoot(root, OpenVikingProjectionUris.OWNED_ROOT)
+                || !OpenVikingProjectionUris.isWithinOwnedRoot(root, ownedRoot)) {
+            park(claimed, owner, nowEpochMillis, "ROOT_NOT_OWNED",
+                    "refusing to write outside the owned namespace");
+            return false;
+        }
+
+        Optional<KnowledgeExternalIndexOperation> sending = persistSendIntent(
+                claimed, binding, ExternalKnowledgeProjectionStatus.DELETING, owner, nowEpochMillis);
+        if (sending.isEmpty()) {
+            return false;
+        }
+        ExternalKnowledgeRemoval removal = removeSafely(root, recursive, ownedRoot, claimed.documentId());
+        applyDeleteOutcome(sending.get(), binding, removal, owner, nowEpochMillis);
+        return true;
+    }
+
+    private boolean dispatchKnowledgeBaseDelete(
+            KnowledgeExternalIndexOperation claimed,
+            String owner,
+            long nowEpochMillis
+    ) {
+        String root = claimed.remoteUri();
+        String ownedRoot = OpenVikingProjectionUris.knowledgeBaseRoot(claimed.knowledgeBaseId());
+        if (!OpenVikingProjectionUris.isWithinOwnedRoot(root, OpenVikingProjectionUris.OWNED_ROOT)
+                || !OpenVikingProjectionUris.isWithinOwnedRoot(root, ownedRoot)) {
+            park(claimed, owner, nowEpochMillis, "ROOT_NOT_OWNED",
+                    "refusing to write outside the owned namespace");
+            return false;
+        }
+        Optional<KnowledgeExternalIndexOperation> sending = persistSendIntent(
+                claimed, null, ExternalKnowledgeProjectionStatus.DELETING, owner, nowEpochMillis);
+        if (sending.isEmpty()) {
+            return false;
+        }
+        ExternalKnowledgeRemoval removal = removeSafely(root, true, ownedRoot, claimed.knowledgeBaseId());
+        applyDeleteOutcome(sending.get(), null, removal, owner, nowEpochMillis);
+        return true;
+    }
+
+    private Optional<KnowledgeExternalIndexOperation> persistSendIntent(
+            KnowledgeExternalIndexOperation claimed,
+            KnowledgeExternalIndexBinding binding,
+            ExternalKnowledgeProjectionStatus projectionStatus,
+            String owner,
+            long nowEpochMillis
+    ) {
+        String sendMarker = claimed.idempotencyKey() + "#" + claimed.attemptCount();
+        KnowledgeExternalIndexBinding observation = binding == null
+                ? null
+                : observation(binding, projectionStatus, claimed.eventId(),
+                        binding.remoteTaskId(), nowEpochMillis, binding.lastVerifiedAtEpochMillis(), "", "",
+                        nowEpochMillis);
+        return settle(claimed, owner, ExternalIndexSettleCommand.aboutToSend(sendMarker, nowEpochMillis),
+                observation, nowEpochMillis);
+    }
+
+    private ExternalKnowledgeRemoval removeSafely(
+            String remoteUri,
+            boolean recursive,
+            String expectedOwnedRoot,
+            String logId
+    ) {
+        try {
+            return indexPort.removeResource(remoteUri, recursive, expectedOwnedRoot);
+        } catch (RuntimeException ex) {
+            log.warn("external index remove threw for {}: {}", logId, ex.toString());
+            return ExternalKnowledgeRemoval.failed(
+                    ExternalIndexFailureClass.UNKNOWN_REMOTE_RESULT,
+                    "ADAPTER_THREW",
+                    "the adapter threw before classifying the outcome",
+                    true);
+        }
+    }
+
+    private void applyDeleteOutcome(
+            KnowledgeExternalIndexOperation sent,
+            KnowledgeExternalIndexBinding binding,
+            ExternalKnowledgeRemoval removal,
+            String owner,
+            long nowEpochMillis
+    ) {
+        if (removal.removed()) {
+            KnowledgeExternalIndexBinding observation = binding == null
+                    ? null
+                    : observation(binding, ExternalKnowledgeProjectionStatus.DELETING, sent.eventId(),
+                            binding.remoteTaskId(), nowEpochMillis, binding.lastVerifiedAtEpochMillis(),
+                            "", "", nowEpochMillis);
+            settle(sent, owner,
+                    ExternalIndexSettleCommand.awaitingAbsence(nowEpochMillis + settings.pollIntervalMillis()),
+                    observation, nowEpochMillis);
+            return;
+        }
+        switch (removal.failureClass()) {
+            case UNKNOWN_REMOTE_RESULT -> settle(sent, owner, ExternalIndexSettleCommand.unknownRemote(
+                            nowEpochMillis + settings.pollIntervalMillis(),
+                            removal.errorCode(), removal.errorMessage()),
+                    binding == null ? null : observation(binding, ExternalKnowledgeProjectionStatus.DELETING,
+                            sent.eventId(), binding.remoteTaskId(), nowEpochMillis,
+                            binding.lastVerifiedAtEpochMillis(), removal.errorCode(), removal.errorMessage(),
+                            nowEpochMillis),
+                    nowEpochMillis);
+            case RETRYABLE_NOT_SENT, RETRYABLE, RETRYABLE_BUSY -> retryOrDeadLetter(
+                    sent, binding, removal.errorCode(), removal.errorMessage(), owner, nowEpochMillis);
+            case CONFIGURATION_BLOCKED, MALFORMED_SUCCESS, FOREIGN -> park(
+                    sent, owner, nowEpochMillis, removal.errorCode(), removal.errorMessage());
+            default -> settle(sent, owner, ExternalIndexSettleCommand.deadLetter(
+                            removal.errorCode(), removal.errorMessage()),
+                    binding == null ? null : observation(binding, ExternalKnowledgeProjectionStatus.DEAD_LETTER, "",
+                            binding.remoteTaskId(), binding.lastSubmittedAtEpochMillis(),
+                            binding.lastVerifiedAtEpochMillis(),
+                            removal.errorCode(), removal.errorMessage(), nowEpochMillis),
+                    nowEpochMillis);
+        }
     }
 
     private ExternalKnowledgeSubmission submitSafely(ExternalKnowledgeUpsertCommand command) {
@@ -226,24 +372,35 @@ public final class KnowledgeExternalIndexSyncEngine {
             String owner,
             long nowEpochMillis
     ) {
+        retryOrDeadLetter(sent, binding, submission.errorCode(), submission.errorMessage(), owner, nowEpochMillis);
+    }
+
+    private void retryOrDeadLetter(
+            KnowledgeExternalIndexOperation sent,
+            KnowledgeExternalIndexBinding binding,
+            String errorCode,
+            String errorMessage,
+            String owner,
+            long nowEpochMillis
+    ) {
         if (sent.attemptCount() >= sent.maxAttempts()) {
             settle(sent, owner,
-                    ExternalIndexSettleCommand.deadLetter(submission.errorCode(), submission.errorMessage()),
-                    observation(binding, ExternalKnowledgeProjectionStatus.DEAD_LETTER, "",
+                    ExternalIndexSettleCommand.deadLetter(errorCode, errorMessage),
+                    binding == null ? null : observation(binding, ExternalKnowledgeProjectionStatus.DEAD_LETTER, "",
                             binding.remoteTaskId(), binding.lastSubmittedAtEpochMillis(),
                             binding.lastVerifiedAtEpochMillis(),
-                            submission.errorCode(), submission.errorMessage(), nowEpochMillis),
+                            errorCode, errorMessage, nowEpochMillis),
                     nowEpochMillis);
             return;
         }
         settle(sent, owner,
                 ExternalIndexSettleCommand.retryWait(
                         nowEpochMillis + settings.submitBackoffMillis(sent.attemptCount()),
-                        submission.errorCode(), submission.errorMessage()),
-                observation(binding, ExternalKnowledgeProjectionStatus.PENDING, "",
+                        errorCode, errorMessage),
+                binding == null ? null : observation(binding, ExternalKnowledgeProjectionStatus.PENDING, "",
                         binding.remoteTaskId(), binding.lastSubmittedAtEpochMillis(),
                         binding.lastVerifiedAtEpochMillis(),
-                        submission.errorCode(), submission.errorMessage(), nowEpochMillis),
+                        errorCode, errorMessage, nowEpochMillis),
                 nowEpochMillis);
     }
 

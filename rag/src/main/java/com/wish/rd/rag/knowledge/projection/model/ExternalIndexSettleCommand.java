@@ -116,6 +116,19 @@ public record ExternalIndexSettleCommand(
     }
 
     /**
+     * 删除已被远端接受，交给 Poller 确认资源缺席。必须释放租约：
+     * 这条路径发生在 Worker 进程，若保留租约会让 Poller 空等到 Worker 租约过期。
+     *
+     * @param nextVisibleAtEpochMillis 下次查询时间
+     * @return settle 意图
+     */
+    public static ExternalIndexSettleCommand awaitingAbsence(long nextVisibleAtEpochMillis) {
+        return new ExternalIndexSettleCommand(
+                ExternalKnowledgeOperationStatus.VERIFYING, LeaseDisposition.RELEASE,
+                "", "", nextVisibleAtEpochMillis, 0L, "", "", true, false, false);
+    }
+
+    /**
      * 远端可能已收到请求但结果不可知，必须靠查询收敛，禁止重放。
      *
      * @param nextVisibleAtEpochMillis 下次查询时间
