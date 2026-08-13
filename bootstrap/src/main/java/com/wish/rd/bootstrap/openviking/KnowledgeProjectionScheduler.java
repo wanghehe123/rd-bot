@@ -4,6 +4,7 @@ import com.wish.rd.rag.knowledge.model.KnowledgeBase;
 import com.wish.rd.rag.knowledge.projection.KnowledgeExternalIndexPollEngine;
 import com.wish.rd.rag.knowledge.projection.KnowledgeExternalIndexReconcileEngine;
 import com.wish.rd.rag.knowledge.projection.KnowledgeExternalIndexSyncEngine;
+import com.wish.rd.rag.knowledge.projection.KnowledgeProjectionBackfillEngine;
 import com.wish.rd.rag.knowledge.projection.OpenVikingProjectionUris;
 import com.wish.rd.rag.knowledge.store.KnowledgeBaseStore;
 import org.slf4j.Logger;
@@ -14,6 +15,8 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+import java.util.Arrays;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.LongSupplier;
 
@@ -26,6 +29,9 @@ import java.util.function.LongSupplier;
  * <p>对账节拍有独立开关 {@code rd.knowledge.projection.reconcile.enabled}（默认 false）
  * 和独立间隔 {@code rd.knowledge.projection.reconcile.interval-millis}（默认 300000）。
  * 打开投影但不打开对账时，Worker/Poller 仍跑，对账保持静默。
+ *
+ * <p>回填节拍同样独立：{@code rd.knowledge.projection.backfill.enabled} 默认 false，
+ * 允许名单为空时即使打开也不自动跑。
  */
 @Component
 @ConditionalOnProperty(name = "rd.knowledge.projection.mode", havingValue = "ON")
@@ -36,11 +42,16 @@ public class KnowledgeProjectionScheduler {
     private final KnowledgeExternalIndexSyncEngine syncEngine;
     private final KnowledgeExternalIndexPollEngine pollEngine;
     private final KnowledgeExternalIndexReconcileEngine reconcileEngine;
+    private final KnowledgeProjectionBackfillEngine backfillEngine;
     private final KnowledgeBaseStore knowledgeBaseStore;
     private final boolean reconcileEnabled;
+    private final boolean backfillEnabled;
+    private final int backfillBatchSize;
+    private final List<String> backfillAllowlist;
     private final LongSupplier clock;
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicBoolean reconciling = new AtomicBoolean(false);
+    private final AtomicBoolean backfilling = new AtomicBoolean(false);
 
     /** 多构造器时 Spring 不做猜测，必须显式指定注入入口，否则真机启动直接失败。 */
     @Autowired
@@ -48,25 +59,47 @@ public class KnowledgeProjectionScheduler {
             KnowledgeExternalIndexSyncEngine syncEngine,
             KnowledgeExternalIndexPollEngine pollEngine,
             KnowledgeExternalIndexReconcileEngine reconcileEngine,
+            KnowledgeProjectionBackfillEngine backfillEngine,
             KnowledgeBaseStore knowledgeBaseStore,
-            @Value("${rd.knowledge.projection.reconcile.enabled:false}") boolean reconcileEnabled
+            @Value("${rd.knowledge.projection.reconcile.enabled:false}") boolean reconcileEnabled,
+            @Value("${rd.knowledge.projection.backfill.enabled:false}") boolean backfillEnabled,
+            @Value("${rd.knowledge.projection.backfill.batch-size:20}") int backfillBatchSize,
+            @Value("${rd.knowledge.projection.backfill.knowledge-base-allowlist:}") String backfillAllowlist
     ) {
-        this(syncEngine, pollEngine, reconcileEngine, knowledgeBaseStore, reconcileEnabled, System::currentTimeMillis);
+        this(
+                syncEngine,
+                pollEngine,
+                reconcileEngine,
+                backfillEngine,
+                knowledgeBaseStore,
+                reconcileEnabled,
+                backfillEnabled,
+                backfillBatchSize,
+                backfillAllowlist,
+                System::currentTimeMillis);
     }
 
     public KnowledgeProjectionScheduler(
             KnowledgeExternalIndexSyncEngine syncEngine,
             KnowledgeExternalIndexPollEngine pollEngine,
             KnowledgeExternalIndexReconcileEngine reconcileEngine,
+            KnowledgeProjectionBackfillEngine backfillEngine,
             KnowledgeBaseStore knowledgeBaseStore,
             boolean reconcileEnabled,
+            boolean backfillEnabled,
+            int backfillBatchSize,
+            String backfillAllowlist,
             LongSupplier clock
     ) {
         this.syncEngine = syncEngine;
         this.pollEngine = pollEngine;
         this.reconcileEngine = reconcileEngine;
+        this.backfillEngine = backfillEngine;
         this.knowledgeBaseStore = knowledgeBaseStore;
         this.reconcileEnabled = reconcileEnabled;
+        this.backfillEnabled = backfillEnabled;
+        this.backfillBatchSize = backfillBatchSize;
+        this.backfillAllowlist = parseAllowlist(backfillAllowlist);
         this.clock = clock;
     }
 
@@ -127,5 +160,47 @@ public class KnowledgeProjectionScheduler {
         } finally {
             reconciling.set(false);
         }
+    }
+
+    /**
+     * 有界回填。默认关闭；允许名单为空时即使打开也不自动跑。
+     */
+    @Scheduled(fixedDelayString = "${rd.knowledge.projection.backfill.interval-millis:60000}")
+    public void backfillTick() {
+        if (!backfillEnabled || backfillAllowlist.isEmpty()) {
+            return;
+        }
+        if (!backfilling.compareAndSet(false, true)) {
+            log.debug("previous backfill tick still running, skip");
+            return;
+        }
+        try {
+            long now = clock.getAsLong();
+            int scanned = 0;
+            for (KnowledgeBase knowledgeBase : knowledgeBaseStore.list()) {
+                if (!knowledgeBase.visible() || !backfillAllowlist.contains(knowledgeBase.id())) {
+                    continue;
+                }
+                backfillEngine.backfillBatch(knowledgeBase.id(), backfillBatchSize, now);
+                scanned++;
+            }
+            if (scanned > 0) {
+                log.info("knowledge projection backfill tick scanned={}", scanned);
+            }
+        } catch (RuntimeException ex) {
+            log.warn("knowledge projection backfill tick failed: {}", ex.toString());
+        } finally {
+            backfilling.set(false);
+        }
+    }
+
+    private static List<String> parseAllowlist(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return List.of();
+        }
+        return Arrays.stream(raw.split(","))
+                .map(String::strip)
+                .filter(value -> !value.isEmpty())
+                .toList();
     }
 }

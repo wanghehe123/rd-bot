@@ -142,6 +142,10 @@ class OpenVikingProductionBoundaryPolicyTest {
                 "the API key must be read from the environment, never from configuration");
         assertTrue(yaml.contains("enabled: ${RD_OPENVIKING_RECONCILE_ENABLED:false}"),
                 "the reconciler must stay opt-in so an unconfigured deployment never scans a shared index");
+        assertTrue(yaml.contains("enabled: ${RD_OPENVIKING_BACKFILL_ENABLED:false}"),
+                "automatic inventory backfill must stay opt-in");
+        assertTrue(yaml.contains("knowledge-base-allowlist: ${RD_OPENVIKING_BACKFILL_KNOWLEDGE_BASE_ALLOWLIST:}"),
+                "an empty backfill allowlist must mean nothing runs automatically");
     }
 
     @Test
@@ -172,12 +176,22 @@ class OpenVikingProductionBoundaryPolicyTest {
                 "bootstrap/src/main/java/com/wish/rd/bootstrap/openviking/OpenVikingProjectionConfiguration.java"));
         assertTrue(config.contains("KnowledgeExternalIndexReconcileEngine"),
                 "the reconciler must be a wired bean so admin and the scheduler share one instance");
+        assertTrue(config.contains("KnowledgeInventoryAuditEngine"),
+                "the inventory audit engine must be a wired bean");
+        assertTrue(config.contains("KnowledgeProjectionBackfillEngine"),
+                "the backfill engine must be a wired bean");
         String scheduler = Files.readString(PROJECT_ROOT.resolve(
                 "bootstrap/src/main/java/com/wish/rd/bootstrap/openviking/KnowledgeProjectionScheduler.java"));
         assertTrue(scheduler.contains("rd.knowledge.projection.reconcile.enabled"),
                 "reconcile must have an independent enable switch");
         assertTrue(scheduler.contains("rd.knowledge.projection.reconcile.interval-millis"),
                 "reconcile must tick on its own interval, defaulting to 300000");
+        assertTrue(scheduler.contains("rd.knowledge.projection.backfill.enabled"),
+                "backfill must have an independent enable switch defaulting to false");
+        assertTrue(scheduler.contains("rd.knowledge.projection.backfill.interval-millis"),
+                "backfill must tick on its own interval, defaulting to 60000");
+        assertTrue(scheduler.contains("knowledge-base-allowlist"),
+                "automatic backfill must be constrained by a knowledge-base allowlist");
     }
 
     @Test
@@ -229,6 +243,83 @@ class OpenVikingProductionBoundaryPolicyTest {
         String retry = methodBody(engine, "public ProjectionAdminActionResult retry(");
         assertTrue(retry.contains("resumeStalled("), "retry must reuse the stalled-row primitive");
         assertFalse(retry.contains("enqueue("), "retry must not create a new outbox version");
+    }
+
+    @Test
+    void inventoryAdminApiMustNotCallRemoteWritesOrReindex() throws Exception {
+        String controller = Files.readString(PROJECT_ROOT.resolve(
+                "bootstrap/src/main/java/com/wish/rd/bootstrap/controller/admin/knowledge/"
+                        + "KnowledgeProjectionAdminController.java"));
+        assertTrue(controller.contains("/inventory"));
+        assertTrue(controller.contains("/inventory/backfill"));
+        assertTrue(controller.contains("/inventory/duplicates/resolve"));
+        assertTrue(controller.contains("expectedRowVersion 不能为空"),
+                "resolve must reject a body that omits expectedRowVersion");
+        assertFalse(controller.contains("writeDocument("),
+                "inventory backfill must not call writeDocument");
+        assertFalse(controller.contains("indexDocument("),
+                "inventory backfill must not call indexDocument");
+        assertFalse(controller.contains("submitUpsert("));
+        assertFalse(controller.contains("removeResource("));
+
+        String engine = Files.readString(PROJECT_ROOT.resolve(
+                "rag/src/main/java/com/wish/rd/rag/knowledge/projection/KnowledgeProjectionAdminEngine.java"));
+        String backfill = methodBody(engine, "public InventoryBackfillBatchReport backfill(");
+        assertFalse(backfill.contains("writeDocument("), "admin backfill must not call writeDocument");
+        assertFalse(backfill.contains("indexDocument("), "admin backfill must not call indexDocument");
+        assertFalse(backfill.contains("submitUpsert("), "admin backfill must only enqueue");
+        assertFalse(backfill.contains("removeResource("), "admin backfill must not delete remotely");
+        String resolve = methodBody(engine, "public InventorySupersedeOutcome resolveDuplicates(");
+        assertTrue(resolve.contains("supersedeDuplicate("), "resolve must go through the aggregate root");
+        assertFalse(resolve.contains("writeDocument("));
+        assertFalse(resolve.contains("indexDocument("));
+
+        String backfillEngine = Files.readString(PROJECT_ROOT.resolve(
+                "rag/src/main/java/com/wish/rd/rag/knowledge/projection/KnowledgeProjectionBackfillEngine.java"));
+        assertFalse(backfillEngine.contains("writeDocument("),
+                "the backfill engine must only call backfillProjection");
+        assertFalse(backfillEngine.contains("indexDocument("),
+                "the backfill engine must not re-run ingestion");
+        assertTrue(backfillEngine.contains("backfillProjection("));
+    }
+
+    @Test
+    void inventoryMetricsMustQueryColumnsThatActuallyExist() throws Exception {
+        String controller = Files.readString(PROJECT_ROOT.resolve(
+                "bootstrap/src/main/java/com/wish/rd/bootstrap/controller/observability/"
+                        + "PrometheusMetricsController.java"));
+        int start = controller.indexOf("private static InventoryMetrics inventoryMetrics(");
+        assertTrue(start > 0, "inventoryMetrics must exist");
+        String sql = controller.substring(start, controller.indexOf("\n    }", start));
+        assertFalse(sql.contains("AtomicLong"), "inventory gauges must not use in-process counters");
+        assertFalse(sql.contains("incrementAndGet"), "inventory gauges must not use in-process counters");
+
+        String p0 = Files.readString(PROJECT_ROOT.resolve(
+                "bootstrap/src/main/resources/sql/postgres/p0_knowledge_productionization.sql"));
+        String p11 = Files.readString(PROJECT_ROOT.resolve(
+                "bootstrap/src/main/resources/sql/postgres/p11_openviking_projection.sql"));
+        for (String column : List.of(
+                "deleted_at",
+                "superseded_by_document_id",
+                "source_identity_key",
+                "local_only_override",
+                "chunk_count",
+                "checksum",
+                "lifecycle_status",
+                "projection_status"
+        )) {
+            assertTrue(sql.contains(column), "inventory gauges must read " + column);
+            assertTrue(
+                    p0.contains(column) || p11.contains(column),
+                    column + " must exist in p0 or p11 or the inventory gauge silently reports zero"
+            );
+        }
+        assertTrue(sql.contains("knowledge_documents"));
+        assertTrue(sql.contains("knowledge_bases"));
+        assertTrue(sql.contains("knowledge_external_index_bindings"));
+        assertTrue(sql.contains("PENDING_BACKFILL"));
+        assertTrue(controller.contains("rd_bot_knowledge_inventory_documents_total"));
+        assertTrue(controller.contains("rd_bot_knowledge_inventory_backfill_pending"));
     }
 
     /**

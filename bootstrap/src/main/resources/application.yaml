@@ -191,6 +191,12 @@ rd:
       reconcile:
         enabled: ${RD_OPENVIKING_RECONCILE_ENABLED:false}
         interval-millis: ${RD_OPENVIKING_RECONCILE_INTERVAL_MILLIS:300000}
+      backfill:
+        enabled: ${RD_OPENVIKING_BACKFILL_ENABLED:false}
+        interval-millis: ${RD_OPENVIKING_BACKFILL_INTERVAL_MILLIS:60000}
+        batch-size: ${RD_OPENVIKING_BACKFILL_BATCH_SIZE:20}
+        max-in-flight: ${RD_OPENVIKING_BACKFILL_MAX_IN_FLIGHT:200}
+        knowledge-base-allowlist: ${RD_OPENVIKING_BACKFILL_KNOWLEDGE_BASE_ALLOWLIST:}
   openviking:
     enabled: ${RD_OPENVIKING_ENABLED:false}
     base-url: ${RD_OPENVIKING_BASE_URL:http://127.0.0.1:1933}

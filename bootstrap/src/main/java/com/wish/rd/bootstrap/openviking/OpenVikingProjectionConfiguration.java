@@ -1,18 +1,23 @@
 package com.wish.rd.bootstrap.openviking;
 
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
+import com.wish.rd.rag.knowledge.KnowledgeDocumentMutationEngine;
 import com.wish.rd.rag.knowledge.projection.ExternalKnowledgeIndexPort;
 import com.wish.rd.rag.knowledge.projection.KnowledgeExternalIndexBindingStore;
 import com.wish.rd.rag.knowledge.projection.KnowledgeExternalIndexOutboxStore;
 import com.wish.rd.rag.knowledge.projection.KnowledgeExternalIndexPollEngine;
 import com.wish.rd.rag.knowledge.projection.KnowledgeExternalIndexReconcileEngine;
 import com.wish.rd.rag.knowledge.projection.KnowledgeExternalIndexSyncEngine;
+import com.wish.rd.rag.knowledge.projection.KnowledgeInventoryAuditEngine;
+import com.wish.rd.rag.knowledge.projection.KnowledgeInventoryAuditStore;
 import com.wish.rd.rag.knowledge.projection.KnowledgeProjectionAdminEngine;
+import com.wish.rd.rag.knowledge.projection.KnowledgeProjectionBackfillEngine;
 import com.wish.rd.rag.knowledge.projection.KnowledgeProjectionSettlePort;
 import com.wish.rd.rag.knowledge.projection.KnowledgeReconcileFindingStore;
 import com.wish.rd.bootstrap.openviking.impl.DisabledExternalKnowledgeIndexPort;
 import com.wish.rd.bootstrap.openviking.impl.JdkOpenVikingHttpExchange;
 import com.wish.rd.bootstrap.openviking.impl.OpenVikingRestIndexAdapter;
+import com.wish.rd.rag.knowledge.projection.model.InventoryBackfillSettings;
 import com.wish.rd.rag.knowledge.projection.model.ProjectionWorkerSettings;
 import com.wish.rd.rag.knowledge.store.KnowledgeDocumentRevisionStore;
 import com.wish.rd.rag.knowledge.store.KnowledgeDocumentStore;
@@ -153,7 +158,10 @@ public class OpenVikingProjectionConfiguration {
             KnowledgeDocumentStore documentStore,
             KnowledgeExternalIndexReconcileEngine reconcileEngine,
             ProjectionWorkerSettings settings,
-            SnowflakeIdGenerator idGenerator
+            SnowflakeIdGenerator idGenerator,
+            KnowledgeInventoryAuditEngine auditEngine,
+            KnowledgeProjectionBackfillEngine backfillEngine,
+            KnowledgeDocumentMutationEngine mutations
     ) {
         return new KnowledgeProjectionAdminEngine(
                 indexPort,
@@ -163,7 +171,32 @@ public class OpenVikingProjectionConfiguration {
                 documentStore,
                 reconcileEngine,
                 settings,
-                idGenerator::nextIdString);
+                idGenerator::nextIdString,
+                auditEngine,
+                backfillEngine,
+                mutations);
+    }
+
+    @Bean
+    public InventoryBackfillSettings inventoryBackfillSettings(
+            @Value("${rd.knowledge.projection.backfill.batch-size:20}") int batchSize,
+            @Value("${rd.knowledge.projection.backfill.max-in-flight:200}") int maxInFlight
+    ) {
+        return new InventoryBackfillSettings(batchSize, maxInFlight);
+    }
+
+    @Bean
+    public KnowledgeInventoryAuditEngine knowledgeInventoryAuditEngine(KnowledgeInventoryAuditStore auditStore) {
+        return new KnowledgeInventoryAuditEngine(auditStore);
+    }
+
+    @Bean
+    public KnowledgeProjectionBackfillEngine knowledgeProjectionBackfillEngine(
+            KnowledgeInventoryAuditStore auditStore,
+            KnowledgeDocumentMutationEngine mutations,
+            InventoryBackfillSettings settings
+    ) {
+        return new KnowledgeProjectionBackfillEngine(auditStore, mutations, settings);
     }
 
     @Bean
