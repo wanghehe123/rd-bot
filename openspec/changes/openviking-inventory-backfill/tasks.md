@@ -12,13 +12,14 @@
 
 ## Stage B：管理 API、指标与装配
 
-- [ ] B1 先写失败测试扩展 `bootstrap/src/test/java/com/wish/rd/bootstrap/controller/admin/knowledge/KnowledgeProjectionAdminControllerTest.java`：六个新接口的响应封套、分页、409 冲突、脱敏错误。
-- [ ] B2 扩展 `KnowledgeProjectionAdminEngine` 与 `KnowledgeProjectionAdminController`：`GET /inventory`、`/inventory/candidates`、`/inventory/duplicates`、`/inventory/drift`、`POST /inventory/backfill`、`POST /inventory/duplicates/resolve`；全部不调远端。
-- [ ] B3 `PrometheusMetricsController` 增加 SQL 来源 gauge：`rd_bot_knowledge_inventory_documents_total{category}`、`rd_bot_knowledge_inventory_backfill_pending`；补列名对齐测试。
-- [ ] B4 `bootstrap/.../openviking/KnowledgeProjectionScheduler.java` 增加回填 tick 与配置（`rd.knowledge.projection.backfill.enabled` 默认 false、`interval-millis`、`batch-size`、`max-in-flight`、`knowledge-base-allowlist`），`application.yaml` 全部用环境变量占位。
-- [ ] B5 扩展 `OpenVikingProductionBoundaryPolicyTest`：新接口不得调远端写、回填不得走 `writeDocument`/`indexDocument`、resolve 必须带 `expectedRowVersion`。
-- [ ] B6 更新 `frontend/test/viteProxy.test.ts` 断言新 API 前缀不被 SPA 吞掉。
-- [ ] B7 `RULE.md` 追加管理面与指标约束（只写本阶段规则）。
+- [x] B1 先写失败测试扩展 `bootstrap/src/test/java/com/wish/rd/bootstrap/controller/admin/knowledge/KnowledgeProjectionAdminControllerTest.java`：六个新接口的响应封套、分页、409 冲突、脱敏错误。
+- [x] B2 扩展 `KnowledgeProjectionAdminEngine` 与 `KnowledgeProjectionAdminController`：`GET /inventory`、`/inventory/candidates`、`/inventory/duplicates`、`/inventory/drift`、`POST /inventory/backfill`、`POST /inventory/duplicates/resolve`；全部不调远端。
+- [x] B3 `PrometheusMetricsController` 增加 SQL 来源 gauge：`rd_bot_knowledge_inventory_documents_total{category}`、`rd_bot_knowledge_inventory_backfill_pending`；补列名对齐测试。
+- [x] B4 `bootstrap/.../openviking/KnowledgeProjectionScheduler.java` 增加回填 tick 与配置（`rd.knowledge.projection.backfill.enabled` 默认 false、`interval-millis`、`batch-size`、`max-in-flight`、`knowledge-base-allowlist`），`application.yaml` 全部用环境变量占位。
+- [x] B5 扩展 `OpenVikingProductionBoundaryPolicyTest`：新接口不得调远端写、回填不得走 `writeDocument`/`indexDocument`、resolve 必须带 `expectedRowVersion`。
+- [x] B6 更新 `frontend/test/viteProxy.test.ts` 断言新 API 前缀不被 SPA 吞掉。
+- [x] B7 `RULE.md` 追加管理面与指标约束（只写本阶段规则）。
+- [x] B8 `KnowledgeProjectionBackfillEngine.backfillBatch` 捕获单篇失败，记为命名的 `FAILED` 并继续处理其余文档；禁止整批中止或静默跳过。
 
 ## Stage C：前端存量审计页签
 

@@ -397,6 +397,37 @@ public RepairContextPackage prepareContext(RepairRagRequest request) {
   `./mvnw -pl bootstrap -Dtest='OpenVikingProjectionSqlPolicyTest,OpenVikingProductionBoundaryPolicyTest,ImplementationPackageIsolationPolicyTest,ModelPackageIsolationPolicyTest,TransactionalProxyPolicyTest,PersistenceImplementationPolicyTest,RuntimeComponentRegistrationPolicyTest' -Dsurefire.failIfNoSpecifiedTests=false test`。
   多个 `-Dtest` 类名必须用逗号分隔，用 `+` 会静默匹配不到。
 
+### 3.5.11 存量审计管理 API、账本指标与回填调度【强制】
+
+- 【强制】存量审计与回填管理 API 挂在既有前缀
+  `/admin/knowledge-base/{knowledgeBaseId}/openviking` 下：
+  `GET /inventory`、`GET /inventory/candidates`、`GET /inventory/duplicates`、
+  `GET /inventory/drift`、`POST /inventory/backfill`、
+  `POST /inventory/duplicates/resolve`。沿用 `DataResponse<T>` / 分页信封；
+  错误体只含已脱敏 `message`。Controller 禁止引用 `OpenVikingHttpExchange` 或调用远端。
+  回填只入队 `UPSERT_DOCUMENT`，不得调用 `writeDocument` / `indexDocument` /
+  `submitUpsert` / `removeResource`。`resolve` 请求体每个 loser 必须带
+  `expectedRowVersion`，缺字段 400，CAS 失败 409。
+- 【强制】单篇回填失败必须记为命名的 `FAILED` 并继续处理本批其余文档，禁止整批
+  500，也禁止静默跳过。原因文本必须脱敏。引擎：
+  `rag/src/main/java/com/wish/rd/rag/knowledge/projection/KnowledgeProjectionBackfillEngine.java`。
+- 【强制】Prometheus 存量指标只能从 SQL 账本读，禁止进程内计数器：
+  `rd_bot_knowledge_inventory_documents_total{category}` 与
+  `rd_bot_knowledge_inventory_backfill_pending`。列名对齐由
+  `OpenVikingProductionBoundaryPolicyTest#inventoryMetricsMustQueryColumnsThatActuallyExist`
+  钉住。
+- 【强制】回填调度独立开关 `rd.knowledge.projection.backfill.enabled` 默认 `false`，
+  间隔默认 60000ms，批量默认 20，未收敛上限默认 200。
+  `knowledge-base-allowlist` 默认空表示自动调度不跑任何知识库；操作员仍可从管理 API
+  触发一批。`application.yaml` 全部走环境变量占位。不得把 `Supplier<String>` 注册成
+  Bean（擦除后会与评测模块 `relayTokenSupplier` 撞车）；多构造器必须显式 `@Autowired`；
+  `@Transactional` 类不得 `final`。
+- 【强制】验证：
+  `./mvnw -pl rag -am -Dtest='KnowledgeProjectionBackfillEngineTest,KnowledgeProjectionAdminEngineTest' -Dsurefire.failIfNoSpecifiedTests=false test`；
+  `./mvnw -pl bootstrap -Dtest='KnowledgeProjectionAdminControllerTest,OpenVikingProductionBoundaryPolicyTest,OpenVikingProjectionSqlPolicyTest,PrometheusMetricsControllerTest,TransactionalProxyPolicyTest,PersistenceImplementationPolicyTest,RuntimeComponentRegistrationPolicyTest' -Dsurefire.failIfNoSpecifiedTests=false test`；
+  `cd frontend && node --experimental-strip-types --test test/viteProxy.test.ts`。
+  多个 `-Dtest` 类名必须用逗号分隔，用 `+` 会静默匹配不到。
+
 ### 3.6 聚合根（Aggregate Root）【强制用于"强一致实体群"】
 
 - **已落地**：`KnowledgeDocumentMutationEngine` 是知识写入聚合根，经 `KnowledgeMutationTransactionPort` 提交 document/revision/chunks/vectors/binding/outbox。`KnowledgeWorkspace` 是查询 facade，mutation 方法委托 Engine。
