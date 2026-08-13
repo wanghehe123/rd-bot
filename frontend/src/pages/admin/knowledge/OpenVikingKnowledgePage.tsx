@@ -3,6 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { Hammer, RefreshCw, RotateCcw, ShieldCheck, Waypoints } from "lucide-react";
 import { toast } from "sonner";
 
+import { OpenVikingInventoryPanel } from "@/components/admin/knowledge/OpenVikingInventoryPanel";
 import { OpenVikingOperationTimeline } from "@/components/admin/knowledge/OpenVikingOperationTimeline";
 import { OpenVikingStatusBadge } from "@/components/admin/knowledge/OpenVikingStatusBadge";
 import { Button } from "@/components/ui/button";
@@ -443,12 +444,25 @@ export function OpenVikingKnowledgePage() {
       </div>
 
       <Tabs value={tab} onValueChange={setTab}>
-        <TabsList className="mb-4 grid h-11 w-full grid-cols-2 gap-2 sm:grid-cols-4">
+        <TabsList className="mb-4 grid h-auto w-full grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+          <TabsTrigger value="inventory">存量审计</TabsTrigger>
           <TabsTrigger value="documents">文档映射</TabsTrigger>
           <TabsTrigger value="tree">远端树</TabsTrigger>
           <TabsTrigger value="dead-letters">死信</TabsTrigger>
           <TabsTrigger value="tombstones">墓碑</TabsTrigger>
         </TabsList>
+
+        <TabsContent value="inventory">
+          {kbId ? (
+            <OpenVikingInventoryPanel
+              kbId={kbId}
+              projectionClosed={projectionClosed}
+              onAfterMutation={() => loadLedger({ silent: true })}
+            />
+          ) : (
+            <div className="py-8 text-center text-muted-foreground">缺少知识库</div>
+          )}
+        </TabsContent>
 
         <TabsContent value="documents">
           <Card>
