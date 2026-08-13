@@ -29,7 +29,6 @@ import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.time.Duration;
 import java.util.UUID;
-import java.util.function.Supplier;
 
 /**
  * 外部索引投影的装配。这里只造基础设施与端口实现，判定逻辑全在 rag 模块的引擎里。
@@ -44,10 +43,13 @@ public class OpenVikingProjectionConfiguration {
      * 租约标识。带上主机与进程信息便于排障，再加随机段，
      * 避免同一台机器重启后新进程"继承"旧进程还没过期的租约。
      *
-     * @return 本进程的租约标识
+     * <p>刻意不注册成 {@code Supplier<String>} Bean：泛型擦除后它会和上下文里其他
+     * {@code Supplier<String>}（如评测模块的 relayTokenSupplier）按类型撞车，
+     * 直接让真机启动失败。配置类是单例，进程内一个字段就够了。
      */
-    @Bean
-    public Supplier<String> projectionLeaseOwner() {
+    private final String projectionLeaseOwner = buildLeaseOwner();
+
+    private static String buildLeaseOwner() {
         String host;
         try {
             host = InetAddress.getLocalHost().getHostName();
@@ -55,8 +57,7 @@ public class OpenVikingProjectionConfiguration {
             host = "unknown-host";
         }
         String pid = ManagementFactory.getRuntimeMXBean().getName();
-        String owner = host + "/" + pid + "/" + UUID.randomUUID().toString().substring(0, 8);
-        return () -> owner;
+        return host + "/" + pid + "/" + UUID.randomUUID().toString().substring(0, 8);
     }
 
     @Bean
@@ -123,11 +124,11 @@ public class OpenVikingProjectionConfiguration {
             KnowledgeExternalIndexBindingStore bindingStore,
             KnowledgeDocumentRevisionStore revisionStore,
             KnowledgeProjectionSettlePort settlePort,
-            ProjectionWorkerSettings settings,
-            Supplier<String> projectionLeaseOwner
+            ProjectionWorkerSettings settings
     ) {
         return new KnowledgeExternalIndexSyncEngine(
-                indexPort, outboxStore, bindingStore, revisionStore, settlePort, settings, projectionLeaseOwner);
+                indexPort, outboxStore, bindingStore, revisionStore, settlePort, settings,
+                () -> projectionLeaseOwner);
     }
 
     @Bean
@@ -136,11 +137,11 @@ public class OpenVikingProjectionConfiguration {
             KnowledgeExternalIndexOutboxStore outboxStore,
             KnowledgeExternalIndexBindingStore bindingStore,
             KnowledgeProjectionSettlePort settlePort,
-            ProjectionWorkerSettings settings,
-            Supplier<String> projectionLeaseOwner
+            ProjectionWorkerSettings settings
     ) {
         return new KnowledgeExternalIndexPollEngine(
-                indexPort, outboxStore, bindingStore, settlePort, settings, projectionLeaseOwner);
+                indexPort, outboxStore, bindingStore, settlePort, settings,
+                () -> projectionLeaseOwner);
     }
 
     @Bean

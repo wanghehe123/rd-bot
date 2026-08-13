@@ -8,6 +8,7 @@ import com.wish.rd.rag.knowledge.projection.OpenVikingProjectionUris;
 import com.wish.rd.rag.knowledge.store.KnowledgeBaseStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -41,6 +42,8 @@ public class KnowledgeProjectionScheduler {
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicBoolean reconciling = new AtomicBoolean(false);
 
+    /** 多构造器时 Spring 不做猜测，必须显式指定注入入口，否则真机启动直接失败。 */
+    @Autowired
     public KnowledgeProjectionScheduler(
             KnowledgeExternalIndexSyncEngine syncEngine,
             KnowledgeExternalIndexPollEngine pollEngine,
