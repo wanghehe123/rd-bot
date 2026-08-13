@@ -114,4 +114,35 @@ class PrometheusMetricsControllerTest {
         assertTrue(metrics.contains("rd_bot_knowledge_projection_outbox_total{status=\"NO_DATA\"} 0"));
         assertTrue(metrics.contains("rd_bot_knowledge_projection_stuck_total 0"));
     }
+
+    @Test
+    void shouldExposeInventoryCategoryGaugesFromTheLedgerSnapshot() {
+        PrometheusMetricsController.MetricsSnapshot snapshot = new PrometheusMetricsController.MetricsSnapshot(
+                1, 1, 1, 1, 0, 1, 0, 1,
+                Map.of(),
+                List.of(),
+                PrometheusMetricsController.RetrievalMetrics.empty(),
+                PrometheusMetricsController.ControlPlaneMetrics.empty(),
+                PrometheusMetricsController.ProjectionMetrics.empty(),
+                new PrometheusMetricsController.InventoryMetrics(
+                        Map.of("PENDING_BACKFILL", 12L, "IN_SYNC", 3L, "TOMBSTONE", 1L),
+                        12L)
+        );
+
+        String metrics = PrometheusMetricsController.render(snapshot);
+
+        assertTrue(metrics.contains("rd_bot_knowledge_inventory_documents_total{category=\"PENDING_BACKFILL\"} 12"));
+        assertTrue(metrics.contains("rd_bot_knowledge_inventory_documents_total{category=\"IN_SYNC\"} 3"));
+        assertTrue(metrics.contains("rd_bot_knowledge_inventory_documents_total{category=\"TOMBSTONE\"} 1"));
+        assertTrue(metrics.contains("rd_bot_knowledge_inventory_documents_total{category=\"FAILED\"} 0"));
+        assertTrue(metrics.contains("rd_bot_knowledge_inventory_backfill_pending 12"));
+    }
+
+    @Test
+    void shouldRenderInventorySeriesEvenBeforeAnyDocumentExists() {
+        String metrics = PrometheusMetricsController.render(PrometheusMetricsController.MetricsSnapshot.empty());
+
+        assertTrue(metrics.contains("rd_bot_knowledge_inventory_documents_total{category=\"PENDING_BACKFILL\"} 0"));
+        assertTrue(metrics.contains("rd_bot_knowledge_inventory_backfill_pending 0"));
+    }
 }

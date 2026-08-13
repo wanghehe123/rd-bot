@@ -1,5 +1,6 @@
 package com.wish.rd.bootstrap.controller.observability;
 
+import com.wish.rd.rag.knowledge.projection.model.InventoryCategory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -104,6 +105,7 @@ public final class PrometheusMetricsController {
         appendRetrievalMetrics(metrics, safe.retrievalMetrics());
         appendControlPlaneMetrics(metrics, safe.controlPlaneMetrics());
         appendProjectionMetrics(metrics, safe.projectionMetrics());
+        appendInventoryMetrics(metrics, safe.inventoryMetrics());
         return metrics.toString();
     }
 
@@ -175,6 +177,27 @@ public final class PrometheusMetricsController {
                 .append(format(safe.oldestPendingSeconds())).append('\n');
     }
 
+    private static void appendInventoryMetrics(StringBuilder metrics, InventoryMetrics inventory) {
+        InventoryMetrics safe = inventory == null ? InventoryMetrics.empty() : inventory;
+        metrics.append("# HELP rd_bot_knowledge_inventory_documents_total Knowledge documents by inventory audit category.\n")
+                .append("# TYPE rd_bot_knowledge_inventory_documents_total gauge\n");
+        LinkedHashMap<String, Long> categories = new LinkedHashMap<>();
+        for (InventoryCategory category : InventoryCategory.values()) {
+            categories.put(category.name(), 0L);
+        }
+        safe.categoryCounts().forEach(categories::put);
+        categories.forEach((category, count) -> metrics.append("rd_bot_knowledge_inventory_documents_total{category=\"")
+                .append(label(category))
+                .append("\"} ")
+                .append(Math.max(count, 0))
+                .append('\n'));
+        metrics.append("# HELP rd_bot_knowledge_inventory_backfill_pending Eligible documents still waiting for projection backfill.\n")
+                .append("# TYPE rd_bot_knowledge_inventory_backfill_pending gauge\n")
+                .append("rd_bot_knowledge_inventory_backfill_pending ")
+                .append(Math.max(safe.pendingBackfill(), 0L))
+                .append('\n');
+    }
+
     private static void appendStatusSeries(StringBuilder metrics, String name, Map<String, Long> statuses) {
         if (statuses == null || statuses.isEmpty()) {
             metrics.append(name).append("{status=\"NO_DATA\"} 0\n");
@@ -227,7 +250,8 @@ public final class PrometheusMetricsController {
                     stageMetrics(connection),
                     safeRetrievalMetrics(connection),
                     safeControlPlaneMetrics(connection),
-                    safeProjectionMetrics(connection)
+                    safeProjectionMetrics(connection),
+                    safeInventoryMetrics(connection)
             );
         } catch (Exception ignored) {
             return MetricsSnapshot.empty();
@@ -255,6 +279,14 @@ public final class PrometheusMetricsController {
             return projectionMetrics(connection);
         } catch (Exception ignored) {
             return ProjectionMetrics.empty();
+        }
+    }
+
+    private static InventoryMetrics safeInventoryMetrics(Connection connection) {
+        try {
+            return inventoryMetrics(connection);
+        } catch (Exception ignored) {
+            return InventoryMetrics.empty();
         }
     }
 
@@ -382,6 +414,47 @@ public final class PrometheusMetricsController {
         );
     }
 
+    private static InventoryMetrics inventoryMetrics(Connection connection) throws Exception {
+        Map<String, Long> categories = groupedCounts(connection, """
+                SELECT classified.category AS status, COUNT(*) AS count
+                  FROM (
+                        SELECT CASE
+                                 WHEN d.deleted_at IS NOT NULL THEN 'TOMBSTONE'
+                                 WHEN d.superseded_by_document_id IS NOT NULL THEN 'SUPERSEDED'
+                                 WHEN d.deleted_at IS NULL
+                                  AND d.superseded_by_document_id IS NULL
+                                  AND d.source_identity_key IS NOT NULL
+                                  AND dup.cnt > 1 THEN 'DUPLICATE_UNRESOLVED'
+                                 WHEN kb.lifecycle_status IS DISTINCT FROM 'ACTIVE' THEN 'EXCLUDED_BASE_INACTIVE'
+                                 WHEN d.local_only_override = TRUE THEN 'EXCLUDED_LOCAL_ONLY'
+                                 WHEN d.chunk_count = 0 OR d.checksum IS NULL OR d.checksum = '' THEN 'EXCLUDED_EMPTY'
+                                 WHEN b.projection_status IN ('FAILED', 'DEAD_LETTER', 'NEEDS_HUMAN') THEN 'FAILED'
+                                 WHEN b.projection_status = 'IN_SYNC' THEN 'IN_SYNC'
+                                 WHEN b.document_id IS NOT NULL THEN 'PROJECTING'
+                                 ELSE 'PENDING_BACKFILL'
+                               END AS category
+                          FROM knowledge_documents d
+                          JOIN knowledge_bases kb ON kb.id = d.knowledge_base_id
+                          LEFT JOIN knowledge_external_index_bindings b
+                            ON b.document_id = d.id AND b.provider = 'OPENVIKING'
+                          LEFT JOIN (
+                                SELECT knowledge_base_id, source_identity_key, COUNT(*) AS cnt
+                                  FROM knowledge_documents
+                                 WHERE deleted_at IS NULL
+                                   AND superseded_by_document_id IS NULL
+                                   AND source_identity_key IS NOT NULL
+                                 GROUP BY knowledge_base_id, source_identity_key
+                          ) dup ON dup.knowledge_base_id = d.knowledge_base_id
+                               AND dup.source_identity_key = d.source_identity_key
+                  ) classified
+                 GROUP BY classified.category
+                """);
+        return new InventoryMetrics(
+                categories,
+                categories.getOrDefault("PENDING_BACKFILL", 0L)
+        );
+    }
+
     private static Map<String, Long> groupedCounts(Connection connection, String sql) throws Exception {
         Map<String, Long> counts = new LinkedHashMap<>();
         try (PreparedStatement statement = connection.prepareStatement(sql);
@@ -437,7 +510,8 @@ public final class PrometheusMetricsController {
             List<StageMetric> stageMetrics,
             RetrievalMetrics retrievalMetrics,
             ControlPlaneMetrics controlPlaneMetrics,
-            ProjectionMetrics projectionMetrics
+            ProjectionMetrics projectionMetrics,
+            InventoryMetrics inventoryMetrics
     ) {
         MetricsSnapshot(
                 long totalTaskCount,
@@ -455,7 +529,7 @@ public final class PrometheusMetricsController {
                     totalTaskCount, successTaskCount, validationTotalCount, validationPassedCount,
                     humanInterventionTaskCount, prCreatedTaskCount, retryCount, meanTimeToRepairSeconds,
                     failureCategories, stageMetrics, RetrievalMetrics.empty(), ControlPlaneMetrics.empty(),
-                    ProjectionMetrics.empty()
+                    ProjectionMetrics.empty(), InventoryMetrics.empty()
             );
         }
 
@@ -476,7 +550,7 @@ public final class PrometheusMetricsController {
                     totalTaskCount, successTaskCount, validationTotalCount, validationPassedCount,
                     humanInterventionTaskCount, prCreatedTaskCount, retryCount, meanTimeToRepairSeconds,
                     failureCategories, stageMetrics, retrievalMetrics, ControlPlaneMetrics.empty(),
-                    ProjectionMetrics.empty()
+                    ProjectionMetrics.empty(), InventoryMetrics.empty()
             );
         }
 
@@ -498,7 +572,30 @@ public final class PrometheusMetricsController {
                     totalTaskCount, successTaskCount, validationTotalCount, validationPassedCount,
                     humanInterventionTaskCount, prCreatedTaskCount, retryCount, meanTimeToRepairSeconds,
                     failureCategories, stageMetrics, retrievalMetrics, controlPlaneMetrics,
-                    ProjectionMetrics.empty()
+                    ProjectionMetrics.empty(), InventoryMetrics.empty()
+            );
+        }
+
+        MetricsSnapshot(
+                long totalTaskCount,
+                long successTaskCount,
+                long validationTotalCount,
+                long validationPassedCount,
+                long humanInterventionTaskCount,
+                long prCreatedTaskCount,
+                long retryCount,
+                double meanTimeToRepairSeconds,
+                Map<String, Long> failureCategories,
+                List<StageMetric> stageMetrics,
+                RetrievalMetrics retrievalMetrics,
+                ControlPlaneMetrics controlPlaneMetrics,
+                ProjectionMetrics projectionMetrics
+        ) {
+            this(
+                    totalTaskCount, successTaskCount, validationTotalCount, validationPassedCount,
+                    humanInterventionTaskCount, prCreatedTaskCount, retryCount, meanTimeToRepairSeconds,
+                    failureCategories, stageMetrics, retrievalMetrics, controlPlaneMetrics,
+                    projectionMetrics, InventoryMetrics.empty()
             );
         }
 
@@ -508,11 +605,13 @@ public final class PrometheusMetricsController {
             retrievalMetrics = retrievalMetrics == null ? RetrievalMetrics.empty() : retrievalMetrics;
             controlPlaneMetrics = controlPlaneMetrics == null ? ControlPlaneMetrics.empty() : controlPlaneMetrics;
             projectionMetrics = projectionMetrics == null ? ProjectionMetrics.empty() : projectionMetrics;
+            inventoryMetrics = inventoryMetrics == null ? InventoryMetrics.empty() : inventoryMetrics;
         }
 
         static MetricsSnapshot empty() {
             return new MetricsSnapshot(0, 0, 0, 0, 0, 0, 0, 0D, Map.of(), List.of(),
-                    RetrievalMetrics.empty(), ControlPlaneMetrics.empty(), ProjectionMetrics.empty());
+                    RetrievalMetrics.empty(), ControlPlaneMetrics.empty(), ProjectionMetrics.empty(),
+                    InventoryMetrics.empty());
         }
     }
 
@@ -585,6 +684,20 @@ public final class PrometheusMetricsController {
 
         static ProjectionMetrics empty() {
             return new ProjectionMetrics(Map.of(), Map.of(), 0L, 0D);
+        }
+    }
+
+    /**
+     * 存量审计分类与待回填剩余。计数来自 SQL 账本，禁止进程内计数器。
+     */
+    record InventoryMetrics(Map<String, Long> categoryCounts, long pendingBackfill) {
+        InventoryMetrics {
+            categoryCounts = categoryCounts == null ? Map.of() : Map.copyOf(categoryCounts);
+            pendingBackfill = Math.max(pendingBackfill, 0L);
+        }
+
+        static InventoryMetrics empty() {
+            return new InventoryMetrics(Map.of(), 0L);
         }
     }
 }
