@@ -9,6 +9,7 @@ import com.wish.rd.rag.knowledge.model.KnowledgeBaseLifecycle;
 import com.wish.rd.rag.knowledge.model.KnowledgeChunk;
 import com.wish.rd.rag.knowledge.model.KnowledgeDocument;
 import com.wish.rd.rag.knowledge.model.KnowledgeDocumentRevision;
+import com.wish.rd.rag.knowledge.model.KnowledgeDocumentSource;
 import com.wish.rd.rag.knowledge.model.WriteKnowledgeDocumentCommand;
 import org.junit.jupiter.api.Test;
 
@@ -162,6 +163,76 @@ class KnowledgeDocumentIdentityMutationTest {
                 workspace.getChunk(pipeline.id()).metadata().get("rd.projection_mode")
         );
         assertEquals(1L, workspace.getDocument(document.id()).syncVersion());
+    }
+
+    @Test
+    void shouldRejectASecondActiveDocumentForTheSameSourceIdentity() {
+        KnowledgeWorkspace workspace = KnowledgeWorkspace.inMemory();
+        KnowledgeBase base = workspace.createBase(new CreateKnowledgeBaseCommand("身份", "WP-6"));
+        KnowledgeDocumentSource source = feishuSource("Wp6DuplicateToken", "7");
+        workspace.writeDocument(identityCommand(base.id(), "first.md", "# First\n"), source);
+
+        DuplicateSourceIdentityException rejected = assertThrows(
+                DuplicateSourceIdentityException.class,
+                () -> workspace.writeDocument(identityCommand(base.id(), "second.md", "# Second\n"), source)
+        );
+
+        assertTrue(rejected.getMessage().contains(base.id()));
+        assertEquals(1, workspace.listDocuments(base.id()).size());
+    }
+
+    /** 本地匿名上传没有身份键，重复预检必须放行，否则第二次上传就会被误拒。 */
+    @Test
+    void shouldStillAllowRepeatedAnonymousLocalUploads() {
+        KnowledgeWorkspace workspace = KnowledgeWorkspace.inMemory();
+        KnowledgeBase base = workspace.createBase(new CreateKnowledgeBaseCommand("身份", "WP-6"));
+
+        KnowledgeDocument first = workspace.writeDocument(
+                identityCommand(base.id(), "local-a.md", "# A\n"),
+                KnowledgeDocumentSource.local()
+        );
+        KnowledgeDocument second = workspace.writeDocument(
+                identityCommand(base.id(), "local-b.md", "# B\n"),
+                KnowledgeDocumentSource.local()
+        );
+
+        assertFalse(first.id().equals(second.id()));
+        assertEquals(2, workspace.listDocuments(base.id()).size());
+    }
+
+    /** 软删除后同身份必须可以重新建，墓碑不参与活动唯一性。 */
+    @Test
+    void shouldAllowReimportOfTheSameIdentityAfterTombstone() {
+        KnowledgeWorkspace workspace = KnowledgeWorkspace.inMemory();
+        KnowledgeBase base = workspace.createBase(new CreateKnowledgeBaseCommand("身份", "WP-6"));
+        KnowledgeDocumentSource source = feishuSource("Wp6TombstoneToken", "1");
+        KnowledgeDocument first = workspace.writeDocument(identityCommand(base.id(), "gone.md", "# Gone\n"), source);
+        workspace.deleteDocument(first.id());
+
+        KnowledgeDocument reborn = workspace.writeDocument(
+                identityCommand(base.id(), "back.md", "# Back\n"),
+                source
+        );
+
+        assertFalse(first.id().equals(reborn.id()));
+        assertEquals(1, workspace.listDocuments(base.id()).size());
+    }
+
+    private static KnowledgeDocumentSource feishuSource(String token, String revisionId) {
+        return new KnowledgeDocumentSource("FEISHU", token, FEISHU_URL, revisionId, 1_780_000_000_000L, 0L);
+    }
+
+    private static WriteKnowledgeDocumentCommand identityCommand(String baseId, String name, String body) {
+        return new WriteKnowledgeDocumentCommand(
+                baseId,
+                name,
+                "api",
+                "text/markdown",
+                body.getBytes(StandardCharsets.UTF_8),
+                ChunkingMode.STRUCTURE_AWARE,
+                32,
+                4
+        );
     }
 
     private static KnowledgeDocument importDoc(FeishuDocKnowledgeImporter importer, String knowledgeBaseId) {

@@ -5,6 +5,7 @@ import com.wish.rd.engine.admin.knowledge.model.KnowledgeAdminOverview;
 import com.wish.rd.rag.core.chunk.model.ChunkingMode;
 import com.wish.rd.rag.knowledge.model.CreateKnowledgeBaseCommand;
 import com.wish.rd.rag.knowledge.model.FeishuDocImportCommand;
+import com.wish.rd.rag.knowledge.DuplicateSourceIdentityException;
 import com.wish.rd.rag.knowledge.FeishuDocKnowledgeImporter;
 import com.wish.rd.rag.knowledge.model.KnowledgeBase;
 import com.wish.rd.rag.knowledge.model.KnowledgeChunk;
@@ -14,7 +15,10 @@ import com.wish.rd.rag.knowledge.model.KnowledgeDocumentStatus;
 import com.wish.rd.rag.knowledge.KnowledgeWorkspace;
 import com.wish.rd.rag.knowledge.model.WriteKnowledgeDocumentCommand;
 import com.wish.rd.rag.ingestion.model.IngestionNodeLog;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -461,5 +465,18 @@ public final class KnowledgeAdminController {
 
     /** 重新分块请求参数。 */
     public record RechunkRequest(ChunkingMode chunkingMode, Integer chunkSize, Integer overlapSize) {
+    }
+
+    /** 冲突响应体，与投影管理面的 {@code {message}} 约定一致。 */
+    public record ConflictView(String message) {
+    }
+
+    /**
+     * 同来源身份重复新建返回 409。没有这个映射时，WP-6 的 active-only 唯一索引
+     * 会让同样的请求以 500 结束，调用方无法据此改走更新路径。
+     */
+    @ExceptionHandler(DuplicateSourceIdentityException.class)
+    public ResponseEntity<ConflictView> duplicateSourceIdentity(DuplicateSourceIdentityException exception) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(new ConflictView(exception.getMessage()));
     }
 }

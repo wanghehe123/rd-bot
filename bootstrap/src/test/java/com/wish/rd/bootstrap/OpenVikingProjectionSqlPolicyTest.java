@@ -30,6 +30,52 @@ class OpenVikingProjectionSqlPolicyTest {
                 "WP-6 must audit duplicate survivors before an active-only unique identity index");
     }
 
+    /**
+     * WP-6 的身份唯一索引只能住在 p13，并且必须自带审计守卫。索引一旦建成，被它
+     * 拒绝的写入就变成运行期错误，操作员再没有"先看审计、再决定谁存活"的机会，
+     * 所以迁移必须在存在未解决重复时明确失败，而不是静默跳过。
+     */
+    @Test
+    void shouldCreateTheActiveOnlyIdentityIndexOnlyInP13AndOnlyBehindAnAuditGuard() throws Exception {
+        String p13 = Files.readString(Path.of(System.getProperty("user.dir"))
+                .resolve("src/main/resources/sql/postgres/p13_openviking_identity_backfill.sql"));
+
+        assertTrue(p13.contains("CREATE UNIQUE INDEX IF NOT EXISTS uk_knowledge_documents_active_identity"));
+        assertTrue(p13.contains("source_identity_key IS NOT NULL"));
+        assertTrue(p13.contains("deleted_at IS NULL"),
+                "tombstones keep their identity for audit and must not participate in uniqueness");
+        assertTrue(p13.contains("superseded_by_document_id IS NULL"),
+                "superseded rows keep their identity for provenance and must not participate in uniqueness");
+        assertTrue(p13.contains("RAISE EXCEPTION"),
+                "the migration must fail loudly while duplicate active identities remain");
+        assertTrue(p13.contains("HAVING COUNT(*) > 1"),
+                "the guard must actually look for duplicate groups");
+        assertTrue(p13.contains("SET source_identity_key = NULL"),
+                "blank identities must be normalised before a unique index treats them as a real identity");
+        assertTrue(p13.indexOf("RAISE EXCEPTION") < p13.indexOf("CREATE UNIQUE INDEX"),
+                "the audit guard must run before the index is created");
+    }
+
+    @Test
+    void shouldRejectDuplicateSourceIdentityWithAConflictInsteadOfAConstraintViolation() throws Exception {
+        Path projectRoot = Path.of(System.getProperty("user.dir")).getParent();
+        String engine = Files.readString(projectRoot.resolve(
+                "rag/src/main/java/com/wish/rd/rag/knowledge/KnowledgeDocumentMutationEngine.java"));
+        String writeDocument = methodBody(engine, "public KnowledgeDocument writeDocument(\n"
+                + "            PipelineDefinition pipeline,\n"
+                + "            WriteKnowledgeDocumentCommand command,\n"
+                + "            KnowledgeDocumentSource source\n"
+                + "    )");
+        assertTrue(writeDocument.contains("rejectDuplicateSourceIdentity("),
+                "the always-new-id write path must pre-check the active source identity");
+
+        String controller = Files.readString(projectRoot.resolve(
+                "bootstrap/src/main/java/com/wish/rd/bootstrap/controller/admin/knowledge/KnowledgeAdminController.java"));
+        assertTrue(controller.contains("@ExceptionHandler(DuplicateSourceIdentityException.class)"));
+        assertTrue(controller.contains("HttpStatus.CONFLICT"),
+                "a duplicate source identity must surface as 409, not as an unhandled server error");
+    }
+
     @Test
     void shouldDefineBindingAndOutboxTablesWithRestrictAndUniqueKeys() throws Exception {
         String content = readP11();

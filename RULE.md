@@ -236,7 +236,7 @@ public RepairContextPackage prepareContext(RepairRagRequest request) {
 - 【强制】同一知识库内，同一外部来源身份（`source_type + source_token`，否则规范化 `source_url`）只保留一个可见 `documentId`。内容变化原地更新并递增 `sync_version`，写入不可变 `KnowledgeDocumentRevision`。相同 canonical checksum 不得新增 revision，也不得递增 `sync_version`。
 - 【强制】`rechunkDocument` 只重建本地 chunk/vector，不得改 `documentId` 或 `sync_version`。手工 `createChunk`/`updateChunk` 必须标记 `rd.projection_mode=LOCAL_ONLY_OVERRIDE`，不得伪装成已同步到 OpenViking。
 - 【强制】文档删除是软删除：保留墓碑行与原文，移出向量；默认列表/`getDocument` 隐藏墓碑。知识库删除进入 `DELETING`，`listBases`/`getBase` 隐藏，`inspectBase` 仍可见。HTTP `DELETE` 仍返回 `{deleted:true}`。
-- 【强制】PostgreSQL `p11_openviking_projection.sql` 增加身份/revision/软删除列与 `knowledge_document_revisions`（`ON DELETE RESTRICT`）。禁止在 WP-6 存量重复组审计完成前创建 `(knowledge_base_id, source_identity_key)` 的 active-only 唯一索引。
+- 【强制】PostgreSQL `p11_openviking_projection.sql` 增加身份/revision/软删除列与 `knowledge_document_revisions`（`ON DELETE RESTRICT`）。`(knowledge_base_id, source_identity_key)` 的 active-only 唯一索引只能出现在 `p13_openviking_identity_backfill.sql`（见 3.5.11），不得回写 p11。
 
 ### 3.5.8 知识 mutation 事务与 OpenViking Outbox【强制】
 
@@ -244,7 +244,7 @@ public RepairContextPackage prepareContext(RepairRagRequest request) {
 - 【强制】相同 canonical checksum 不入新 Outbox。`rechunkDocument`、手工 chunk CRUD、重命名/类型与分块启停不写 UPSERT/DELETE 事件。禁用文档递增 `sync_version` 并写 `ABSENT`/`DELETE_DOCUMENT`；重新启用递增版本并写 `PRESENT`/`UPSERT_DOCUMENT`。删除文档递增 `sync_version` 并写 `desired_state=ABSENT` 与 `DELETE_DOCUMENT` PENDING。删除知识库写 `DELETE_KNOWLEDGE_BASE`，`sync_version` 与 `DELETING` 行一致。
 - 【强制】Outbox 以 `UNIQUE(idempotency_key)` 与 `(provider, document_id, sync_version, operation_type)` 吸收重复入队；终端行不得静默 insert-ignore。claim 使用 `FOR UPDATE SKIP LOCKED`；settle 必须匹配 `event_id + status + lease_owner + row_version` 且 lease 未过期。过期 owner 不得 settle。
 - 【强制】提交成功后唤醒 Worker；线程池拒绝不得回滚，operation 保持 `PENDING`。生产 Controller / Feishu importer / RefreshScheduler / IngestionAdminRegistry 禁止组合 Store 写入，也不得直接调用 `workspace.writeDocument/deleteDocument/createChunk/rechunkDocument`。
-- 【强制】`p11_openviking_projection.sql` 含 `knowledge_external_index_bindings`（FK `ON DELETE RESTRICT`）与 `knowledge_external_index_outbox`（无 documents/bases FK、无 CASCADE）。禁止在 WP-6 前创建 source identity 的 active-only 唯一索引。
+- 【强制】`p11_openviking_projection.sql` 含 `knowledge_external_index_bindings`（FK `ON DELETE RESTRICT`）与 `knowledge_external_index_outbox`（无 documents/bases FK、无 CASCADE）。source identity 的 active-only 唯一索引归 `p13`，见 3.5.11。
 - 【强制】验证：`./mvnw -pl rag -am -Dtest=KnowledgeMutationTransactionPortTest,KnowledgeDocumentMutationEngineTest,KnowledgeDocumentIdentityMutationTest -Dsurefire.failIfNoSpecifiedTests=false test`；
   `./mvnw -pl engine -am -Dtest=KnowledgeAdminFlowTest -Dsurefire.failIfNoSpecifiedTests=false test`；
   `./mvnw -pl bootstrap -am -Dtest=OpenVikingProjectionSqlPolicyTest,OpenVikingProductionBoundaryPolicyTest,RuntimeComponentRegistrationPolicyTest -Dsurefire.failIfNoSpecifiedTests=false test`。
@@ -427,6 +427,28 @@ public RepairContextPackage prepareContext(RepairRagRequest request) {
   `./mvnw -pl bootstrap -Dtest='KnowledgeProjectionAdminControllerTest,OpenVikingProductionBoundaryPolicyTest,OpenVikingProjectionSqlPolicyTest,PrometheusMetricsControllerTest,TransactionalProxyPolicyTest,PersistenceImplementationPolicyTest,RuntimeComponentRegistrationPolicyTest' -Dsurefire.failIfNoSpecifiedTests=false test`；
   `cd frontend && node --experimental-strip-types --test test/viteProxy.test.ts`。
   多个 `-Dtest` 类名必须用逗号分隔，用 `+` 会静默匹配不到。
+
+### 3.5.12 身份唯一索引门与重复新建预检【强制】
+
+- 【强制】`(knowledge_base_id, source_identity_key)` 的 active-only 唯一索引只允许定义在
+  `bootstrap/src/main/resources/sql/postgres/p13_openviking_identity_backfill.sql`，谓词必须同时排除
+  `deleted_at IS NOT NULL` 与 `superseded_by_document_id IS NOT NULL`：墓碑保留身份用于审计，
+  被取代行保留身份用于溯源，两者都不参与唯一性判定。
+- 【强制】p13 内部顺序不可颠倒：先把 `source_identity_key = ''` 归一为 `NULL`（空串会被唯一索引
+  当成真实身份互相冲突），再用 `DO` 块在存在未解决重复活动身份时 `RAISE EXCEPTION`，最后才建索引。
+  守卫禁止改成「跳过」或「自动挑 survivor」：索引建成后被拒绝的写入变成运行期错误，
+  操作员此时已失去先审计再决定谁存活的机会。异常文案必须指向存量审计页与
+  `/inventory/duplicates/resolve`。
+- 【强制】永远新建 documentId 的写入路径
+  `KnowledgeDocumentMutationEngine#writeDocument(PipelineDefinition, WriteKnowledgeDocumentCommand, KnowledgeDocumentSource)`
+  必须先做重复预检，命中活动同身份文档时抛 `DuplicateSourceIdentityException`，由
+  `KnowledgeAdminController` 映射为 409。禁止让唯一索引冲突以 500 泄露。
+  身份为空（本地匿名上传）时预检必须放行；`writeDocumentIfChanged` 已扫描过身份，
+  落到新建时直接调 `indexDocument`，不重复扫描。
+- 【强制】验证：`./mvnw -pl bootstrap -am -Dtest='OpenVikingProjectionSqlPolicyTest' -Dsurefire.failIfNoSpecifiedTests=false test`；
+  `./mvnw -pl rag -am -Dtest='KnowledgeDocumentIdentityMutationTest' -Dsurefire.failIfNoSpecifiedTests=false test`；
+  真机：`psql -f p13` 在有未解决重复时必须失败，解决后必须成功建索引，
+  且索引建成后两个活动行共享身份被库层拒绝、一方 superseded 后允许共存。
 
 ### 3.6 聚合根（Aggregate Root）【强制用于"强一致实体群"】
 

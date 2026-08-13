@@ -129,7 +129,31 @@ public final class KnowledgeDocumentMutationEngine implements KnowledgeDocumentM
             KnowledgeDocumentSource source
     ) {
         requireActiveBase(command.knowledgeBaseId());
+        rejectDuplicateSourceIdentity(command.knowledgeBaseId(), source);
         return indexDocument(pipeline, command, source, null, true);
+    }
+
+    /**
+     * 这条路径永远新建 documentId，所以对已存在的活动来源身份必须显式拒绝。
+     *
+     * <p>WP-6 的 active-only 唯一索引会在库层拦住同样的写入，但那是
+     * {@code DataIntegrityViolationException}，在 HTTP 层表现为 500，并且不会告诉
+     * 调用方"应该走更新路径"。预检把它变成可理解的冲突。
+     */
+    private void rejectDuplicateSourceIdentity(String knowledgeBaseId, KnowledgeDocumentSource source) {
+        String identity = SourceIdentityKeys.from(source);
+        if (identity.isBlank()) {
+            return;
+        }
+        boolean taken = documentStore.listByKnowledgeBaseId(knowledgeBaseId).stream()
+                .filter(KnowledgeDocument::visible)
+                .anyMatch(document -> identity.equals(document.sourceIdentityKey())
+                        || matchesLegacySource(document, source));
+        if (taken) {
+            throw new DuplicateSourceIdentityException(
+                    "knowledge base " + knowledgeBaseId + " already has an active document for this source identity; "
+                            + "use the update path instead of creating a second one");
+        }
     }
 
     @Override
@@ -183,7 +207,8 @@ public final class KnowledgeDocumentMutationEngine implements KnowledgeDocumentM
                 );
             }
         }
-        return writeDocument(command, source);
+        // 上面的扫描已经证明没有活动同身份文档，直接建新的，不再走 writeDocument 的重复预检。
+        return indexDocument(PipelineDefinition.defaultDocumentPipeline(), command, source, null, true);
     }
 
     @Override
