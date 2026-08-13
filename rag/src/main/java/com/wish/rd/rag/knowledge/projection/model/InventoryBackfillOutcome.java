@@ -28,4 +28,8 @@ public record InventoryBackfillOutcome(
     ) {
         return new InventoryBackfillOutcome(documentId, status, reason);
     }
+
+    public static InventoryBackfillOutcome failed(String documentId, String reason) {
+        return new InventoryBackfillOutcome(documentId, InventoryBackfillStatus.FAILED, reason);
+    }
 }

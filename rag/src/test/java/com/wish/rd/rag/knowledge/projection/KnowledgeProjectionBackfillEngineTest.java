@@ -15,6 +15,7 @@ import com.wish.rd.rag.knowledge.projection.impl.InMemoryKnowledgeMutationTransa
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeOperationStatus;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeOperationType;
 import com.wish.rd.rag.knowledge.projection.model.InventoryBackfillBatchReport;
+import com.wish.rd.rag.knowledge.projection.model.InventoryBackfillOutcome;
 import com.wish.rd.rag.knowledge.projection.model.InventoryBackfillSettings;
 import com.wish.rd.rag.knowledge.projection.model.InventoryBackfillStatus;
 import com.wish.rd.rag.knowledge.projection.model.KnowledgeDocumentMutationBundle;
@@ -65,6 +66,66 @@ class KnowledgeProjectionBackfillEngineTest {
         assertEquals(0, report.applied());
         assertEquals(KnowledgeProjectionBackfillEngine.IN_FLIGHT_CAP_REASON, report.stopReason());
         assertEquals(2, fixture.audit.nextBackfillCandidates(fixture.baseId, "", 10).size());
+    }
+
+    @Test
+    void perDocumentEnqueueFailureIsNamedFailedAndDoesNotAbortTheBatch() {
+        Fixture fixture = Fixture.withPendingDocuments(2);
+        List<KnowledgeDocument> candidates = fixture.audit.nextBackfillCandidates(fixture.baseId, "", 10);
+        KnowledgeDocument blocked = candidates.getFirst();
+        KnowledgeDocument remaining = candidates.get(1);
+        fixture.outbox.enqueue(new KnowledgeExternalIndexOperation(
+                "evt-terminal",
+                "idem-other",
+                KnowledgeExternalIndexBinding.OPENVIKING,
+                ExternalKnowledgeOperationType.UPSERT_DOCUMENT,
+                fixture.baseId,
+                blocked.id(),
+                blocked.syncVersion(),
+                blocked.checksum(),
+                "uri",
+                "",
+                "",
+                ExternalKnowledgeOperationStatus.SUCCEEDED,
+                "",
+                "op-sent",
+                "",
+                0L,
+                1,
+                8,
+                NOW,
+                NOW,
+                "",
+                "",
+                1L,
+                NOW,
+                NOW));
+
+        InventoryBackfillBatchReport report = fixture.engine.backfillBatch(fixture.baseId, 2, NOW);
+
+        assertEquals(2, report.attempted());
+        assertEquals(1, report.applied());
+        assertEquals(1, report.failed());
+        assertEquals("", report.stopReason());
+        InventoryBackfillOutcome failed = report.outcomes().stream()
+                .filter(outcome -> blocked.id().equals(outcome.documentId()))
+                .findFirst()
+                .orElseThrow();
+        assertEquals(InventoryBackfillStatus.FAILED, failed.status());
+        assertTrue(failed.reason().contains("terminal"));
+        assertTrue(
+                report.outcomes().stream().noneMatch(outcome -> outcome.reason().contains("IllegalStateException")),
+                "per-document failure must be a named FAILED outcome with a sanitized reason, not a stack");
+        assertEquals(InventoryBackfillStatus.APPLIED, report.outcomes().stream()
+                .filter(outcome -> remaining.id().equals(outcome.documentId()))
+                .findFirst()
+                .orElseThrow()
+                .status());
+        assertTrue(fixture.bindings.findByProviderAndDocumentId(
+                KnowledgeExternalIndexBinding.OPENVIKING, remaining.id()).isPresent());
+        assertTrue(fixture.bindings.findByProviderAndDocumentId(
+                KnowledgeExternalIndexBinding.OPENVIKING, blocked.id()).isEmpty(),
+                "a failed document must not keep a partial binding");
     }
 
     @Test

@@ -13,6 +13,7 @@ public record InventoryBackfillBatchReport(
         int skippedAlreadyBound,
         int skippedNotEligible,
         int skippedConcurrentModification,
+        int failed,
         String stopReason,
         List<InventoryBackfillOutcome> outcomes
 ) {
@@ -24,6 +25,7 @@ public record InventoryBackfillBatchReport(
         skippedAlreadyBound = Math.max(0, skippedAlreadyBound);
         skippedNotEligible = Math.max(0, skippedNotEligible);
         skippedConcurrentModification = Math.max(0, skippedConcurrentModification);
+        failed = Math.max(0, failed);
         stopReason = stopReason == null ? "" : stopReason;
         outcomes = outcomes == null ? List.of() : List.copyOf(outcomes);
     }
