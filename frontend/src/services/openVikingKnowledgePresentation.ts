@@ -98,6 +98,27 @@ export function projectionBadgeClass(status?: string | null): string {
   return BADGE_CLASS_BY_TONE[projectionBadgeTone(status)];
 }
 
+export function operationBadgeTone(status?: string | null): ProjectionBadgeTone {
+  const normalized = (status ?? "").trim().toUpperCase();
+  if (normalized === "SUCCEEDED") {
+    return "green";
+  }
+  if (normalized === "DEAD_LETTER") {
+    return "red";
+  }
+  if (normalized === "NEEDS_HUMAN") {
+    return "orange";
+  }
+  if (!normalized || normalized === "SUPERSEDED") {
+    return "slate";
+  }
+  return "blue";
+}
+
+export function operationBadgeClass(status?: string | null): string {
+  return BADGE_CLASS_BY_TONE[operationBadgeTone(status)];
+}
+
 export function projectionStatusLabel(status?: string | null): string {
   const normalized = (status ?? "").trim().toUpperCase();
   if (!normalized) {

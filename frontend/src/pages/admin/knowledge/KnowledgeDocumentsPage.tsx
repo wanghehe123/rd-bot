@@ -576,6 +576,9 @@ export function KnowledgeDocumentsPage() {
           <Button variant="outline" onClick={() => navigate("/admin/knowledge")}>
             返回知识库
           </Button>
+          <Button variant="outline" onClick={() => navigate(`/admin/knowledge/${kbId}/openviking`)}>
+            OpenViking 投影
+          </Button>
           <Button className="admin-primary-gradient" onClick={() => setUploadOpen(true)}>
             <FileUp className="mr-2 h-4 w-4" />
             上传文档

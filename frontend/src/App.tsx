@@ -9,6 +9,7 @@ const DashboardPage = lazy(() => import("./pages/DashboardPage").then((module) =
 const KnowledgeListPage = lazy(() => import("@/pages/admin/knowledge/KnowledgeListPage").then((module) => ({ default: module.KnowledgeListPage })));
 const KnowledgeDocumentsPage = lazy(() => import("@/pages/admin/knowledge/KnowledgeDocumentsPage").then((module) => ({ default: module.KnowledgeDocumentsPage })));
 const KnowledgeChunksPage = lazy(() => import("@/pages/admin/knowledge/KnowledgeChunksPage").then((module) => ({ default: module.KnowledgeChunksPage })));
+const OpenVikingKnowledgePage = lazy(() => import("@/pages/admin/knowledge/OpenVikingKnowledgePage").then((module) => ({ default: module.OpenVikingKnowledgePage })));
 const ProjectListPage = lazy(() => import("@/pages/admin/project/ProjectListPage").then((module) => ({ default: module.ProjectListPage })));
 const RdTaskListPage = lazy(() => import("@/pages/admin/rdtask/RdTaskListPage").then((module) => ({ default: module.RdTaskListPage })));
 const RdTaskDetailPage = lazy(() => import("@/pages/admin/rdtask/RdTaskDetailPage").then((module) => ({ default: module.RdTaskDetailPage })));
@@ -41,6 +42,7 @@ export function App() {
             <Route path="dashboard" element={<DashboardPage />} />
             <Route path="knowledge" element={<KnowledgeListPage />} />
             <Route path="knowledge/:kbId" element={<KnowledgeDocumentsPage />} />
+            <Route path="knowledge/:kbId/openviking" element={<OpenVikingKnowledgePage />} />
             <Route path="knowledge/:kbId/docs/:docId" element={<KnowledgeChunksPage />} />
             <Route path="projects" element={<ProjectListPage />} />
             <Route path="rd-tasks" element={<RdTaskListPage />} />
