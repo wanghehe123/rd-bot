@@ -1,5 +1,6 @@
 package com.wish.rd.rag.knowledge.projection;
 
+import com.wish.rd.rag.knowledge.KnowledgeDocumentMutationEngine;
 import com.wish.rd.rag.knowledge.model.KnowledgeDocument;
 import com.wish.rd.rag.knowledge.projection.impl.ProjectionObservationWriter;
 import com.wish.rd.rag.knowledge.projection.model.ExternalIndexFailureClass;
@@ -10,7 +11,13 @@ import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeOperationType
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeProjectionStatus;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeVerification;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeVersionMarker;
+import com.wish.rd.rag.knowledge.projection.model.DuplicateIdentityGroup;
 import com.wish.rd.rag.knowledge.projection.model.ExternalTreeListing;
+import com.wish.rd.rag.knowledge.projection.model.InventoryAuditReport;
+import com.wish.rd.rag.knowledge.projection.model.InventoryBackfillBatchReport;
+import com.wish.rd.rag.knowledge.projection.model.InventoryDriftEntry;
+import com.wish.rd.rag.knowledge.projection.model.InventorySupersedeOutcome;
+import com.wish.rd.rag.knowledge.projection.model.InventorySupersedeStatus;
 import com.wish.rd.rag.knowledge.projection.model.KnowledgeExternalIndexBinding;
 import com.wish.rd.rag.knowledge.projection.model.KnowledgeExternalIndexOperation;
 import com.wish.rd.rag.knowledge.projection.model.ProjectionAdminActionResult;
@@ -24,6 +31,7 @@ import com.wish.rd.rag.knowledge.projection.model.ProjectionWorkerSettings;
 import com.wish.rd.rag.knowledge.projection.model.ReconcileFinding;
 import com.wish.rd.rag.knowledge.projection.model.ReconcileFindingStatus;
 import com.wish.rd.rag.knowledge.projection.model.ReconcileReport;
+import com.wish.rd.rag.knowledge.projection.model.SupersedeTarget;
 import com.wish.rd.rag.knowledge.store.KnowledgeDocumentStore;
 
 import java.util.Comparator;
@@ -51,6 +59,9 @@ public final class KnowledgeProjectionAdminEngine {
     private final KnowledgeExternalIndexReconcileEngine reconcileEngine;
     private final ProjectionWorkerSettings settings;
     private final Supplier<String> idSupplier;
+    private final KnowledgeInventoryAuditEngine auditEngine;
+    private final KnowledgeProjectionBackfillEngine backfillEngine;
+    private final KnowledgeDocumentMutationEngine mutations;
 
     public KnowledgeProjectionAdminEngine(
             ExternalKnowledgeIndexPort indexPort,
@@ -62,6 +73,33 @@ public final class KnowledgeProjectionAdminEngine {
             ProjectionWorkerSettings settings,
             Supplier<String> idSupplier
     ) {
+        this(
+                indexPort,
+                bindingStore,
+                outboxStore,
+                findingStore,
+                documentStore,
+                reconcileEngine,
+                settings,
+                idSupplier,
+                null,
+                null,
+                null);
+    }
+
+    public KnowledgeProjectionAdminEngine(
+            ExternalKnowledgeIndexPort indexPort,
+            KnowledgeExternalIndexBindingStore bindingStore,
+            KnowledgeExternalIndexOutboxStore outboxStore,
+            KnowledgeReconcileFindingStore findingStore,
+            KnowledgeDocumentStore documentStore,
+            KnowledgeExternalIndexReconcileEngine reconcileEngine,
+            ProjectionWorkerSettings settings,
+            Supplier<String> idSupplier,
+            KnowledgeInventoryAuditEngine auditEngine,
+            KnowledgeProjectionBackfillEngine backfillEngine,
+            KnowledgeDocumentMutationEngine mutations
+    ) {
         this.indexPort = indexPort;
         this.bindingStore = bindingStore;
         this.outboxStore = outboxStore;
@@ -70,6 +108,9 @@ public final class KnowledgeProjectionAdminEngine {
         this.reconcileEngine = reconcileEngine;
         this.settings = settings;
         this.idSupplier = idSupplier;
+        this.auditEngine = auditEngine;
+        this.backfillEngine = backfillEngine;
+        this.mutations = mutations;
     }
 
     /**
@@ -440,6 +481,124 @@ public final class KnowledgeProjectionAdminEngine {
                 fingerprint,
                 open,
                 findingCounts);
+    }
+
+    /**
+     * 存量审计总览：分类计数、总数、求和校验、待回填剩余与未收敛操作数。不调远端。
+     *
+     * @param knowledgeBaseId 知识库 ID
+     * @return 审计总览
+     */
+    public InventoryAuditReport inventory(String knowledgeBaseId) {
+        return requireAuditEngine().overview(knowledgeBaseId);
+    }
+
+    /**
+     * 待回填候选的键集分页。不调远端。
+     *
+     * @param knowledgeBaseId 知识库 ID
+     * @param afterDocumentId 上一页最后一篇文档 ID，空表示从头
+     * @param size            页大小
+     * @return 候选文档
+     */
+    public List<KnowledgeDocument> inventoryCandidates(String knowledgeBaseId, String afterDocumentId, int size) {
+        int limit = Math.min(MAX_PAGE_SIZE, Math.max(1, size));
+        String after = afterDocumentId == null ? "" : afterDocumentId.strip();
+        return requireAuditEngine().candidates(knowledgeBaseId, after, limit);
+    }
+
+    /**
+     * 重复来源身份分组与确定性提出的存活文档。只读。
+     *
+     * @param knowledgeBaseId 知识库 ID
+     * @param size            最多返回组数
+     * @return 重复组
+     */
+    public List<DuplicateIdentityGroup> inventoryDuplicates(String knowledgeBaseId, int size) {
+        return requireAuditEngine().duplicates(knowledgeBaseId, Math.min(MAX_PAGE_SIZE, Math.max(1, size)));
+    }
+
+    /**
+     * 本地孤儿漂移：绑定期望仍为 PRESENT 但文档不可见。
+     *
+     * @param knowledgeBaseId 知识库 ID
+     * @param size            最多返回条数
+     * @return 漂移条目
+     */
+    public List<InventoryDriftEntry> inventoryDrift(String knowledgeBaseId, int size) {
+        return requireAuditEngine().drift(knowledgeBaseId, Math.min(MAX_PAGE_SIZE, Math.max(1, size)));
+    }
+
+    /**
+     * 跑一批有界回填。只入队，不调用远端写接口，也不走 {@code writeDocument}/{@code indexDocument}。
+     *
+     * @param knowledgeBaseId 知识库 ID
+     * @param limit           本批上限，非正数时用引擎默认
+     * @param nowEpochMillis  当前时间
+     * @return 逐类计数与逐篇 outcome
+     */
+    public InventoryBackfillBatchReport backfill(String knowledgeBaseId, int limit, long nowEpochMillis) {
+        return requireBackfillEngine().backfillBatch(knowledgeBaseId, limit, nowEpochMillis);
+    }
+
+    /**
+     * 操作员确认取代一个重复组。任一 loser 的 {@code expectedRowVersion} 不匹配则整体冲突。
+     *
+     * @param knowledgeBaseId 知识库 ID
+     * @param identityKey     来源身份键
+     * @param survivorId      期望存活文档
+     * @param losers          被取代成员及期望行版本
+     * @param nowEpochMillis  当前时间
+     * @return 取代结果
+     */
+    public InventorySupersedeOutcome resolveDuplicates(
+            String knowledgeBaseId,
+            String identityKey,
+            String survivorId,
+            List<SupersedeTarget> losers,
+            long nowEpochMillis
+    ) {
+        if (identityKey == null || identityKey.isBlank()) {
+            throw new IllegalArgumentException("identityKey 不能为空");
+        }
+        if (survivorId == null || survivorId.isBlank()) {
+            throw new IllegalArgumentException("survivorDocumentId 不能为空");
+        }
+        if (losers == null || losers.isEmpty()) {
+            throw new IllegalArgumentException("losers 不能为空");
+        }
+        requireOwnedDocument(knowledgeBaseId, survivorId);
+        for (SupersedeTarget loser : losers) {
+            requireOwnedDocument(knowledgeBaseId, loser.documentId());
+        }
+        InventorySupersedeOutcome outcome = requireMutations().supersedeDuplicate(
+                survivorId, losers, nowEpochMillis);
+        if (outcome.status() == InventorySupersedeStatus.CONFLICT) {
+            throw new ProjectionAdminConflictException(
+                    outcome.reason().isBlank() ? "row_version 已过期，请刷新后重试" : outcome.reason());
+        }
+        return outcome;
+    }
+
+    private KnowledgeInventoryAuditEngine requireAuditEngine() {
+        if (auditEngine == null) {
+            throw new IllegalStateException("inventory audit engine is not wired");
+        }
+        return auditEngine;
+    }
+
+    private KnowledgeProjectionBackfillEngine requireBackfillEngine() {
+        if (backfillEngine == null) {
+            throw new IllegalStateException("inventory backfill engine is not wired");
+        }
+        return backfillEngine;
+    }
+
+    private KnowledgeDocumentMutationEngine requireMutations() {
+        if (mutations == null) {
+            throw new IllegalStateException("document mutation engine is not wired");
+        }
+        return mutations;
     }
 
     private void requireOwnedDocument(String knowledgeBaseId, String documentId) {

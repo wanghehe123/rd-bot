@@ -1,15 +1,25 @@
 package com.wish.rd.bootstrap.controller.admin.knowledge;
 
 import com.wish.rd.bootstrap.openviking.impl.DisabledExternalKnowledgeIndexPort;
+import com.wish.rd.framework.convention.model.RetrievedChunk;
+import com.wish.rd.framework.id.SnowflakeIdGenerator;
+import com.wish.rd.rag.knowledge.KnowledgeDocumentMutationEngine;
+import com.wish.rd.rag.knowledge.model.KnowledgeBase;
+import com.wish.rd.rag.knowledge.model.KnowledgeChunk;
 import com.wish.rd.rag.knowledge.model.KnowledgeDocument;
 import com.wish.rd.rag.knowledge.model.KnowledgeDocumentStatus;
 import com.wish.rd.rag.knowledge.projection.ExternalIndexIdempotencyKeys;
 import com.wish.rd.rag.knowledge.projection.ExternalKnowledgeIndexPort;
 import com.wish.rd.rag.knowledge.projection.KnowledgeExternalIndexReconcileEngine;
+import com.wish.rd.rag.knowledge.projection.KnowledgeInventoryAuditEngine;
 import com.wish.rd.rag.knowledge.projection.KnowledgeProjectionAdminEngine;
+import com.wish.rd.rag.knowledge.projection.KnowledgeProjectionBackfillEngine;
+import com.wish.rd.rag.knowledge.projection.KnowledgeProjectionWakePort;
 import com.wish.rd.rag.knowledge.projection.OpenVikingProjectionUris;
 import com.wish.rd.rag.knowledge.projection.impl.InMemoryKnowledgeExternalIndexBindingStore;
 import com.wish.rd.rag.knowledge.projection.impl.InMemoryKnowledgeExternalIndexOutboxStore;
+import com.wish.rd.rag.knowledge.projection.impl.InMemoryKnowledgeInventoryAuditStore;
+import com.wish.rd.rag.knowledge.projection.impl.InMemoryKnowledgeMutationTransactionAdapter;
 import com.wish.rd.rag.knowledge.projection.impl.InMemoryKnowledgeReconcileFindingStore;
 import com.wish.rd.rag.knowledge.projection.model.ExternalIndexFailureClass;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeDesiredState;
@@ -25,10 +35,15 @@ import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeVerification;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeVersionMarker;
 import com.wish.rd.rag.knowledge.projection.model.ExternalResourceProbe;
 import com.wish.rd.rag.knowledge.projection.model.ExternalTreeListing;
+import com.wish.rd.rag.knowledge.projection.model.InventoryBackfillSettings;
 import com.wish.rd.rag.knowledge.projection.model.KnowledgeExternalIndexBinding;
 import com.wish.rd.rag.knowledge.projection.model.KnowledgeExternalIndexOperation;
 import com.wish.rd.rag.knowledge.projection.model.ProjectionWorkerSettings;
+import com.wish.rd.rag.knowledge.store.impl.InMemoryKnowledgeBaseStore;
+import com.wish.rd.rag.knowledge.store.impl.InMemoryKnowledgeChunkStore;
+import com.wish.rd.rag.knowledge.store.impl.InMemoryKnowledgeDocumentRevisionStore;
 import com.wish.rd.rag.knowledge.store.impl.InMemoryKnowledgeDocumentStore;
+import com.wish.rd.rag.vector.impl.InMemoryVectorStore;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
@@ -37,6 +52,7 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.hamcrest.Matchers.containsString;
@@ -202,6 +218,174 @@ class KnowledgeProjectionAdminControllerTest {
                 .andExpect(jsonPath("$.message").value(containsString("关闭")));
     }
 
+    @Test
+    void shouldWrapInventoryOverviewInADataEnvelopeWithSumCheck() throws Exception {
+        Fixture fixture = Fixture.ready();
+        fixture.saveActiveBase();
+        fixture.savePendingCandidate("2101");
+        fixture.saveInSyncDocument("2401");
+        fixture.saveTombstone("2002");
+
+        fixture.mvc()
+                .perform(get("/admin/knowledge-base/1001/openviking/inventory"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.categories.PENDING_BACKFILL").value(1))
+                .andExpect(jsonPath("$.data.categories.TOMBSTONE").value(1))
+                .andExpect(jsonPath("$.data.categories.IN_SYNC").value(1))
+                .andExpect(jsonPath("$.data.documentTotal").value(3))
+                .andExpect(jsonPath("$.data.sumMatchesTotal").value(true))
+                .andExpect(jsonPath("$.data.pendingBackfillRemaining").value(1))
+                .andExpect(jsonPath("$.data.inFlightOperations").value(0));
+    }
+
+    @Test
+    void shouldKeysetPaginateInventoryCandidates() throws Exception {
+        Fixture fixture = Fixture.ready();
+        fixture.saveActiveBase();
+        fixture.savePendingCandidate("2101");
+        fixture.savePendingCandidate("2102");
+        fixture.savePendingCandidate("2103");
+
+        MockMvc mvc = fixture.mvc();
+        mvc.perform(get("/admin/knowledge-base/1001/openviking/inventory/candidates")
+                        .param("size", "2"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.records.length()").value(2))
+                .andExpect(jsonPath("$.data.records[0].documentId").value("2101"))
+                .andExpect(jsonPath("$.data.records[1].documentId").value("2102"))
+                .andExpect(jsonPath("$.data.size").value(2))
+                .andExpect(jsonPath("$.data.after").value("2102"));
+
+        mvc.perform(get("/admin/knowledge-base/1001/openviking/inventory/candidates")
+                        .param("after", "2102")
+                        .param("size", "2"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.records.length()").value(1))
+                .andExpect(jsonPath("$.data.records[0].documentId").value("2103"))
+                .andExpect(jsonPath("$.data.after").value(""));
+    }
+
+    @Test
+    void shouldListDuplicateGroupsWithProposedSurvivor() throws Exception {
+        Fixture fixture = Fixture.ready();
+        fixture.saveActiveBase();
+        fixture.saveDuplicatePair();
+
+        fixture.mvc()
+                .perform(get("/admin/knowledge-base/1001/openviking/inventory/duplicates").param("size", "10"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.records.length()").value(1))
+                .andExpect(jsonPath("$.data.records[0].identityKey").value(Fixture.DUPLICATE_IDENTITY))
+                .andExpect(jsonPath("$.data.records[0].proposedSurvivorDocumentId").value("2202"))
+                .andExpect(jsonPath("$.data.records[0].members.length()").value(2))
+                .andExpect(jsonPath("$.data.records[0].members[0].rowVersion").exists());
+    }
+
+    @Test
+    void shouldListLocalOrphanDrift() throws Exception {
+        Fixture fixture = Fixture.ready();
+        fixture.saveActiveBase();
+        fixture.saveTombstone("2301");
+        fixture.savePresentBinding("2301");
+
+        fixture.mvc()
+                .perform(get("/admin/knowledge-base/1001/openviking/inventory/drift").param("size", "10"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.records.length()").value(1))
+                .andExpect(jsonPath("$.data.records[0].documentId").value("2301"))
+                .andExpect(jsonPath("$.data.records[0].desiredState").value("PRESENT"));
+    }
+
+    @Test
+    void shouldRunBoundedBackfillAndReturnPerDocumentOutcomes() throws Exception {
+        Fixture fixture = Fixture.ready();
+        fixture.saveActiveBase();
+        fixture.savePendingCandidate("2101");
+        fixture.savePendingCandidate("2102");
+
+        fixture.mvc()
+                .perform(post("/admin/knowledge-base/1001/openviking/inventory/backfill")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"limit\":1}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.attempted").value(1))
+                .andExpect(jsonPath("$.data.applied").value(1))
+                .andExpect(jsonPath("$.data.failed").value(0))
+                .andExpect(jsonPath("$.data.stopReason").value(""))
+                .andExpect(jsonPath("$.data.outcomes[0].documentId").value("2101"))
+                .andExpect(jsonPath("$.data.outcomes[0].status").value("APPLIED"))
+                .andExpect(jsonPath("$.data.outcomes[0].reason").exists());
+    }
+
+    @Test
+    void shouldReturnRestrictionReasonWhenInFlightCapBlocksBackfill() throws Exception {
+        Fixture fixture = Fixture.capped(1);
+        fixture.saveActiveBase();
+        fixture.savePendingCandidate("2101");
+        fixture.enqueuePendingOutbox("cap-1", "2099");
+
+        fixture.mvc()
+                .perform(post("/admin/knowledge-base/1001/openviking/inventory/backfill")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"limit\":20}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.attempted").value(0))
+                .andExpect(jsonPath("$.data.applied").value(0))
+                .andExpect(jsonPath("$.data.stopReason").value(containsString("in-flight")))
+                .andExpect(jsonPath("$.data.outcomes").isArray());
+    }
+
+    @Test
+    void shouldConflictWhenResolveRowVersionIsStale() throws Exception {
+        Fixture fixture = Fixture.ready();
+        fixture.saveActiveBase();
+        fixture.saveDuplicatePair();
+
+        fixture.mvc()
+                .perform(post("/admin/knowledge-base/1001/openviking/inventory/duplicates/resolve")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"identityKey":"%s","survivorDocumentId":"2202",
+                                 "losers":[{"documentId":"2201","expectedRowVersion":99}]}
+                                """.formatted(Fixture.DUPLICATE_IDENTITY)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value(containsString("row_version")))
+                .andExpect(jsonPath("$.trace").doesNotExist())
+                .andExpect(jsonPath("$.stackTrace").doesNotExist());
+    }
+
+    @Test
+    void shouldRejectResolveBodyMissingExpectedRowVersion() throws Exception {
+        Fixture fixture = Fixture.ready();
+        fixture.saveActiveBase();
+        fixture.saveDuplicatePair();
+
+        MvcResult result = fixture.mvc()
+                .perform(post("/admin/knowledge-base/1001/openviking/inventory/duplicates/resolve")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"identityKey":"%s","survivorDocumentId":"2202",
+                                 "losers":[{"documentId":"2201"}]}
+                                """.formatted(Fixture.DUPLICATE_IDENTITY)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(containsString("expectedRowVersion")))
+                .andReturn();
+        assertNoInternalLeak(result.getResponse().getContentAsString());
+    }
+
+    @Test
+    void shouldKeepInventoryReadsWorkingWhenProjectionIsDisabled() throws Exception {
+        Fixture fixture = Fixture.disabled();
+        fixture.saveActiveBase();
+        fixture.savePendingCandidate("2101");
+
+        fixture.mvc()
+                .perform(get("/admin/knowledge-base/1001/openviking/inventory"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.pendingBackfillRemaining").value(1))
+                .andExpect(jsonPath("$.data.sumMatchesTotal").value(true));
+    }
+
     private static void assertNoInternalLeak(String body) {
         org.junit.jupiter.api.Assertions.assertFalse(body.contains("at com.wish"), body);
         org.junit.jupiter.api.Assertions.assertFalse(body.contains("Exception"), body);
@@ -257,6 +441,8 @@ class KnowledgeProjectionAdminControllerTest {
 
     private static final class Fixture {
 
+        static final String DUPLICATE_IDENTITY = "FEISHU:tok-dup";
+
         private final InMemoryKnowledgeExternalIndexOutboxStore outbox =
                 new InMemoryKnowledgeExternalIndexOutboxStore();
         private final InMemoryKnowledgeExternalIndexBindingStore bindings =
@@ -264,12 +450,20 @@ class KnowledgeProjectionAdminControllerTest {
         private final InMemoryKnowledgeReconcileFindingStore findings =
                 new InMemoryKnowledgeReconcileFindingStore();
         private final InMemoryKnowledgeDocumentStore documents = new InMemoryKnowledgeDocumentStore();
+        private final InMemoryKnowledgeBaseStore bases = new InMemoryKnowledgeBaseStore();
+        private final InMemoryKnowledgeDocumentRevisionStore revisions = new InMemoryKnowledgeDocumentRevisionStore();
+        private final InMemoryKnowledgeChunkStore chunks = new InMemoryKnowledgeChunkStore();
+        private final InMemoryVectorStore vectors = new InMemoryVectorStore();
         private final ExternalKnowledgeIndexPort indexPort;
         private final RecordingIndexPort port;
         private final AtomicLong ids = new AtomicLong(9000L);
         private final KnowledgeProjectionAdminEngine engine;
 
-        private Fixture(ExternalKnowledgeIndexPort indexPort, RecordingIndexPort recording) {
+        private Fixture(
+                ExternalKnowledgeIndexPort indexPort,
+                RecordingIndexPort recording,
+                InventoryBackfillSettings backfillSettings
+        ) {
             this.indexPort = indexPort;
             this.port = recording;
             KnowledgeExternalIndexReconcileEngine reconciler = new KnowledgeExternalIndexReconcileEngine(
@@ -280,6 +474,22 @@ class KnowledgeProjectionAdminControllerTest {
                     ProjectionWorkerSettings.defaults(),
                     0L,
                     () -> Long.toString(ids.getAndIncrement()));
+            InMemoryKnowledgeMutationTransactionAdapter tx = new InMemoryKnowledgeMutationTransactionAdapter(
+                    documents, revisions, chunks, vectors, bindings, outbox, bases);
+            KnowledgeDocumentMutationEngine mutations = new KnowledgeDocumentMutationEngine(
+                    SnowflakeIdGenerator.defaultGenerator(),
+                    bases,
+                    documents,
+                    revisions,
+                    chunks,
+                    tx,
+                    KnowledgeProjectionWakePort.noop(),
+                    bindings);
+            InMemoryKnowledgeInventoryAuditStore audit = new InMemoryKnowledgeInventoryAuditStore(
+                    documents, bases, bindings, outbox);
+            KnowledgeInventoryAuditEngine auditEngine = new KnowledgeInventoryAuditEngine(audit);
+            KnowledgeProjectionBackfillEngine backfillEngine = new KnowledgeProjectionBackfillEngine(
+                    audit, mutations, backfillSettings);
             this.engine = new KnowledgeProjectionAdminEngine(
                     indexPort,
                     bindings,
@@ -288,20 +498,35 @@ class KnowledgeProjectionAdminControllerTest {
                     documents,
                     reconciler,
                     ProjectionWorkerSettings.defaults(),
-                    () -> Long.toString(ids.getAndIncrement()));
+                    () -> Long.toString(ids.getAndIncrement()),
+                    auditEngine,
+                    backfillEngine,
+                    mutations);
         }
 
         static Fixture ready() {
             RecordingIndexPort port = new RecordingIndexPort();
-            return new Fixture(port, port);
+            return new Fixture(port, port, InventoryBackfillSettings.defaults());
         }
 
         static Fixture disabled() {
-            return new Fixture(new DisabledExternalKnowledgeIndexPort(), new RecordingIndexPort());
+            return new Fixture(
+                    new DisabledExternalKnowledgeIndexPort(),
+                    new RecordingIndexPort(),
+                    InventoryBackfillSettings.defaults());
+        }
+
+        static Fixture capped(int maxInFlight) {
+            RecordingIndexPort port = new RecordingIndexPort();
+            return new Fixture(port, port, new InventoryBackfillSettings(20, maxInFlight));
         }
 
         private MockMvc mvc() {
             return MockMvcBuilders.standaloneSetup(new KnowledgeProjectionAdminController(engine)).build();
+        }
+
+        private void saveActiveBase() {
+            bases.save(new KnowledgeBase("1001", "kb-1001", "", true, NOW));
         }
 
         private void saveOwnedDocument() {
@@ -323,13 +548,92 @@ class KnowledgeProjectionAdminControllerTest {
             documents.save(live.withSoftDeleted(NOW, NOW + 86_400_000L), "body");
         }
 
+        private void savePendingCandidate(String documentId) {
+            documents.save(new KnowledgeDocument(
+                    documentId, "1001", "pending-" + documentId + ".md", "document", "text/markdown",
+                    KnowledgeDocumentStatus.INDEXED, true, 1, List.of(), NOW,
+                    "FEISHU", "tok-" + documentId, "https://example.feishu.cn/wiki/tok-" + documentId,
+                    "", "checksum-" + documentId, "preview", NOW, 0L, 1L, "", "", 0L, 0L, "", 0L, false),
+                    "body-" + documentId);
+            chunks.save(new KnowledgeChunk(
+                    "c-" + documentId, documentId, "1001", 0, "body-" + documentId, "document",
+                    "pending-" + documentId + ".md", true, Map.of("documentId", documentId)));
+            vectors.index(List.of(new RetrievedChunk(
+                    "c-" + documentId, "body-" + documentId, "1001", "document",
+                    "pending-" + documentId + ".md", 1.0d, Map.of("documentId", documentId))));
+        }
+
+        private void saveInSyncDocument(String documentId) {
+            documents.save(new KnowledgeDocument(
+                    documentId, "1001", "sync-" + documentId + ".md", "document", "text/markdown",
+                    KnowledgeDocumentStatus.INDEXED, true, 1, List.of(), NOW,
+                    "FEISHU", "tok-" + documentId, "https://example.feishu.cn/wiki/tok-" + documentId,
+                    "", CHECKSUM, "preview", NOW, 0L, 1L, "", "id-" + documentId, 0L, 0L, "", 0L, false),
+                    "synced");
+            savePresentBinding(documentId);
+        }
+
+        private void saveDuplicatePair() {
+            documents.save(new KnowledgeDocument(
+                    "2201", "1001", "dup-old.md", "document", "text/markdown",
+                    KnowledgeDocumentStatus.INDEXED, true, 1, List.of(), NOW - 20_000L,
+                    "FEISHU", "tok-dup", "https://example.feishu.cn/wiki/tok-dup",
+                    "", "ck-old", "preview", NOW - 20_000L, 0L, 1L, "", DUPLICATE_IDENTITY,
+                    0L, 0L, "", 3L, false), "old");
+            documents.save(new KnowledgeDocument(
+                    "2202", "1001", "dup-new.md", "document", "text/markdown",
+                    KnowledgeDocumentStatus.INDEXED, true, 1, List.of(), NOW - 10_000L,
+                    "FEISHU", "tok-dup", "https://example.feishu.cn/wiki/tok-dup",
+                    "", "ck-new", "preview", NOW, 0L, 1L, "", DUPLICATE_IDENTITY,
+                    0L, 0L, "", 5L, false), "new");
+        }
+
         private void saveInSyncBinding() {
+            savePresentBinding("2001");
+        }
+
+        private void savePresentBinding(String documentId) {
+            String uri = OpenVikingProjectionUris.documentRootUri("1001", documentId);
             bindings.save(new KnowledgeExternalIndexBinding(
-                    KnowledgeExternalIndexBinding.OPENVIKING, "2001", "1001", ROOT, "rd-bot:1001:2001",
+                    KnowledgeExternalIndexBinding.OPENVIKING, documentId, "1001", uri, "rd-bot:1001:" + documentId,
                     ExternalKnowledgeDesiredState.PRESENT, 1L, CHECKSUM,
                     ExternalKnowledgeObservedState.READY, 1L, CHECKSUM,
                     ExternalKnowledgeProjectionStatus.IN_SYNC, "", "", "fp-default",
                     NOW - 60_000L, NOW - 60_000L, "", "", 0L, NOW - 60_000L, NOW - 60_000L));
+        }
+
+        private void enqueuePendingOutbox(String eventId, String documentId) {
+            outbox.enqueue(new KnowledgeExternalIndexOperation(
+                    eventId,
+                    ExternalIndexIdempotencyKeys.document(
+                            KnowledgeExternalIndexBinding.OPENVIKING,
+                            documentId,
+                            1L,
+                            ExternalKnowledgeOperationType.UPSERT_DOCUMENT),
+                    KnowledgeExternalIndexBinding.OPENVIKING,
+                    ExternalKnowledgeOperationType.UPSERT_DOCUMENT,
+                    "1001",
+                    documentId,
+                    1L,
+                    CHECKSUM,
+                    OpenVikingProjectionUris.documentRootUri("1001", documentId),
+                    "",
+                    "",
+                    ExternalKnowledgeOperationStatus.PENDING,
+                    "",
+                    "",
+                    "",
+                    0L,
+                    0,
+                    8,
+                    NOW,
+                    0L,
+                    "",
+                    "",
+                    0L,
+                    NOW,
+                    NOW
+            ));
         }
 
         private void enqueueDeadLetter(String eventId, long rowVersion) {

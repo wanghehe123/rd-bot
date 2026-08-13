@@ -210,6 +210,17 @@ class KnowledgeProjectionAdminEngineTest {
         assertEquals(List.of(OWNED), fixture.port.listed);
     }
 
+    @Test
+    void inventoryAndBackfillMustNotCallRemoteWrites() {
+        Fixture fixture = new Fixture();
+        fixture.saveDocument("2001", "1001");
+        assertThrows(IllegalStateException.class, () -> fixture.engine.inventory("1001"));
+        assertThrows(IllegalStateException.class, () -> fixture.engine.backfill("1001", 1, NOW));
+        assertTrue(fixture.port.submitted.isEmpty());
+        assertTrue(fixture.port.removed.isEmpty());
+        assertTrue(fixture.port.verified.isEmpty());
+    }
+
     private static KnowledgeExternalIndexOperation operation(
             String eventId,
             ExternalKnowledgeOperationStatus status,

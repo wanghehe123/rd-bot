@@ -19,6 +19,15 @@ const OPENVIKING_ADMIN_API_PATHS = [
   "/admin/knowledge-base/123/openviking/reconcile"
 ];
 
+const OPENVIKING_INVENTORY_API_PATHS = [
+  "/admin/knowledge-base/123/openviking/inventory",
+  "/admin/knowledge-base/123/openviking/inventory/candidates",
+  "/admin/knowledge-base/123/openviking/inventory/duplicates",
+  "/admin/knowledge-base/123/openviking/inventory/drift",
+  "/admin/knowledge-base/123/openviking/inventory/backfill",
+  "/admin/knowledge-base/123/openviking/inventory/duplicates/resolve"
+];
+
 test("proxies task draft API requests to Spring Boot", () => {
   assert.equal(typeof viteConfig, "object");
   const proxy = viteConfig.server?.proxy as Record<string, string | { target?: string }> | undefined;
@@ -133,7 +142,7 @@ test("bypasses OpenViking knowledge SPA navigation but never nested knowledge-ba
   assert.equal(bypass?.(navigation("/admin/knowledge/123/openviking")), "/admin/knowledge/123/openviking");
   assert.equal(bypass?.(navigation("/admin/knowledge/123/openviking/")), "/admin/knowledge/123/openviking/");
 
-  for (const apiPath of OPENVIKING_ADMIN_API_PATHS) {
+  for (const apiPath of [...OPENVIKING_ADMIN_API_PATHS, ...OPENVIKING_INVENTORY_API_PATHS]) {
     assert.equal(bypass?.(navigation(apiPath)), undefined, `${apiPath} must not match the knowledge SPA bypass`);
   }
 });

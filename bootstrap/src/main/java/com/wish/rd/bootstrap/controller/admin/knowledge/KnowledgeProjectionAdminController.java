@@ -3,7 +3,16 @@ package com.wish.rd.bootstrap.controller.admin.knowledge;
 import com.wish.rd.rag.knowledge.projection.KnowledgeProjectionAdminEngine;
 import com.wish.rd.rag.knowledge.projection.ProjectionAdminConflictException;
 import com.wish.rd.rag.knowledge.projection.ProjectionRemoteUnavailableException;
+import com.wish.rd.rag.knowledge.model.KnowledgeDocument;
+import com.wish.rd.rag.knowledge.projection.model.DuplicateIdentityGroup;
+import com.wish.rd.rag.knowledge.projection.model.DuplicateIdentityMember;
 import com.wish.rd.rag.knowledge.projection.model.ExternalTreeListing;
+import com.wish.rd.rag.knowledge.projection.model.InventoryAuditReport;
+import com.wish.rd.rag.knowledge.projection.model.InventoryBackfillBatchReport;
+import com.wish.rd.rag.knowledge.projection.model.InventoryBackfillOutcome;
+import com.wish.rd.rag.knowledge.projection.model.InventoryCategory;
+import com.wish.rd.rag.knowledge.projection.model.InventoryDriftEntry;
+import com.wish.rd.rag.knowledge.projection.model.InventorySupersedeOutcome;
 import com.wish.rd.rag.knowledge.projection.model.KnowledgeExternalIndexBinding;
 import com.wish.rd.rag.knowledge.projection.model.KnowledgeExternalIndexOperation;
 import com.wish.rd.rag.knowledge.projection.model.ProjectionAdminActionResult;
@@ -16,6 +25,8 @@ import com.wish.rd.rag.knowledge.projection.model.ProjectionAdminTombstone;
 import com.wish.rd.rag.knowledge.projection.model.ReconcileFinding;
 import com.wish.rd.rag.knowledge.projection.model.ReconcileFindingType;
 import com.wish.rd.rag.knowledge.projection.model.ReconcileReport;
+import com.wish.rd.rag.knowledge.projection.model.SupersedeTarget;
+import com.wish.rd.bootstrap.openviking.OpenVikingErrorTranslator;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -150,6 +161,134 @@ public final class KnowledgeProjectionAdminController {
     @PostMapping("/reconcile")
     public DataResponse<ReconcileView> reconcile(@PathVariable("knowledgeBaseId") String knowledgeBaseId) {
         return new DataResponse<>(toReconcile(adminEngine.reconcile(knowledgeBaseId, now())));
+    }
+
+    /**
+     * 存量审计总览。只读账本，不调远端。
+     *
+     * @param knowledgeBaseId 知识库 ID
+     * @return 分类计数与求和校验
+     */
+    @GetMapping("/inventory")
+    public DataResponse<InventoryView> inventory(@PathVariable("knowledgeBaseId") String knowledgeBaseId) {
+        return new DataResponse<>(toInventory(adminEngine.inventory(knowledgeBaseId)));
+    }
+
+    /**
+     * 待回填候选键集分页。
+     *
+     * @param knowledgeBaseId 知识库 ID
+     * @param after           上一页最后一篇文档 ID
+     * @param size            页大小
+     * @return 候选列表与下一游标
+     */
+    @GetMapping("/inventory/candidates")
+    public DataResponse<KeysetPageView<CandidateView>> inventoryCandidates(
+            @PathVariable("knowledgeBaseId") String knowledgeBaseId,
+            @RequestParam(value = "after", required = false) String after,
+            @RequestParam(value = "size", defaultValue = "20") int size
+    ) {
+        List<KnowledgeDocument> records = adminEngine.inventoryCandidates(knowledgeBaseId, after, size);
+        int safeSize = Math.min(100, Math.max(1, size));
+        String nextAfter = records.size() == safeSize ? records.getLast().id() : "";
+        return new DataResponse<>(new KeysetPageView<>(
+                records.stream().map(this::toCandidate).toList(),
+                safeSize,
+                nextAfter));
+    }
+
+    /**
+     * 重复来源身份分组与提出的存活文档。只读。
+     *
+     * @param knowledgeBaseId 知识库 ID
+     * @param size            最多返回组数
+     * @return 重复组
+     */
+    @GetMapping("/inventory/duplicates")
+    public DataResponse<ListView<DuplicateGroupView>> inventoryDuplicates(
+            @PathVariable("knowledgeBaseId") String knowledgeBaseId,
+            @RequestParam(value = "size", defaultValue = "20") int size
+    ) {
+        List<DuplicateIdentityGroup> groups = adminEngine.inventoryDuplicates(knowledgeBaseId, size);
+        int safeSize = Math.min(100, Math.max(1, size));
+        return new DataResponse<>(new ListView<>(
+                groups.stream().map(this::toDuplicateGroup).toList(),
+                safeSize));
+    }
+
+    /**
+     * 本地孤儿漂移列表。
+     *
+     * @param knowledgeBaseId 知识库 ID
+     * @param size            最多返回条数
+     * @return 漂移条目
+     */
+    @GetMapping("/inventory/drift")
+    public DataResponse<ListView<DriftView>> inventoryDrift(
+            @PathVariable("knowledgeBaseId") String knowledgeBaseId,
+            @RequestParam(value = "size", defaultValue = "20") int size
+    ) {
+        List<InventoryDriftEntry> entries = adminEngine.inventoryDrift(knowledgeBaseId, size);
+        int safeSize = Math.min(100, Math.max(1, size));
+        return new DataResponse<>(new ListView<>(
+                entries.stream().map(this::toDrift).toList(),
+                safeSize));
+    }
+
+    /**
+     * 跑一批有界回填。只入队，不调用远端写接口。
+     *
+     * @param knowledgeBaseId 知识库 ID
+     * @param request         批量上限
+     * @return 逐类计数与逐篇结果
+     */
+    @PostMapping("/inventory/backfill")
+    public DataResponse<BackfillReportView> backfill(
+            @PathVariable("knowledgeBaseId") String knowledgeBaseId,
+            @RequestBody(required = false) BackfillRequest request
+    ) {
+        int limit = request == null || request.limit() == null ? 0 : request.limit();
+        return new DataResponse<>(toBackfill(adminEngine.backfill(knowledgeBaseId, limit, now())));
+    }
+
+    /**
+     * 操作员确认解决一个重复组。缺少 {@code expectedRowVersion} 时拒绝；CAS 失败返回 409。
+     *
+     * @param knowledgeBaseId 知识库 ID
+     * @param request         存活文档与各 loser 的期望行版本
+     * @return 取代结果
+     */
+    @PostMapping("/inventory/duplicates/resolve")
+    public DataResponse<ResolveView> resolveDuplicates(
+            @PathVariable("knowledgeBaseId") String knowledgeBaseId,
+            @RequestBody(required = false) ResolveRequest request
+    ) {
+        if (request == null) {
+            throw new IllegalArgumentException("expectedRowVersion 不能为空");
+        }
+        if (request.losers() == null || request.losers().isEmpty()) {
+            throw new IllegalArgumentException("losers 不能为空");
+        }
+        List<SupersedeTarget> losers = new java.util.ArrayList<>();
+        for (ResolveLoserView loser : request.losers()) {
+            if (loser == null || loser.documentId() == null || loser.documentId().isBlank()) {
+                throw new IllegalArgumentException("loser documentId 不能为空");
+            }
+            if (loser.expectedRowVersion() == null) {
+                throw new IllegalArgumentException("expectedRowVersion 不能为空");
+            }
+            losers.add(new SupersedeTarget(loser.documentId(), loser.expectedRowVersion()));
+        }
+        InventorySupersedeOutcome outcome = adminEngine.resolveDuplicates(
+                knowledgeBaseId,
+                request.identityKey(),
+                request.survivorDocumentId(),
+                losers,
+                now());
+        return new DataResponse<>(new ResolveView(
+                outcome.appliedSuccessfully(),
+                outcome.status().name(),
+                outcome.reason()));
     }
 
     @ExceptionHandler(IllegalArgumentException.class)
@@ -314,12 +453,77 @@ public final class KnowledgeProjectionAdminController {
                 finding.lastSeenAtEpochMillis());
     }
 
+    private InventoryView toInventory(InventoryAuditReport report) {
+        LinkedHashMap<String, Long> categories = new LinkedHashMap<>();
+        for (InventoryCategory category : InventoryCategory.values()) {
+            categories.put(category.name(), report.categories().count(category));
+        }
+        return new InventoryView(
+                categories,
+                report.documentTotal(),
+                report.sumMatchesTotal(),
+                report.pendingBackfillRemaining(),
+                report.inFlightOperations());
+    }
+
+    private CandidateView toCandidate(KnowledgeDocument document) {
+        return new CandidateView(
+                document.id(),
+                document.sourceName(),
+                document.chunkCount(),
+                document.checksum(),
+                document.syncVersion(),
+                document.rowVersion(),
+                document.sourceIdentityKey());
+    }
+
+    private DuplicateGroupView toDuplicateGroup(DuplicateIdentityGroup group) {
+        return new DuplicateGroupView(
+                group.identityKey(),
+                group.proposedSurvivorDocumentId(),
+                group.members().stream().map(this::toDuplicateMember).toList());
+    }
+
+    private DuplicateMemberView toDuplicateMember(DuplicateIdentityMember member) {
+        return new DuplicateMemberView(
+                member.documentId(),
+                member.lastSyncedAtEpochMillis(),
+                member.createdAtEpochMillis(),
+                member.rowVersion());
+    }
+
+    private DriftView toDrift(InventoryDriftEntry entry) {
+        return new DriftView(
+                entry.documentId(),
+                entry.remoteUri(),
+                entry.desiredState().name());
+    }
+
+    private BackfillReportView toBackfill(InventoryBackfillBatchReport report) {
+        return new BackfillReportView(
+                report.attempted(),
+                report.applied(),
+                report.skippedAlreadyBound(),
+                report.skippedNotEligible(),
+                report.skippedConcurrentModification(),
+                report.failed(),
+                report.stopReason(),
+                report.outcomes().stream().map(this::toBackfillOutcome).toList());
+    }
+
+    private BackfillOutcomeView toBackfillOutcome(InventoryBackfillOutcome outcome) {
+        return new BackfillOutcomeView(
+                outcome.documentId(),
+                outcome.status().name(),
+                OpenVikingErrorTranslator.safeMessage(outcome.reason()));
+    }
+
     private static long now() {
         return System.currentTimeMillis();
     }
 
     private static String safe(String message) {
-        return message == null ? "" : message;
+        return OpenVikingErrorTranslator.safeMessage(message == null ? "" : message);
     }
 
     public record DataResponse<T>(T data) {
@@ -329,6 +533,19 @@ public final class KnowledgeProjectionAdminController {
     }
 
     public record RequeueRequest(Long expectedRowVersion) {
+    }
+
+    public record BackfillRequest(Integer limit) {
+    }
+
+    public record ResolveRequest(
+            String identityKey,
+            String survivorDocumentId,
+            List<ResolveLoserView> losers
+    ) {
+    }
+
+    public record ResolveLoserView(String documentId, Long expectedRowVersion) {
     }
 
     public record OverviewView(
@@ -459,5 +676,67 @@ public final class KnowledgeProjectionAdminController {
             long firstSeenAtEpochMillis,
             long lastSeenAtEpochMillis
     ) {
+    }
+
+    public record InventoryView(
+            Map<String, Long> categories,
+            long documentTotal,
+            boolean sumMatchesTotal,
+            long pendingBackfillRemaining,
+            long inFlightOperations
+    ) {
+    }
+
+    public record KeysetPageView<T>(List<T> records, int size, String after) {
+    }
+
+    public record ListView<T>(List<T> records, int size) {
+    }
+
+    public record CandidateView(
+            String documentId,
+            String sourceName,
+            int chunkCount,
+            String checksum,
+            long syncVersion,
+            long rowVersion,
+            String sourceIdentityKey
+    ) {
+    }
+
+    public record DuplicateGroupView(
+            String identityKey,
+            String proposedSurvivorDocumentId,
+            List<DuplicateMemberView> members
+    ) {
+    }
+
+    public record DuplicateMemberView(
+            String documentId,
+            long lastSyncedAtEpochMillis,
+            long createdAtEpochMillis,
+            long rowVersion
+    ) {
+    }
+
+    public record DriftView(String documentId, String remoteUri, String desiredState) {
+    }
+
+    public record BackfillReportView(
+            int attempted,
+            int applied,
+            int skippedAlreadyBound,
+            int skippedNotEligible,
+            int skippedConcurrentModification,
+            int failed,
+            String stopReason,
+            List<BackfillOutcomeView> outcomes
+    ) {
+    }
+
+    public record BackfillOutcomeView(String documentId, String status, String reason) {
+    }
+
+    public record ResolveView(boolean applied, String status, String message) {
     }
 }
