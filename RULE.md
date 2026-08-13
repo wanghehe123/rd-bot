@@ -442,6 +442,8 @@ public RepairContextPackage prepareContext(RepairRagRequest request) {
   审计分类、候选排除、重复列表、p13 守卫四处都必须调它。
 - 【强制】身份值的权威在 Java：唯一索引守的是已落库的列，SQL 只负责在回填前发现尚未
   落库的碰撞。不得让索引改用函数表达式，那会让同一约束出现两个权威。
+- 【强制】部署顺序：p13 必须先于使用审计 API 的后端版本上线。函数缺失时审计查询会直接
+  报 `function knowledge_source_identity_key does not exist`，存量审计页整页失败。
 - 【强制】`(knowledge_base_id, source_identity_key)` 的 active-only 唯一索引只允许定义在
   `bootstrap/src/main/resources/sql/postgres/p13_openviking_identity_backfill.sql`，谓词必须同时排除
   `deleted_at IS NOT NULL` 与 `superseded_by_document_id IS NOT NULL`：墓碑保留身份用于审计，
