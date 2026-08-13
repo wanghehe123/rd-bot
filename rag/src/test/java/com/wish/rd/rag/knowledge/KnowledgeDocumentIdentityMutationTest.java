@@ -11,10 +11,26 @@ import com.wish.rd.rag.knowledge.model.KnowledgeDocument;
 import com.wish.rd.rag.knowledge.model.KnowledgeDocumentRevision;
 import com.wish.rd.rag.knowledge.model.KnowledgeDocumentSource;
 import com.wish.rd.rag.knowledge.model.WriteKnowledgeDocumentCommand;
+import com.wish.rd.rag.knowledge.projection.KnowledgeMutationTransactionPort;
+import com.wish.rd.rag.knowledge.projection.impl.InMemoryKnowledgeExternalIndexBindingStore;
+import com.wish.rd.rag.knowledge.projection.impl.InMemoryKnowledgeExternalIndexOutboxStore;
+import com.wish.rd.rag.knowledge.projection.impl.InMemoryKnowledgeMutationTransactionAdapter;
+import com.wish.rd.rag.knowledge.projection.model.KnowledgeDocumentMutationBundle;
+import com.wish.rd.rag.knowledge.projection.model.KnowledgeProjectionBackfillBundle;
+import com.wish.rd.rag.knowledge.projection.model.KnowledgeProjectionBackfillCommitResult;
+import com.wish.rd.rag.knowledge.projection.model.KnowledgeProjectionSupersedeBundle;
+import com.wish.rd.rag.knowledge.store.KnowledgeDocumentStore;
+import com.wish.rd.rag.knowledge.store.impl.InMemoryKnowledgeBaseStore;
+import com.wish.rd.rag.knowledge.store.impl.InMemoryKnowledgeChunkStore;
+import com.wish.rd.rag.knowledge.store.impl.InMemoryKnowledgeDocumentRevisionStore;
+import com.wish.rd.rag.knowledge.store.impl.InMemoryKnowledgeDocumentStore;
+import com.wish.rd.rag.vector.impl.InMemoryVectorStore;
+import com.wish.rd.framework.id.SnowflakeIdGenerator;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -216,6 +232,101 @@ class KnowledgeDocumentIdentityMutationTest {
 
         assertFalse(first.id().equals(reborn.id()));
         assertEquals(1, workspace.listDocuments(base.id()).size());
+    }
+
+    /**
+     * 并发首建：输家在提交时撞上 active-only 唯一索引，但调用方要的是「这个来源的内容变成
+     * 最新」，赢家已经把文档建好，所以必须重扫一次原地收敛，而不是把冲突抛给调用方。
+     */
+    @Test
+    void shouldAdoptTheWinnerWhenAConcurrentWriterCreatesTheSameSourceFirst() {
+        InMemoryKnowledgeBaseStore baseStore = new InMemoryKnowledgeBaseStore();
+        InMemoryKnowledgeDocumentStore documentStore = new InMemoryKnowledgeDocumentStore();
+        InMemoryKnowledgeChunkStore chunkStore = new InMemoryKnowledgeChunkStore();
+        InMemoryKnowledgeDocumentRevisionStore revisionStore = new InMemoryKnowledgeDocumentRevisionStore();
+        InMemoryVectorStore vectorStore = new InMemoryVectorStore();
+        InMemoryKnowledgeExternalIndexBindingStore bindings = new InMemoryKnowledgeExternalIndexBindingStore();
+        KnowledgeMutationTransactionPort delegate = new InMemoryKnowledgeMutationTransactionAdapter(
+                documentStore,
+                revisionStore,
+                chunkStore,
+                vectorStore,
+                bindings,
+                new InMemoryKnowledgeExternalIndexOutboxStore(),
+                baseStore
+        );
+        AtomicBoolean raceLost = new AtomicBoolean(false);
+        KnowledgeMutationTransactionPort racing = new RaceLosingTransactionPort(delegate, documentStore, raceLost);
+        KnowledgeWorkspace workspace = KnowledgeWorkspace.withStores(
+                vectorStore,
+                SnowflakeIdGenerator.defaultGenerator(),
+                baseStore,
+                documentStore,
+                chunkStore,
+                revisionStore,
+                new KnowledgeDocumentMutationEngine(
+                        SnowflakeIdGenerator.defaultGenerator(),
+                        baseStore,
+                        documentStore,
+                        revisionStore,
+                        chunkStore,
+                        racing,
+                        null,
+                        bindings
+                )
+        );
+        KnowledgeBase base = workspace.createBase(new CreateKnowledgeBaseCommand("身份", "WP-6"));
+        KnowledgeDocumentSource source = feishuSource("Wp6RaceToken", "1");
+
+        KnowledgeDocument adopted = workspace.mutations().writeDocumentIfChanged(
+                identityCommand(base.id(), "race.md", "# Race\n"),
+                source
+        );
+
+        assertTrue(raceLost.get(), "并发首建必须真的撞过一次冲突");
+        assertEquals(1, workspace.listDocuments(base.id()).size());
+        assertEquals(workspace.listDocuments(base.id()).getFirst().id(), adopted.id());
+    }
+
+    /**
+     * 模拟并发首建的输家：第一次新建提交时，赢家的行已经落库（扫描时还看不到），
+     * 提交撞唯一索引。之后的提交正常放行。
+     */
+    private static final class RaceLosingTransactionPort implements KnowledgeMutationTransactionPort {
+
+        private final KnowledgeMutationTransactionPort delegate;
+        private final KnowledgeDocumentStore documentStore;
+        private final AtomicBoolean raceLost;
+
+        private RaceLosingTransactionPort(
+                KnowledgeMutationTransactionPort delegate,
+                KnowledgeDocumentStore documentStore,
+                AtomicBoolean raceLost
+        ) {
+            this.delegate = delegate;
+            this.documentStore = documentStore;
+            this.raceLost = raceLost;
+        }
+
+        @Override
+        public KnowledgeDocument commit(KnowledgeDocumentMutationBundle bundle) {
+            if (bundle.document() != null && !raceLost.get() && !bundle.document().sourceIdentityKey().isBlank()) {
+                raceLost.set(true);
+                documentStore.save(bundle.document(), bundle.rawContent());
+                throw new DuplicateSourceIdentityException("another writer won the race");
+            }
+            return delegate.commit(bundle);
+        }
+
+        @Override
+        public KnowledgeProjectionBackfillCommitResult commitBackfill(KnowledgeProjectionBackfillBundle bundle) {
+            return delegate.commitBackfill(bundle);
+        }
+
+        @Override
+        public void commitSupersede(KnowledgeProjectionSupersedeBundle bundle) {
+            delegate.commitSupersede(bundle);
+        }
     }
 
     private static KnowledgeDocumentSource feishuSource(String token, String revisionId) {

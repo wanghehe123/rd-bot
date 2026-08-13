@@ -162,53 +162,70 @@ public final class KnowledgeDocumentMutationEngine implements KnowledgeDocumentM
             KnowledgeDocumentSource source
     ) {
         requireActiveBase(command.knowledgeBaseId());
-        String digest = checksum(command.content());
-        String identity = SourceIdentityKeys.from(source);
-        if (!identity.isBlank()) {
-            Optional<KnowledgeDocument> existing = documentStore.listByKnowledgeBaseId(command.knowledgeBaseId()).stream()
-                    .filter(KnowledgeDocument::visible)
-                    .filter(document -> identity.equals(document.sourceIdentityKey())
-                            || matchesLegacySource(document, source))
-                    .findFirst();
-            if (existing.isPresent()) {
-                KnowledgeDocument current = existing.get();
-                if (digest.equals(current.checksum())) {
-                    if (!source.revisionId().isBlank() && !source.revisionId().equals(current.revisionId())) {
-                        KnowledgeDocument touched = current.withSyncState(
-                                source.revisionId(),
-                                current.checksum(),
-                                current.rawPreview(),
-                                source.lastSyncedAtEpochMillis() > 0L
-                                        ? source.lastSyncedAtEpochMillis()
-                                        : System.currentTimeMillis(),
-                                source.nextRefreshAtEpochMillis()
-                        );
-                        return commitAndWake(new KnowledgeDocumentMutationBundle(
-                                touched,
-                                documentStore.rawContent(current.id()),
-                                null,
-                                List.of(),
-                                List.of(),
-                                List.of(),
-                                false,
-                                null,
-                                null,
-                                null
-                        ));
-                    }
-                    return current;
-                }
-                return indexDocument(
-                        PipelineDefinition.defaultDocumentPipeline(),
-                        command,
-                        source,
-                        current,
-                        true
-                );
-            }
+        Optional<KnowledgeDocument> existing = findActiveBySource(command.knowledgeBaseId(), source);
+        if (existing.isPresent()) {
+            return syncExisting(command, source, existing.get());
         }
-        // 上面的扫描已经证明没有活动同身份文档，直接建新的，不再走 writeDocument 的重复预检。
-        return indexDocument(PipelineDefinition.defaultDocumentPipeline(), command, source, null, true);
+        try {
+            // 上面的扫描已经证明没有活动同身份文档，直接建新的，不再走 writeDocument 的重复预检。
+            return indexDocument(PipelineDefinition.defaultDocumentPipeline(), command, source, null, true);
+        } catch (DuplicateSourceIdentityException conflict) {
+            // 扫描与提交之间有人抢先建好了同身份文档。唯一索引只保证不出现第二份，而调用方
+            // 的意图（让这个来源的内容变成最新）此刻更新赢家就能满足，不该以错误结束。重扫
+            // 一次仍找不到，说明冲突另有来源，交回调用方。
+            return findActiveBySource(command.knowledgeBaseId(), source)
+                    .map(winner -> syncExisting(command, source, winner))
+                    .orElseThrow(() -> conflict);
+        }
+    }
+
+    /** 按来源身份找当前活动文档；本地匿名上传没有身份，永远返回空。 */
+    private Optional<KnowledgeDocument> findActiveBySource(String knowledgeBaseId, KnowledgeDocumentSource source) {
+        String identity = SourceIdentityKeys.from(source);
+        if (identity.isBlank()) {
+            return Optional.empty();
+        }
+        return documentStore.listByKnowledgeBaseId(knowledgeBaseId).stream()
+                .filter(KnowledgeDocument::visible)
+                .filter(document -> identity.equals(document.sourceIdentityKey())
+                        || matchesLegacySource(document, source))
+                .findFirst();
+    }
+
+    /** 把既有文档同步到来源当前状态：内容变了重新摄取，只有 revision 变了就记一次同步。 */
+    private KnowledgeDocument syncExisting(
+            WriteKnowledgeDocumentCommand command,
+            KnowledgeDocumentSource source,
+            KnowledgeDocument current
+    ) {
+        String digest = checksum(command.content());
+        if (!digest.equals(current.checksum())) {
+            return indexDocument(PipelineDefinition.defaultDocumentPipeline(), command, source, current, true);
+        }
+        if (source.revisionId().isBlank() || source.revisionId().equals(current.revisionId())) {
+            return current;
+        }
+        KnowledgeDocument touched = current.withSyncState(
+                source.revisionId(),
+                current.checksum(),
+                current.rawPreview(),
+                source.lastSyncedAtEpochMillis() > 0L
+                        ? source.lastSyncedAtEpochMillis()
+                        : System.currentTimeMillis(),
+                source.nextRefreshAtEpochMillis()
+        );
+        return commitAndWake(new KnowledgeDocumentMutationBundle(
+                touched,
+                documentStore.rawContent(current.id()),
+                null,
+                List.of(),
+                List.of(),
+                List.of(),
+                false,
+                null,
+                null,
+                null
+        ));
     }
 
     @Override

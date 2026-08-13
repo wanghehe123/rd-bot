@@ -459,11 +459,19 @@ public RepairContextPackage prepareContext(RepairRagRequest request) {
   `KnowledgeAdminController` 映射为 409。禁止让唯一索引冲突以 500 泄露。
   身份为空（本地匿名上传）时预检必须放行；`writeDocumentIfChanged` 已扫描过身份，
   落到新建时直接调 `indexDocument`，不重复扫描。
+- 【强制】预检只窄化竞态窗口，挡不住并发首建：两个请求同时为同一来源建首份文档时都扫不到
+  既有行，输家在提交时撞唯一索引。因此 `PostgresKnowledgeMutationTransactionAdapter#commit`
+  必须把 `uk_knowledge_documents_active_identity` 的 `DataIntegrityViolationException`
+  翻译成 `DuplicateSourceIdentityException`，且 `writeDocumentIfChanged` 捕获后必须重扫一次
+  并原地收敛到赢家——调用方要的是「这个来源的内容变成最新」，赢家此时已经把文档建好，
+  以错误结束会让飞书导入/刷新在并发下无故失败。重扫仍找不到才向上抛。
+  禁止把这条改成重试整个新建（会产生第二份）或忽略冲突（会丢掉本次内容更新）。
 - 【强制】验证：`./mvnw -pl bootstrap -am -Dtest='OpenVikingProjectionSqlPolicyTest' -Dsurefire.failIfNoSpecifiedTests=false test`；
   `./mvnw -pl rag -am -Dtest='KnowledgeDocumentIdentityMutationTest,KnowledgeInventoryAuditStoreContractTest' -Dsurefire.failIfNoSpecifiedTests=false test`；
   真机：`psql -f p13` 在有未解决重复时必须失败，解决后必须成功建索引，
   且索引建成后两个活动行共享身份被库层拒绝、一方 superseded 后允许共存；
-  `SELECT knowledge_source_identity_key(...)` 的结果必须与 Java 对同一组输入逐字节相同。
+  `SELECT knowledge_source_identity_key(...)` 的结果必须与 Java 对同一组输入逐字节相同；
+  并发向同一 KB 导入同一个来源两次，两个请求都必须成功且只留下一行。
 
 ### 3.6 聚合根（Aggregate Root）【强制用于"强一致实体群"】
 

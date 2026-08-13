@@ -1,5 +1,6 @@
 package com.wish.rd.bootstrap.persistence.impl;
 
+import com.wish.rd.rag.knowledge.DuplicateSourceIdentityException;
 import com.wish.rd.rag.knowledge.model.KnowledgeDocument;
 import com.wish.rd.rag.knowledge.projection.InventorySupersedeConflictException;
 import com.wish.rd.rag.knowledge.projection.KnowledgeExternalIndexBindingStore;
@@ -17,6 +18,7 @@ import com.wish.rd.rag.knowledge.store.KnowledgeDocumentRevisionStore;
 import com.wish.rd.rag.knowledge.store.KnowledgeDocumentStore;
 import com.wish.rd.rag.vector.VectorStore;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -33,6 +35,8 @@ import java.util.Objects;
 @Component
 @ConditionalOnProperty(name = "rd.knowledge.store", havingValue = "postgres")
 public class PostgresKnowledgeMutationTransactionAdapter implements KnowledgeMutationTransactionPort {
+
+    private static final String ACTIVE_IDENTITY_INDEX = "uk_knowledge_documents_active_identity";
 
     private final KnowledgeDocumentStore documentStore;
     private final KnowledgeDocumentRevisionStore revisionStore;
@@ -64,9 +68,14 @@ public class PostgresKnowledgeMutationTransactionAdapter implements KnowledgeMut
     @Transactional
     public KnowledgeDocument commit(KnowledgeDocumentMutationBundle bundle) {
         Objects.requireNonNull(bundle, "bundle must not be null");
-        KnowledgeDocument saved = bundle.document() == null
-                ? null
-                : documentStore.save(bundle.document(), bundle.rawContent());
+        KnowledgeDocument saved;
+        try {
+            saved = bundle.document() == null
+                    ? null
+                    : documentStore.save(bundle.document(), bundle.rawContent());
+        } catch (DataIntegrityViolationException exception) {
+            throw translateIdentityConflict(exception);
+        }
         if (bundle.revision() != null) {
             revisionStore.save(bundle.revision());
         }
@@ -150,5 +159,21 @@ public class PostgresKnowledgeMutationTransactionAdapter implements KnowledgeMut
                 outboxStore.enqueue(loser.deleteOperation());
             }
         }
+    }
+
+    /**
+     * 把 active-only 身份唯一索引的冲突翻译成领域异常。
+     *
+     * <p>两个请求同时为同一个外部来源建首份文档时，双方都扫不到既有行，都走新建，
+     * 输家在提交时撞索引。不翻译的话调用方只能看到 500，既不知道发生了什么，也不知道
+     * 重试就能成功——而此时赢家已经把那份文档建好了。
+     */
+    private RuntimeException translateIdentityConflict(DataIntegrityViolationException exception) {
+        String detail = String.valueOf(exception.getMostSpecificCause().getMessage());
+        if (detail.contains(ACTIVE_IDENTITY_INDEX)) {
+            return new DuplicateSourceIdentityException(
+                    "another writer just created the active document for this source identity");
+        }
+        return exception;
     }
 }
