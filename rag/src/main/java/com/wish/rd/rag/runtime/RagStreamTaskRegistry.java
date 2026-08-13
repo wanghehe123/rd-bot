@@ -1282,8 +1282,9 @@ public final class RagStreamTaskRegistry {
     /**
      * 管理台审批通过等待人工确认的需求任务。
      *
-     * <p>审批本身只追加审计事件，不直接改变主状态；后续由需求交付引擎通过
-     * {@code WAITING_APPROVAL -> EXECUTING} 的合法状态机边继续执行。
+     * <p>审批不改变主状态（仍为 {@code WAITING_APPROVAL}），但必须与 {@code APPROVED}
+     * 审计事件在同一 CAS 边界推进 version/fence，避免并发写者看不到审批。后续由需求交付
+     * 引擎通过 {@code WAITING_APPROVAL -> EXECUTING} 的合法状态机边继续执行。
      *
      * @param taskId  任务 ID
      * @param message 审批说明
@@ -1296,8 +1297,14 @@ public final class RagStreamTaskRegistry {
                 throw new IllegalStateException("requirement task is not waiting approval: " + existing.status());
             }
             String approvalMessage = message == null || message.isBlank() ? "管理台审批通过" : message;
-            recordEvent(existing, RdTaskStatusEvent.ACTION_APPROVED, existing.title(), approvalMessage, RdTaskEventTrigger.API);
-            return existing;
+            return (RdRequirementTask) saveTaskActionWithEventCas(
+                    existing,
+                    buildEvent(existing, RdTaskStatusEvent.ACTION_APPROVED, existing.title(),
+                            approvalMessage, RdTaskEventTrigger.API),
+                    existing.version(),
+                    existing.fencingToken(),
+                    existing.status()
+            );
         });
     }
 

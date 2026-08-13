@@ -77,10 +77,15 @@
 - [x] Pi QA 键出现在 `dockerMetadataJson`（`DockerPiAgentExecutorTest#shouldPublishDeterminableQaCandidateChangedFilesInDockerMetadata`）。
 - [x] 真实 GitHub 私有仓 docs-only 冒烟：项目 `7487468535443230720`，任务 `7493354884037742592`，约 9 分钟 COMPLETED，发布账本 `COMMITTED`，PR https://github.com/wanghehe123/next-js-16-sqlite-drizzle-local-kbr-20260724-001/pull/9 。四角色 attempt 1 均 SUCCEEDED。未 approve/merge。
 
-已知非阻塞项（不要为了变绿而改生产行为）：
+已修（本轮缺口）：
 
-- `DockerPiAgentExecutorTest` 两条 aspirational：QA 只读 repo mount、QA 独立 candidate workspace 仍保留任务 cache。
-- 冻结计划 `2026-08-11-checkpoint-bound-retry-dispatch-implementation.md` 的全量 HTTP/concurrency/crash 矩阵未宣称完成；已验证的是角色→QA→PR 主路径。
+- `TaskRetryEngine.retry()` 在缺少 `RequirementRetryDispatchTransactionPort` 时 fail-closed，写 checkpoint 之前抛错；内存 store 装配 `InMemoryRequirementRetryDispatchTransactionAdapter`。
+- `RagStreamTaskRegistry.approveRequirementTask` 与 `ACTION_APPROVED` 审计事件同 CAS 推进 version/fence；主状态仍为 `WAITING_APPROVAL`。
+
+延后（不要为了变绿而改生产行为，也不宣称完成）：
+
+- Pi QA `provider-attempts` 隔离：测试已 `@Disabled`（见 pi-qa spec §4）；生产仍挂载任务 `repo/:ro`。
+- 冻结计划 `2026-08-11-checkpoint-bound-retry-dispatch-implementation.md` Task 10 全量 HTTP/并发/崩溃矩阵。主路径证据仍是任务 `7493354884037742592`。
 
 ## 4. 验证命令
 

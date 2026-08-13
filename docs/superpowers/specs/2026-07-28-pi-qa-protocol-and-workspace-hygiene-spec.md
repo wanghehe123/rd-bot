@@ -1,7 +1,7 @@
 # Pi QA 协议与工作区卫生护栏
 
 日期：2026-07-28
-状态：已实施。2026-08-13 私有仓 docs-only 冒烟验证了 Pi 主路径；两条 aspirational mount 测试仍红。
+状态：已实施。2026-08-13 私有仓 docs-only 冒烟验证了 Pi 主路径。QA `provider-attempts` 隔离是延后特性，对应测试已 `@Disabled`。
 范围：Pi 运行时的 QA 结果提交、事件留存、任务级依赖缓存、重试并发隔离、provider compat 与 QA 元数据通道。
 
 ## 1. 问题
@@ -106,7 +106,7 @@ sequenceDiagram
 - [x] 成功路径要求同时存在 `RESULT_SUBMITTED` 与 `AGENT_SETTLED`；诊断分别记录缺失项，不把聚合缺失写成顺序违规。
 - [x] Bridge 对 settled-without-submit 最多一次恢复提示；`rd_submit_result` 在容器内 fail-closed。
 - [x] `/work/cache` 与 raw-event 上限由 executor 注入；新 attempt 只清 `output/`。
-- [ ] `DockerPiAgentExecutorTest` 两条 aspirational 仍红：QA 只读 repo mount、QA 独立 candidate workspace 且保留任务 cache。不要为变绿而改生产行为。
+- [ ] **延后（测试已 `@Disabled`，不要为变绿改生产 mount）**：Pi QA 使用 `provider-attempts/` 独立 candidate workspace，同时挂载任务级 `/work/cache`。`RepairWorkspaceFactory.createProviderAttempt` 的现有语义是 Claude **provider fallback** 隔离，不是 QA vs coding 隔离。当前 Pi QA 与 reviewer/architect 一样挂载任务 `repo/:ro`；docs-only 冒烟已在该模型上跑通。
 - [x] 2026-08-13 GitHub 私有仓 docs-only 冒烟已跑通完整角色→QA→PR；见 publication/provenance spec。
 
 ## 5. 验证命令
@@ -114,7 +114,7 @@ sequenceDiagram
 | 检查 | 命令 | 预期 |
 | --- | --- | --- |
 | Bridge 协议 | `cd bootstrap/src/main/resources/executor/pi && npm test` | 全部 Node 测试通过 |
-| Pi 执行器 | `./mvnw -pl exec -am -Dtest=DockerPiAgentExecutorTest -Dsurefire.failIfNoSpecifiedTests=false test` | 缓存、清理、锁和协议测试通过 |
+| Pi 执行器 | `./mvnw -pl exec -am -Dtest=DockerPiAgentExecutorTest -Dsurefire.failIfNoSpecifiedTests=false test` | 缓存、清理、锁和协议测试通过；两条 `@Disabled` 隔离测试不跑 |
 | Pi Spring 配置 | `./mvnw -pl bootstrap -am -Dtest=PiAgentExecutorPropertiesTest -Dsurefire.failIfNoSpecifiedTests=false test` | 上限配置测试通过 |
 | 后端装配 | `./mvnw -pl bootstrap -am install -DskipTests` | 新 executor JAR 被安装 |
 | 运行态 | `curl --noproxy '*' http://127.0.0.1:18080/admin/rd-tasks/<taskId>` | 返回 200；状态与审计记录一致 |

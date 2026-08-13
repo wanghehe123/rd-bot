@@ -1,6 +1,8 @@
 package com.wish.rd.bootstrap.executor;
 
 import com.wish.rd.engine.requirement.policy.RequirementPolicyTransactionPort;
+import com.wish.rd.engine.retry.RequirementRetryDispatchTransactionPort;
+import com.wish.rd.engine.retry.TaskRetryTaskPort;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
 import com.wish.rd.rag.runtime.RdTaskStatusEventStore;
 import com.wish.rd.rag.runtime.RdTaskStore;
@@ -10,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
 
 /** Locks the explicit memory-mode policy transaction wiring. */
 class InMemoryRequirementPolicyTransactionWiringTest {
@@ -29,5 +32,11 @@ class InMemoryRequirementPolicyTransactionWiringTest {
                 .withPropertyValues("rd.knowledge.store=postgres")
                 .withUserConfiguration(InMemoryAgentObservabilityConfiguration.class)
                 .run(context -> assertThat(context).doesNotHaveBean(RequirementPolicyTransactionPort.class));
+    }
+
+    @Test
+    void shouldExposeCheckpointBoundRetryDispatchPortWhenTaskPortIsPresent() {
+        runner.withBean(TaskRetryTaskPort.class, () -> mock(TaskRetryTaskPort.class))
+                .run(context -> assertThat(context).hasSingleBean(RequirementRetryDispatchTransactionPort.class));
     }
 }

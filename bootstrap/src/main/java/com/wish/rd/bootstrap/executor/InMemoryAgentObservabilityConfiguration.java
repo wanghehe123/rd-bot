@@ -6,6 +6,7 @@ import com.wish.rd.engine.agent.impl.InMemoryAgentStageArtifactStore;
 import com.wish.rd.engine.agent.impl.InMemoryAgentStageRunStore;
 import com.wish.rd.exec.repair.pi.AgentPrivateArtifactIndex;
 import com.wish.rd.exec.repair.pi.impl.InMemoryAgentPrivateArtifactIndex;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
@@ -15,9 +16,12 @@ import com.wish.rd.rag.context.RoleContextPackageStore;
 import com.wish.rd.rag.context.impl.InMemoryRoleContextPackageStore;
 import com.wish.rd.engine.requirement.review.AiReviewRunStore;
 import com.wish.rd.engine.requirement.review.impl.InMemoryAiReviewRunStore;
+import com.wish.rd.engine.retry.RequirementRetryDispatchTransactionPort;
 import com.wish.rd.engine.retry.TaskRetryAttemptBindingStore;
 import com.wish.rd.engine.retry.TaskRetryCheckpointStore;
 import com.wish.rd.engine.retry.TaskRetryFailureProvenanceStore;
+import com.wish.rd.engine.retry.TaskRetryTaskPort;
+import com.wish.rd.engine.retry.impl.InMemoryRequirementRetryDispatchTransactionAdapter;
 import com.wish.rd.engine.retry.impl.InMemoryTaskRetryAttemptBindingStore;
 import com.wish.rd.engine.retry.impl.InMemoryTaskRetryCheckpointStore;
 import com.wish.rd.engine.retry.impl.InMemoryTaskRetryFailureProvenanceStore;
@@ -92,6 +96,19 @@ public class InMemoryAgentObservabilityConfiguration {
     @ConditionalOnMissingBean(TaskRetryAttemptBindingStore.class)
     TaskRetryAttemptBindingStore taskRetryAttemptBindingStore() {
         return new InMemoryTaskRetryAttemptBindingStore();
+    }
+
+    @Bean
+    @ConditionalOnBean(TaskRetryTaskPort.class)
+    @ConditionalOnMissingBean(RequirementRetryDispatchTransactionPort.class)
+    RequirementRetryDispatchTransactionPort requirementRetryDispatchTransactionPort(
+            TaskRetryTaskPort taskPort,
+            TaskRetryCheckpointStore checkpointStore,
+            RequirementStageCommandStore commandStore,
+            TaskRetryAttemptBindingStore bindingStore
+    ) {
+        return new InMemoryRequirementRetryDispatchTransactionAdapter(
+                taskPort, checkpointStore, commandStore, bindingStore);
     }
 
     @Bean

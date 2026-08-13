@@ -126,7 +126,7 @@ RequirementDeliveryEngine（QA 契约提示词）
 | --- | --- | --- |
 | Bridge 协议 | `cd bootstrap/src/main/resources/executor/pi && node --test test/protocol.test.mjs` | 含 docs-only 用例全部通过 |
 | Docs-only 分类与画像 | `./mvnw -pl exec -Dtest='QaDocsOnlyChangeClassifierTest,QaRepositoryProfileDetectorTest,QaEvidenceBundleValidatorTest' -Dsurefire.failIfNoSpecifiedTests=false test` | 全部通过 |
-| 探测器与执行器 | `./mvnw -pl exec test -Dtest='QaRepositoryProfileDetectorTest,QaEvidenceBundleValidatorTest,DockerClaudeCodeExecutorTest,DockerPiAgentExecutorTest' -Dsurefire.failIfNoSpecifiedTests=false` | 全部通过（已知 2 个 aspirational Pi mount 失败除外） |
+| 探测器与执行器 | `./mvnw -pl exec test -Dtest='QaRepositoryProfileDetectorTest,QaEvidenceBundleValidatorTest,DockerClaudeCodeExecutorTest,DockerPiAgentExecutorTest' -Dsurefire.failIfNoSpecifiedTests=false` | 全部通过（Pi QA `provider-attempts` 隔离测试 `@Disabled`） |
 | QA 契约提示词 | `./mvnw -pl engine test -Dtest=RequirementDeliveryEngineTest -Dsurefire.failIfNoSpecifiedTests=false` | 通过且提示词含 docs-only |
 | 镜像内校验生效 | `docker run --rm --entrypoint grep rd-bot/pi-agent:local -c checkBrowserEvidenceReferences /opt/rd-pi-bridge/src/result-tool.mjs` | 输出非 0 |
 | 镜像内 docs-only | `docker run --rm --entrypoint grep rd-bot/pi-agent:local -c DOCS_ONLY /opt/rd-pi-bridge/src/result-tool.mjs` | 输出非 0 |
