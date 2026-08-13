@@ -301,6 +301,27 @@ public RepairContextPackage prepareContext(RepairRagRequest request) {
   真机端到端还需 `scripts/openviking/up.sh` 后加 `-Drd.openviking.smoke=true` 跑 `OpenVikingProjectionLiveSmokeTest`，
   真实飞书正文再加 `-Drd.feishu.docs.smoke=true`。多个 `-Dtest` 类名必须用逗号分隔，
   用 `+` 会静默匹配不到任何测试并"通过"。
+- 【强制】删除同样先过发送边界：`KnowledgeExternalIndexSyncEngine` 必须先 `aboutToSend` 持久化
+  `remote_operation_id`，再调用 `removeResource`（`DELETE /api/v1/fs?uri=&recursive=`）。
+  `path_busy` / 429 / 连接失败只允许 `RETRY_WAIT`，禁止把 busy 删除标成 `SUCCEEDED`。
+  每一次远端写（含递归删除）前必须校验目标 URI 以该 KB owned root 为前缀；越界
+  `CONFIGURATION_BLOCKED` 且不得发出请求。晚完成的低版本 UPSERT 若发现
+  `binding.desiredState=ABSENT` 或 `desiredVersion > op.syncVersion`，只能 settle
+  `SUPERSEDED` 且观测写 `DRIFTED`，永远不得把已删除文档写回 `IN_SYNC`。
+- 【强制】死信 requeue 按发送边界分流：`remote_operation_id=''` 才回到 `PENDING` 并清零
+  attempt；已越过边界的行只能进 `UNKNOWN_REMOTE_RESULT`，禁止再走提交路径。
+  requeue SQL 不得对已发送行 `SET status = 'PENDING'`。
+- 【强制】`KnowledgeExternalIndexReconcileEngine` 只记账、只入队 `REBUILD_DOCUMENT`。
+  禁止调用 `removeResource` / `submitUpsert`。远端有而本地无 binding 记 `ORPHAN_REMOTE`
+  （`QUARANTINED`），本 WP 不自动删除；owner 非 rd-bot 记 `FOREIGN_OWNER`，永不产生
+  outbox 行。`IN_SYNC` 绑定远端缺失时观测 CAS 改 `DRIFTED`（不得写 `desired_*`）并入队
+  `REBUILD_DOCUMENT`（唯一键吸收重复）。对账调度独立开关
+  `rd.knowledge.projection.reconcile.enabled` 默认 `false`，间隔
+  `rd.knowledge.projection.reconcile.interval-millis` 默认 300000。墓碑 purge job
+  （到期硬删 `knowledge_documents`）显式延期，本 WP 不得实现。
+- 【强制】验证（WP-4 Stage A 追加）：`./mvnw -pl rag -am -Dtest='KnowledgeExternalIndex*Test,KnowledgeMutationTransactionPortTest' -Dsurefire.failIfNoSpecifiedTests=false test`；
+  `./mvnw -pl bootstrap -am -Dtest='OpenViking*Test,PrometheusMetricsControllerTest,ImplementationPackageIsolationPolicyTest,ModelPackageIsolationPolicyTest' -Dsurefire.failIfNoSpecifiedTests=false test`。
+  隔离测试允许的失败仅限既有 `engine/` 遗留项。禁止跑 `-Drd.openviking.smoke` 作为本 WP 回归。
 
 ### 3.6 聚合根（Aggregate Root）【强制用于"强一致实体群"】
 

@@ -1,11 +1,14 @@
 package com.wish.rd.bootstrap.openviking;
 
+import com.wish.rd.framework.id.SnowflakeIdGenerator;
 import com.wish.rd.rag.knowledge.projection.ExternalKnowledgeIndexPort;
 import com.wish.rd.rag.knowledge.projection.KnowledgeExternalIndexBindingStore;
 import com.wish.rd.rag.knowledge.projection.KnowledgeExternalIndexOutboxStore;
 import com.wish.rd.rag.knowledge.projection.KnowledgeExternalIndexPollEngine;
+import com.wish.rd.rag.knowledge.projection.KnowledgeExternalIndexReconcileEngine;
 import com.wish.rd.rag.knowledge.projection.KnowledgeExternalIndexSyncEngine;
 import com.wish.rd.rag.knowledge.projection.KnowledgeProjectionSettlePort;
+import com.wish.rd.rag.knowledge.projection.KnowledgeReconcileFindingStore;
 import com.wish.rd.bootstrap.openviking.impl.DisabledExternalKnowledgeIndexPort;
 import com.wish.rd.bootstrap.openviking.impl.JdkOpenVikingHttpExchange;
 import com.wish.rd.bootstrap.openviking.impl.OpenVikingRestIndexAdapter;
@@ -136,5 +139,25 @@ public class OpenVikingProjectionConfiguration {
     ) {
         return new KnowledgeExternalIndexPollEngine(
                 indexPort, outboxStore, bindingStore, settlePort, settings, projectionLeaseOwner);
+    }
+
+    @Bean
+    public KnowledgeExternalIndexReconcileEngine knowledgeExternalIndexReconcileEngine(
+            ExternalKnowledgeIndexPort indexPort,
+            KnowledgeExternalIndexBindingStore bindingStore,
+            KnowledgeExternalIndexOutboxStore outboxStore,
+            KnowledgeReconcileFindingStore findingStore,
+            ProjectionWorkerSettings settings,
+            SnowflakeIdGenerator idGenerator,
+            @Value("${rd.knowledge.projection.reconcile.stale-after-millis:300000}") long staleAfterMillis
+    ) {
+        return new KnowledgeExternalIndexReconcileEngine(
+                indexPort,
+                bindingStore,
+                outboxStore,
+                findingStore,
+                settings,
+                staleAfterMillis,
+                idGenerator::nextIdString);
     }
 }

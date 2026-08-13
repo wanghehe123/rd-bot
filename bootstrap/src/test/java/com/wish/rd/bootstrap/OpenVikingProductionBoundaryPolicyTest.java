@@ -139,6 +139,56 @@ class OpenVikingProductionBoundaryPolicyTest {
         assertTrue(yaml.contains("enabled: ${RD_OPENVIKING_ENABLED:false}"));
         assertTrue(yaml.contains("api-key-env: ${RD_OPENVIKING_API_KEY_ENV:OPENVIKING_API_KEY}"),
                 "the API key must be read from the environment, never from configuration");
+        assertTrue(yaml.contains("enabled: ${RD_OPENVIKING_RECONCILE_ENABLED:false}"),
+                "the reconciler must stay opt-in so an unconfigured deployment never scans a shared index");
+    }
+
+    @Test
+    void deleteMustPersistSendIntentBeforeTheRemoteRemove() throws Exception {
+        String worker = Files.readString(PROJECT_ROOT.resolve(
+                "rag/src/main/java/com/wish/rd/rag/knowledge/projection/KnowledgeExternalIndexSyncEngine.java"));
+        String delete = methodBody(worker, "private boolean dispatchDelete(");
+        int intent = delete.indexOf("persistSendIntent(");
+        int remove = delete.indexOf("removeSafely(");
+        assertTrue(intent > 0 && remove > intent,
+                "a delete that already crossed the send boundary must never be issued without a durable marker");
+        assertTrue(delete.contains("removeSafely("));
+        int aboutToSend = worker.indexOf("ExternalIndexSettleCommand.aboutToSend(");
+        int removeResource = worker.indexOf("indexPort.removeResource(");
+        assertTrue(aboutToSend > 0 && removeResource > aboutToSend,
+                "aboutToSend must precede removeResource in the worker source");
+    }
+
+    @Test
+    void theReconcilerMustNeverIssueARemoteWrite() throws Exception {
+        String reconciler = Files.readString(PROJECT_ROOT.resolve(
+                "rag/src/main/java/com/wish/rd/rag/knowledge/projection/KnowledgeExternalIndexReconcileEngine.java"));
+        assertFalse(reconciler.contains("removeResource("),
+                "orphans are findings, not deletes");
+        assertFalse(reconciler.contains("submitUpsert("),
+                "the reconciler must never submit a write; it may only enqueue REBUILD_DOCUMENT");
+        String config = Files.readString(PROJECT_ROOT.resolve(
+                "bootstrap/src/main/java/com/wish/rd/bootstrap/openviking/OpenVikingProjectionConfiguration.java"));
+        assertTrue(config.contains("KnowledgeExternalIndexReconcileEngine"),
+                "the reconciler must be a wired bean so admin and the scheduler share one instance");
+        String scheduler = Files.readString(PROJECT_ROOT.resolve(
+                "bootstrap/src/main/java/com/wish/rd/bootstrap/openviking/KnowledgeProjectionScheduler.java"));
+        assertTrue(scheduler.contains("rd.knowledge.projection.reconcile.enabled"),
+                "reconcile must have an independent enable switch");
+        assertTrue(scheduler.contains("rd.knowledge.projection.reconcile.interval-millis"),
+                "reconcile must tick on its own interval, defaulting to 300000");
+    }
+
+    @Test
+    void requeueMustNotReturnASentRowToPending() throws Exception {
+        String mapper = Files.readString(PROJECT_ROOT.resolve(
+                "bootstrap/src/main/java/com/wish/rd/bootstrap/persistence/mapper/"
+                        + "KnowledgeExternalIndexOutboxMapper.java"));
+        String requeueSql = selectSqlBefore(mapper, "KnowledgeExternalIndexOutboxRow requeueDeadLetter(");
+        assertFalse(requeueSql.contains("SET status = 'PENDING'"),
+                "a sent dead letter must not be requeued to PENDING; that would replay the write");
+        assertTrue(requeueSql.contains("CASE WHEN remote_operation_id = '' THEN 'PENDING' ELSE 'UNKNOWN_REMOTE_RESULT'"),
+                "unsent rows return to PENDING; sent rows can only become UNKNOWN_REMOTE_RESULT");
     }
 
     /**
@@ -169,5 +219,24 @@ class OpenVikingProductionBoundaryPolicyTest {
             assertTrue(sql.contains("'" + terminal + "'"),
                     "terminal state " + terminal + " must be excluded from the backlog age gauge");
         }
+    }
+
+    private static String methodBody(String source, String signature) {
+        int start = source.indexOf(signature);
+        assertTrue(start >= 0, "missing method " + signature);
+        int brace = source.indexOf('{', start);
+        int depth = 0;
+        for (int index = brace; index < source.length(); index++) {
+            char character = source.charAt(index);
+            if (character == '{') {
+                depth++;
+            } else if (character == '}') {
+                depth--;
+                if (depth == 0) {
+                    return source.substring(start, index + 1);
+                }
+            }
+        }
+        throw new AssertionError("unbalanced method body for " + signature);
     }
 }
