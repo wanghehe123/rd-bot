@@ -178,6 +178,11 @@ public RepairContextPackage prepareContext(RepairRagRequest request) {
 
 - 【强制】`RdTaskStatus` 虽为共享枚举，合法边必须按 `RdTaskType` 分图校验；需求任务不得走 BugFix 的 `SEARCHING` 捷径。
 - 【强制】任务快照与对应状态事件必须通过同一个事务端口写入；PostgreSQL 实现必须使用 `@Transactional`，禁止先改快照、后补事件。
+- 【强制】声明 `@Transactional` 的 Spring Bean 类不得是 `final`：Boot 默认 CGLIB 子类代理，
+  final 类会在真机启动时抛 `Cannot subclass final class` 并放弃整个上下文，而单测不加载
+  Spring 上下文暴露不了（2026-08-13 两个 Postgres 投影适配器就这样把后端打挂）。
+  由 `TransactionalProxyPolicyTest` 扫描 bootstrap 源码钉住；验证：
+  `./mvnw -pl bootstrap -am -Dtest=TransactionalProxyPolicyTest -Dsurefire.failIfNoSpecifiedTests=false test`。
 - 【强制】任务写锁使用 task ID 粒度；工单幂等创建使用 ticket ID 粒度。禁止用全局注册表锁串行化不同任务。
 - 【强制】普通需求交付（含 umbrella 提交）先写 `rd_requirement_delivery_jobs`，再提交线程池。Worker 必须通过条件更新获得租约；进程重启后恢复 PENDING、FAILED_RETRYABLE 与租约过期的 RUNNING 作业。**窄化例外**：checkpoint-bound 阶段重试以初始化事务同写的 `rd_requirement_stage_commands` 为唯一派发真值，不得为该重试凭空创建第二个 umbrella job，除非既有运行时路径明确需要它；提交后的调度器只能按 checkpoint 记录的 command ID 唤醒该行。
 - 【强制】阶段重试必须创建新的 `attemptNo`；`FAILED_RETRYABLE` 是旧 attempt 的终态，不得把旧记录改写为 `RECOVERING`。

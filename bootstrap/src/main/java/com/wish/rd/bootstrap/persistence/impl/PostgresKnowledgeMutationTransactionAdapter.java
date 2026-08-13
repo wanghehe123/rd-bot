@@ -19,10 +19,14 @@ import java.util.Objects;
 /**
  * PostgreSQL mutation 事务：文档、revision、chunk/vector、binding、outbox 同一提交。
  * 事务内不调用 OpenViking、模型或执行器。
+ *
+ * <p>不能是 {@code final}：{@code @Transactional} 依赖 CGLIB 子类代理，final 类会让
+ * 应用在 {@code rd.knowledge.store=postgres} 下直接启动失败（单测不加载 Spring 上下文，
+ * 只有真机启动才暴露）。
  */
 @Component
 @ConditionalOnProperty(name = "rd.knowledge.store", havingValue = "postgres")
-public final class PostgresKnowledgeMutationTransactionAdapter implements KnowledgeMutationTransactionPort {
+public class PostgresKnowledgeMutationTransactionAdapter implements KnowledgeMutationTransactionPort {
 
     private final KnowledgeDocumentStore documentStore;
     private final KnowledgeDocumentRevisionStore revisionStore;
