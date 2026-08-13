@@ -175,13 +175,18 @@ rd:
     projection:
       mode: ${RD_KNOWLEDGE_PROJECTION_MODE:OFF}
       provider: ${RD_KNOWLEDGE_PROJECTION_PROVIDER:openviking}
+      tick-millis: ${RD_OPENVIKING_TICK_MILLIS:3000}
       worker:
         concurrency: ${RD_OPENVIKING_WORKER_CONCURRENCY:2}
         batch-size: ${RD_OPENVIKING_WORKER_BATCH_SIZE:10}
         lease-millis: ${RD_OPENVIKING_WORKER_LEASE_MILLIS:120000}
         max-attempts: ${RD_OPENVIKING_MAX_ATTEMPTS:8}
+        retry-backoff-millis: ${RD_OPENVIKING_RETRY_BACKOFF_MILLIS:2000}
+        max-retry-backoff-millis: ${RD_OPENVIKING_MAX_RETRY_BACKOFF_MILLIS:300000}
       poll:
         interval-millis: ${RD_OPENVIKING_POLL_INTERVAL_MILLIS:3000}
+        max-interval-millis: ${RD_OPENVIKING_POLL_MAX_INTERVAL_MILLIS:60000}
+        lease-millis: ${RD_OPENVIKING_POLL_LEASE_MILLIS:15000}
         unknown-outcome-timeout-millis: ${RD_OPENVIKING_UNKNOWN_TIMEOUT_MILLIS:1800000}
       reconcile:
         enabled: ${RD_OPENVIKING_RECONCILE_ENABLED:false}

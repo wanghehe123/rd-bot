@@ -32,6 +32,31 @@ public final class PostgresKnowledgeExternalIndexBindingStore implements Knowled
     }
 
     @Override
+    public Optional<KnowledgeExternalIndexBinding> saveObservationIfVersionMatches(
+            KnowledgeExternalIndexBinding binding,
+            long expectedRowVersion
+    ) {
+        KnowledgeExternalIndexBindingRow row = mapper.updateObservationIfVersionMatches(
+                binding.provider(),
+                PostgresPersistenceSupport.parseId(binding.documentId()),
+                expectedRowVersion,
+                binding.observedState().name(),
+                binding.observedVersion(),
+                binding.observedChecksum(),
+                binding.projectionStatus().name(),
+                PostgresPersistenceSupport.parseOptionalId(binding.activeOperationId()),
+                binding.remoteTaskId(),
+                binding.semanticConfigFingerprint(),
+                PostgresPersistenceSupport.nullableDateTime(binding.lastSubmittedAtEpochMillis()),
+                PostgresPersistenceSupport.nullableDateTime(binding.lastVerifiedAtEpochMillis()),
+                binding.lastErrorCode(),
+                binding.lastErrorMessage(),
+                PostgresPersistenceSupport.toDateTime(binding.updatedAtEpochMillis())
+        );
+        return Optional.ofNullable(row).map(this::toBinding);
+    }
+
+    @Override
     public Optional<KnowledgeExternalIndexBinding> findByProviderAndDocumentId(String provider, String documentId) {
         return mapper.selectList(new QueryWrapper<KnowledgeExternalIndexBindingRow>()
                         .eq("provider", provider)

@@ -5,9 +5,11 @@ import com.wish.rd.bootstrap.persistence.PostgresPersistenceSupport;
 import com.wish.rd.bootstrap.persistence.entity.KnowledgeExternalIndexOutboxRow;
 import com.wish.rd.bootstrap.persistence.mapper.KnowledgeExternalIndexOutboxMapper;
 import com.wish.rd.rag.knowledge.projection.KnowledgeExternalIndexOutboxStore;
+import com.wish.rd.rag.knowledge.projection.model.ExternalIndexSettleCommand;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeOperationStatus;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeOperationType;
 import com.wish.rd.rag.knowledge.projection.model.KnowledgeExternalIndexOperation;
+import com.wish.rd.rag.knowledge.projection.model.LeaseDisposition;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Component;
@@ -73,12 +75,29 @@ public final class PostgresKnowledgeExternalIndexOutboxStore implements Knowledg
     }
 
     @Override
+    public List<KnowledgeExternalIndexOperation> claimPollBatch(
+            String leaseOwner,
+            long nowEpochMillis,
+            long leaseUntilEpochMillis,
+            int batchSize
+    ) {
+        return mapper.claimPollBatch(
+                        leaseOwner,
+                        PostgresPersistenceSupport.toDateTime(nowEpochMillis),
+                        PostgresPersistenceSupport.toDateTime(leaseUntilEpochMillis),
+                        batchSize
+                ).stream()
+                .map(this::toOperation)
+                .toList();
+    }
+
+    @Override
     public Optional<KnowledgeExternalIndexOperation> settle(
             String eventId,
             ExternalKnowledgeOperationStatus expectedStatus,
             String leaseOwner,
             long expectedRowVersion,
-            ExternalKnowledgeOperationStatus nextStatus,
+            ExternalIndexSettleCommand command,
             long nowEpochMillis
     ) {
         KnowledgeExternalIndexOutboxRow row = mapper.settle(
@@ -86,7 +105,17 @@ public final class PostgresKnowledgeExternalIndexOutboxStore implements Knowledg
                 expectedStatus.name(),
                 leaseOwner,
                 expectedRowVersion,
-                nextStatus.name(),
+                command.nextStatus().name(),
+                command.leaseDisposition() == LeaseDisposition.RELEASE,
+                command.remoteTaskId(),
+                command.remoteOperationId(),
+                PostgresPersistenceSupport.nullableDateTime(command.nextVisibleAtEpochMillis()),
+                PostgresPersistenceSupport.nullableDateTime(command.publishedAtEpochMillis()),
+                command.errorCode(),
+                command.errorMessage(),
+                command.clearError(),
+                command.clearSendMarker(),
+                command.refundAttempt(),
                 PostgresPersistenceSupport.toDateTime(nowEpochMillis)
         );
         return Optional.ofNullable(row).map(this::toOperation);

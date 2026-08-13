@@ -26,6 +26,11 @@ public final class InMemoryKnowledgeDocumentRevisionStore implements KnowledgeDo
     }
 
     @Override
+    public synchronized Optional<KnowledgeDocumentRevision> findById(String id) {
+        return Optional.ofNullable(revisions.get(id));
+    }
+
+    @Override
     public synchronized Optional<KnowledgeDocumentRevision> findByDocumentIdAndChecksum(
             String documentId,
             String checksum

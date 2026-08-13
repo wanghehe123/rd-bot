@@ -33,6 +33,12 @@ public final class PostgresKnowledgeDocumentRevisionStore implements KnowledgeDo
     }
 
     @Override
+    public Optional<KnowledgeDocumentRevision> findById(String id) {
+        return Optional.ofNullable(mapper.selectById(PostgresPersistenceSupport.parseId(id)))
+                .map(this::toRevision);
+    }
+
+    @Override
     public Optional<KnowledgeDocumentRevision> findByDocumentIdAndChecksum(String documentId, String checksum) {
         return mapper.selectList(new QueryWrapper<KnowledgeDocumentRevisionRow>()
                         .eq("document_id", PostgresPersistenceSupport.parseId(documentId))

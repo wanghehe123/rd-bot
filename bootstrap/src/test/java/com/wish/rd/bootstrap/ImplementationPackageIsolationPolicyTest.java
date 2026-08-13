@@ -19,6 +19,30 @@ class ImplementationPackageIsolationPolicyTest {
             "(?m)^public\\s+(?:final\\s+)?class\\s+([A-Za-z0-9_]+)\\s+(?:extends\\s+[^\\{]+\\s+)?implements\\s+"
     );
 
+    /**
+     * 聚合根按 RULE.md 3.6 就该待在领域包根上，和它守护的实体同层；藏进 {@code .impl}
+     * 会让"入口在哪"这件事只能靠读代码猜。豁免必须逐个列名，且下面那条测试会要求
+     * RULE.md 3.6 真的把它写成聚合根，防止这里退化成绕过策略的垃圾桶。
+     */
+    private static final List<String> AGGREGATE_ROOT_EXEMPTIONS = List.of(
+            "com.wish.rd.rag.knowledge.KnowledgeDocumentMutationEngine"
+    );
+
+    @Test
+    void anExemptionMustBeBackedByADocumentedAggregateRoot() throws IOException {
+        String rule = Files.readString(Path.of("..", "RULE.md").normalize());
+        int section = rule.indexOf("### 3.6 聚合根");
+        assertTrue(section > 0, "RULE.md 3.6 must exist for exemptions to point at");
+        int nextSection = rule.indexOf("### 3.7", section);
+        String aggregateRootSection = rule.substring(section, nextSection < 0 ? rule.length() : nextSection);
+        for (String exemption : AGGREGATE_ROOT_EXEMPTIONS) {
+            String simpleName = exemption.substring(exemption.lastIndexOf('.') + 1);
+            assertTrue(aggregateRootSection.contains(simpleName),
+                    "RULE.md 3.6 must name " + simpleName + " as an aggregate root, "
+                            + "otherwise the exemption is just a way to skip the policy");
+        }
+    }
+
     @Test
     void publicInterfaceImplementationsShouldLiveUnderImplPackages() throws IOException {
         List<Path> roots = List.of(
@@ -48,8 +72,12 @@ class ImplementationPackageIsolationPolicyTest {
                 return;
             }
             String packageName = packageName(content);
+            String qualifiedName = packageName + "." + implementationMatcher.group(1);
+            if (AGGREGATE_ROOT_EXEMPTIONS.contains(qualifiedName)) {
+                return;
+            }
             if (!packageName.endsWith(".impl") && !packageName.contains(".impl.")) {
-                violations.add(path.normalize() + " -> " + packageName + "." + implementationMatcher.group(1));
+                violations.add(path.normalize() + " -> " + qualifiedName);
             }
         } catch (IOException exception) {
             violations.add(path.normalize() + " -> unreadable: " + exception.getMessage());

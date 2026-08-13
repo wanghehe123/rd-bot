@@ -103,6 +103,7 @@ public final class PrometheusMetricsController {
         }
         appendRetrievalMetrics(metrics, safe.retrievalMetrics());
         appendControlPlaneMetrics(metrics, safe.controlPlaneMetrics());
+        appendProjectionMetrics(metrics, safe.projectionMetrics());
         return metrics.toString();
     }
 
@@ -157,6 +158,23 @@ public final class PrometheusMetricsController {
                 .append(format(safe.meanAiReviewDurationSeconds())).append('\n');
     }
 
+    private static void appendProjectionMetrics(StringBuilder metrics, ProjectionMetrics projection) {
+        ProjectionMetrics safe = projection == null ? ProjectionMetrics.empty() : projection;
+        metrics.append("# HELP rd_bot_knowledge_projection_outbox_total External index outbox operations by status.\n")
+                .append("# TYPE rd_bot_knowledge_projection_outbox_total gauge\n");
+        appendStatusSeries(metrics, "rd_bot_knowledge_projection_outbox_total", safe.outboxStatuses());
+        metrics.append("# HELP rd_bot_knowledge_projection_binding_total External index bindings by projection status.\n")
+                .append("# TYPE rd_bot_knowledge_projection_binding_total gauge\n");
+        appendStatusSeries(metrics, "rd_bot_knowledge_projection_binding_total", safe.bindingStatuses());
+        metrics.append("# HELP rd_bot_knowledge_projection_stuck_total Outbox rows parked for a human or dead-lettered.\n")
+                .append("# TYPE rd_bot_knowledge_projection_stuck_total gauge\n")
+                .append("rd_bot_knowledge_projection_stuck_total ").append(safe.stuckTotal()).append('\n')
+                .append("# HELP rd_bot_knowledge_projection_oldest_pending_seconds Age of the oldest unconverged outbox row.\n")
+                .append("# TYPE rd_bot_knowledge_projection_oldest_pending_seconds gauge\n")
+                .append("rd_bot_knowledge_projection_oldest_pending_seconds ")
+                .append(format(safe.oldestPendingSeconds())).append('\n');
+    }
+
     private static void appendStatusSeries(StringBuilder metrics, String name, Map<String, Long> statuses) {
         if (statuses == null || statuses.isEmpty()) {
             metrics.append(name).append("{status=\"NO_DATA\"} 0\n");
@@ -208,7 +226,8 @@ public final class PrometheusMetricsController {
                     failureCategories(connection),
                     stageMetrics(connection),
                     safeRetrievalMetrics(connection),
-                    safeControlPlaneMetrics(connection)
+                    safeControlPlaneMetrics(connection),
+                    safeProjectionMetrics(connection)
             );
         } catch (Exception ignored) {
             return MetricsSnapshot.empty();
@@ -228,6 +247,14 @@ public final class PrometheusMetricsController {
             return controlPlaneMetrics(connection);
         } catch (Exception ignored) {
             return ControlPlaneMetrics.empty();
+        }
+    }
+
+    private static ProjectionMetrics safeProjectionMetrics(Connection connection) {
+        try {
+            return projectionMetrics(connection);
+        } catch (Exception ignored) {
+            return ProjectionMetrics.empty();
         }
     }
 
@@ -328,6 +355,33 @@ public final class PrometheusMetricsController {
         );
     }
 
+    private static ProjectionMetrics projectionMetrics(Connection connection) throws Exception {
+        return new ProjectionMetrics(
+                groupedCounts(connection, """
+                        SELECT status, COUNT(*) AS count
+                        FROM knowledge_external_index_outbox
+                        GROUP BY status
+                        ORDER BY status
+                        """),
+                groupedCounts(connection, """
+                        SELECT projection_status AS status, COUNT(*) AS count
+                        FROM knowledge_external_index_bindings
+                        GROUP BY projection_status
+                        ORDER BY projection_status
+                        """),
+                count(connection, """
+                        SELECT COUNT(*)
+                        FROM knowledge_external_index_outbox
+                        WHERE status IN ('NEEDS_HUMAN','DEAD_LETTER')
+                        """),
+                decimal(connection, """
+                        SELECT COALESCE(MAX(EXTRACT(EPOCH FROM (now() - created_at))), 0)
+                        FROM knowledge_external_index_outbox
+                        WHERE status NOT IN ('SUCCEEDED','SUPERSEDED','DEAD_LETTER')
+                        """)
+        );
+    }
+
     private static Map<String, Long> groupedCounts(Connection connection, String sql) throws Exception {
         Map<String, Long> counts = new LinkedHashMap<>();
         try (PreparedStatement statement = connection.prepareStatement(sql);
@@ -382,7 +436,8 @@ public final class PrometheusMetricsController {
             Map<String, Long> failureCategories,
             List<StageMetric> stageMetrics,
             RetrievalMetrics retrievalMetrics,
-            ControlPlaneMetrics controlPlaneMetrics
+            ControlPlaneMetrics controlPlaneMetrics,
+            ProjectionMetrics projectionMetrics
     ) {
         MetricsSnapshot(
                 long totalTaskCount,
@@ -399,7 +454,8 @@ public final class PrometheusMetricsController {
             this(
                     totalTaskCount, successTaskCount, validationTotalCount, validationPassedCount,
                     humanInterventionTaskCount, prCreatedTaskCount, retryCount, meanTimeToRepairSeconds,
-                    failureCategories, stageMetrics, RetrievalMetrics.empty(), ControlPlaneMetrics.empty()
+                    failureCategories, stageMetrics, RetrievalMetrics.empty(), ControlPlaneMetrics.empty(),
+                    ProjectionMetrics.empty()
             );
         }
 
@@ -419,7 +475,30 @@ public final class PrometheusMetricsController {
             this(
                     totalTaskCount, successTaskCount, validationTotalCount, validationPassedCount,
                     humanInterventionTaskCount, prCreatedTaskCount, retryCount, meanTimeToRepairSeconds,
-                    failureCategories, stageMetrics, retrievalMetrics, ControlPlaneMetrics.empty()
+                    failureCategories, stageMetrics, retrievalMetrics, ControlPlaneMetrics.empty(),
+                    ProjectionMetrics.empty()
+            );
+        }
+
+        MetricsSnapshot(
+                long totalTaskCount,
+                long successTaskCount,
+                long validationTotalCount,
+                long validationPassedCount,
+                long humanInterventionTaskCount,
+                long prCreatedTaskCount,
+                long retryCount,
+                double meanTimeToRepairSeconds,
+                Map<String, Long> failureCategories,
+                List<StageMetric> stageMetrics,
+                RetrievalMetrics retrievalMetrics,
+                ControlPlaneMetrics controlPlaneMetrics
+        ) {
+            this(
+                    totalTaskCount, successTaskCount, validationTotalCount, validationPassedCount,
+                    humanInterventionTaskCount, prCreatedTaskCount, retryCount, meanTimeToRepairSeconds,
+                    failureCategories, stageMetrics, retrievalMetrics, controlPlaneMetrics,
+                    ProjectionMetrics.empty()
             );
         }
 
@@ -428,11 +507,12 @@ public final class PrometheusMetricsController {
             stageMetrics = stageMetrics == null ? List.of() : List.copyOf(stageMetrics);
             retrievalMetrics = retrievalMetrics == null ? RetrievalMetrics.empty() : retrievalMetrics;
             controlPlaneMetrics = controlPlaneMetrics == null ? ControlPlaneMetrics.empty() : controlPlaneMetrics;
+            projectionMetrics = projectionMetrics == null ? ProjectionMetrics.empty() : projectionMetrics;
         }
 
         static MetricsSnapshot empty() {
             return new MetricsSnapshot(0, 0, 0, 0, 0, 0, 0, 0D, Map.of(), List.of(),
-                    RetrievalMetrics.empty(), ControlPlaneMetrics.empty());
+                    RetrievalMetrics.empty(), ControlPlaneMetrics.empty(), ProjectionMetrics.empty());
         }
     }
 
@@ -483,6 +563,28 @@ public final class PrometheusMetricsController {
 
         static ControlPlaneMetrics empty() {
             return new ControlPlaneMetrics(Map.of(), Map.of(), 0D, 0D);
+        }
+    }
+
+    /**
+     * 外部索引投影的健康度。计数直接来自 outbox/binding 账本而非进程内计数器，
+     * 因此重启和多实例都不会丢失，读到的就是当前真实积压。
+     */
+    record ProjectionMetrics(
+            Map<String, Long> outboxStatuses,
+            Map<String, Long> bindingStatuses,
+            long stuckTotal,
+            double oldestPendingSeconds
+    ) {
+        ProjectionMetrics {
+            outboxStatuses = outboxStatuses == null ? Map.of() : Map.copyOf(outboxStatuses);
+            bindingStatuses = bindingStatuses == null ? Map.of() : Map.copyOf(bindingStatuses);
+            stuckTotal = Math.max(stuckTotal, 0L);
+            oldestPendingSeconds = Math.max(oldestPendingSeconds, 0D);
+        }
+
+        static ProjectionMetrics empty() {
+            return new ProjectionMetrics(Map.of(), Map.of(), 0L, 0D);
         }
     }
 }

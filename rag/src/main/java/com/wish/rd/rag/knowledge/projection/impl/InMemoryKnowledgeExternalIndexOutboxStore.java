@@ -1,6 +1,7 @@
 package com.wish.rd.rag.knowledge.projection.impl;
 
 import com.wish.rd.rag.knowledge.projection.KnowledgeExternalIndexOutboxStore;
+import com.wish.rd.rag.knowledge.projection.model.ExternalIndexSettleCommand;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeOperationStatus;
 import com.wish.rd.rag.knowledge.projection.model.KnowledgeExternalIndexOperation;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -62,12 +63,38 @@ public final class InMemoryKnowledgeExternalIndexOutboxStore implements Knowledg
     }
 
     @Override
+    public synchronized List<KnowledgeExternalIndexOperation> claimPollBatch(
+            String leaseOwner,
+            long nowEpochMillis,
+            long leaseUntilEpochMillis,
+            int batchSize
+    ) {
+        if (leaseOwner == null || leaseOwner.isBlank()) {
+            throw new IllegalArgumentException("leaseOwner must not be blank");
+        }
+        ArrayList<KnowledgeExternalIndexOperation> claimed = new ArrayList<>();
+        for (KnowledgeExternalIndexOperation operation : List.copyOf(operations.values())) {
+            if (claimed.size() >= batchSize) {
+                break;
+            }
+            if (!pollable(operation, nowEpochMillis)) {
+                continue;
+            }
+            KnowledgeExternalIndexOperation next =
+                    operation.pollClaimed(leaseOwner, leaseUntilEpochMillis, nowEpochMillis);
+            operations.put(next.eventId(), next);
+            claimed.add(next);
+        }
+        return List.copyOf(claimed);
+    }
+
+    @Override
     public synchronized Optional<KnowledgeExternalIndexOperation> settle(
             String eventId,
             ExternalKnowledgeOperationStatus expectedStatus,
             String leaseOwner,
             long expectedRowVersion,
-            ExternalKnowledgeOperationStatus nextStatus,
+            ExternalIndexSettleCommand command,
             long nowEpochMillis
     ) {
         KnowledgeExternalIndexOperation current = operations.get(eventId);
@@ -80,7 +107,7 @@ public final class InMemoryKnowledgeExternalIndexOutboxStore implements Knowledg
                 || !current.leaseActive(nowEpochMillis)) {
             return Optional.empty();
         }
-        KnowledgeExternalIndexOperation settled = current.settled(nextStatus, leaseOwner, nowEpochMillis);
+        KnowledgeExternalIndexOperation settled = current.settled(command, leaseOwner, nowEpochMillis);
         operations.put(eventId, settled);
         return Optional.of(settled);
     }
@@ -132,8 +159,19 @@ public final class InMemoryKnowledgeExternalIndexOutboxStore implements Knowledg
         if (!operation.status().claimable() || operation.attemptCount() >= operation.maxAttempts()) {
             return false;
         }
+        if (operation.crossedSendBoundary()) {
+            return false;
+        }
         if (operation.status() == ExternalKnowledgeOperationStatus.CLAIMED) {
             return operation.leaseUntilEpochMillis() > 0L && operation.leaseUntilEpochMillis() <= nowEpochMillis;
+        }
+        return operation.nextVisibleAtEpochMillis() <= nowEpochMillis
+                && (operation.leaseUntilEpochMillis() <= 0L || operation.leaseUntilEpochMillis() <= nowEpochMillis);
+    }
+
+    private static boolean pollable(KnowledgeExternalIndexOperation operation, long nowEpochMillis) {
+        if (!operation.status().awaitingRemoteOutcome()) {
+            return false;
         }
         return operation.nextVisibleAtEpochMillis() <= nowEpochMillis
                 && (operation.leaseUntilEpochMillis() <= 0L || operation.leaseUntilEpochMillis() <= nowEpochMillis);

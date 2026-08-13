@@ -7,6 +7,7 @@ import com.wish.rd.rag.knowledge.model.KnowledgeDocumentRevision;
 import com.wish.rd.rag.knowledge.model.KnowledgeDocumentStatus;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeDesiredState;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeObservedState;
+import com.wish.rd.rag.knowledge.projection.model.ExternalIndexSettleCommand;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeOperationStatus;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeOperationType;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeProjectionStatus;
@@ -131,7 +132,7 @@ class KnowledgeMutationTransactionPortTest {
                 ExternalKnowledgeOperationStatus.CLAIMED,
                 "worker-old",
                 claimed.rowVersion(),
-                ExternalKnowledgeOperationStatus.SUCCEEDED,
+                ExternalIndexSettleCommand.succeeded(),
                 NOW + 2_000L
         ).isEmpty());
         assertEquals(ExternalKnowledgeOperationStatus.CLAIMED, fixture.outbox.findById("301").orElseThrow().status());
@@ -152,7 +153,7 @@ class KnowledgeMutationTransactionPortTest {
                 ExternalKnowledgeOperationStatus.CLAIMED,
                 "worker-old",
                 firstClaim.rowVersion(),
-                ExternalKnowledgeOperationStatus.SUCCEEDED,
+                ExternalIndexSettleCommand.succeeded(),
                 NOW + 3_000L
         ).isEmpty());
         KnowledgeExternalIndexOperation settled = fixture.outbox.settle(
@@ -160,7 +161,7 @@ class KnowledgeMutationTransactionPortTest {
                 ExternalKnowledgeOperationStatus.CLAIMED,
                 "worker-new",
                 secondClaim.rowVersion(),
-                ExternalKnowledgeOperationStatus.SUCCEEDED,
+                ExternalIndexSettleCommand.succeeded(),
                 NOW + 3_000L
         ).orElseThrow();
         assertEquals(ExternalKnowledgeOperationStatus.SUCCEEDED, settled.status());

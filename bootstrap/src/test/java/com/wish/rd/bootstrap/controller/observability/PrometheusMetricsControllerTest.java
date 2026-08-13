@@ -79,4 +79,39 @@ class PrometheusMetricsControllerTest {
         assertTrue(metrics.contains("rd_bot_ai_review_score 88.500000"));
         assertTrue(metrics.contains("rd_bot_ai_review_duration_seconds 12.250000"));
     }
+
+    /**
+     * 投影是异步且默认关闭的，运维唯一能看见"卡住了"的地方就是这几条曲线：
+     * 停在 NEEDS_HUMAN/DEAD_LETTER 的行数，以及最老一行未收敛了多久。
+     */
+    @Test
+    void shouldExposeProjectionBacklogAndStuckRows() {
+        PrometheusMetricsController.MetricsSnapshot snapshot = new PrometheusMetricsController.MetricsSnapshot(
+                1, 1, 1, 1, 0, 1, 0, 1,
+                Map.of(),
+                List.of(),
+                PrometheusMetricsController.RetrievalMetrics.empty(),
+                PrometheusMetricsController.ControlPlaneMetrics.empty(),
+                new PrometheusMetricsController.ProjectionMetrics(
+                        Map.of("PENDING", 2L, "WAITING_REMOTE", 1L, "NEEDS_HUMAN", 3L, "DEAD_LETTER", 1L),
+                        Map.of("IN_SYNC", 9L, "NEEDS_HUMAN", 3L),
+                        4L,
+                        615D)
+        );
+
+        String metrics = PrometheusMetricsController.render(snapshot);
+
+        assertTrue(metrics.contains("rd_bot_knowledge_projection_outbox_total{status=\"WAITING_REMOTE\"} 1"));
+        assertTrue(metrics.contains("rd_bot_knowledge_projection_binding_total{status=\"IN_SYNC\"} 9"));
+        assertTrue(metrics.contains("rd_bot_knowledge_projection_stuck_total 4"));
+        assertTrue(metrics.contains("rd_bot_knowledge_projection_oldest_pending_seconds 615.000000"));
+    }
+
+    @Test
+    void shouldRenderProjectionSeriesEvenBeforeAnyDocumentIsProjected() {
+        String metrics = PrometheusMetricsController.render(PrometheusMetricsController.MetricsSnapshot.empty());
+
+        assertTrue(metrics.contains("rd_bot_knowledge_projection_outbox_total{status=\"NO_DATA\"} 0"));
+        assertTrue(metrics.contains("rd_bot_knowledge_projection_stuck_total 0"));
+    }
 }

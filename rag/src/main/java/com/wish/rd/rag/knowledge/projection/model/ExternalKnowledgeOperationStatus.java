@@ -24,4 +24,17 @@ public enum ExternalKnowledgeOperationStatus {
     public boolean claimable() {
         return this == PENDING || this == RETRY_WAIT || this == CLAIMED;
     }
+
+    /**
+     * 是否已经把请求交给远端，只能靠查询收敛。这类行归 Poller 所有，
+     * 永远不得重新走提交路径。
+     *
+     * @return 需要查询远端时为 true
+     */
+    public boolean awaitingRemoteOutcome() {
+        return this == SUBMITTED
+                || this == WAITING_REMOTE
+                || this == UNKNOWN_REMOTE_RESULT
+                || this == VERIFYING;
+    }
 }

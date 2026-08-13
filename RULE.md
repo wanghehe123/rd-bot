@@ -244,10 +244,74 @@ public RepairContextPackage prepareContext(RepairRagRequest request) {
   `./mvnw -pl engine -am -Dtest=KnowledgeAdminFlowTest -Dsurefire.failIfNoSpecifiedTests=false test`；
   `./mvnw -pl bootstrap -am -Dtest=OpenVikingProjectionSqlPolicyTest,OpenVikingProductionBoundaryPolicyTest,RuntimeComponentRegistrationPolicyTest -Dsurefire.failIfNoSpecifiedTests=false test`。
 
+### 3.5.9 外部索引发送边界、查询收敛与版本核验【强制】
+
+- 【强制】发送边界是 `POST /api/v1/resources`，不是 `temp_upload`。`KnowledgeExternalIndexSyncEngine` 必须先把
+  `remote_operation_id` 与 `SUBMITTED` 提交入库，再发 HTTP。`claimBatch` 的 SQL 必须带 `remote_operation_id = ''`：
+  越过发送边界的行永远不回提交路径，崩溃实例的请求不得被盲目重放。
+- 【强制】只有远端确定没有执行本次写入（连接未建立、`temp_upload` 失败、429、409 `path_busy`、远端任务终态 `failed`）
+  才允许 `clearSendMarker` 交回提交侧。  `UNKNOWN_REMOTE_RESULT` 只能靠 `verifyResource` 这类只读查询收敛，
+  禁止重发，并受 `RD_OPENVIKING_UNKNOWN_TIMEOUT_MILLIS`（默认 30 分钟）墙钟截止约束，超时进 `NEEDS_HUMAN`。
+  越过发送边界后只有这一个墙钟截止，锚在发送时刻，覆盖 `WAITING_REMOTE`/`VERIFYING`/`UNKNOWN_REMOTE_RESULT`
+  全部非终态路径（见 `KnowledgeExternalIndexPollEngine#defer`）。禁止再加一个"核验专用"截止：
+  进入核验的时刻没有落库，只能拿每轮都被重写的 `updated_at` 当锚点，那样截止永远不会触发，
+  比没有截止更糟；真要分两段计时必须先加持久化列，不能靠推导。
+- 【强制】`claimPollBatch` 只做存活性判定（`lease_until <= now`），不改状态、不递增 `attempt_count`、
+  不按 `attempt_count < max_attempts` 过滤：远端任务还在跑时，本地提交预算耗尽不得让它变成不可见。
+  纯本地放弃派发（版本被抢先、同文档另一版本在途）必须 `refundAttempt`，否则一次缓慢但正常的远端任务
+  会让后一版本仅靠等待就耗尽预算进死信。
+- 【强制】`HTTP 2xx` 与 `task completed` 都不等于版本正确。`observed_version` 只能在版本核验全部通过后推进：
+  `fs/attrs` 的 `rd.owner/rd.kb_id/rd.doc_id/rd.sync_version/rd.checksum`、L0 abstract、L1 overview、
+  L2 正文 SHA-256 与 `checksum` 相等。任一项不符不得写 `IN_SYNC`。
+  `add_resource` 返回的 `root_uri` 必须与请求的 `to` 精确相等，否则按 `MALFORMED_SUCCESS` 挂起。
+  核验前必须先确认本次提交的 `task` 已终态且 `queue_status.Semantic/Embedding.error_count` 均为 0，
+  语义产物才归属本版本。
+- 【强制】版本核验只能用确定性证据，禁止把 `search/find` 之类相关性检索放进 settle 路径。
+  真机实测（v0.4.13 + mock 嵌入）：同一篇已正确落库的中文文档，`query` 用短 token 命中 score 0.40
+  且命中的是派生的 `.abstract.md` 而非被核验的 L2 正文，`query` 换成它自己 200 字正文则连续 61 秒 0 命中；
+  `tags` 是排序后的过滤器，兜不住这件事。检索命中率随语料增长而下降、随嵌入模型更换而漂移，
+  放进闸门等于让健康文档进 `NEEDS_HUMAN`，换模型就是一次投影停摆事故；它也证明不了版本。
+  检索健康度属于旁路探针（用 WP-0 那种含唯一 ASCII token 的合成文档），不得改写任何 binding/outbox 行。
+  `IN_SYNC` 的语义因此是"已落库且版本已核验"，不是"可被检索到"。
+  `OpenVikingRealContractSmokeTest` 必须继续断言 `search/find` 的响应形状，保持契约被冻结。
+  注意 WP-0 没暴露这个问题的原因是它的语料是含唯一 token 的合成文档——用合成 fixture 写契约测试
+  会系统性高估检索命中率。
+- 【强制】租约判定用应用时钟：`claimBatch`/`claimPollBatch`/`settle` 里的 `lease_until`、`next_visible_at`
+  都跟调用方传入的 `#{now}` 比，不是 SQL 的 `now()`。因此多实例部署必须做时钟同步——
+  偏移超过租约时长（默认 120s）时，快钟实例会判定一个仍然活着的租约已过期并抢走行。
+  单实例默认部署不受影响。要去掉这个前提就得把谓词里的 `#{now}` 换成 `now()`，
+  代价是 Postgres 侧不能再用注入时钟做过期重领的时间旅行测试，换之前先补真机测试。
+- 【强制】Outbox settle 与 binding 观测必须经 `KnowledgeProjectionSettlePort` 在同一事务提交。
+  观测写入只覆盖 `observed_*` 列并做 CAS，禁止覆盖 `desired_*`：desired 由本地 mutation 事务拥有。
+  Worker 与 Poller 都不得写 desired。
+- 【强制】投影默认关闭：`rd.knowledge.projection.mode=OFF` 且 `rd.openviking.enabled=false`。
+  API key 只从 `rd.openviking.api-key-env` 指定的环境变量读取，禁止写进配置文件；
+  缺 key 时 `ready()` 必须为 false，Worker 不领取任何行（领取会消耗预算，让一次运维故障把队列推向死信）。
+  所有落库与日志的错误说明必须过 `OpenVikingErrorTranslator.safeMessage`。
+- 【强制】投影健康度只能从 outbox/binding 账本读，不得改用进程内计数器：投影是异步且多实例的，
+  重启会清零内存计数，而"卡了多少行、最老一行卡了多久"恰恰要跨重启才有意义。
+  `PrometheusMetricsController` 暴露 `rd_bot_knowledge_projection_outbox_total`、
+  `rd_bot_knowledge_projection_binding_total`、`rd_bot_knowledge_projection_stuck_total`、
+  `rd_bot_knowledge_projection_oldest_pending_seconds` 四条；积压年龄按非终态行统计，
+  `CLAIMED` 必须计入（Worker 卡死时它就是唯一信号）。
+  该查询失败时静默退回全零，所以列名与 `p11_openviking_projection.sql` 的绑定由
+  `OpenVikingProductionBoundaryPolicyTest#projectionMetricsMustQueryColumnsThatActuallyExist` 钉住。
+- 【强制】验证：`./mvnw -pl rag -am -Dtest=KnowledgeExternalIndexSyncEngineTest,KnowledgeExternalIndexPollEngineTest -Dsurefire.failIfNoSpecifiedTests=false test`；
+  `./mvnw -pl bootstrap -am -Dtest=OpenVikingRestIndexAdapterTest,OpenVikingErrorTranslatorTest,OpenVikingProductionBoundaryPolicyTest,PrometheusMetricsControllerTest -Dsurefire.failIfNoSpecifiedTests=false test`；
+  真机端到端还需 `scripts/openviking/up.sh` 后加 `-Drd.openviking.smoke=true` 跑 `OpenVikingProjectionLiveSmokeTest`，
+  真实飞书正文再加 `-Drd.feishu.docs.smoke=true`。多个 `-Dtest` 类名必须用逗号分隔，
+  用 `+` 会静默匹配不到任何测试并"通过"。
+
 ### 3.6 聚合根（Aggregate Root）【强制用于"强一致实体群"】
 
 - **已落地**：`KnowledgeDocumentMutationEngine` 是知识写入聚合根，经 `KnowledgeMutationTransactionPort` 提交 document/revision/chunks/vectors/binding/outbox。`KnowledgeWorkspace` 是查询 facade，mutation 方法委托 Engine。
 - 【强制】聚合内的跨实体一致性操作必须通过聚合根方法完成，外部不得绕过根直接改子实体。
+- 【强制】聚合根留在领域包根（如 `com.wish.rd.rag.knowledge`），不下沉到 `.impl`：它是这组实体的唯一
+  写入入口，和 `.impl` 里那些"某接口的一种实现"不是一回事，藏进去会让入口只能靠读代码猜。
+  因此 `ImplementationPackageIsolationPolicyTest.AGGREGATE_ROOT_EXEMPTIONS` 逐个列出豁免的全限定名，
+  且 `anExemptionMustBeBackedByADocumentedAggregateRoot` 会要求本节真的把它写成聚合根——
+  想加豁免就必须先在这里说明它凭什么是聚合根，避免豁免名单退化成绕过策略的垃圾桶。
+  验证：`./mvnw -pl bootstrap -am -Dtest=ImplementationPackageIsolationPolicyTest -Dsurefire.failIfNoSpecifiedTests=false test`。
 
 ### 3.7 值对象与不可变性（Value Object）【强制】
 

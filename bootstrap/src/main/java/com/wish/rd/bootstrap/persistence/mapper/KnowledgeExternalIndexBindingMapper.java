@@ -4,6 +4,10 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.wish.rd.bootstrap.persistence.entity.KnowledgeExternalIndexBindingRow;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
+
+import java.time.OffsetDateTime;
 
 @Mapper
 public interface KnowledgeExternalIndexBindingMapper extends BaseMapper<KnowledgeExternalIndexBindingRow> {
@@ -44,4 +48,46 @@ public interface KnowledgeExternalIndexBindingMapper extends BaseMapper<Knowledg
                 updated_at = EXCLUDED.updated_at
             """)
     void upsert(KnowledgeExternalIndexBindingRow row);
+
+    /**
+     * 以 CAS 写入观测结果。SET 子句刻意不包含任何 {@code desired_*} 列：
+     * desired 归本地 mutation 事务所有，Worker/Poller 覆盖它会把刚提交的更高版本意图退回。
+     */
+    @Select("""
+            UPDATE knowledge_external_index_bindings
+               SET observed_state = #{observedState},
+                   observed_version = #{observedVersion},
+                   observed_checksum = #{observedChecksum},
+                   projection_status = #{projectionStatus},
+                   active_operation_id = #{activeOperationId},
+                   remote_task_id = #{remoteTaskId},
+                   semantic_config_fingerprint = #{semanticConfigFingerprint},
+                   last_submitted_at = COALESCE(#{lastSubmittedAt}, last_submitted_at),
+                   last_verified_at = COALESCE(#{lastVerifiedAt}, last_verified_at),
+                   last_error_code = #{lastErrorCode},
+                   last_error_message = #{lastErrorMessage},
+                   row_version = row_version + 1,
+                   updated_at = #{updatedAt}
+             WHERE provider = #{provider}
+               AND document_id = #{documentId}
+               AND row_version = #{expectedRowVersion}
+            RETURNING *
+            """)
+    KnowledgeExternalIndexBindingRow updateObservationIfVersionMatches(
+            @Param("provider") String provider,
+            @Param("documentId") Long documentId,
+            @Param("expectedRowVersion") long expectedRowVersion,
+            @Param("observedState") String observedState,
+            @Param("observedVersion") Long observedVersion,
+            @Param("observedChecksum") String observedChecksum,
+            @Param("projectionStatus") String projectionStatus,
+            @Param("activeOperationId") Long activeOperationId,
+            @Param("remoteTaskId") String remoteTaskId,
+            @Param("semanticConfigFingerprint") String semanticConfigFingerprint,
+            @Param("lastSubmittedAt") OffsetDateTime lastSubmittedAt,
+            @Param("lastVerifiedAt") OffsetDateTime lastVerifiedAt,
+            @Param("lastErrorCode") String lastErrorCode,
+            @Param("lastErrorMessage") String lastErrorMessage,
+            @Param("updatedAt") OffsetDateTime updatedAt
+    );
 }
