@@ -322,6 +322,20 @@ public RepairContextPackage prepareContext(RepairRagRequest request) {
 - 【强制】验证（WP-4 Stage A 追加）：`./mvnw -pl rag -am -Dtest='KnowledgeExternalIndex*Test,KnowledgeMutationTransactionPortTest' -Dsurefire.failIfNoSpecifiedTests=false test`；
   `./mvnw -pl bootstrap -am -Dtest='OpenViking*Test,PrometheusMetricsControllerTest,ImplementationPackageIsolationPolicyTest,ModelPackageIsolationPolicyTest' -Dsurefire.failIfNoSpecifiedTests=false test`。
   隔离测试允许的失败仅限既有 `engine/` 遗留项。禁止跑 `-Drd.openviking.smoke` 作为本 WP 回归。
+- 【强制】投影管理 API（`/admin/knowledge-base/{kbId}/openviking/**`）只经
+  `KnowledgeProjectionAdminEngine` 访问账本与端口。Controller 禁止引用
+  `OpenVikingHttpExchange` 或直接发 REST。除 `verifyResource` / `listTree`
+  外，管理面不得调用远端写接口；retry 不新建版本，已越过发送边界的
+  `NEEDS_HUMAN` 只能进 `UNKNOWN_REMOTE_RESULT`。tree 必须先校验该 KB 的
+  owned root，越界返回 400，禁止代理任意 URI。requeue 请求体带
+  `expectedRowVersion`，CAS 失败 409。错误 DTO 只含已脱敏 `message`，禁止
+  堆栈、原始远端响应与 API key。投影关闭时读接口仍读账本，`verify` /
+  `reconcile` 返回 409。SPA 页面路由是 `GET /admin/knowledge/{kbId}/openviking`，
+  不得把 `/admin/knowledge-base/**/openviking/**` 吞成 `index.html`。
+- 【强制】验证（WP-5 Stage B）：`./mvnw -pl rag -am -Dtest=KnowledgeProjectionAdminEngineTest -Dsurefire.failIfNoSpecifiedTests=false test`；
+  `./mvnw -pl bootstrap -am -Dtest='KnowledgeProjectionAdmin*Test,AdminFrontendControllerTest,OpenVikingProductionBoundaryPolicyTest' -Dsurefire.failIfNoSpecifiedTests=false test`。
+  前端代理契约：`cd frontend && npm test && npm run typecheck`。禁止跑
+  `-Drd.openviking.smoke` 作为本 WP 回归。
 
 ### 3.6 聚合根（Aggregate Root）【强制用于"强一致实体群"】
 

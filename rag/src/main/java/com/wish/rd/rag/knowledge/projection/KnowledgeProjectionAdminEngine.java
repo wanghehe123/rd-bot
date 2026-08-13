@@ -403,7 +403,7 @@ public final class KnowledgeProjectionAdminEngine {
         String ownedRoot = OpenVikingProjectionUris.knowledgeBaseRoot(knowledgeBaseId);
         String requested = uri == null || uri.isBlank() ? ownedRoot : uri.strip();
         if (!OpenVikingProjectionUris.isWithinOwnedRoot(requested, ownedRoot)) {
-            throw new IllegalArgumentException("URI 不在该知识库 owned root 之内");
+            throw new IllegalArgumentException("URI 不在该知识库 owned root 之内: " + requested);
         }
         return indexPort.listTree(requested);
     }

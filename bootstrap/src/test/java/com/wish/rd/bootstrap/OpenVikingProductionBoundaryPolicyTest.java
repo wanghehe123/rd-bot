@@ -17,6 +17,7 @@ class OpenVikingProductionBoundaryPolicyTest {
     void productionWritersMustNotComposeStoreMutations() throws Exception {
         List<String> writers = List.of(
                 "bootstrap/src/main/java/com/wish/rd/bootstrap/controller/admin/knowledge/KnowledgeAdminController.java",
+                "bootstrap/src/main/java/com/wish/rd/bootstrap/controller/admin/knowledge/KnowledgeProjectionAdminController.java",
                 "rag/src/main/java/com/wish/rd/rag/knowledge/FeishuDocKnowledgeImporter.java",
                 "rag/src/main/java/com/wish/rd/rag/knowledge/KnowledgeRefreshScheduler.java",
                 "rag/src/main/java/com/wish/rd/rag/ingestion/IngestionAdminRegistry.java"
@@ -189,6 +190,33 @@ class OpenVikingProductionBoundaryPolicyTest {
                 "a sent dead letter must not be requeued to PENDING; that would replay the write");
         assertTrue(requeueSql.contains("CASE WHEN remote_operation_id = '' THEN 'PENDING' ELSE 'UNKNOWN_REMOTE_RESULT'"),
                 "unsent rows return to PENDING; sent rows can only become UNKNOWN_REMOTE_RESULT");
+    }
+
+    @Test
+    void adminApiMustNotCallTheRemoteExceptVerifyAndTree() throws Exception {
+        String controller = Files.readString(PROJECT_ROOT.resolve(
+                "bootstrap/src/main/java/com/wish/rd/bootstrap/controller/admin/knowledge/"
+                        + "KnowledgeProjectionAdminController.java"));
+        assertFalse(controller.contains("OpenVikingHttpExchange"),
+                "the admin controller must not hold an HTTP exchange");
+        assertFalse(controller.contains("/api/v1/"),
+                "the admin controller must not issue OpenViking REST paths");
+        assertTrue(controller.contains("KnowledgeProjectionAdminEngine"),
+                "every admin action must go through the projection admin engine");
+        assertTrue(controller.contains("@ExceptionHandler"),
+                "errors must be translated; stack traces must not reach the frontend");
+
+        String engine = Files.readString(PROJECT_ROOT.resolve(
+                "rag/src/main/java/com/wish/rd/rag/knowledge/projection/KnowledgeProjectionAdminEngine.java"));
+        assertFalse(engine.contains("submitUpsert("), "admin retry/rebuild must not submit a write");
+        assertFalse(engine.contains("removeResource("), "admin must not delete remotely");
+        assertTrue(engine.contains("verifyResource("), "verify is the only allowed remote mutation-adjacent call");
+        assertTrue(engine.contains("listTree("), "tree is allowed as a read of the owned root");
+        assertTrue(engine.contains("isWithinOwnedRoot("),
+                "tree must reject URIs outside the knowledge-base owned root before listing");
+        String retry = methodBody(engine, "public ProjectionAdminActionResult retry(");
+        assertTrue(retry.contains("resumeStalled("), "retry must reuse the stalled-row primitive");
+        assertFalse(retry.contains("enqueue("), "retry must not create a new outbox version");
     }
 
     /**
