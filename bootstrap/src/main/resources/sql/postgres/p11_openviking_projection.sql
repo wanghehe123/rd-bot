@@ -123,3 +123,17 @@ CREATE UNIQUE INDEX IF NOT EXISTS uk_knowledge_external_index_outbox_kb_op
 
 CREATE INDEX IF NOT EXISTS idx_knowledge_external_index_outbox_claim
     ON knowledge_external_index_outbox (status, next_visible_at, created_at);
+
+-- PENDING 必须没有发送标记：claimBatch 以 remote_operation_id = '' 作发送边界护栏，
+-- 任何把行放回 PENDING 却不清标记的 SQL 都会造出"可见却永不可领取"的僵尸行。
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'ck_knowledge_external_index_outbox_pending_unsent'
+    ) THEN
+        ALTER TABLE knowledge_external_index_outbox
+            ADD CONSTRAINT ck_knowledge_external_index_outbox_pending_unsent
+            CHECK (status <> 'PENDING' OR (remote_operation_id = '' AND remote_task_id = ''));
+    END IF;
+END $$;

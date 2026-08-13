@@ -181,15 +181,27 @@ class OpenVikingProductionBoundaryPolicyTest {
     }
 
     @Test
-    void requeueMustNotReturnASentRowToPending() throws Exception {
+    void requeueMustNotReturnASentRowToPendingExceptIdempotentDeletes() throws Exception {
         String mapper = Files.readString(PROJECT_ROOT.resolve(
                 "bootstrap/src/main/java/com/wish/rd/bootstrap/persistence/mapper/"
                         + "KnowledgeExternalIndexOutboxMapper.java"));
-        String requeueSql = selectSqlBefore(mapper, "KnowledgeExternalIndexOutboxRow requeueDeadLetter(");
-        assertFalse(requeueSql.contains("SET status = 'PENDING'"),
-                "a sent dead letter must not be requeued to PENDING; that would replay the write");
-        assertTrue(requeueSql.contains("CASE WHEN remote_operation_id = '' THEN 'PENDING' ELSE 'UNKNOWN_REMOTE_RESULT'"),
-                "unsent rows return to PENDING; sent rows can only become UNKNOWN_REMOTE_RESULT");
+        for (String method : List.of(
+                "KnowledgeExternalIndexOutboxRow requeueDeadLetter(",
+                "KnowledgeExternalIndexOutboxRow resumeStalled(")) {
+            String sql = selectSqlBefore(mapper, method);
+            assertFalse(sql.contains("SET status = 'PENDING'"), method
+                    + ": a sent row must not be requeued to PENDING unconditionally; that replays the write");
+            assertTrue(sql.contains("ELSE 'UNKNOWN_REMOTE_RESULT'"), method
+                    + ": sent non-delete rows may only converge by query");
+            assertTrue(sql.contains("OR operation_type IN ('DELETE_DOCUMENT', 'DELETE_KNOWLEDGE_BASE') THEN 'PENDING'"),
+                    method + ": idempotent deletes are the only sent rows allowed back onto the submit path"
+                            + " (remote rm idempotency is pinned by the live contract smoke)");
+            assertTrue(sql.contains("remote_operation_id = CASE"), method
+                    + ": a row returned to PENDING must clear its send marker in the same statement,"
+                    + " or the claim guard skips it forever");
+            assertFalse(sql.contains("last_error_code ="), method
+                    + ": the exemption routes on operation_type; error evidence must be preserved, not rewritten");
+        }
     }
 
     @Test

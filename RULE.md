@@ -308,6 +308,10 @@ public RepairContextPackage prepareContext(RepairRagRequest request) {
   用 `+` 会静默匹配不到任何测试并"通过"。
 - 【强制】删除同样先过发送边界：`KnowledgeExternalIndexSyncEngine` 必须先 `aboutToSend` 持久化
   `remote_operation_id`，再调用 `removeResource`（`DELETE /api/v1/fs?uri=&recursive=`）。
+  文档级删除必须 `recursive=true`：文档根在远端是目录（source.md + 派生层），非递归删除
+  被 v0.4.13 以 412 `Cannot remove directory without --recursive` 拒绝并直接死信
+  （2026-08-13 真机验收实测）。防误删依赖绑定 URI 相等 + KB root 前缀 + owned root
+  前缀三重校验，不是靠关掉递归。
   `path_busy` / 429 / 连接失败只允许 `RETRY_WAIT`，禁止把 busy 删除标成 `SUCCEEDED`。
   每一次远端写（含递归删除）前必须校验目标 URI 以该 KB owned root 为前缀；越界
   `CONFIGURATION_BLOCKED` 且不得发出请求。晚完成的低版本 UPSERT 若发现
@@ -316,6 +320,18 @@ public RepairContextPackage prepareContext(RepairRagRequest request) {
 - 【强制】死信 requeue 按发送边界分流：`remote_operation_id=''` 才回到 `PENDING` 并清零
   attempt；已越过边界的行只能进 `UNKNOWN_REMOTE_RESULT`，禁止再走提交路径。
   requeue SQL 不得对已发送行 `SET status = 'PENDING'`。
+  唯一豁免：删除类操作（`DELETE_DOCUMENT` / `DELETE_KNOWLEDGE_BASE`）。远端 `rm` 幂等
+  （真机合同冒烟钉住：重复删除受理且 `count=0`），重发不是盲重放；不豁免的话，被 412
+  协议拒绝的删除会永远停在"等一个不会自己发生的缺席"（2026-08-13 真机验收实测：
+  `UNKNOWN_REMOTE_RESULT` → 探测到远端仍存在 → 超时 `NEEDS_HUMAN` → 催单又回查询路径，
+  死循环）。豁免只按 `operation_type` 白名单路由，禁止嗅探 `last_error_code`；
+  `requeueDeadLetter` 与 `resumeStalled` 必须同一条语句把行改回 `PENDING`、清零 attempt、
+  清空 `remote_task_id`/`remote_operation_id`（否则 `claimBatch` 的发送边界护栏让行永远
+  不可领取），并保留 `last_error_*` 作操作员证据。UPSERT 不在豁免内：它有 REBUILD
+  换新幂等键的逃生门，盲重放会与在途任务竞态。库层由
+  `ck_knowledge_external_index_outbox_pending_unsent` CHECK 兜底（`PENDING` 行必须无
+  发送标记）。验证：`KnowledgeExternalIndexOutboxStoreContractTest` +
+  `OpenVikingProductionBoundaryPolicyTest#requeueMustNotReturnASentRowToPendingExceptIdempotentDeletes`。
 - 【强制】`KnowledgeExternalIndexReconcileEngine` 只记账、只入队 `REBUILD_DOCUMENT`。
   禁止调用 `removeResource` / `submitUpsert`。远端有而本地无 binding 记 `ORPHAN_REMOTE`
   （`QUARANTINED`），本 WP 不自动删除；owner 非 rd-bot 记 `FOREIGN_OWNER`，永不产生
@@ -331,7 +347,8 @@ public RepairContextPackage prepareContext(RepairRagRequest request) {
   `KnowledgeProjectionAdminEngine` 访问账本与端口。Controller 禁止引用
   `OpenVikingHttpExchange` 或直接发 REST。除 `verifyResource` / `listTree`
   外，管理面不得调用远端写接口；retry 不新建版本，已越过发送边界的
-  `NEEDS_HUMAN` 只能进 `UNKNOWN_REMOTE_RESULT`。tree 必须先校验该 KB 的
+  `NEEDS_HUMAN` 只能进 `UNKNOWN_REMOTE_RESULT`（删除类操作按上条豁免回
+  `PENDING`）。tree 必须先校验该 KB 的
   owned root，越界返回 400，禁止代理任意 URI。requeue 请求体带
   `expectedRowVersion`，CAS 失败 409。错误 DTO 只含已脱敏 `message`，禁止
   堆栈、原始远端响应与 API key。投影关闭时读接口仍读账本，`verify` /

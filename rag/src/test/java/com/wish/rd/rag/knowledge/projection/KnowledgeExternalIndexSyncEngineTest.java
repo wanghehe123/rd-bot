@@ -186,7 +186,9 @@ class KnowledgeExternalIndexSyncEngineTest {
             assertEquals(ExternalKnowledgeOperationStatus.SUBMITTED, inFlight.status(),
                     "the durable delete intent must be committed before the HTTP call");
             assertTrue(inFlight.crossedSendBoundary());
-            assertFalse(recursive, "a document delete is not a recursive knowledge-base wipe");
+            assertTrue(recursive, "the document root is a directory on the real container; "
+                    + "a non-recursive delete dead-letters with http 412 FAILED_PRECONDITION. "
+                    + "Wipe protection is the URI ownership checks, not this flag.");
             assertEquals(ROOT, uri);
             return ExternalKnowledgeRemoval.accepted(1);
         };

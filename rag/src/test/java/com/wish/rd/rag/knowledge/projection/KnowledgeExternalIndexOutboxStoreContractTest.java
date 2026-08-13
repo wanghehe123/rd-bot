@@ -246,6 +246,69 @@ class KnowledgeExternalIndexOutboxStoreContractTest {
                 "a sent row must never be assigned PENDING by an unconditional SET");
         assertTrue(requeueSql.contains("THEN 0") || requeueSql.contains("THEN 0,"),
                 "the unsent branch must clear attempt_count");
+        assertTrue(requeueSql.contains("operation_type IN ('DELETE_DOCUMENT', 'DELETE_KNOWLEDGE_BASE')"),
+                "idempotent deletes are the only sent rows allowed back onto the submit path");
+        assertTrue(requeueSql.contains("remote_operation_id = CASE"),
+                "a delete returned to PENDING must clear its send marker, "
+                        + "or the claim guard forever skips it");
+    }
+
+    @Test
+    void aSentDeleteDeadLetterMustReturnToTheSubmitPathWithClearedMarkers() {
+        // 真机事故回放：recursive 缺陷让 DELETE 越过发送边界后被 412 拒绝进死信。
+        // 远端 rm 幂等（真机合同冒烟钉住），重发不是盲重放；不豁免的话 Poller 只能
+        // 等一个永远不会自己发生的缺席。豁免按操作类型路由，不看 last_error_code。
+        InMemoryKnowledgeExternalIndexOutboxStore store = new InMemoryKnowledgeExternalIndexOutboxStore();
+        KnowledgeExternalIndexOperation dead = enqueueTerminal(
+                store, ExternalKnowledgeOperationType.DELETE_DOCUMENT,
+                ExternalKnowledgeOperationStatus.DEAD_LETTER, "op-sent", 1);
+
+        KnowledgeExternalIndexOperation requeued = store.requeueDeadLetter(dead.eventId(), dead.rowVersion(), NOW)
+                .orElseThrow();
+
+        assertEquals(ExternalKnowledgeOperationStatus.PENDING, requeued.status());
+        assertEquals(0, requeued.attemptCount(), "a replayed delete gets a fresh submit budget");
+        assertTrue(requeued.remoteOperationId().isBlank(),
+                "the send marker must be cleared, or claimBatch's boundary guard never claims the row");
+        assertTrue(requeued.remoteTaskId().isBlank());
+        assertEquals("DEAD", requeued.lastErrorCode(), "operator evidence must survive the requeue");
+        assertEquals(1, store.claimBatch("worker-a", NOW, NOW + LEASE, 10).size(),
+                "the replayed delete must actually be claimable by the submit path");
+    }
+
+    @Test
+    void aSentDeleteParkedNeedsHumanMustEscapeThroughResumeStalled() {
+        // 已越界的删除若 requeue 后进入查询路径并超时 park NEEDS_HUMAN，
+        // resumeStalled 不带同样的删除豁免时，操作员将困在 探测→超时→催单 的环里。
+        InMemoryKnowledgeExternalIndexOutboxStore store = new InMemoryKnowledgeExternalIndexOutboxStore();
+        KnowledgeExternalIndexOperation parked = enqueueTerminal(
+                store, ExternalKnowledgeOperationType.DELETE_DOCUMENT,
+                ExternalKnowledgeOperationStatus.NEEDS_HUMAN, "op-sent", 1);
+
+        KnowledgeExternalIndexOperation resumed = store.resumeStalled(parked.eventId(), parked.rowVersion(), NOW)
+                .orElseThrow();
+
+        assertEquals(ExternalKnowledgeOperationStatus.PENDING, resumed.status());
+        assertEquals(0, resumed.attemptCount());
+        assertTrue(resumed.remoteOperationId().isBlank());
+        assertTrue(resumed.remoteTaskId().isBlank());
+        assertEquals(1, store.claimBatch("worker-a", NOW, NOW + LEASE, 10).size());
+    }
+
+    @Test
+    void aSentUpsertParkedNeedsHumanMustStayOffTheSubmitPath() {
+        InMemoryKnowledgeExternalIndexOutboxStore store = new InMemoryKnowledgeExternalIndexOutboxStore();
+        KnowledgeExternalIndexOperation parked = enqueueTerminal(
+                store, ExternalKnowledgeOperationType.UPSERT_DOCUMENT,
+                ExternalKnowledgeOperationStatus.NEEDS_HUMAN, "op-sent", 3);
+
+        KnowledgeExternalIndexOperation resumed = store.resumeStalled(parked.eventId(), parked.rowVersion(), NOW)
+                .orElseThrow();
+
+        assertEquals(ExternalKnowledgeOperationStatus.UNKNOWN_REMOTE_RESULT, resumed.status(),
+                "an upsert that crossed the send boundary may only converge by query");
+        assertEquals("op-sent", resumed.remoteOperationId());
+        assertTrue(store.claimBatch("worker-a", NOW, NOW + LEASE, 10).isEmpty());
     }
 
     @Test
@@ -287,11 +350,22 @@ class KnowledgeExternalIndexOutboxStoreContractTest {
             String remoteOperationId,
             int attemptCount
     ) {
+        return enqueueTerminal(store, ExternalKnowledgeOperationType.UPSERT_DOCUMENT,
+                ExternalKnowledgeOperationStatus.DEAD_LETTER, remoteOperationId, attemptCount);
+    }
+
+    private static KnowledgeExternalIndexOperation enqueueTerminal(
+            InMemoryKnowledgeExternalIndexOutboxStore store,
+            ExternalKnowledgeOperationType type,
+            ExternalKnowledgeOperationStatus status,
+            String remoteOperationId,
+            int attemptCount
+    ) {
         KnowledgeExternalIndexOperation dead = new KnowledgeExternalIndexOperation(
                 "7001",
-                "OPENVIKING:doc:9001:1:UPSERT_DOCUMENT",
+                "OPENVIKING:doc:9001:1:" + type.name(),
                 KnowledgeExternalIndexBinding.OPENVIKING,
-                ExternalKnowledgeOperationType.UPSERT_DOCUMENT,
+                type,
                 "1001",
                 "9001",
                 1L,
@@ -299,7 +373,7 @@ class KnowledgeExternalIndexOutboxStoreContractTest {
                 "viking://resources/rd-bot/kb/1001/documents/9001",
                 "5001",
                 "",
-                ExternalKnowledgeOperationStatus.DEAD_LETTER,
+                status,
                 remoteOperationId.isBlank() ? "" : "task-1",
                 remoteOperationId,
                 "",

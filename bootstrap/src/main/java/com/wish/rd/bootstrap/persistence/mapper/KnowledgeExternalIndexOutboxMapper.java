@@ -179,11 +179,35 @@ public interface KnowledgeExternalIndexOutboxMapper extends BaseMapper<Knowledge
     /**
      * 人工把死信重新放回收敛路径。未越过发送边界才回到 PENDING 并清零 attempt；
      * 已经发出去的行只能进 UNKNOWN_REMOTE_RESULT，禁止再走提交路径。
+     *
+     * <p>唯一豁免：删除类操作（DELETE_DOCUMENT / DELETE_KNOWLEDGE_BASE）。远端 rm
+     * 幂等（真机合同冒烟钉住），重发不是盲重放；不豁免的话，被 412 协议拒绝的删除
+     * 会永远停在"等一个不会自己发生的缺席"。豁免按 operation_type 路由，禁止依赖
+     * last_error_code。回到 PENDING 必须同一条语句清空 remote_task_id 与
+     * remote_operation_id，否则 claimBatch 的发送边界护栏让行永远不可领取；
+     * last_error_* 保留作操作员证据。
      */
     @Select("""
             UPDATE knowledge_external_index_outbox
-               SET status = CASE WHEN remote_operation_id = '' THEN 'PENDING' ELSE 'UNKNOWN_REMOTE_RESULT' END,
-                   attempt_count = CASE WHEN remote_operation_id = '' THEN 0 ELSE attempt_count END,
+               SET status = CASE
+                       WHEN remote_operation_id = ''
+                         OR operation_type IN ('DELETE_DOCUMENT', 'DELETE_KNOWLEDGE_BASE') THEN 'PENDING'
+                       ELSE 'UNKNOWN_REMOTE_RESULT'
+                   END,
+                   attempt_count = CASE
+                       WHEN remote_operation_id = ''
+                         OR operation_type IN ('DELETE_DOCUMENT', 'DELETE_KNOWLEDGE_BASE') THEN 0
+                       ELSE attempt_count
+                   END,
+                   remote_task_id = CASE
+                       WHEN remote_operation_id = ''
+                         OR operation_type IN ('DELETE_DOCUMENT', 'DELETE_KNOWLEDGE_BASE') THEN ''
+                       ELSE remote_task_id
+                   END,
+                   remote_operation_id = CASE
+                       WHEN operation_type IN ('DELETE_DOCUMENT', 'DELETE_KNOWLEDGE_BASE') THEN ''
+                       ELSE remote_operation_id
+                   END,
                    lease_owner = '',
                    lease_until = NULL,
                    next_visible_at = #{now},
@@ -202,19 +226,34 @@ public interface KnowledgeExternalIndexOutboxMapper extends BaseMapper<Knowledge
 
     /**
      * 管理面催 RETRY_WAIT / NEEDS_HUMAN。RETRY_WAIT 只拨可见时间；
-     * NEEDS_HUMAN 按发送边界分流，已发出的行不得回到 PENDING。
+     * NEEDS_HUMAN 按发送边界分流，已发出的行不得回到 PENDING——
+     * 删除类操作豁免，同 {@code requeueDeadLetter}（卡在查询路径的删除
+     * 只能从这里回到提交侧，Poller 等不来缺席）。
      */
     @Select("""
             UPDATE knowledge_external_index_outbox
                SET status = CASE
                        WHEN status = 'RETRY_WAIT' THEN status
-                       WHEN remote_operation_id = '' THEN 'PENDING'
+                       WHEN remote_operation_id = ''
+                         OR operation_type IN ('DELETE_DOCUMENT', 'DELETE_KNOWLEDGE_BASE') THEN 'PENDING'
                        ELSE 'UNKNOWN_REMOTE_RESULT'
                    END,
                    attempt_count = CASE
                        WHEN status = 'RETRY_WAIT' THEN attempt_count
-                       WHEN remote_operation_id = '' THEN 0
+                       WHEN remote_operation_id = ''
+                         OR operation_type IN ('DELETE_DOCUMENT', 'DELETE_KNOWLEDGE_BASE') THEN 0
                        ELSE attempt_count
+                   END,
+                   remote_task_id = CASE
+                       WHEN status = 'RETRY_WAIT' THEN remote_task_id
+                       WHEN remote_operation_id = ''
+                         OR operation_type IN ('DELETE_DOCUMENT', 'DELETE_KNOWLEDGE_BASE') THEN ''
+                       ELSE remote_task_id
+                   END,
+                   remote_operation_id = CASE
+                       WHEN status = 'RETRY_WAIT' THEN remote_operation_id
+                       WHEN operation_type IN ('DELETE_DOCUMENT', 'DELETE_KNOWLEDGE_BASE') THEN ''
+                       ELSE remote_operation_id
                    END,
                    lease_owner = '',
                    lease_until = NULL,

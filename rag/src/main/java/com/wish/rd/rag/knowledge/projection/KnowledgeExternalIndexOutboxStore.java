@@ -73,6 +73,9 @@ public interface KnowledgeExternalIndexOutboxStore {
      *
      * <p>未越过发送边界的行回到 {@code PENDING} 并清零 attempt；已经发出去的行只能进
      * {@code UNKNOWN_REMOTE_RESULT}，由 Poller 查询收敛，禁止再走提交路径。
+     * 删除类操作豁免（按 operation_type 路由，禁止依赖 last_error_code）：远端 rm 幂等，
+     * 重发安全；回到 {@code PENDING} 时必须同步清空 remote_task_id 与 remote_operation_id，
+     * 保留 last_error_* 作证据。见 {@code KnowledgeExternalIndexOperation#requeued}。
      *
      * @param eventId            行 ID
      * @param expectedRowVersion 期望 rowVersion
@@ -128,7 +131,8 @@ public interface KnowledgeExternalIndexOutboxStore {
      * 管理面催 RETRY_WAIT / NEEDS_HUMAN。CAS：row_version 必须匹配。
      *
      * <p>{@code RETRY_WAIT} 只把 {@code next_visible_at} 拨到现在，不改状态、不清 attempt。
-     * {@code NEEDS_HUMAN} 走与死信相同的发送边界分流。
+     * {@code NEEDS_HUMAN} 走与死信相同的发送边界分流（含删除类操作的重发豁免；
+     * 卡在查询路径的删除只能从这里回到提交侧）。
      *
      * @param eventId            行 ID
      * @param expectedRowVersion 期望 rowVersion

@@ -154,11 +154,19 @@ public record KnowledgeExternalIndexOperation(
      * 把死信重新放回收敛路径。未发出的行回到提交侧并清零预算；
      * 已越过发送边界的行只交给 Poller，attempt 不清零。
      *
+     * <p>删除类操作（{@code DELETE_DOCUMENT} / {@code DELETE_KNOWLEDGE_BASE}）豁免
+     * 重发禁令：远端 rm 幂等（真机合同冒烟钉住：重复删除受理且 count=0），重发不是
+     * 盲重放。被 412 之类协议拒绝后卡死的删除若不豁免，将永远无法完成——Poller 只
+     * 确认缺席，而缺席永远不会自己发生。豁免按操作类型路由，刻意不看
+     * {@code lastErrorCode}：错误码只是最后一次 settle 的见证，跨多轮租约不可靠。
+     * 回到提交侧时必须同时清空两个发送标记，否则 {@code claimBatch} 的
+     * {@code remote_operation_id = ''} 护栏会让行停在 PENDING 却永远不被领取。
+     *
      * @param nowEpochMillis 当前时间
      * @return 新行
      */
     public KnowledgeExternalIndexOperation requeued(long nowEpochMillis) {
-        boolean crossed = crossedSendBoundary();
+        boolean replayable = !crossedSendBoundary() || idempotentReplayableType();
         return new KnowledgeExternalIndexOperation(
                 eventId,
                 idempotencyKey,
@@ -171,14 +179,14 @@ public record KnowledgeExternalIndexOperation(
                 remoteUri,
                 revisionId,
                 payloadRef,
-                crossed
-                        ? ExternalKnowledgeOperationStatus.UNKNOWN_REMOTE_RESULT
-                        : ExternalKnowledgeOperationStatus.PENDING,
-                remoteTaskId,
-                remoteOperationId,
+                replayable
+                        ? ExternalKnowledgeOperationStatus.PENDING
+                        : ExternalKnowledgeOperationStatus.UNKNOWN_REMOTE_RESULT,
+                replayable ? "" : remoteTaskId,
+                replayable ? "" : remoteOperationId,
                 "",
                 0L,
-                crossed ? attemptCount : 0,
+                replayable ? 0 : attemptCount,
                 maxAttempts,
                 nowEpochMillis,
                 publishedAtEpochMillis,
@@ -188,6 +196,17 @@ public record KnowledgeExternalIndexOperation(
                 createdAtEpochMillis,
                 nowEpochMillis
         );
+    }
+
+    /**
+     * 是否属于可安全重发的幂等操作类型。目前只有删除：远端 rm 的幂等性
+     * 由真机合同冒烟验证。UPSERT 不在此列——它已有 REBUILD 的全新 key 逃生门。
+     *
+     * @return 删除类操作为 true
+     */
+    public boolean idempotentReplayableType() {
+        return operationType == ExternalKnowledgeOperationType.DELETE_DOCUMENT
+                || operationType == ExternalKnowledgeOperationType.DELETE_KNOWLEDGE_BASE;
     }
 
     /**

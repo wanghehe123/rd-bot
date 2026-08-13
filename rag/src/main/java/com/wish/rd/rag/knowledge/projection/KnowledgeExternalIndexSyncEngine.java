@@ -94,7 +94,9 @@ public final class KnowledgeExternalIndexSyncEngine {
     private boolean dispatch(KnowledgeExternalIndexOperation claimed, String owner, long nowEpochMillis) {
         return switch (claimed.operationType()) {
             case UPSERT_DOCUMENT, REBUILD_DOCUMENT -> dispatchUpsert(claimed, owner, nowEpochMillis);
-            case DELETE_DOCUMENT -> dispatchDelete(claimed, owner, nowEpochMillis, false);
+            // 文档根在远端是目录（source.md + 派生层），非递归删除会被真实容器以
+            // 412 FAILED_PRECONDITION 拒绝。防误删靠的是下面的三重 URI 校验，不是这个标志。
+            case DELETE_DOCUMENT -> dispatchDelete(claimed, owner, nowEpochMillis, true);
             case DELETE_KNOWLEDGE_BASE -> dispatchKnowledgeBaseDelete(claimed, owner, nowEpochMillis);
             default -> {
                 park(claimed, owner, nowEpochMillis, "UNSUPPORTED_OPERATION",
