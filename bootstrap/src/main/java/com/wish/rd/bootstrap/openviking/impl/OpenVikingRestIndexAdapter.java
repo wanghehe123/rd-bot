@@ -313,6 +313,12 @@ public final class OpenVikingRestIndexAdapter implements ExternalKnowledgeIndexP
                     "TRANSPORT_FAILURE",
                     describe(listed));
         }
+        if (listed.status() == 404) {
+            // owned root 还不存在是确定答复「那里什么都没有」，与 fs/attrs 的 404 同义。
+            // 判成失败会让对账把「远端整卷丢失」误当「远端不可用」而整轮跳过，
+            // 于是所有 IN_SYNC 观测永远得不到复核。
+            return ExternalTreeListing.of(List.of());
+        }
         if (!listed.successful()) {
             return ExternalTreeListing.failed(
                     OpenVikingErrorTranslator.classify(listed.status(), listed.body()),

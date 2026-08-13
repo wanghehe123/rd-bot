@@ -123,6 +123,22 @@ public final class KnowledgeExternalIndexReconcileEngine {
             List<ReconcileFinding> seen,
             long nowEpochMillis
     ) {
+        scanOrphanRemote(knowledgeBaseId, ownedRoot, bindings, seen, nowEpochMillis);
+        probeMissingRemote(knowledgeBaseId, bindings, seen, nowEpochMillis);
+    }
+
+    /**
+     * 列 owned root 找没有本地 binding 的远端资源。
+     *
+     * <p>列不出目录时只能放弃这一半：凭空说某个远端资源是孤儿会把账本刷脏。
+     */
+    private void scanOrphanRemote(
+            String knowledgeBaseId,
+            String ownedRoot,
+            List<KnowledgeExternalIndexBinding> bindings,
+            List<ReconcileFinding> seen,
+            long nowEpochMillis
+    ) {
         ExternalTreeListing tree = indexPort.listTree(ownedRoot);
         if (tree.failureClass() != ExternalIndexFailureClass.NONE) {
             return;
@@ -160,6 +176,20 @@ public final class KnowledgeExternalIndexReconcileEngine {
                     ReconcileFindingStatus.QUARANTINED,
                     nowEpochMillis));
         }
+    }
+
+    /**
+     * 复核每条 IN_SYNC 观测在远端是否还在。
+     *
+     * <p>必须独立于列目录：远端整卷丢失时 owned root 本身就没了，把这段挂在列目录成功
+     * 之后等于「丢得越彻底越发现不了」。每次探针自己判断失败与否，探不通的那条跳过就行。
+     */
+    private void probeMissingRemote(
+            String knowledgeBaseId,
+            List<KnowledgeExternalIndexBinding> bindings,
+            List<ReconcileFinding> seen,
+            long nowEpochMillis
+    ) {
         int probeBudget = settings.batchSize();
         for (KnowledgeExternalIndexBinding binding : bindings) {
             if (probeBudget <= 0) {

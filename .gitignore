@@ -82,3 +82,5 @@ feishu-wiki-auth.png
 application-local.yml
 application-local.yaml
 private-repos/
+# 由 scripts/openviking/up.sh 从 ov.conf.dashscope.template 渲染，含真实 DASHSCOPE_API_KEY。
+deploy/openviking/ov.conf.rendered

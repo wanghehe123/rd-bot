@@ -32,10 +32,18 @@ public final class PostgresKnowledgeDocumentRevisionStore implements KnowledgeDo
         return findByDocumentIdAndChecksum(revision.documentId(), revision.checksum()).orElse(revision);
     }
 
+    /**
+     * 查不到就返回空，不抛。空 id 是合法输入：对账入队的 REBUILD 只认得 binding，
+     * 没有冻结的 revision id，调用方要靠 checksum 兜底找回同一份正文。抛
+     * {@code NumberFormatException} 会被上游当成 {@code INVALID_PAYLOAD} 直接挂起。
+     */
     @Override
     public Optional<KnowledgeDocumentRevision> findById(String id) {
-        return Optional.ofNullable(mapper.selectById(PostgresPersistenceSupport.parseId(id)))
-                .map(this::toRevision);
+        Long parsed = PostgresPersistenceSupport.parseOptionalId(id);
+        if (parsed == null) {
+            return Optional.empty();
+        }
+        return Optional.ofNullable(mapper.selectById(parsed)).map(this::toRevision);
     }
 
     @Override

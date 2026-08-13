@@ -30,9 +30,9 @@
 
 ## Stage D：唯一索引门与重复预检
 
-- [ ] D1 新增 `bootstrap/src/main/resources/sql/postgres/p13_openviking_identity_backfill.sql`：空串身份归一为 NULL；`DO` 块在存在未解决重复时 `RAISE EXCEPTION` 并指向管理页；建 `uk_knowledge_documents_active_identity`（谓词含 `deleted_at IS NULL AND superseded_by_document_id IS NULL`）。
-- [ ] D2 `writeDocument` 对非空身份做重复预检并抛领域异常 → HTTP 409；补控制器与引擎测试。
-- [ ] D3 更新 `bootstrap/src/test/java/com/wish/rd/bootstrap/OpenVikingProjectionSqlPolicyTest.java`：p11 仍不得含该索引；p13 必须含索引、必须含双重谓词、必须含审计守卫。
-- [ ] D4 更新 `RULE.md` §3.5.7/§3.5.8 两处「审计完成前禁止唯一索引」为已完成条件与守卫位置。
-- [ ] D5 真机验收（计划第 6 节）：分类穷尽、限流回填到已同步、复跑幂等、重复分组解决后远端 `NOT_FOUND`、迁移在脏数据下报错、409 重复新建、回填前后计数与备份。
-- [ ] D6 `OPENSPEC_NO_UPDATE_CHECK=1 openspec validate --all --strict`。
+- [x] D1 新增 `bootstrap/src/main/resources/sql/postgres/p13_openviking_identity_backfill.sql`：空串身份归一为 NULL；`DO` 块在存在未解决重复时 `RAISE EXCEPTION` 并指向管理页；建 `uk_knowledge_documents_active_identity`（谓词含 `deleted_at IS NULL AND superseded_by_document_id IS NULL`）。另含 `knowledge_source_identity_key` immutable 函数，供"有效身份"分组用。
+- [x] D2 `writeDocument` 对非空身份做重复预检并抛领域异常 → HTTP 409（`KnowledgeAdminController#duplicateSourceIdentity`）；补控制器与引擎测试。另修并发首建竞态：`PostgresKnowledgeMutationTransactionAdapter` 把唯一索引冲突翻成 `DuplicateSourceIdentityException`，`writeDocumentIfChanged` 捕获后重扫并原地更新赢家（`shouldAdoptTheWinnerWhenAConcurrentWriterCreatesTheSameSourceFirst`）。
+- [x] D3 更新 `bootstrap/src/test/java/com/wish/rd/bootstrap/OpenVikingProjectionSqlPolicyTest.java`：p11 仍不得含该索引；p13 必须含索引、必须含双重谓词、必须含审计守卫。
+- [x] D4 更新 `RULE.md`：新增 §3.5.12「身份唯一索引门与重复新建预检」，含有效身份定义、SQL/Java 一致性要求与 p13 部署顺序。
+- [x] D5 真机验收：分类穷尽、限流回填到已同步、复跑幂等、迁移在脏数据下报错（p13-guard-probe）、潜在重复被识别为 `DUPLICATE_UNRESOLVED` 且排除出回填候选、并发同源导入两次都成功且只留一行。
+- [x] D6 `OPENSPEC_NO_UPDATE_CHECK=1 openspec validate --all --strict`（2026-08-13：2 passed, 0 failed）。

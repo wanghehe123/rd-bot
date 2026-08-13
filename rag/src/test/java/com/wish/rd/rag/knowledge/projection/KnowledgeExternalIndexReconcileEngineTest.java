@@ -97,6 +97,31 @@ class KnowledgeExternalIndexReconcileEngineTest {
         assertTrue(count(report, ReconcileFindingType.MISSING_REMOTE) >= 1);
     }
 
+    /**
+     * 远端整卷丢失时 owned root 本身就没了，列目录必然失败。缺失探针不能挂在列目录成功
+     * 之后，否则丢得越彻底越发现不了：所有 IN_SYNC 观测会一直停在「一切正常」。
+     */
+    @Test
+    void shouldStillProbeInSyncBindingsWhenTheTreeListingFails() {
+        Fixture fixture = new Fixture();
+        fixture.bindings.save(inSyncBinding());
+        fixture.port.tree = ExternalTreeListing.failed(
+                ExternalIndexFailureClass.RETRYABLE, "LS_FAILED", "owned root is gone");
+        fixture.port.onProbe = uri -> ExternalResourceProbe.absent();
+
+        ReconcileReport report = fixture.engine.runOnce("1001", OWNED, NOW);
+
+        assertEquals(1, count(report, ReconcileFindingType.MISSING_REMOTE));
+        assertEquals(0, count(report, ReconcileFindingType.ORPHAN_REMOTE),
+                "列不出目录时不得凭空判定孤儿");
+        assertEquals(ExternalKnowledgeProjectionStatus.DRIFTED, fixture.bindings
+                .findByProviderAndDocumentId(KnowledgeExternalIndexBinding.OPENVIKING, "2001")
+                .orElseThrow()
+                .projectionStatus());
+        assertEquals(ExternalKnowledgeOperationType.REBUILD_DOCUMENT,
+                fixture.outbox.listAll().getFirst().operationType());
+    }
+
     @Test
     void shouldBeIdempotentAcrossRepeatedRunOnce() {
         Fixture fixture = new Fixture();

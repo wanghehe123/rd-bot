@@ -39,7 +39,8 @@ services:
     ports:
       - "127.0.0.1:1933:1933"
     volumes:
-      - ./ov.conf:/etc/openviking/ov.conf:ro
+      # 默认挂 mock 档；scripts/openviking/up.sh 在 dashscope 档下指向渲染出的 ov.conf.rendered。
+      - ${OPENVIKING_CONF_FILE:-./ov.conf}:/etc/openviking/ov.conf:ro
       - rd-bot-openviking-data:/app/.openviking
     environment:
       OPENVIKING_WITH_BOT: "0"

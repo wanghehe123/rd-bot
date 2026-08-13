@@ -340,6 +340,24 @@ class OpenVikingRestIndexAdapterTest {
         assertEquals("viking://resources/rd-bot/", exchange.queries.get("GET /api/v1/fs/ls").get("uri"));
     }
 
+    /**
+     * owned root 不存在是确定答复「那里什么都没有」，和 attrs 的 404 同义。判成失败会让
+     * 对账把「远端整卷丢失」当成「远端不可用」而跳过复核。
+     */
+    @Test
+    void shouldTreatAMissingOwnedRootAsAnEmptyTreeRatherThanAFailure() throws Exception {
+        FakeExchange exchange = new FakeExchange();
+        exchange.enqueue("GET /api/v1/fs/ls", 404,
+                "{\"status\":\"error\",\"result\":null,\"error\":{\"code\":\"NOT_FOUND\","
+                        + "\"message\":\"Directory not found: viking://resources/rd-bot/\"}}");
+
+        ExternalTreeListing listing = adapter(exchange).listTree(OpenVikingProjectionUris.OWNED_ROOT);
+
+        assertEquals(ExternalIndexFailureClass.NONE, listing.failureClass(),
+                "404 on ls is a negative observation, not a failed call");
+        assertTrue(listing.entries().isEmpty());
+    }
+
     @Test
     void shouldNotBeReadyWhenTheEmbeddingBackendIsDown() throws Exception {
         ObjectNode degraded = (ObjectNode) MAPPER.readTree(fixture("ready.json"));
