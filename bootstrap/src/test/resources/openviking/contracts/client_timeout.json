@@ -1,0 +1,7 @@
+{
+  "observed": "no_http_body",
+  "client_exceptions": [
+    "java.net.http.HttpTimeoutException",
+    "java.net.ConnectException"
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "status": "ok",
+  "result": [
+    {
+      "uri": "viking://resources/rd-bot/wp0-contract/wp0run1786589166/documents/1002/source.md/source_v2.md",
+      "size": 144,
+      "isDir": false,
+      "modTime": "2026-08-13T02:46:41.000Z",
+      "rel_path": "source_v2.md",
+      "abstract": ""
+    }
+  ],
+  "error": null,
+  "telemetry": null,
+  "profile": null
+}

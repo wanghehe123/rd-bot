@@ -1,0 +1,11 @@
+{
+  "status": "error",
+  "result": null,
+  "error": {
+    "code": "UNAUTHENTICATED",
+    "message": "Missing API Key when resolving identity.",
+    "details": {}
+  },
+  "telemetry": null,
+  "profile": null
+}

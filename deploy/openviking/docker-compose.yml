@@ -1,0 +1,67 @@
+# RD-Bot OpenViking 单实例合同环境。
+# 镜像钉死 version+digest，不使用 latest。数据只进专用 volume，不复用 ~/.openviking。
+# Studio 仅绑定 127.0.0.1:1933。root_api_key 是本地合同占位符，生产必须替换。
+
+name: rd-bot-openviking
+
+services:
+  openviking-mock-llm:
+    image: python:3.13-alpine@sha256:540c7d91f98ff6880174c40e99067bf5941eb54d818a7a5e094d188b196a934d
+    container_name: rd-bot-openviking-mock-llm
+    command: ["python", "/mock/server.py"]
+    volumes:
+      - ./mock-llm/server.py:/mock/server.py:ro
+    expose:
+      - "8080"
+    restart: unless-stopped
+    mem_limit: 128m
+    cpus: "0.25"
+    pids_limit: 64
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  openviking:
+    image: ghcr.io/volcengine/openviking:v0.4.13@sha256:92ad51e68b028d17642d2ece77f83800c71cdcb511217eb04349f4f651cc97e8
+    container_name: rd-bot-openviking
+    command: ["--without-bot"]
+    depends_on:
+      openviking-mock-llm:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:1933:1933"
+    volumes:
+      - ./ov.conf:/etc/openviking/ov.conf:ro
+      - rd-bot-openviking-data:/app/.openviking
+    environment:
+      OPENVIKING_WITH_BOT: "0"
+      OPENVIKING_CONFIG_FILE: /etc/openviking/ov.conf
+      OPENVIKING_SERVER_HOST: 0.0.0.0
+      OPENVIKING_SERVER_PORT: "1933"
+    restart: unless-stopped
+    mem_limit: 2g
+    cpus: "2.0"
+    pids_limit: 256
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "openviking-entrypoint", "--healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+
+volumes:
+  rd-bot-openviking-data:
+    name: rd-bot-openviking-data

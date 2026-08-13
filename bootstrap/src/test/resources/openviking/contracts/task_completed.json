@@ -1,0 +1,39 @@
+{
+  "status": "ok",
+  "result": {
+    "task_id": "3bc6c062-a67c-45ec-ae2d-f6facfa156a8",
+    "task_type": "add_resource",
+    "status": "completed",
+    "created_at": 1786589166.4208179,
+    "updated_at": 1786589168.0392573,
+    "resource_id": "viking://resources/rd-bot/wp0-contract/wp0run1786589166/documents/1001/source.md",
+    "meta": {
+      "source_path": "source.md"
+    },
+    "stage": "completed",
+    "result": {
+      "status": "success",
+      "root_uri": "viking://resources/rd-bot/wp0-contract/wp0run1786589166/documents/1001/source.md",
+      "queue_status": {
+        "Semantic": {
+          "processed": 1,
+          "requeue_count": 0,
+          "error_count": 0,
+          "errors": []
+        },
+        "Embedding": {
+          "processed": 3,
+          "requeue_count": 0,
+          "error_count": 0,
+          "errors": []
+        }
+      }
+    },
+    "error": null,
+    "created_at_iso": "2026-08-13T02:46:06.420818+00:00",
+    "updated_at_iso": "2026-08-13T02:46:08.039257+00:00"
+  },
+  "error": null,
+  "telemetry": null,
+  "profile": null
+}

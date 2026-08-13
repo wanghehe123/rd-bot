@@ -1,0 +1,14 @@
+{
+  "status": "error",
+  "result": null,
+  "error": {
+    "code": "ALREADY_EXISTS",
+    "message": "Account already exists: rd-bot",
+    "details": {
+      "resource": "rd-bot",
+      "type": "account"
+    }
+  },
+  "telemetry": null,
+  "profile": null
+}

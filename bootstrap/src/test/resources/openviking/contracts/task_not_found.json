@@ -1,0 +1,14 @@
+{
+  "status": "error",
+  "result": null,
+  "error": {
+    "code": "NOT_FOUND",
+    "message": "Task not found or expired",
+    "details": {
+      "resource": "00000000-0000-4000-8000-000000000000",
+      "type": "task"
+    }
+  },
+  "telemetry": null,
+  "profile": null
+}

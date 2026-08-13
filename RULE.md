@@ -211,6 +211,21 @@ public RepairContextPackage prepareContext(RepairRagRequest request) {
 - 【强制】宿主 QA 只从 `dockerMetadataJson` 读取 docs-only 判定键（`QaExecutionMetadataKeys`）。Pi 必须把这些键写入该通道；写入 `githubMetadataJson` / `repositoryMetadata` 不算。提示词、bridge、宿主三处不一致即协议裂缝。
 - 【强制】验证与反例见 `docs/superpowers/specs/2026-08-13-requirement-publication-preflight-and-retry-provenance-spec.md`。
 
+### 3.5.6 OpenViking 投影协议与合同测试【强制】
+
+- 【强制】OpenViking 是可重建的外部知识投影，不是业务真值。PostgreSQL 保存知识库、逻辑文档、revision、desired/observed 与 Outbox。Java 进程内禁止把 OpenViking 2xx 或 `task completed` 单独当成 `IN_SYNC`。
+- 【强制】文档 URI 只使用数据库数字 ID：资源根
+  `viking://resources/rd-bot/kb/{knowledgeBaseId}/documents/{documentId}` 作为 `add_resource.to`；
+  L2 文件为 `{root}/source.md`。名称、来源 URL、revision 不得进入路径。v0.4.13 会把 `to` 建成目录，即使最后一段像文件名。
+- 【强制】日常数据访问必须使用 RD-Bot 专用 account 的 user/admin key。`root_api_key` 只用于创建 account/user。ROOT key 调用租户数据 API 会返回 `PERMISSION_DENIED`。`application.yaml` 只保存环境变量名，不保存真实 key。
+- 【强制】合同测试与清理只能操作 `viking://resources/rd-bot/wp0-contract/{runId}/`。禁止删除 `viking://resources/` 或 `viking://resources/rd-bot/`。真实合同默认关闭，使用 `-Drd.openviking.smoke=true`。
+- 【强制】错误分类与 JSON 字段以
+  `docs/superpowers/specs/2026-08-13-openviking-projection-protocol-spec.md` 和
+  `bootstrap/src/test/resources/openviking/contracts/` 为准，禁止按 OpenViking 文档猜测 DTO。
+- 【强制】验证：`./mvnw -pl rag -am -Dtest=OpenVikingProjectionUrisTest,OpenVikingLocalRetrievalBaselineTest -Dsurefire.failIfNoSpecifiedTests=false test`；
+  `./mvnw -pl bootstrap -am -Dtest=OpenVikingContractJsonFixturesTest,OpenVikingRealContractSmokePreconditionsTest -Dsurefire.failIfNoSpecifiedTests=false test`；
+  真实合同还需 `scripts/openviking/up.sh` 后加 `-Drd.openviking.smoke=true` 跑 `OpenVikingRealContractSmokeTest`。
+
 ### 3.6 聚合根（Aggregate Root）【强制用于"强一致实体群"】
 
 - **已落地**：`KnowledgeWorkspace` 是知识域聚合根，统一管理 知识库→文档→分块→向量 的级联一致性（删除知识库级联删文档/分块/向量；更新文档同步刷新分块与向量库）。

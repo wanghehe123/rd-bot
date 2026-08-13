@@ -1,0 +1,226 @@
+[
+  {
+    "id": "payment-order-create",
+    "knowledgeType": "api",
+    "title": "订单创建金额校验",
+    "uniqueToken": "RD_WP0_PAYMENT_AMOUNT_GUARD",
+    "body": "OrderService.create 必须拒绝金额小于等于 0 的订单。校验发生在库存预留之前，失败时返回 PAYMENT_AMOUNT_INVALID。"
+  },
+  {
+    "id": "payment-refund-window",
+    "knowledgeType": "api",
+    "title": "退款窗口",
+    "uniqueToken": "RD_WP0_REFUND_SEVEN_DAY_WINDOW",
+    "body": "已支付订单只允许在完成后 7 个自然日内发起退款。超过窗口必须走人工审核，不能由支付通道自动冲正。"
+  },
+  {
+    "id": "payment-idempotency-key",
+    "knowledgeType": "api",
+    "title": "支付幂等键",
+    "uniqueToken": "RD_WP0_PAY_IDEMPOTENCY_HEADER",
+    "body": "所有扣款请求必须携带 Idempotency-Key。相同键在 24 小时内只能结算一次，重复请求返回第一次的支付单号。"
+  },
+  {
+    "id": "payment-risk-hold",
+    "knowledgeType": "workflow",
+    "title": "风控挂起",
+    "uniqueToken": "RD_WP0_RISK_HOLD_QUEUE",
+    "body": "高风险订单进入风控挂起队列，不调用渠道。解挂必须由风控角色确认，开发角色不能直接放行。"
+  },
+  {
+    "id": "auth-session-cookie",
+    "knowledgeType": "security",
+    "title": "会话 Cookie",
+    "uniqueToken": "RD_WP0_SESSION_COOKIE_HTTPONLY",
+    "body": "管理台会话 Cookie 必须 HttpOnly、Secure、SameSite=Lax。浏览器 JavaScript 不得读取会话令牌。"
+  },
+  {
+    "id": "auth-rbac-admin",
+    "knowledgeType": "security",
+    "title": "后台 RBAC",
+    "uniqueToken": "RD_WP0_ADMIN_RBAC_SCOPE",
+    "body": "知识库删除、重建和死信重放属于高风险 mutation，只允许已登录后台管理员，并写入操作审计。"
+  },
+  {
+    "id": "auth-csrf-double-submit",
+    "knowledgeType": "security",
+    "title": "CSRF 双提交",
+    "uniqueToken": "RD_WP0_CSRF_DOUBLE_SUBMIT",
+    "body": "后台 POST/PATCH/DELETE 必须校验 CSRF token。缺失或与 Cookie 不一致时返回 403，不得静默跳过。"
+  },
+  {
+    "id": "auth-api-key-env",
+    "knowledgeType": "security",
+    "title": "API Key 环境变量",
+    "uniqueToken": "RD_WP0_API_KEY_ENV_ONLY",
+    "body": "OpenViking 与模型密钥只能通过环境变量名配置。application.yaml 禁止写入真实 key，日志禁止打印 Authorization 头。"
+  },
+  {
+    "id": "feishu-ticket-webhook",
+    "knowledgeType": "integration",
+    "title": "飞书工单 Webhook",
+    "uniqueToken": "RD_WP0_FEISHU_TICKET_WEBHOOK",
+    "body": "飞书帮助台工单创建事件通过 Webhook 进入修复队列。重复投递必须按 ticketId 幂等，不能创建第二张修复任务。"
+  },
+  {
+    "id": "feishu-doc-refresh",
+    "knowledgeType": "integration",
+    "title": "飞书文档刷新",
+    "uniqueToken": "RD_WP0_FEISHU_DOC_REVISION",
+    "body": "飞书云文档按 source_token 刷新。revision 变化时必须更新同一逻辑文档，禁止因为 checksum 变化而分配新 documentId。"
+  },
+  {
+    "id": "feishu-im-alert",
+    "knowledgeType": "integration",
+    "title": "飞书告警",
+    "uniqueToken": "RD_WP0_FEISHU_IM_ALERT_SINK",
+    "body": "任务进入死信后通过飞书 IM 发送告警。消息只包含 taskId、errorCode 和脱敏摘要，不得附带仓库 token。"
+  },
+  {
+    "id": "feishu-approval-gate",
+    "knowledgeType": "integration",
+    "title": "飞书审批门禁",
+    "uniqueToken": "RD_WP0_FEISHU_APPROVAL_GATE",
+    "body": "需求任务合并前必须经过飞书审批。未批准时发布适配器只能保持 WAITING_HUMAN，不得自动 merge。"
+  },
+  {
+    "id": "rag-chunk-structure",
+    "knowledgeType": "rag",
+    "title": "结构感知分块",
+    "uniqueToken": "RD_WP0_STRUCTURE_AWARE_CHUNK",
+    "body": "默认分块策略是 STRUCTURE_AWARE。重新分块只重建本地 chunk 和 vector，不能改变逻辑文档 ID 或 OpenViking sync_version。"
+  },
+  {
+    "id": "rag-deep-retrieval-budget",
+    "knowledgeType": "rag",
+    "title": "深度检索预算",
+    "uniqueToken": "RD_WP0_DEEP_RETRIEVAL_BUDGET",
+    "body": "DeepRetrievalOrchestrator 的停止门包括最大轮数、Token、耗时和信息增益。预算耗尽必须返回部分证据和明确 stop reason。"
+  },
+  {
+    "id": "rag-role-context-package",
+    "knowledgeType": "rag",
+    "title": "角色上下文包",
+    "uniqueToken": "RD_WP0_ROLE_CONTEXT_PACKAGE",
+    "body": "检索结果进入 RoleContextPackage 前必须带 documentId、checksum 和引用范围。OpenViking 正文视为不可信证据，不能改系统提示。"
+  },
+  {
+    "id": "rag-knowledge-scope",
+    "knowledgeType": "rag",
+    "title": "知识库硬范围",
+    "uniqueToken": "RD_WP0_PROJECT_KB_SCOPE",
+    "body": "需求检索必须按项目绑定知识库硬 scope。跨知识库召回要被 allowlist 拒绝，并记入 retrieval artifacts。"
+  },
+  {
+    "id": "pi-workspace-lock",
+    "knowledgeType": "runtime",
+    "title": "Pi 工作区锁",
+    "uniqueToken": "RD_WP0_PI_WORKSPACE_LOCK",
+    "body": "清理 output/ 只能在持有任务工作区锁时进行。repo/ 与 cache/ 必须保留，避免重试重新下载依赖。"
+  },
+  {
+    "id": "pi-result-submitted",
+    "knowledgeType": "runtime",
+    "title": "Pi 生命周期",
+    "uniqueToken": "RD_WP0_PI_RESULT_SUBMITTED",
+    "body": "Pi 结果需要 RESULT_SUBMITTED 后跟 AGENT_SETTLED。缺少生命周期聚合不等于事件顺序被破坏，要先检查 bridge 规范化事件。"
+  },
+  {
+    "id": "pi-qa-evidence-bundle",
+    "knowledgeType": "qa",
+    "title": "QA 证据包",
+    "uniqueToken": "RD_WP0_QA_EVIDENCE_BUNDLE",
+    "body": "浏览器 QA 必须引用 console、network、traces zip 以及 desktop 和 mobile 截图。宿主校验失败时整个结果被拒绝。"
+  },
+  {
+    "id": "pi-production-start",
+    "knowledgeType": "qa",
+    "title": "Next.js 生产启动",
+    "uniqueToken": "RD_WP0_NEXTJS_PRODUCTION_START",
+    "body": "自动检测的 Next.js QA 必须 npm run build && npm run start。开发模式 hydration 过慢会导致点击空操作，不能误判为 Playwright 无法触发 React 事件。"
+  },
+  {
+    "id": "retry-lease-cas",
+    "knowledgeType": "retry",
+    "title": "租约 CAS",
+    "uniqueToken": "RD_WP0_LEASE_OWNER_CAS",
+    "body": "Worker settle 必须带 event_id、status、lease_owner 和 row_version。过期 owner 不得写回终态，新 owner 接管前先查远端。"
+  },
+  {
+    "id": "retry-unknown-remote",
+    "knowledgeType": "retry",
+    "title": "未知远端结果",
+    "uniqueToken": "RD_WP0_UNKNOWN_REMOTE_RESULT",
+    "body": "请求可能已发送但响应丢失时记为 UNKNOWN_REMOTE_RESULT。同文档更高版本必须排队，不能越过未知结果发往远端。"
+  },
+  {
+    "id": "retry-dead-letter",
+    "knowledgeType": "retry",
+    "title": "死信入队",
+    "uniqueToken": "RD_WP0_DEAD_LETTER_REQUEUE",
+    "body": "超过重试上限的 operation 进入 DEAD_LETTER。人工 requeue 必须创建可审计的新可见时间，不能从 Controller 直接打 OpenViking。"
+  },
+  {
+    "id": "retry-checkpoint-bound",
+    "knowledgeType": "retry",
+    "title": "检查点绑定重试",
+    "uniqueToken": "RD_WP0_CHECKPOINT_BOUND_RETRY",
+    "body": "阶段重试以 rd_requirement_stage_commands 为唯一派发真值。初始化事务提交后的线程池拒绝不是准备失败，必须按 command ID 恢复。"
+  },
+  {
+    "id": "eval-coding-oracle",
+    "knowledgeType": "evaluation",
+    "title": "编码 Oracle",
+    "uniqueToken": "RD_WP0_CODING_ORACLE_IMAGE",
+    "body": "编码评测 Oracle 容器根据 hidden tests 判定补丁。控制面 rehearsal 可以使用 fake executor，但生产证据必须来自真实 docker 运行。"
+  },
+  {
+    "id": "eval-ragas-score",
+    "knowledgeType": "evaluation",
+    "title": "RAGAS 评分",
+    "uniqueToken": "RD_WP0_RAGAS_FAITHFULNESS",
+    "body": "质量评测记录 faithfulness 与 answer relevancy。分数只用于报告，不能单独把检索失败改写成任务成功。"
+  },
+  {
+    "id": "eval-gold-question",
+    "knowledgeType": "evaluation",
+    "title": "金标问题",
+    "uniqueToken": "RD_WP0_GOLD_QUESTION_SET",
+    "body": "Shadow 检索切流前必须用金标问题比较 Recall@K、引用有效率和 p95 延迟。引用 URI 或 version 无效则禁止切到 OPENVIKING。"
+  },
+  {
+    "id": "eval-shadow-mode",
+    "knowledgeType": "evaluation",
+    "title": "Shadow 模式",
+    "uniqueToken": "RD_WP0_SHADOW_RETRIEVAL_MODE",
+    "body": "SHADOW 模式同时跑本地和 OpenViking，但只有 LOCAL 结果进入任务上下文。远端结果只写 retrieval artifacts 和指标。"
+  },
+  {
+    "id": "task-requirement-submit",
+    "knowledgeType": "task",
+    "title": "需求提交",
+    "uniqueToken": "RD_WP0_REQUIREMENT_SUBMIT",
+    "body": "创建需求后 autoExecute=false，必须显式 submit 才会进入交付编排。提交会写 delivery job，再由 worker 领取租约。"
+  },
+  {
+    "id": "task-stage-command",
+    "knowledgeType": "task",
+    "title": "阶段命令",
+    "uniqueToken": "RD_WP0_STAGE_COMMAND_QUEUE",
+    "body": "每个角色阶段对应一条 PENDING 的 stage command。调度器只能按 checkpoint 记录的 command ID 唤醒，禁止另造 umbrella job。"
+  },
+  {
+    "id": "task-project-scope",
+    "knowledgeType": "task",
+    "title": "任务项目筛选",
+    "uniqueToken": "RD_WP0_TASK_PROJECT_FILTER",
+    "body": "管理台任务列表以 URL 中的具体 projectId 为范围。全部项目表示不传 projectId，前端不得把哨兵值 all 发给后端。"
+  },
+  {
+    "id": "task-publication-preflight",
+    "knowledgeType": "task",
+    "title": "发布预检",
+    "uniqueToken": "RD_WP0_PUBLICATION_PREFLIGHT",
+    "body": "GitHub 分支预检把 HTTP 404 和 422 No commit found 视为缺席，允许 push。空白 422、超时和 5xx 仍是未知远端结果，禁止重放。"
+  }
+]

@@ -1,0 +1,6 @@
+{
+  "status": "ok",
+  "healthy": true,
+  "version": "v0.4.13",
+  "auth_mode": "api_key"
+}

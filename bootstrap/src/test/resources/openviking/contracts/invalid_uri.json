@@ -1,0 +1,14 @@
+{
+  "status": "error",
+  "result": null,
+  "error": {
+    "code": "INVALID_URI",
+    "message": "Invalid URI: not-a-viking-uri (Invalid scope 'not-a-viking-uri'. Must be one of: agent, resources, session, user)",
+    "details": {
+      "uri": "not-a-viking-uri",
+      "reason": "Invalid scope 'not-a-viking-uri'. Must be one of: agent, resources, session, user"
+    }
+  },
+  "telemetry": null,
+  "profile": null
+}

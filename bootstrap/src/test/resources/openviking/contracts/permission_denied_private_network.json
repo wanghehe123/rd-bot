@@ -1,0 +1,11 @@
+{
+  "status": "error",
+  "result": null,
+  "error": {
+    "code": "PERMISSION_DENIED",
+    "message": "HTTP server only accepts public remote resource targets; host '127.0.0.1' resolves to non-public address '127.0.0.1'. To allow this, add the domain to its code.<platform>_domains list or code.code_hosting_domains or set allow_private_networks=true in your ov.conf.",
+    "details": {}
+  },
+  "telemetry": null,
+  "profile": null
+}

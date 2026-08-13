@@ -1,0 +1,11 @@
+{
+  "status": "error",
+  "result": null,
+  "error": {
+    "code": "PERMISSION_DENIED",
+    "message": "ROOT API keys cannot access tenant-scoped data APIs in api_key mode. Use a user/admin API key for data access, or trusted mode for upstream identity assertion.",
+    "details": {}
+  },
+  "telemetry": null,
+  "profile": null
+}

@@ -1,0 +1,14 @@
+{
+  "status": "error",
+  "result": null,
+  "error": {
+    "code": "NOT_FOUND",
+    "message": "File not found: viking://resources/rd-bot/wp0-contract/wp0run1786589166/documents/1002/source.md",
+    "details": {
+      "type": "file",
+      "resource": "viking://resources/rd-bot/wp0-contract/wp0run1786589166/documents/1002/source.md"
+    }
+  },
+  "telemetry": null,
+  "profile": null
+}

@@ -1,0 +1,7 @@
+{
+  "status": "ok",
+  "result": "# WP-0 contract source nosplit\n\nUnique token: `RD_WP0_CONTRACT_SOURCE_NOSPLIT`\n\nOrderService.create validates orders.amount before reservation.\n",
+  "error": null,
+  "telemetry": null,
+  "profile": null
+}

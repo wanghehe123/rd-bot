@@ -1,0 +1,24 @@
+{
+  "status": "ok",
+  "result": {
+    "memories": [],
+    "resources": [
+      {
+        "context_type": "resource",
+        "uri": "viking://resources/rd-bot/wp0-contract/wp0run1786589166/documents/1002/source.md/source_v2.md",
+        "level": 2,
+        "score": 0.1522434949874878,
+        "abstract": "RD-Bot mock abstract for contract tests. The document is owned by rd-bot and should stay under the wp0-contract root. Summary: Output Language: en  You are a documentation analysis expert. Generate a concise yet informative summary for the following documentation file.  【File Name】 source_v2.md  【File Content】 # WP-0 contract source nosplit  Unique token: `RD_WP0_CONTRACT_SOURCE_NOSPLIT`  OrderService.cr",
+        "tags": [
+          "rd.owner=rd-bot",
+          "rd.kb_id=1002",
+          "rd.doc_id=1002",
+          "rd.sync_version=1",
+          "rd.checksum=aa11bb22"
+        ]
+      }
+    ],
+    "skills": [],
+    "total": 1
+  }
+}

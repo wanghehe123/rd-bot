@@ -64,6 +64,7 @@ docs/superpowers/specs/*
 !docs/superpowers/specs/2026-08-02-redis-stream-repair-queue-migration-spec.md
 !docs/superpowers/specs/2026-08-12-ragent-docker-postgres-bootstrap-spec.md
 !docs/superpowers/specs/2026-08-13-requirement-publication-preflight-and-retry-provenance-spec.md
+!docs/superpowers/specs/2026-08-13-openviking-projection-protocol-spec.md
 
 # ===== 生成产物 / 本地输出 =====
 lark-output/

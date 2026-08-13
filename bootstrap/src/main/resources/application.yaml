@@ -169,8 +169,30 @@ rd:
     retrieval-log:
       enabled: ${RD_RAG_RETRIEVAL_LOG_ENABLED:true}
       path: ${RD_RAG_RETRIEVAL_LOG_PATH:logs/rag-retrieval.jsonl}
+    knowledge-provider-mode: ${RD_RAG_KNOWLEDGE_PROVIDER_MODE:LOCAL}
   knowledge:
     store: ${RD_KNOWLEDGE_STORE:postgres}
+    projection:
+      mode: ${RD_KNOWLEDGE_PROJECTION_MODE:OFF}
+      provider: ${RD_KNOWLEDGE_PROJECTION_PROVIDER:openviking}
+      worker:
+        concurrency: ${RD_OPENVIKING_WORKER_CONCURRENCY:2}
+        batch-size: ${RD_OPENVIKING_WORKER_BATCH_SIZE:10}
+        lease-millis: ${RD_OPENVIKING_WORKER_LEASE_MILLIS:120000}
+        max-attempts: ${RD_OPENVIKING_MAX_ATTEMPTS:8}
+      poll:
+        interval-millis: ${RD_OPENVIKING_POLL_INTERVAL_MILLIS:3000}
+        unknown-outcome-timeout-millis: ${RD_OPENVIKING_UNKNOWN_TIMEOUT_MILLIS:1800000}
+      reconcile:
+        enabled: ${RD_OPENVIKING_RECONCILE_ENABLED:false}
+        interval-millis: ${RD_OPENVIKING_RECONCILE_INTERVAL_MILLIS:300000}
+  openviking:
+    enabled: ${RD_OPENVIKING_ENABLED:false}
+    base-url: ${RD_OPENVIKING_BASE_URL:http://127.0.0.1:1933}
+    api-key-env: ${RD_OPENVIKING_API_KEY_ENV:OPENVIKING_API_KEY}
+    owned-root: ${RD_OPENVIKING_OWNED_ROOT:viking://resources/rd-bot/}
+    connect-timeout-millis: ${RD_OPENVIKING_CONNECT_TIMEOUT_MILLIS:3000}
+    request-timeout-millis: ${RD_OPENVIKING_REQUEST_TIMEOUT_MILLIS:30000}
   storage:
     mode: ${RD_STORAGE_MODE:s3}
   redis-stream:
