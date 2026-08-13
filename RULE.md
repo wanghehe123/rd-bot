@@ -359,6 +359,44 @@ public RepairContextPackage prepareContext(RepairRagRequest request) {
   前端代理契约：`cd frontend && npm test && npm run typecheck`。禁止跑
   `-Drd.openviking.smoke` 作为本 WP 回归。
 
+### 3.5.10 存量审计、回填与去重原语【强制】
+
+- 【强制】存量审计把 `knowledge_documents` 的每一行归入且只归入一个分类，顺序固定为
+  墓碑、已被取代、未解决重复身份、知识库非活动、手工本地覆盖、内容为空、投影失败、
+  已同步、投影中、待回填。`sum(分类计数) == count(documents)` 必须可断言。
+  `DRIFT_LOCAL_ORPHAN`（绑定 `desired_state=PRESENT` 但文档不可见）单独列表，不进主分类求和。
+  端口：`rag/src/main/java/com/wish/rd/rag/knowledge/projection/KnowledgeInventoryAuditStore.java`；
+  内存实现 `.../projection/impl/InMemoryKnowledgeInventoryAuditStore.java`；
+  Postgres 实现 `bootstrap/src/main/java/com/wish/rd/bootstrap/persistence/impl/PostgresKnowledgeInventoryAuditStore.java`，
+  Mapper `bootstrap/.../mapper/KnowledgeInventoryAuditMapper.java`（禁止 `JdbcTemplate`）。
+- 【强制】回填只走聚合根 `KnowledgeDocumentMutationEngine#backfillProjection`，经
+  `KnowledgeMutationTransactionPort#commitBackfill` 提交。禁止调用 `indexDocument`：
+  不得重切块、重算向量、改 `chunk_count`/`status`，也不得递增 `sync_version`。
+  修订落在文档当前 `sync_version`，checksum 用文档现有值；命中
+  `revisionStore.findByDocumentIdAndChecksum` 时复用既有修订。
+- 【强制】文档行只做窄 CAS：
+  `SET source_identity_key=?, current_revision_id=?, row_version=row_version+1, updated_at=?`
+  `WHERE id=? AND row_version=? AND source_identity_key IS NULL`
+  （`KnowledgeDocumentMapper#updateIdentityIfUnchanged`）。CAS 失败必须记为
+  `SKIPPED_CONCURRENT_MODIFICATION`，禁止整行 upsert，禁止静默吞掉。
+- 【强制】已有 binding 的文档绝不回填。候选查询要求无 binding；插入用
+  `ON CONFLICT (provider, document_id) DO NOTHING`
+  （`KnowledgeExternalIndexBindingMapper#insertIfAbsent`），禁止复用覆盖 `observed_*`
+  的 binding upsert / `projectionBinding`。对已 `IN_SYNC` 行复跑，`observed_state`、
+  `observed_version`、binding `row_version` 不变且不新增 outbox 行。
+- 【强制】去重不自动执行。审计按 `last_synced_at DESC → created_at DESC → id DESC`
+  提出 survivor；`supersedeDuplicate` 必须带期望 survivor 与每个 loser 的
+  `expectedRowVersion`。任一 CAS 失败整体不提交。loser 标 `superseded_by_document_id`，
+  本地行/修订/分块保留；若已有 binding，同事务把 desired 改为 `ABSENT` 并入队
+  `DELETE_DOCUMENT`（文档级删除递归，复用 WP-4 删除语义）。
+- 【强制】回填批处理由 `KnowledgeProjectionBackfillEngine` 限流：单批上限、未收敛
+  outbox 上限、按知识库触发。引擎只调聚合根，不直接写 store。进度由「eligible 且无
+  binding」的键集候选表达，不引入 checkpoint 表。
+- 【强制】验证：
+  `./mvnw -pl rag -am -Dtest='KnowledgeInventoryAuditStoreContractTest,KnowledgeInventoryAuditEngineTest,KnowledgeProjectionBackfillEngineTest,KnowledgeDocumentBackfillMutationTest,KnowledgeMutationTransactionPortTest,KnowledgeDocumentIdentityMutationTest' -Dsurefire.failIfNoSpecifiedTests=false test`；
+  `./mvnw -pl bootstrap -Dtest='OpenVikingProjectionSqlPolicyTest,OpenVikingProductionBoundaryPolicyTest,ImplementationPackageIsolationPolicyTest,ModelPackageIsolationPolicyTest,TransactionalProxyPolicyTest,PersistenceImplementationPolicyTest,RuntimeComponentRegistrationPolicyTest' -Dsurefire.failIfNoSpecifiedTests=false test`。
+  多个 `-Dtest` 类名必须用逗号分隔，用 `+` 会静默匹配不到。
+
 ### 3.6 聚合根（Aggregate Root）【强制用于"强一致实体群"】
 
 - **已落地**：`KnowledgeDocumentMutationEngine` 是知识写入聚合根，经 `KnowledgeMutationTransactionPort` 提交 document/revision/chunks/vectors/binding/outbox。`KnowledgeWorkspace` 是查询 facade，mutation 方法委托 Engine。

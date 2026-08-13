@@ -1,14 +1,14 @@
 ## Stage A：审计只读模型与写入原语
 
-- [ ] A1 先写失败测试 `rag/src/test/java/com/wish/rd/rag/knowledge/projection/KnowledgeInventoryAuditStoreContractTest.java`：十类分类顺序判定、`sum == total`、键集分页候选、重复分组与提出的存活文档、本地孤儿漂移列表；内存与 Postgres 实现共用同一套断言。
-- [ ] A2 新增只读端口 `rag/src/main/java/com/wish/rd/rag/knowledge/projection/KnowledgeInventoryAuditStore.java` 与 `.model` 下的计数/分组/漂移记录；内存实现放 `.../projection/impl/`。
-- [ ] A3 新增 Postgres 实现与 MyBatis Mapper（`bootstrap/src/main/java/com/wish/rd/bootstrap/persistence/{impl,mapper}/`），禁止 `JdbcTemplate`（`PersistenceImplementationPolicyTest`）；列名必须与 `p11_openviking_projection.sql`、`p0_knowledge_productionization.sql` 对齐并加列名对齐测试。
-- [ ] A4 先写失败测试 `rag/src/test/java/com/wish/rd/rag/knowledge/KnowledgeDocumentBackfillMutationTest.java`：回填后分块集合/分块计数/`sync_version` 不变；修订落在当前版本且同 checksum 复用；对已同步行复跑不改 `observed_*`/`row_version` 且不新增操作；并发修改返回并发跳过。
-- [ ] A5 扩展 `rag/src/main/java/com/wish/rd/rag/knowledge/projection/KnowledgeMutationTransactionPort.java` 增加 `commitBackfill`，并在 `bootstrap/.../impl/PostgresKnowledgeMutationTransactionAdapter.java`（保持非 final）与内存适配器实现窄 CAS 更新 → 幂等修订 → 绑定 `ON CONFLICT DO NOTHING` → 入队操作。
-- [ ] A6 在 `rag/src/main/java/com/wish/rd/rag/knowledge/KnowledgeDocumentMutationEngine.java` 增加 `backfillProjection` 与 `supersedeDuplicate`，返回显式结果枚举；不得调用 `indexDocument`。
-- [ ] A7 先写失败测试再实现 `rag/src/main/java/com/wish/rd/rag/knowledge/projection/KnowledgeInventoryAuditEngine.java` 与 `KnowledgeProjectionBackfillEngine.java`（有界批量、未收敛上限、按知识库）。
-- [ ] A8 `RULE.md` 追加 3.5.9：回填不重切块/不递增版本/窄 CAS/不覆盖观测/分类穷尽/去重需操作员确认，附真实路径与验证命令。
-- [ ] A9 运行 `./mvnw -q -pl rag -am -Dtest='KnowledgeInventoryAuditStoreContractTest,KnowledgeInventoryAuditEngineTest,KnowledgeProjectionBackfillEngineTest,KnowledgeDocumentBackfillMutationTest,KnowledgeMutationTransactionPortTest' -Dsurefire.failIfNoSpecifiedTests=false test`。
+- [x] A1 先写失败测试 `rag/src/test/java/com/wish/rd/rag/knowledge/projection/KnowledgeInventoryAuditStoreContractTest.java`：十类分类顺序判定、`sum == total`、键集分页候选、重复分组与提出的存活文档、本地孤儿漂移列表；内存与 Postgres 实现共用同一套断言。
+- [x] A2 新增只读端口 `rag/src/main/java/com/wish/rd/rag/knowledge/projection/KnowledgeInventoryAuditStore.java` 与 `.model` 下的计数/分组/漂移记录；内存实现放 `.../projection/impl/`。
+- [x] A3 新增 Postgres 实现与 MyBatis Mapper（`bootstrap/src/main/java/com/wish/rd/bootstrap/persistence/{impl,mapper}/`），禁止 `JdbcTemplate`（`PersistenceImplementationPolicyTest`）；列名必须与 `p11_openviking_projection.sql`、`p0_knowledge_productionization.sql` 对齐并加列名对齐测试。
+- [x] A4 先写失败测试 `rag/src/test/java/com/wish/rd/rag/knowledge/KnowledgeDocumentBackfillMutationTest.java`：回填后分块集合/分块计数/`sync_version` 不变；修订落在当前版本且同 checksum 复用；对已同步行复跑不改 `observed_*`/`row_version` 且不新增操作；并发修改返回并发跳过。
+- [x] A5 扩展 `rag/src/main/java/com/wish/rd/rag/knowledge/projection/KnowledgeMutationTransactionPort.java` 增加 `commitBackfill`，并在 `bootstrap/.../impl/PostgresKnowledgeMutationTransactionAdapter.java`（保持非 final）与内存适配器实现窄 CAS 更新 → 幂等修订 → 绑定 `ON CONFLICT DO NOTHING` → 入队操作。
+- [x] A6 在 `rag/src/main/java/com/wish/rd/rag/knowledge/KnowledgeDocumentMutationEngine.java` 增加 `backfillProjection` 与 `supersedeDuplicate`，返回显式结果枚举；不得调用 `indexDocument`。
+- [x] A7 先写失败测试再实现 `rag/src/main/java/com/wish/rd/rag/knowledge/projection/KnowledgeInventoryAuditEngine.java` 与 `KnowledgeProjectionBackfillEngine.java`（有界批量、未收敛上限、按知识库）。
+- [x] A8 `RULE.md` 追加 3.5.9：回填不重切块/不递增版本/窄 CAS/不覆盖观测/分类穷尽/去重需操作员确认，附真实路径与验证命令。
+- [x] A9 运行 `./mvnw -q -pl rag -am -Dtest='KnowledgeInventoryAuditStoreContractTest,KnowledgeInventoryAuditEngineTest,KnowledgeProjectionBackfillEngineTest,KnowledgeDocumentBackfillMutationTest,KnowledgeMutationTransactionPortTest' -Dsurefire.failIfNoSpecifiedTests=false test`。
 
 ## Stage B：管理 API、指标与装配
 
