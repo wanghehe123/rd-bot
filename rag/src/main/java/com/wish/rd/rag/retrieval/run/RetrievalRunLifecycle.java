@@ -126,6 +126,24 @@ public final class RetrievalRunLifecycle {
     }
 
     /**
+     * 只读查找任务上最近一次检索 run，供旁路探测把 artifact 挂到已有 attempt。
+     * 不得为此再 {@link #start}：start 会把非终态 run 当成同一 attempt 复用。
+     *
+     * @param taskId 任务 ID
+     * @return 最近一次 run，没有则空
+     */
+    public Optional<RetrievalRun> findLatestForTask(String taskId) {
+        String safeTaskId = taskId == null ? "" : taskId.strip();
+        if (safeTaskId.isBlank()) {
+            return Optional.empty();
+        }
+        return store.listByTask(safeTaskId).stream()
+                .max(Comparator.comparingInt(RetrievalRun::attemptNo)
+                        .thenComparingLong(RetrievalRun::createdAtEpochMillis)
+                        .thenComparing(RetrievalRun::runId));
+    }
+
+    /**
      * Records a bounded redacted preview so operators can inspect retrieval behavior without
      * exposing raw prompts or complete source documents.
      *

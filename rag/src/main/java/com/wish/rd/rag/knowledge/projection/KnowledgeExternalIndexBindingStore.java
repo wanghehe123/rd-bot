@@ -31,6 +31,24 @@ public interface KnowledgeExternalIndexBindingStore {
     Optional<KnowledgeExternalIndexBinding> findByProviderAndDocumentId(String provider, String documentId);
 
     /**
+     * 将远端命中 URI 解析为绑定：在同一 provider 下，取 {@code remote_uri} 为该 URI
+     * 最长路径前缀的一行。
+     *
+     * <p>路径前缀指规范化后相等，或命中以 {@code remote_uri + '/'} 开头。
+     * 因此 {@code .../documents/12} 不会匹配 {@code .../documents/123/...}。
+     * 命中若带 {@code ..}，先按投影 URI 规则规范化再匹配，避免裸前缀钉死穿越前的目录。
+     *
+     * <p>实现必须走有界的祖先等值查询（命中路径深度通常 7～9 段），
+     * 禁止 {@code hit LIKE remote_uri || '%'} 全表扫描。空白或非法 URI 返回空，
+     * 不得把命中当成数字 id 去 {@code parseId}。
+     *
+     * @param provider 提供方，空白时按 OPENVIKING
+     * @param hitUri   远端命中 URI，可以是文档根或其派生子路径
+     * @return 最长匹配的绑定；没有前缀命中时为空
+     */
+    Optional<KnowledgeExternalIndexBinding> findByProviderAndLongestRemoteUriPrefix(String provider, String hitUri);
+
+    /**
      * 一个知识库的绑定，可按投影状态过滤。
      *
      * @param provider          提供方

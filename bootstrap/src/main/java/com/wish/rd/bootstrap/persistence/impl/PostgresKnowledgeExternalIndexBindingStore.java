@@ -5,6 +5,7 @@ import com.wish.rd.bootstrap.persistence.PostgresPersistenceSupport;
 import com.wish.rd.bootstrap.persistence.entity.KnowledgeExternalIndexBindingRow;
 import com.wish.rd.bootstrap.persistence.mapper.KnowledgeExternalIndexBindingMapper;
 import com.wish.rd.rag.knowledge.projection.KnowledgeExternalIndexBindingStore;
+import com.wish.rd.rag.knowledge.projection.OpenVikingProjectionUris;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeDesiredState;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeObservedState;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeProjectionStatus;
@@ -65,6 +66,20 @@ public final class PostgresKnowledgeExternalIndexBindingStore implements Knowled
                         .eq("document_id", PostgresPersistenceSupport.parseId(documentId)))
                 .stream()
                 .findFirst()
+                .map(this::toBinding);
+    }
+
+    @Override
+    public Optional<KnowledgeExternalIndexBinding> findByProviderAndLongestRemoteUriPrefix(
+            String provider,
+            String hitUri
+    ) {
+        // 空白或非法 URI 没有祖先可查；这里也没有数字主键，不能走会抛错的 id 解析。
+        List<String> ancestors = OpenVikingProjectionUris.ancestorUrisInclusive(hitUri);
+        if (ancestors.isEmpty()) {
+            return Optional.empty();
+        }
+        return Optional.ofNullable(mapper.selectLongestRemoteUriPrefix(normalizeProvider(provider), ancestors))
                 .map(this::toBinding);
     }
 

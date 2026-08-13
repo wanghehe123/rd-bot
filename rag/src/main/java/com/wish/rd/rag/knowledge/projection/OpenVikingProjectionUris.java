@@ -20,6 +20,9 @@ public final class OpenVikingProjectionUris {
 
     public static final String SOURCE_FILE_NAME = "source.md";
 
+    /** 按 URI 反查绑定时最多回溯的祖先级数，见 {@link #ancestorUrisInclusive}。 */
+    public static final int MAX_ANCESTOR_LOOKUP = 12;
+
     private static final Pattern NUMERIC_ID = Pattern.compile("[1-9][0-9]*");
     private static final Pattern SAFE_SEGMENT = Pattern.compile("[A-Za-z0-9][A-Za-z0-9_-]*");
     private static final Pattern MARKDOWN_FILE = Pattern.compile("[A-Za-z0-9][A-Za-z0-9_-]*\\.md");
@@ -106,6 +109,78 @@ public final class OpenVikingProjectionUris {
      */
     public static String contractTestDocumentUri(String runId, String documentId) {
         return contractTestDocumentRoot(runId, documentId) + "/" + SOURCE_FILE_NAME;
+    }
+
+    /**
+     * 命中 URI 的自身及各级祖先路径，最长在前、已去掉尾斜杠。
+     *
+     * <p>检索命中经常落在文档根下的派生文件（{@code .abstract.md}、{@code source.md}），
+     * 绑定只存文档根。用这组祖先做等值 {@code IN} 查询，才能走
+     * {@code UNIQUE (provider, remote_uri)}，也避免 {@code LIKE remote_uri || '%'}
+     * 把 {@code .../documents/12} 误当成 {@code .../documents/123} 的前缀。
+     *
+     * <p>空白、非法、或含空路径段的 URI 返回空列表，调用方应视为查无绑定。
+     * 路径中的 {@code ..} 先按 {@link #isWithinOwnedRoot} 同一套规则规范化，
+     * 再切祖先——否则裸字符串前缀会把穿越前的目录当成命中文档。
+     *
+     * <p>只保留最浅的 {@link #MAX_ANCESTOR_LOOKUP} 级。命中 URI 来自远端检索结果，
+     * 深度由远端说了算，而这组祖先会直接变成 SQL 的 {@code IN} 绑定参数个数；
+     * 不设上限就等于让远端决定一条语句有多大。绑定的 {@code remote_uri} 恒为
+     * {@code viking://resources/rd-bot/kb/{kbId}/documents/{docId}} 这个固定深度
+     * （真机 55 行实测最深 7 段），比它更深的祖先永远匹配不上任何绑定，
+     * 因此裁掉深端不会漏掉任何真实命中。
+     *
+     * @param uri 远端命中 URI
+     * @return 祖先列表，最长在前，无法规范化时为空
+     */
+    public static List<String> ancestorUrisInclusive(String uri) {
+        if (uri == null || uri.isBlank()) {
+            return List.of();
+        }
+        try {
+            String current = stripTrailingSlash(canonicalizeUri(uri));
+            if (current.isEmpty()) {
+                return List.of();
+            }
+            ArrayList<String> ancestors = new ArrayList<>();
+            int schemeEnd = "viking://".length() - 1;
+            while (true) {
+                ancestors.add(current);
+                int slash = current.lastIndexOf('/');
+                if (slash <= schemeEnd) {
+                    break;
+                }
+                current = current.substring(0, slash);
+            }
+            if (ancestors.size() > MAX_ANCESTOR_LOOKUP) {
+                // 深端裁掉：祖先按深→浅追加，能匹配绑定的固定深度落在浅端。
+                return List.copyOf(ancestors.subList(
+                        ancestors.size() - MAX_ANCESTOR_LOOKUP, ancestors.size()));
+            }
+            return List.copyOf(ancestors);
+        } catch (IllegalArgumentException ex) {
+            return List.of();
+        }
+    }
+
+    /**
+     * {@code remoteUri} 是否为 {@code hitUri} 的路径前缀（相等，或命中以 {@code remoteUri + '/'} 开头）。
+     * 两侧都先规范化；非法 URI 或不构成路径边界的数字前缀视为不匹配。
+     *
+     * @param remoteUri 绑定上的文档根（或更长的已存 URI）
+     * @param hitUri    远端命中 URI
+     * @return 构成路径前缀时为 true
+     */
+    public static boolean isRemoteUriPrefixOf(String remoteUri, String hitUri) {
+        if (remoteUri == null || remoteUri.isBlank()) {
+            return false;
+        }
+        try {
+            String canonicalRemote = stripTrailingSlash(canonicalizeUri(remoteUri));
+            return ancestorUrisInclusive(hitUri).contains(canonicalRemote);
+        } catch (IllegalArgumentException ex) {
+            return false;
+        }
     }
 
     /**

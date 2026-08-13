@@ -130,4 +130,75 @@ class OpenVikingProjectionUrisTest {
                 "b3a2c0ffee"
         ));
     }
+
+    @Test
+    void ancestorUrisIncludeTheHitAndEachPathParentDownToTheScheme() {
+        String hit = OpenVikingProjectionUris.documentRootUri("12", "34") + "/.abstract.md";
+
+        List<String> ancestors = OpenVikingProjectionUris.ancestorUrisInclusive(hit);
+
+        assertEquals(
+                List.of(
+                        "viking://resources/rd-bot/kb/12/documents/34/.abstract.md",
+                        "viking://resources/rd-bot/kb/12/documents/34",
+                        "viking://resources/rd-bot/kb/12/documents",
+                        "viking://resources/rd-bot/kb/12",
+                        "viking://resources/rd-bot/kb",
+                        "viking://resources/rd-bot",
+                        "viking://resources"
+                ),
+                ancestors
+        );
+        assertFalse(ancestors.contains("viking://resources/rd-bot/kb/12/documents/12"));
+    }
+
+    @Test
+    void ancestorUrisDoNotTreatAShorterNumericIdAsAPrefix() {
+        String hit = OpenVikingProjectionUris.documentRootUri("12", "123") + "/source.md";
+
+        List<String> ancestors = OpenVikingProjectionUris.ancestorUrisInclusive(hit);
+
+        assertTrue(ancestors.contains("viking://resources/rd-bot/kb/12/documents/123"));
+        assertFalse(ancestors.contains("viking://resources/rd-bot/kb/12/documents/12"));
+        assertFalse(OpenVikingProjectionUris.isRemoteUriPrefixOf(
+                OpenVikingProjectionUris.documentRootUri("12", "12"), hit));
+        assertTrue(OpenVikingProjectionUris.isRemoteUriPrefixOf(
+                OpenVikingProjectionUris.documentRootUri("12", "123"), hit));
+    }
+
+    @Test
+    void ancestorUrisRejectBlankAndEmptySegmentsRatherThanThrowing() {
+        assertEquals(List.of(), OpenVikingProjectionUris.ancestorUrisInclusive(""));
+        assertEquals(List.of(), OpenVikingProjectionUris.ancestorUrisInclusive("   "));
+        assertEquals(List.of(), OpenVikingProjectionUris.ancestorUrisInclusive(null));
+        assertEquals(List.of(), OpenVikingProjectionUris.ancestorUrisInclusive(
+                "viking://resources/rd-bot/kb/12/documents/34//source.md"));
+    }
+
+    @Test
+    void ancestorUrisStayBoundedSoARemoteHitCannotSizeTheLookupQuery() {
+        String hit = OpenVikingProjectionUris.documentRootUri("12", "34")
+                + "/nested".repeat(500) + "/source.md";
+
+        List<String> ancestors = OpenVikingProjectionUris.ancestorUrisInclusive(hit);
+
+        assertEquals(OpenVikingProjectionUris.MAX_ANCESTOR_LOOKUP, ancestors.size(),
+                "祖先数会变成 SQL 的 IN 参数个数，不能由远端命中的深度决定");
+        assertTrue(ancestors.contains(OpenVikingProjectionUris.documentRootUri("12", "34")),
+                "裁剪必须留下浅端，绑定就落在那里");
+    }
+
+    @Test
+    void ancestorUrisCanonicalizeTraversalBeforeMatching() {
+        String hit = "viking://resources/rd-bot/kb/12/documents/34/../56/source.md";
+
+        List<String> ancestors = OpenVikingProjectionUris.ancestorUrisInclusive(hit);
+
+        assertTrue(ancestors.contains("viking://resources/rd-bot/kb/12/documents/56"));
+        assertFalse(ancestors.contains("viking://resources/rd-bot/kb/12/documents/34"));
+        assertFalse(OpenVikingProjectionUris.isRemoteUriPrefixOf(
+                OpenVikingProjectionUris.documentRootUri("12", "34"), hit));
+        assertTrue(OpenVikingProjectionUris.isRemoteUriPrefixOf(
+                OpenVikingProjectionUris.documentRootUri("12", "56"), hit));
+    }
 }

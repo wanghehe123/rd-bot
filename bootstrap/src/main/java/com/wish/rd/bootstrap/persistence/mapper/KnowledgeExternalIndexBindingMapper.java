@@ -8,6 +8,7 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
 import java.time.OffsetDateTime;
+import java.util.List;
 
 @Mapper
 public interface KnowledgeExternalIndexBindingMapper extends BaseMapper<KnowledgeExternalIndexBindingRow> {
@@ -107,5 +108,31 @@ public interface KnowledgeExternalIndexBindingMapper extends BaseMapper<Knowledg
             @Param("lastErrorCode") String lastErrorCode,
             @Param("lastErrorMessage") String lastErrorMessage,
             @Param("updatedAt") OffsetDateTime updatedAt
+    );
+
+    /**
+     * 在调用方给出的祖先 URI 中取 {@code remote_uri} 最长的一行。
+     * 祖先列表必须非空；空列表会生成非法的 {@code IN ()}，由 Store 在调用前拦掉。
+     *
+     * @param provider   提供方
+     * @param remoteUris 命中 URI 的自身及祖先，最长不必排在前面
+     * @return 最长匹配行，没有命中时为 null
+     */
+    @Select("""
+            <script>
+            SELECT *
+              FROM knowledge_external_index_bindings
+             WHERE provider = #{provider}
+               AND remote_uri IN
+               <foreach collection="remoteUris" item="remoteUri" open="(" separator="," close=")">
+                   #{remoteUri}
+               </foreach>
+             ORDER BY char_length(remote_uri) DESC
+             LIMIT 1
+            </script>
+            """)
+    KnowledgeExternalIndexBindingRow selectLongestRemoteUriPrefix(
+            @Param("provider") String provider,
+            @Param("remoteUris") List<String> remoteUris
     );
 }

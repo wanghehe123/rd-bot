@@ -1,0 +1,169 @@
+{
+  "corpusKnowledgeBaseId": "7475766492030701568",
+  "corpusKnowledgeBaseName": "waimai",
+  "corpusDocumentCount": 45,
+  "corpusChoice": "选用 45 篇 IN_SYNC、均长约 3600 字的外卖应用知识库，而不是另外两个均长不足 120 字的 QA fixture 库。design.md 所称 54 篇是三个已投影库的合计（45+5+4）。",
+  "k": 8,
+  "questions": [
+    {
+      "id": "Q01",
+      "type": "SINGLE_DOCUMENT",
+      "question": "用户已经看到第三方扣款成功，但订单详情还停在等付款，商家也接不了单。应该从回调处理的哪一段开始查？",
+      "expectedDocumentIds": ["7475766492466909184"],
+      "justification": "答案在支付回调状态修复手册：回调确认成功后必须改订单状态，否则前端继续显示待支付。"
+    },
+    {
+      "id": "Q02",
+      "type": "SINGLE_DOCUMENT",
+      "question": "支付通知校验完金额和签名之后，应该用哪个订单方法把状态写成已付？如果这笔单此前已经记成已付，还要不要再通知一次商家？",
+      "expectedDocumentIds": ["7475766492731150336"],
+      "justification": "答案在 PaymentCallbackService 推荐修复形态：事务内 markPaid，已付则幂等成功且不再通知。"
+    },
+    {
+      "id": "Q03",
+      "type": "SINGLE_DOCUMENT",
+      "question": "商家端什么时候才允许点接单？支付成功时间和对端流水号分别记在哪两个字段？",
+      "expectedDocumentIds": ["7475766492915699712"],
+      "justification": "答案在订单状态与支付字段短文：仅已付可接单，并列出 paid_at 与 payment_transaction_id。"
+    },
+    {
+      "id": "Q04",
+      "type": "SINGLE_DOCUMENT",
+      "question": "真正落库的 SQLite 建表语句里，订单状态列的默认值是什么，约束到底允许哪些取值？",
+      "expectedDocumentIds": ["7481208064473960448"],
+      "justification": "答案在 server/config/schema.sql 的 orders.status DEFAULT 与 CHECK 列表，与支付手册三态不是同一套词。"
+    },
+    {
+      "id": "Q05",
+      "type": "SINGLE_DOCUMENT",
+      "question": "一键启动脚本装完前后端依赖之后还会做什么？脚本结束时告诉人用浏览器打开哪个地址、接口又监听哪一侧？",
+      "expectedDocumentIds": ["7481208066139099136"],
+      "justification": "答案在 start.sh：第 3 步跑 seed.ts，最后打印前端 5173 与后端 3000。"
+    },
+    {
+      "id": "Q06",
+      "type": "SINGLE_DOCUMENT",
+      "question": "生产环境如果没配登录令牌的签名密钥，进程还能不能起来？本地开发没配时走的是抛错还是警告？",
+      "expectedDocumentIds": ["7481208064813699072"],
+      "justification": "答案在 server/src/middleware/auth.ts：production 缺密钥直接 throw，非生产只 warn 并走开发兜底。"
+    },
+    {
+      "id": "Q07",
+      "type": "SINGLE_DOCUMENT",
+      "question": "新注册账号的登录名允许哪些字符、长度范围多少？口令最短和最长分别卡在几位？",
+      "expectedDocumentIds": ["7481208065199575040"],
+      "justification": "答案在 server/src/routes/auth.ts 的用户名/口令校验，不是登录页文案。"
+    },
+    {
+      "id": "Q08",
+      "type": "SINGLE_DOCUMENT",
+      "question": "SQLite 数据文件相对源码落在哪个目录？建立连接时打开了哪些并发和完整性开关？",
+      "expectedDocumentIds": ["7481208064683675648"],
+      "justification": "答案在 server/src/database.ts：data/waimai.db，以及 WAL 与 foreign_keys=ON。"
+    },
+    {
+      "id": "Q09",
+      "type": "SINGLE_DOCUMENT",
+      "question": "前端开发服务器怎样把浏览器里的接口路径转到 Node，从而不用在页面里写后端主机名？",
+      "expectedDocumentIds": ["7481208064385880064"],
+      "justification": "答案在 client/vite.config.ts：/api 代理到本机 3000。"
+    },
+    {
+      "id": "Q10",
+      "type": "SINGLE_DOCUMENT",
+      "question": "打折券的减免金额怎么封顶？免配送那一类抵的是商品小计还是运费本身？",
+      "expectedDocumentIds": ["7481208065312821248"],
+      "justification": "答案在 coupons.ts 的 calculateDiscount：percent 受 cap 与订单金额限制，free_delivery 抵 deliveryFee。"
+    },
+    {
+      "id": "Q11",
+      "type": "SINGLE_DOCUMENT",
+      "question": "骑手还没上线就去拉待抢列表会怎样？列表里只会露出哪种出餐完成且还没指派骑手的单？",
+      "expectedDocumentIds": ["7481208065837109248"],
+      "justification": "答案在 server/src/routes/riders.ts 的 available-orders：未上线 400，过滤 ready 且 rider_id 为空。"
+    },
+    {
+      "id": "Q12",
+      "type": "MULTI_DOCUMENT",
+      "question": "演示环境预置了哪些角色的登录名，默认口令是什么？项目说明和种子脚本里的顾客账号是否写成了同一个名字？",
+      "expectedDocumentIds": [
+        "7481208061986738176",
+        "7481208065946161152"
+      ],
+      "justification": "README 写 customer1，seed.ts 实际插入 user1/user2/user3，口令都是 123456。必须对照两篇才能发现不一致。"
+    },
+    {
+      "id": "Q13",
+      "type": "MULTI_DOCUMENT",
+      "question": "订单从刚创建到顾客确认收货，商家、骑手、顾客各自能把状态推进到哪几步？这和支付手册里那套「待支付 / 已支付 / 已接单」是不是同一套取值？",
+      "expectedDocumentIds": [
+        "7481208065707085824",
+        "7481208064473960448",
+        "7475766492915699712"
+      ],
+      "justification": "状态机在 orders.ts，CHECK 列表在 schema.sql，支付手册是另一套 PENDING_PAYMENT/PAID/ACCEPTED。三篇对照才完整。"
+    },
+    {
+      "id": "Q14",
+      "type": "MULTI_DOCUMENT",
+      "question": "登录成功后签发的令牌多久过期？前端把它存在哪，后续请求的哪个头里带上？",
+      "expectedDocumentIds": [
+        "7481208065199575040",
+        "7481208062586523648",
+        "7481208062355836928"
+      ],
+      "justification": "auth.ts 签发 24h，AuthContext 写入 localStorage，api.ts 用 Authorization Bearer 带出。"
+    },
+    {
+      "id": "Q15",
+      "type": "MULTI_DOCUMENT",
+      "question": "优惠券在表结构里有哪几种类型？计算减免时定额、打折、免运费分别读哪些字段？",
+      "expectedDocumentIds": [
+        "7481208064473960448",
+        "7481208065312821248"
+      ],
+      "justification": "schema.sql 约束 type∈fixed/percent/free_delivery；coupons.ts 的 calculateDiscount 解释各类型怎么用 discount_value 与 delivery_fee。"
+    },
+    {
+      "id": "Q16",
+      "type": "MULTI_DOCUMENT",
+      "question": "顾客下单勾了一张已领的券时，服务端怎样确认这张券仍可用，成功之后用户券记录改成什么状态？用户券表本身允许哪些状态？",
+      "expectedDocumentIds": [
+        "7481208065707085824",
+        "7481208064473960448"
+      ],
+      "justification": "orders.ts 创建订单时校验 user_coupons 为 unused 并更新为 used；schema.sql 定义 unused/used/expired。"
+    },
+    {
+      "id": "Q17",
+      "type": "MULTI_DOCUMENT",
+      "question": "项目说明里写的骑手待抢订单接口路径，和后端路由文件实际挂上的路径是不是同一条？",
+      "expectedDocumentIds": [
+        "7481208061986738176",
+        "7481208065837109248"
+      ],
+      "justification": "README 写 GET /api/riders/available，riders.ts 实际是 /available-orders。问的是对照，不是复述其中一篇。"
+    },
+    {
+      "id": "Q18",
+      "type": "UNANSWERABLE",
+      "question": "接入微信支付 APIv3 时，商户证书和平台证书的轮换周期应该配成多少天？",
+      "expectedDocumentIds": [],
+      "justification": "语料是自建演示支付回调与 SQLite 订单，没有微信支付商户号、证书或轮换策略。"
+    },
+    {
+      "id": "Q19",
+      "type": "UNANSWERABLE",
+      "question": "出餐完成后如果骑手一直不接，系统自动改派的超时是多少分钟？",
+      "expectedDocumentIds": [],
+      "justification": "骑手路由只有上线与手动抢单，没有超时改派或 SLA 配置。"
+    },
+    {
+      "id": "Q20",
+      "type": "UNANSWERABLE",
+      "question": "用户申请注销账号之后，订单和手机号要在多少天内删除才符合个保法？",
+      "expectedDocumentIds": [],
+      "justification": "语料没有注销、留存期限或个保法删除流程。"
+    }
+  ]
+}

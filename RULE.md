@@ -272,15 +272,48 @@ public RepairContextPackage prepareContext(RepairRagRequest request) {
   核验前必须先确认本次提交的 `task` 已终态且 `queue_status.Semantic/Embedding.error_count` 均为 0，
   语义产物才归属本版本。
 - 【强制】版本核验只能用确定性证据，禁止把 `search/find` 之类相关性检索放进 settle 路径。
-  真机实测（v0.4.13 + mock 嵌入）：同一篇已正确落库的中文文档，`query` 用短 token 命中 score 0.40
-  且命中的是派生的 `.abstract.md` 而非被核验的 L2 正文，`query` 换成它自己 200 字正文则连续 61 秒 0 命中；
-  `tags` 是排序后的过滤器，兜不住这件事。检索命中率随语料增长而下降、随嵌入模型更换而漂移，
-  放进闸门等于让健康文档进 `NEEDS_HUMAN`，换模型就是一次投影停摆事故；它也证明不了版本。
-  检索健康度属于旁路探针（用 WP-0 那种含唯一 ASCII token 的合成文档），不得改写任何 binding/outbox 行。
-  `IN_SYNC` 的语义因此是"已落库且版本已核验"，不是"可被检索到"。
+  理由与嵌入模型无关：相关性检索证明不了"这一版正文落对了"，且命中率随语料增长而下降、
+  随嵌入模型更换而漂移；放进闸门等于让健康文档进 `NEEDS_HUMAN`，换一次模型就是一次投影停摆事故。
+  `tags` 是排序后的过滤器，兜不住这件事。`IN_SYNC` 的语义因此是"已落库且版本已核验"，
+  不是"可被检索到"。检索健康度属于旁路探针，不得改写任何 binding/outbox 行。
   `OpenVikingRealContractSmokeTest` 必须继续断言 `search/find` 的响应形状，保持契约被冻结。
-  注意 WP-0 没暴露这个问题的原因是它的语料是含唯一 token 的合成文档——用合成 fixture 写契约测试
-  会系统性高估检索命中率。
+- 【强制】谈检索质量必须先声明嵌入档，两档的数字不可互相引用：
+  - `mock` 档（`deploy/openviking/ov.conf`，本地 mock LLM，dimension 32 哈希向量）只够跑协议合同。
+    实测：一篇已正确落库的中文文档，短 token 查命中 score 0.40 且命中的是派生 `.abstract.md`
+    而非 L2 正文，换成它自己 200 字正文则连续 61 秒 0 命中。**这是 mock 向量的产物，
+    不得当作 OpenViking 检索能力的结论。**
+  - `dashscope` 档（`deploy/openviking/ov.conf.dashscope.template`，`text-embedding-v4`，
+    dimension 1024，密钥只以 `DASHSCOPE_API_KEY` 变量名出现）实测（2026-08-13，真实语料 52 篇
+    IN_SYNC 文档，每篇取正文中段 200 字自查，`limit=8`）：Recall@8 = 52/52，Recall@1 = 44/52，
+    自命中平均排名 1.35，0 未命中 0 报错，中文文档 top score 0.97~0.98。
+  只有 `dashscope` 档的数字具备切流决策效力。另外：用含唯一 ASCII token 的合成 fixture
+  （WP-0 语料、`rag/src/test/resources/openviking-baseline/`）测召回会系统性高估命中率：
+  这种语料偏向精确 token 匹配，判断不了语义检索是否够用。
+  启动方式：`OPENVIKING_EMBEDDING_PROFILE=dashscope scripts/openviking/up.sh`。
+- 【强制】"远端那里什么都没有"与"远端不可用"是两件事，不得合并。`fs/ls` 和 `fs/attrs` 的
+  HTTP 404 都是确定的否定观测：`listTree` 必须返回空列表且 `failureClass=NONE`
+  （见 `OpenVikingRestIndexAdapter#listTree`）。把它判成失败会让对账在"远端整卷丢失"时
+  整轮跳过——owned root 本身没了，列目录必然失败——于是丢得越彻底越发现不了。
+  对应地，`KnowledgeExternalIndexReconcileEngine` 的 IN_SYNC 缺失探针
+  （`probeMissingRemote`）必须独立于列目录成败运行，每条探针自己判断失败与否。
+  真机实证（2026-08-13）：删掉 `rd-bot-openviking-data` 卷后，修复前对账报 0 条发现而
+  54 条 binding 仍自称 `IN_SYNC`；修复后报 `MISSING_REMOTE` 并入队 `REBUILD_DOCUMENT`，
+  54 篇全部重投影回 `IN_SYNC`。回归用例：
+  `KnowledgeExternalIndexReconcileEngineTest#shouldStillProbeInSyncBindingsWhenTheTreeListingFails`、
+  `OpenVikingRestIndexAdapterTest#shouldTreatAMissingOwnedRootAsAnEmptyTreeRatherThanAFailure`。
+- 【强制】返回 `Optional` 的 `findById` 对空/非法 id 必须返回空，不得抛
+  `NumberFormatException`：`PostgresPersistenceSupport#parseId` 会抛，查询路径要用
+  `parseOptionalId`。对账入队的 `REBUILD_DOCUMENT` 本来就没有冻结的 `revision_id`，
+  `KnowledgeExternalIndexSyncEngine#buildCommand` 靠 checksum 兜底找回同一份正文；
+  `findById("")` 抛异常会被上游 catch 成 `INVALID_PAYLOAD` 全部挂起
+  （真机：54 条重建一次性进 `NEEDS_HUMAN`，`last_error_message` 是 `For input string: ""`）。
+  已修 `PostgresKnowledgeDocumentRevisionStore#findById`；document/outbox/base/retry 四个
+  Postgres store 的 `findById` 仍是会抛的写法，改动它们前先确认调用方是否可能传空 id。
+- 【强制】管理台的"死信"页只列 `DEAD_LETTER`，`park()` 挂起的行是 `NEEDS_HUMAN`，两者是不同状态。
+  按文档重试要用 `POST /documents/{documentId}/retry`（`KnowledgeProjectionAdminEngine#retry`
+  同时接受 `DEAD_LETTER` 与 `NEEDS_HUMAN`）；`/dead-letters/{eventId}/requeue` 覆盖不到
+  `NEEDS_HUMAN`。给死信页加状态时必须同时改 `deadLetters` 的查询条件，否则页面数字与
+  `overview.unconvergedCount` 会长期互相矛盾。
 - 【强制】租约判定用应用时钟：`claimBatch`/`claimPollBatch`/`settle` 里的 `lease_until`、`next_visible_at`
   都跟调用方传入的 `#{now}` 比，不是 SQL 的 `now()`。因此多实例部署必须做时钟同步——
   偏移超过租约时长（默认 120s）时，快钟实例会判定一个仍然活着的租约已过期并抢走行。
@@ -473,6 +506,59 @@ public RepairContextPackage prepareContext(RepairRagRequest request) {
   `SELECT knowledge_source_identity_key(...)` 的结果必须与 Java 对同一组输入逐字节相同；
   并发向同一 KB 导入同一个来源两次，两个请求都必须成功且只留下一行。
 
+### 3.5.13 读路径模式路由与证据 allowlist【强制】
+
+- 【强制】`rd.rag.knowledge-provider-mode` 只有 LOCAL/SHADOW/OPENVIKING 三个值，默认 LOCAL。
+  SHADOW 的返回值必须结构上只由本地检索产生（`KnowledgeRetrievalModeRouter`：返回值来自
+  `localSearch.search(...)`，远端结果不参与任何合并），恒等性靠构造保证而不是靠断言或时序。
+  影子探针必须 fire-and-forget，不得 `close()`/`get()` executor——见 6.2 的旁路探测例外。
+- 【强制】远端命中不是证据，本地库才是权威。`KnowledgeEvidenceAllowlist#admit` 的四步判定
+  顺序固定且首次失败即停：无绑定 → 版本未核验（`IN_SYNC` 且 `observedVersion == desiredVersion`）
+  → 文档非活跃（`enabled` 与 `visible()` 必须同时成立，`visible()` 只覆盖软删除与 supersede，
+  不含 `enabled`）→ 越出本次检索的知识库范围。任何一步的拒绝都必须按原因记账并可被评测读到：
+  「远端没召回」与「召回了但被拒」必须能区分，否则质量数字无法解释。
+- 【强制】命中 URI 到绑定的解析走「规范化后的最长路径前缀」，且必须先按
+  `isWithinOwnedRoot` 同一套规则规范化 `..`：裸字符串前缀会把穿越前的目录当成命中文档，
+  而 `LIKE remote_uri || '%'` 既用不上 `UNIQUE (provider, remote_uri)`，又会把
+  `.../documents/12` 误当成 `.../documents/123` 的前缀。实现用等值 `IN` 祖先查询
+  （`OpenVikingProjectionUris#ancestorUrisInclusive` + `selectLongestRemoteUriPrefix`）。
+- 【强制】祖先级数必须有上限（`MAX_ANCESTOR_LOOKUP`）。命中 URI 来自远端检索结果，深度由
+  远端说了算，而这组祖先直接变成 SQL 的 `IN` 绑定参数个数；不设上限等于让远端决定一条语句
+  有多大。绑定的 `remote_uri` 恒为文档根那个固定深度（真机实测最深 7 段），更深的祖先
+  永远匹配不上任何绑定，裁掉深端不漏真实命中。回归用例：
+  `OpenVikingProjectionUrisTest#ancestorUrisStayBoundedSoARemoteHitCannotSizeTheLookupQuery`。
+- 【强制】读路径全程只读，allowlist 与三层导航不得写任何 binding/outbox/document 行。
+- 【强制】三层导航的每个出口必须带且只带一个机器可读的 `NavigatorStopReason`，预算必须在
+  发远端调用**之前**判，否则「最多 15 次」是假的。时间预算走注入时钟，不得内联
+  `System.currentTimeMillis()`，否则只能靠 sleep 测。
+- 【强制】默认证据门与查询改写是兜底，不是判定能力，禁止用它们的绿灯冒充检索质量：
+  - 证据门不得写成「整条 query 原样出现在正文里」。真实提问几乎不逐字出现，那样
+    `EVIDENCE_SUFFICIENT` 永不触发，循环只能烧到预算上限（真机 20 题：0 次触发、
+    10 次 `DUPLICATE_CANDIDATES`、10 次远端预算耗尽）。
+  - 现默认门按原子术语（ASCII 术语 + 中文 2-gram，`TextAnalyzer`）覆盖率 ≥ 0.4。
+    阈值由分词方式决定而非调参：相邻 2-gram 全切会产出大量跨词边界噪声 gram，
+    标准答案的覆盖率天花板本身就在 0.5 附近。**禁止为了让评测通过继续压低这个阈值**，
+    那是对二十道题过拟合，会让无关证据也判足。
+  - 真机结论：修完覆盖率门后 `EVIDENCE_SUFFICIENT` 仍为 0，词面门判不了「答上没答上」。
+    要真判定必须替换注入的 `NavigatorEvidenceGate`（判定模型），这是设计留的唯一出口。
+  - 查询改写不得只在原句尾部追加标记（原实现追加 `补充N`）：对嵌入向量几乎无扰动，
+    第二轮会召回同一批命中。必须转向「尚未被已收集证据覆盖」的术语，
+    因此 `NavigatorQueryRefiner` 必须能看到已收集证据——只给计数版的
+    `NavigatorRoundRecord` 改不出方向。真机对照：`DUPLICATE_CANDIDATES` 10 → 0。
+- 【强制】谈检索质量必须报「自检索」与「问答」两类数字，且不得互相冒充：正文中段自查
+  （`tmp/search_probe.py` 那种）测的是自检索，Recall@8 = 52/52 不构成问答质量主张。
+  切流决策只认金标问句评测：`bootstrap/src/test/resources/openviking-eval/waimai-gold-questions.json`
+  （45 篇 waimai 库，含 3 道故意不可答题），跑
+  `./mvnw -pl bootstrap -am -Dtest=OpenVikingShadowRetrievalEvaluationRealSmokeTest -Drd.openviking.smoke=true -Dsurefire.failIfNoSpecifiedTests=false test`。
+  金标问句禁止抄正文连续片段，也禁止用含唯一 ASCII token 的合成 fixture，两者都会系统性高估。
+- 【强制】默认 `rd.rag.knowledge-provider-mode` 保持 LOCAL。已测（2026-08-13，dashscope 档，
+  20 道金标问句）：OpenViking Recall@8 = 0.8922、LOCAL = 0.2353，但两条路径对不可答题的
+  误引率都是 1.0，OpenViking 无弃权出口、Token 约 5 倍、p50 约 1.1 s。
+  「LOCAL 很弱」不等于「OPENVIKING 可当唯一读路径」，切流需要另有弃权与证据门证据。
+  报告：`docs/superpowers/specs/2026-08-13-wp7-shadow-retrieval-evaluation-report.md`。
+- 【强制】验证：`./mvnw -pl rag -am -Dtest='KnowledgeEvidenceAllowlistTest,KnowledgeExternalIndexBindingStoreContractTest,OpenVikingProjectionUrisTest,ThreeTierNavigationEngineTest' -Dsurefire.failIfNoSpecifiedTests=false test`；
+  `./mvnw -pl engine -am -Dtest=KnowledgeRetrievalModeRouterTest -Dsurefire.failIfNoSpecifiedTests=false test`。
+
 ### 3.6 聚合根（Aggregate Root）【强制用于"强一致实体群"】
 
 - **已落地**：`KnowledgeDocumentMutationEngine` 是知识写入聚合根，经 `KnowledgeMutationTransactionPort` 提交 document/revision/chunks/vectors/binding/outbox。`KnowledgeWorkspace` 是查询 facade，mutation 方法委托 Engine。
@@ -532,6 +618,13 @@ public RepairContextPackage prepareContext(RepairRagRequest request) {
 - 【强制】会被多实例同时访问的共享可变状态必须通过端口接入分布式锁或数据库原子约束；`synchronized` 只允许用于单进程私有资源保护（如本地文件 append、生命周期关闭保护、测试桩快照）。
 - 【强制】进程内高频局部计数可使用 `java.util.concurrent` 原子类（如限流的 `AtomicInteger` + CAS）。
 - 【强制】并发检索用 `Executors.newVirtualThreadPerTaskExecutor()`（Java 21 虚拟线程），每个通道一个线程，`try-with-resources` 关闭。
+  唯一例外是"结果不进返回值"的旁路探测（如 SHADOW 模式的 OpenViking 探针）：
+  `ExecutorService.close()` 会阻塞到已提交任务结束，用 try-with-resources 等于把旁路探测
+  变成关键路径，与"SHADOW 不得延长角色派发"直接冲突。此类探测必须
+  fire-and-forget（长生命周期 executor + `execute`，不 `close`、不 `get`），
+  且返回值必须来自本地检索、结构上与远端无关
+  （见 `KnowledgeRetrievalModeRouter#launchShadowProbe`：返回值只由
+  `localSearch.search(...)` 产生，恒等性靠构造保证而非靠时序）。
 - 【强制】`CompletableFuture` 聚合多任务时用 `join` 等待，异常会在此抛出，需在调用方处理。
 - 【推荐】耗时操作（记忆加载）用虚拟线程异步化，`.exceptionally(ignored -> List.of()).join()` 做兜底降级。
 

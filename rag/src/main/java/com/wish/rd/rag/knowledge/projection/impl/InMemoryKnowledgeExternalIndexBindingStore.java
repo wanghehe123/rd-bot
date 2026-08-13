@@ -1,6 +1,7 @@
 package com.wish.rd.rag.knowledge.projection.impl;
 
 import com.wish.rd.rag.knowledge.projection.KnowledgeExternalIndexBindingStore;
+import com.wish.rd.rag.knowledge.projection.OpenVikingProjectionUris;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeProjectionStatus;
 import com.wish.rd.rag.knowledge.projection.model.KnowledgeExternalIndexBinding;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -72,6 +73,19 @@ public final class InMemoryKnowledgeExternalIndexBindingStore implements Knowled
             String documentId
     ) {
         return Optional.ofNullable(bindings.get(key(provider, documentId)));
+    }
+
+    @Override
+    public synchronized Optional<KnowledgeExternalIndexBinding> findByProviderAndLongestRemoteUriPrefix(
+            String provider,
+            String hitUri
+    ) {
+        String normalized = provider == null || provider.isBlank() ? "OPENVIKING" : provider.strip().toUpperCase();
+        return bindings.values().stream()
+                .filter(binding -> binding.provider().equals(normalized))
+                .filter(binding -> OpenVikingProjectionUris.isRemoteUriPrefixOf(binding.remoteUri(), hitUri))
+                .max(Comparator.comparingInt((KnowledgeExternalIndexBinding binding) -> binding.remoteUri().length())
+                        .thenComparing(KnowledgeExternalIndexBinding::documentId));
     }
 
     @Override

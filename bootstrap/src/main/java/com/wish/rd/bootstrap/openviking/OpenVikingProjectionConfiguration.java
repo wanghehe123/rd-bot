@@ -15,8 +15,11 @@ import com.wish.rd.rag.knowledge.projection.KnowledgeProjectionBackfillEngine;
 import com.wish.rd.rag.knowledge.projection.KnowledgeProjectionSettlePort;
 import com.wish.rd.rag.knowledge.projection.KnowledgeReconcileFindingStore;
 import com.wish.rd.bootstrap.openviking.impl.DisabledExternalKnowledgeIndexPort;
+import com.wish.rd.bootstrap.openviking.impl.DisabledExternalKnowledgeNavigatorPort;
 import com.wish.rd.bootstrap.openviking.impl.JdkOpenVikingHttpExchange;
 import com.wish.rd.bootstrap.openviking.impl.OpenVikingRestIndexAdapter;
+import com.wish.rd.bootstrap.openviking.impl.OpenVikingRestNavigatorAdapter;
+import com.wish.rd.rag.retrieval.navigator.ExternalKnowledgeNavigatorPort;
 import com.wish.rd.rag.knowledge.projection.model.InventoryBackfillSettings;
 import com.wish.rd.rag.knowledge.projection.model.ProjectionWorkerSettings;
 import com.wish.rd.rag.knowledge.store.KnowledgeDocumentRevisionStore;
@@ -120,6 +123,24 @@ public class OpenVikingProjectionConfiguration {
     @ConditionalOnProperty(name = "rd.openviking.enabled", havingValue = "false", matchIfMissing = true)
     public ExternalKnowledgeIndexPort disabledIndexPort() {
         return new DisabledExternalKnowledgeIndexPort();
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "rd.openviking.enabled", havingValue = "true")
+    public ExternalKnowledgeNavigatorPort openVikingNavigatorPort(
+            OpenVikingHttpExchange exchange,
+            OpenVikingProperties properties
+    ) {
+        return new OpenVikingRestNavigatorAdapter(
+                exchange,
+                () -> apiKey(properties),
+                properties.getOwnedRoot());
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "rd.openviking.enabled", havingValue = "false", matchIfMissing = true)
+    public ExternalKnowledgeNavigatorPort disabledNavigatorPort() {
+        return new DisabledExternalKnowledgeNavigatorPort();
     }
 
     @Bean

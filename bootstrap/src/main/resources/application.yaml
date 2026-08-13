@@ -170,6 +170,14 @@ rd:
       enabled: ${RD_RAG_RETRIEVAL_LOG_ENABLED:true}
       path: ${RD_RAG_RETRIEVAL_LOG_PATH:logs/rag-retrieval.jsonl}
     knowledge-provider-mode: ${RD_RAG_KNOWLEDGE_PROVIDER_MODE:LOCAL}
+    navigator:
+      max-rounds: ${RD_RAG_NAVIGATOR_MAX_ROUNDS:3}
+      l0-candidates: ${RD_RAG_NAVIGATOR_L0_CANDIDATES:20}
+      l1-expansions: ${RD_RAG_NAVIGATOR_L1_EXPANSIONS:6}
+      l2-expansions: ${RD_RAG_NAVIGATOR_L2_EXPANSIONS:3}
+      max-remote-calls: ${RD_RAG_NAVIGATOR_MAX_REMOTE_CALLS:15}
+      token-budget: ${RD_RAG_NAVIGATOR_TOKEN_BUDGET:8000}
+      time-budget: ${RD_RAG_NAVIGATOR_TIME_BUDGET:20s}
   knowledge:
     store: ${RD_KNOWLEDGE_STORE:postgres}
     projection:
