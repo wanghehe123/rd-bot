@@ -5,6 +5,7 @@ import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeOperationStat
 import com.wish.rd.rag.knowledge.projection.model.KnowledgeExternalIndexOperation;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -85,6 +86,60 @@ public interface KnowledgeExternalIndexOutboxStore {
     );
 
     List<KnowledgeExternalIndexOperation> listByDocumentId(String documentId);
+
+    /**
+     * 一篇文档的 outbox 时间线，新的在前。
+     *
+     * @param provider   提供方
+     * @param documentId 逻辑文档 ID
+     * @param limit      最多返回条数
+     * @return 该文档的操作，按更新时间倒序
+     */
+    List<KnowledgeExternalIndexOperation> findByDocument(String provider, String documentId, int limit);
+
+    /**
+     * 按知识库与状态分页。
+     *
+     * @param provider       提供方
+     * @param knowledgeBaseId 知识库 ID
+     * @param status         状态
+     * @param offset         偏移
+     * @param limit          最多返回条数
+     * @return 匹配的操作，新的在前
+     */
+    List<KnowledgeExternalIndexOperation> findByStatus(
+            String provider,
+            String knowledgeBaseId,
+            ExternalKnowledgeOperationStatus status,
+            int offset,
+            int limit
+    );
+
+    /**
+     * 一个知识库各 outbox 状态的行数。
+     *
+     * @param provider        提供方
+     * @param knowledgeBaseId 知识库 ID
+     * @return 状态到计数
+     */
+    Map<ExternalKnowledgeOperationStatus, Long> countByStatus(String provider, String knowledgeBaseId);
+
+    /**
+     * 管理面催 RETRY_WAIT / NEEDS_HUMAN。CAS：row_version 必须匹配。
+     *
+     * <p>{@code RETRY_WAIT} 只把 {@code next_visible_at} 拨到现在，不改状态、不清 attempt。
+     * {@code NEEDS_HUMAN} 走与死信相同的发送边界分流。
+     *
+     * @param eventId            行 ID
+     * @param expectedRowVersion 期望 rowVersion
+     * @param nowEpochMillis     当前时间
+     * @return CAS 成功时返回新行
+     */
+    Optional<KnowledgeExternalIndexOperation> resumeStalled(
+            String eventId,
+            long expectedRowVersion,
+            long nowEpochMillis
+    );
 
     List<KnowledgeExternalIndexOperation> listAll();
 

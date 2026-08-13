@@ -14,7 +14,9 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Component;
 
+import java.util.EnumMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 @Component
@@ -151,6 +153,69 @@ public final class PostgresKnowledgeExternalIndexOutboxStore implements Knowledg
     }
 
     @Override
+    public List<KnowledgeExternalIndexOperation> findByDocument(String provider, String documentId, int limit) {
+        return mapper.selectList(new QueryWrapper<KnowledgeExternalIndexOutboxRow>()
+                        .eq("provider", normalizeProvider(provider))
+                        .eq("document_id", PostgresPersistenceSupport.parseId(documentId))
+                        .orderByDesc("updated_at")
+                        .orderByDesc("event_id")
+                        .last("LIMIT " + Math.max(0, limit)))
+                .stream()
+                .map(this::toOperation)
+                .toList();
+    }
+
+    @Override
+    public List<KnowledgeExternalIndexOperation> findByStatus(
+            String provider,
+            String knowledgeBaseId,
+            ExternalKnowledgeOperationStatus status,
+            int offset,
+            int limit
+    ) {
+        return mapper.selectList(new QueryWrapper<KnowledgeExternalIndexOutboxRow>()
+                        .eq("provider", normalizeProvider(provider))
+                        .eq("knowledge_base_id", PostgresPersistenceSupport.parseId(knowledgeBaseId))
+                        .eq("status", status.name())
+                        .orderByDesc("updated_at")
+                        .orderByDesc("event_id")
+                        .last("LIMIT " + Math.max(0, limit) + " OFFSET " + Math.max(0, offset)))
+                .stream()
+                .map(this::toOperation)
+                .toList();
+    }
+
+    @Override
+    public Map<ExternalKnowledgeOperationStatus, Long> countByStatus(String provider, String knowledgeBaseId) {
+        EnumMap<ExternalKnowledgeOperationStatus, Long> counts =
+                new EnumMap<>(ExternalKnowledgeOperationStatus.class);
+        for (KnowledgeExternalIndexOutboxRow row : mapper.selectList(new QueryWrapper<KnowledgeExternalIndexOutboxRow>()
+                .eq("provider", normalizeProvider(provider))
+                .eq("knowledge_base_id", PostgresPersistenceSupport.parseId(knowledgeBaseId))
+                .select("status"))) {
+            if (row.status == null || row.status.isBlank()) {
+                continue;
+            }
+            counts.merge(ExternalKnowledgeOperationStatus.valueOf(row.status), 1L, Long::sum);
+        }
+        return Map.copyOf(counts);
+    }
+
+    @Override
+    public Optional<KnowledgeExternalIndexOperation> resumeStalled(
+            String eventId,
+            long expectedRowVersion,
+            long nowEpochMillis
+    ) {
+        KnowledgeExternalIndexOutboxRow row = mapper.resumeStalled(
+                PostgresPersistenceSupport.parseId(eventId),
+                expectedRowVersion,
+                PostgresPersistenceSupport.toDateTime(nowEpochMillis)
+        );
+        return Optional.ofNullable(row).map(this::toOperation);
+    }
+
+    @Override
     public List<KnowledgeExternalIndexOperation> listAll() {
         return mapper.selectList(null).stream().map(this::toOperation).toList();
     }
@@ -218,5 +283,9 @@ public final class PostgresKnowledgeExternalIndexOutboxStore implements Knowledg
                 PostgresPersistenceSupport.toEpochMillis(row.createdAt),
                 PostgresPersistenceSupport.toEpochMillis(row.updatedAt)
         );
+    }
+
+    private static String normalizeProvider(String provider) {
+        return provider == null || provider.isBlank() ? "OPENVIKING" : provider.strip().toUpperCase();
     }
 }

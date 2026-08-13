@@ -12,7 +12,9 @@ import com.wish.rd.rag.knowledge.projection.model.KnowledgeExternalIndexBinding;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
+import java.util.EnumMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 @Component
@@ -64,6 +66,45 @@ public final class PostgresKnowledgeExternalIndexBindingStore implements Knowled
                 .stream()
                 .findFirst()
                 .map(this::toBinding);
+    }
+
+    @Override
+    public List<KnowledgeExternalIndexBinding> findByKnowledgeBase(
+            String provider,
+            String knowledgeBaseId,
+            ExternalKnowledgeProjectionStatus projectionStatus,
+            int offset,
+            int limit
+    ) {
+        QueryWrapper<KnowledgeExternalIndexBindingRow> query = new QueryWrapper<KnowledgeExternalIndexBindingRow>()
+                .eq("provider", normalizeProvider(provider))
+                .eq("knowledge_base_id", PostgresPersistenceSupport.parseId(knowledgeBaseId));
+        if (projectionStatus != null) {
+            query.eq("projection_status", projectionStatus.name());
+        }
+        query.orderByDesc("updated_at")
+                .orderByDesc("document_id")
+                .last("LIMIT " + Math.max(0, limit) + " OFFSET " + Math.max(0, offset));
+        return mapper.selectList(query).stream().map(this::toBinding).toList();
+    }
+
+    @Override
+    public Map<ExternalKnowledgeProjectionStatus, Long> countByProjectionStatus(
+            String provider,
+            String knowledgeBaseId
+    ) {
+        EnumMap<ExternalKnowledgeProjectionStatus, Long> counts =
+                new EnumMap<>(ExternalKnowledgeProjectionStatus.class);
+        for (KnowledgeExternalIndexBindingRow row : mapper.selectList(new QueryWrapper<KnowledgeExternalIndexBindingRow>()
+                .eq("provider", normalizeProvider(provider))
+                .eq("knowledge_base_id", PostgresPersistenceSupport.parseId(knowledgeBaseId))
+                .select("projection_status"))) {
+            if (row.projectionStatus == null || row.projectionStatus.isBlank()) {
+                continue;
+            }
+            counts.merge(ExternalKnowledgeProjectionStatus.valueOf(row.projectionStatus), 1L, Long::sum);
+        }
+        return Map.copyOf(counts);
     }
 
     @Override
@@ -130,5 +171,9 @@ public final class PostgresKnowledgeExternalIndexBindingStore implements Knowled
                 PostgresPersistenceSupport.toEpochMillis(row.createdAt),
                 PostgresPersistenceSupport.toEpochMillis(row.updatedAt)
         );
+    }
+
+    private static String normalizeProvider(String provider) {
+        return provider == null || provider.isBlank() ? "OPENVIKING" : provider.strip().toUpperCase();
     }
 }

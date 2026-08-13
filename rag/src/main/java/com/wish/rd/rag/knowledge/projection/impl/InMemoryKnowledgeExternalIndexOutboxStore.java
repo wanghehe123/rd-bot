@@ -8,8 +8,11 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.EnumMap;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -142,6 +145,105 @@ public final class InMemoryKnowledgeExternalIndexOutboxStore implements Knowledg
     }
 
     @Override
+    public synchronized List<KnowledgeExternalIndexOperation> findByDocument(
+            String provider,
+            String documentId,
+            int limit
+    ) {
+        String normalized = normalizeProvider(provider);
+        return operations.values().stream()
+                .filter(operation -> operation.provider().equals(normalized)
+                        && operation.documentId().equals(documentId))
+                .sorted(ADMIN_ORDER)
+                .limit(Math.max(0, limit))
+                .toList();
+    }
+
+    @Override
+    public synchronized List<KnowledgeExternalIndexOperation> findByStatus(
+            String provider,
+            String knowledgeBaseId,
+            ExternalKnowledgeOperationStatus status,
+            int offset,
+            int limit
+    ) {
+        String normalized = normalizeProvider(provider);
+        return operations.values().stream()
+                .filter(operation -> operation.provider().equals(normalized)
+                        && operation.knowledgeBaseId().equals(knowledgeBaseId)
+                        && operation.status() == status)
+                .sorted(ADMIN_ORDER)
+                .skip(Math.max(0, offset))
+                .limit(Math.max(0, limit))
+                .toList();
+    }
+
+    @Override
+    public synchronized Map<ExternalKnowledgeOperationStatus, Long> countByStatus(
+            String provider,
+            String knowledgeBaseId
+    ) {
+        String normalized = normalizeProvider(provider);
+        EnumMap<ExternalKnowledgeOperationStatus, Long> counts =
+                new EnumMap<>(ExternalKnowledgeOperationStatus.class);
+        for (KnowledgeExternalIndexOperation operation : operations.values()) {
+            if (operation.provider().equals(normalized) && operation.knowledgeBaseId().equals(knowledgeBaseId)) {
+                counts.merge(operation.status(), 1L, Long::sum);
+            }
+        }
+        return Map.copyOf(counts);
+    }
+
+    @Override
+    public synchronized Optional<KnowledgeExternalIndexOperation> resumeStalled(
+            String eventId,
+            long expectedRowVersion,
+            long nowEpochMillis
+    ) {
+        KnowledgeExternalIndexOperation current = operations.get(eventId);
+        if (current == null || current.rowVersion() != expectedRowVersion) {
+            return Optional.empty();
+        }
+        if (current.status() == ExternalKnowledgeOperationStatus.RETRY_WAIT) {
+            KnowledgeExternalIndexOperation next = new KnowledgeExternalIndexOperation(
+                    current.eventId(),
+                    current.idempotencyKey(),
+                    current.provider(),
+                    current.operationType(),
+                    current.knowledgeBaseId(),
+                    current.documentId(),
+                    current.syncVersion(),
+                    current.checksum(),
+                    current.remoteUri(),
+                    current.revisionId(),
+                    current.payloadRef(),
+                    current.status(),
+                    current.remoteTaskId(),
+                    current.remoteOperationId(),
+                    "",
+                    0L,
+                    current.attemptCount(),
+                    current.maxAttempts(),
+                    nowEpochMillis,
+                    current.publishedAtEpochMillis(),
+                    current.lastErrorCode(),
+                    current.lastErrorMessage(),
+                    current.rowVersion() + 1L,
+                    current.createdAtEpochMillis(),
+                    nowEpochMillis
+            );
+            operations.put(eventId, next);
+            return Optional.of(next);
+        }
+        if (current.status() == ExternalKnowledgeOperationStatus.NEEDS_HUMAN) {
+            KnowledgeExternalIndexOperation next = current.requeued(nowEpochMillis);
+            operations.put(eventId, next);
+            return Optional.of(next);
+        }
+        return Optional.empty();
+    }
+
+    @Override
     public synchronized List<KnowledgeExternalIndexOperation> listAll() {
         return List.copyOf(operations.values());
     }
@@ -193,4 +295,13 @@ public final class InMemoryKnowledgeExternalIndexOutboxStore implements Knowledg
         return operation.nextVisibleAtEpochMillis() <= nowEpochMillis
                 && (operation.leaseUntilEpochMillis() <= 0L || operation.leaseUntilEpochMillis() <= nowEpochMillis);
     }
+
+    private static String normalizeProvider(String provider) {
+        return provider == null || provider.isBlank() ? "OPENVIKING" : provider.strip().toUpperCase();
+    }
+
+    private static final Comparator<KnowledgeExternalIndexOperation> ADMIN_ORDER =
+            Comparator.comparingLong(KnowledgeExternalIndexOperation::updatedAtEpochMillis)
+                    .reversed()
+                    .thenComparing(KnowledgeExternalIndexOperation::eventId, Comparator.reverseOrder());
 }

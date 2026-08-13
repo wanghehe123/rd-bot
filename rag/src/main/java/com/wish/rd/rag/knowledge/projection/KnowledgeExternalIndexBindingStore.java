@@ -1,8 +1,10 @@
 package com.wish.rd.rag.knowledge.projection;
 
+import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeProjectionStatus;
 import com.wish.rd.rag.knowledge.projection.model.KnowledgeExternalIndexBinding;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -27,6 +29,33 @@ public interface KnowledgeExternalIndexBindingStore {
     );
 
     Optional<KnowledgeExternalIndexBinding> findByProviderAndDocumentId(String provider, String documentId);
+
+    /**
+     * 一个知识库的绑定，可按投影状态过滤。
+     *
+     * @param provider          提供方
+     * @param knowledgeBaseId   知识库 ID
+     * @param projectionStatus  可选状态过滤，null 表示不过滤
+     * @param offset            偏移
+     * @param limit             最多返回条数
+     * @return 匹配的绑定，新的在前
+     */
+    List<KnowledgeExternalIndexBinding> findByKnowledgeBase(
+            String provider,
+            String knowledgeBaseId,
+            ExternalKnowledgeProjectionStatus projectionStatus,
+            int offset,
+            int limit
+    );
+
+    /**
+     * 一个知识库各 projection_status 的行数。
+     *
+     * @param provider        提供方
+     * @param knowledgeBaseId 知识库 ID
+     * @return 状态到计数
+     */
+    Map<ExternalKnowledgeProjectionStatus, Long> countByProjectionStatus(String provider, String knowledgeBaseId);
 
     List<KnowledgeExternalIndexBinding> listAll();
 

@@ -7,6 +7,7 @@ import com.wish.rd.rag.knowledge.projection.KnowledgeExternalIndexOutboxStore;
 import com.wish.rd.rag.knowledge.projection.KnowledgeExternalIndexPollEngine;
 import com.wish.rd.rag.knowledge.projection.KnowledgeExternalIndexReconcileEngine;
 import com.wish.rd.rag.knowledge.projection.KnowledgeExternalIndexSyncEngine;
+import com.wish.rd.rag.knowledge.projection.KnowledgeProjectionAdminEngine;
 import com.wish.rd.rag.knowledge.projection.KnowledgeProjectionSettlePort;
 import com.wish.rd.rag.knowledge.projection.KnowledgeReconcileFindingStore;
 import com.wish.rd.bootstrap.openviking.impl.DisabledExternalKnowledgeIndexPort;
@@ -14,6 +15,7 @@ import com.wish.rd.bootstrap.openviking.impl.JdkOpenVikingHttpExchange;
 import com.wish.rd.bootstrap.openviking.impl.OpenVikingRestIndexAdapter;
 import com.wish.rd.rag.knowledge.projection.model.ProjectionWorkerSettings;
 import com.wish.rd.rag.knowledge.store.KnowledgeDocumentRevisionStore;
+import com.wish.rd.rag.knowledge.store.KnowledgeDocumentStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -139,6 +141,28 @@ public class OpenVikingProjectionConfiguration {
     ) {
         return new KnowledgeExternalIndexPollEngine(
                 indexPort, outboxStore, bindingStore, settlePort, settings, projectionLeaseOwner);
+    }
+
+    @Bean
+    public KnowledgeProjectionAdminEngine knowledgeProjectionAdminEngine(
+            ExternalKnowledgeIndexPort indexPort,
+            KnowledgeExternalIndexBindingStore bindingStore,
+            KnowledgeExternalIndexOutboxStore outboxStore,
+            KnowledgeReconcileFindingStore findingStore,
+            KnowledgeDocumentStore documentStore,
+            KnowledgeExternalIndexReconcileEngine reconcileEngine,
+            ProjectionWorkerSettings settings,
+            SnowflakeIdGenerator idGenerator
+    ) {
+        return new KnowledgeProjectionAdminEngine(
+                indexPort,
+                bindingStore,
+                outboxStore,
+                findingStore,
+                documentStore,
+                reconcileEngine,
+                settings,
+                idGenerator::nextIdString);
     }
 
     @Bean

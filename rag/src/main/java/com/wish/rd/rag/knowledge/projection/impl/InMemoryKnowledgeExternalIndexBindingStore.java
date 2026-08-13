@@ -1,12 +1,16 @@
 package com.wish.rd.rag.knowledge.projection.impl;
 
 import com.wish.rd.rag.knowledge.projection.KnowledgeExternalIndexBindingStore;
+import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeProjectionStatus;
 import com.wish.rd.rag.knowledge.projection.model.KnowledgeExternalIndexBinding;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
+import java.util.Comparator;
+import java.util.EnumMap;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -71,6 +75,41 @@ public final class InMemoryKnowledgeExternalIndexBindingStore implements Knowled
     }
 
     @Override
+    public synchronized List<KnowledgeExternalIndexBinding> findByKnowledgeBase(
+            String provider,
+            String knowledgeBaseId,
+            ExternalKnowledgeProjectionStatus projectionStatus,
+            int offset,
+            int limit
+    ) {
+        String normalized = provider == null || provider.isBlank() ? "OPENVIKING" : provider.strip().toUpperCase();
+        return bindings.values().stream()
+                .filter(binding -> binding.provider().equals(normalized)
+                        && binding.knowledgeBaseId().equals(knowledgeBaseId)
+                        && (projectionStatus == null || binding.projectionStatus() == projectionStatus))
+                .sorted(ADMIN_ORDER)
+                .skip(Math.max(0, offset))
+                .limit(Math.max(0, limit))
+                .toList();
+    }
+
+    @Override
+    public synchronized Map<ExternalKnowledgeProjectionStatus, Long> countByProjectionStatus(
+            String provider,
+            String knowledgeBaseId
+    ) {
+        String normalized = provider == null || provider.isBlank() ? "OPENVIKING" : provider.strip().toUpperCase();
+        EnumMap<ExternalKnowledgeProjectionStatus, Long> counts =
+                new EnumMap<>(ExternalKnowledgeProjectionStatus.class);
+        for (KnowledgeExternalIndexBinding binding : bindings.values()) {
+            if (binding.provider().equals(normalized) && binding.knowledgeBaseId().equals(knowledgeBaseId)) {
+                counts.merge(binding.projectionStatus(), 1L, Long::sum);
+            }
+        }
+        return Map.copyOf(counts);
+    }
+
+    @Override
     public synchronized List<KnowledgeExternalIndexBinding> listAll() {
         return List.copyOf(bindings.values());
     }
@@ -83,4 +122,9 @@ public final class InMemoryKnowledgeExternalIndexBindingStore implements Knowled
     private static String key(String provider, String documentId) {
         return provider + "\0" + documentId;
     }
+
+    private static final Comparator<KnowledgeExternalIndexBinding> ADMIN_ORDER =
+            Comparator.comparingLong(KnowledgeExternalIndexBinding::updatedAtEpochMillis)
+                    .reversed()
+                    .thenComparing(KnowledgeExternalIndexBinding::documentId, Comparator.reverseOrder());
 }

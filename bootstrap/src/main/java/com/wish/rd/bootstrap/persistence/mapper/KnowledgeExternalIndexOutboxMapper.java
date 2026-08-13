@@ -199,4 +199,36 @@ public interface KnowledgeExternalIndexOutboxMapper extends BaseMapper<Knowledge
             @Param("expectedRowVersion") long expectedRowVersion,
             @Param("now") OffsetDateTime now
     );
+
+    /**
+     * 管理面催 RETRY_WAIT / NEEDS_HUMAN。RETRY_WAIT 只拨可见时间；
+     * NEEDS_HUMAN 按发送边界分流，已发出的行不得回到 PENDING。
+     */
+    @Select("""
+            UPDATE knowledge_external_index_outbox
+               SET status = CASE
+                       WHEN status = 'RETRY_WAIT' THEN status
+                       WHEN remote_operation_id = '' THEN 'PENDING'
+                       ELSE 'UNKNOWN_REMOTE_RESULT'
+                   END,
+                   attempt_count = CASE
+                       WHEN status = 'RETRY_WAIT' THEN attempt_count
+                       WHEN remote_operation_id = '' THEN 0
+                       ELSE attempt_count
+                   END,
+                   lease_owner = '',
+                   lease_until = NULL,
+                   next_visible_at = #{now},
+                   row_version = row_version + 1,
+                   updated_at = #{now}
+             WHERE event_id = #{eventId}
+               AND status IN ('RETRY_WAIT', 'NEEDS_HUMAN')
+               AND row_version = #{expectedRowVersion}
+            RETURNING *
+            """)
+    KnowledgeExternalIndexOutboxRow resumeStalled(
+            @Param("eventId") long eventId,
+            @Param("expectedRowVersion") long expectedRowVersion,
+            @Param("now") OffsetDateTime now
+    );
 }
