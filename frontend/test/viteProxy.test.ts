@@ -1,7 +1,23 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import viteConfig from "../vite.config.ts";
+
+const OPENVIKING_ADMIN_API_PATHS = [
+  "/admin/knowledge-base/123/openviking/overview",
+  "/admin/knowledge-base/123/openviking/documents",
+  "/admin/knowledge-base/123/openviking/documents/2001",
+  "/admin/knowledge-base/123/openviking/tree",
+  "/admin/knowledge-base/123/openviking/health",
+  "/admin/knowledge-base/123/openviking/dead-letters",
+  "/admin/knowledge-base/123/openviking/tombstones",
+  "/admin/knowledge-base/123/openviking/documents/2001/retry",
+  "/admin/knowledge-base/123/openviking/documents/2001/verify",
+  "/admin/knowledge-base/123/openviking/documents/2001/rebuild",
+  "/admin/knowledge-base/123/openviking/dead-letters/8101/requeue",
+  "/admin/knowledge-base/123/openviking/reconcile"
+];
 
 test("proxies task draft API requests to Spring Boot", () => {
   assert.equal(typeof viteConfig, "object");
@@ -117,20 +133,31 @@ test("bypasses OpenViking knowledge SPA navigation but never nested knowledge-ba
   assert.equal(bypass?.(navigation("/admin/knowledge/123/openviking")), "/admin/knowledge/123/openviking");
   assert.equal(bypass?.(navigation("/admin/knowledge/123/openviking/")), "/admin/knowledge/123/openviking/");
 
-  for (const apiPath of [
-    "/admin/knowledge-base/123/openviking/overview",
-    "/admin/knowledge-base/123/openviking/documents",
-    "/admin/knowledge-base/123/openviking/documents/2001",
-    "/admin/knowledge-base/123/openviking/tree",
-    "/admin/knowledge-base/123/openviking/health",
-    "/admin/knowledge-base/123/openviking/dead-letters",
-    "/admin/knowledge-base/123/openviking/tombstones",
-    "/admin/knowledge-base/123/openviking/documents/2001/retry",
-    "/admin/knowledge-base/123/openviking/documents/2001/verify",
-    "/admin/knowledge-base/123/openviking/documents/2001/rebuild",
-    "/admin/knowledge-base/123/openviking/dead-letters/8101/requeue",
-    "/admin/knowledge-base/123/openviking/reconcile"
-  ]) {
+  for (const apiPath of OPENVIKING_ADMIN_API_PATHS) {
     assert.equal(bypass?.(navigation(apiPath)), undefined, `${apiPath} must not match the knowledge SPA bypass`);
   }
+});
+
+test("OpenViking service and SPA route stay aligned with the 12 nested admin APIs", () => {
+  assert.equal(OPENVIKING_ADMIN_API_PATHS.length, 12);
+  const service = readFileSync(new URL("../src/services/openVikingKnowledgeService.ts", import.meta.url), "utf8");
+  const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+  assert.match(app, /knowledge\/:kbId\/openviking/);
+  assert.match(service, /\/admin\/knowledge-base\/\$\{kbId\}\/openviking/);
+  for (const fragment of [
+    "/overview",
+    "/documents",
+    "/tree",
+    "/health",
+    "/dead-letters",
+    "/tombstones",
+    "/retry",
+    "/verify",
+    "/rebuild",
+    "/requeue",
+    "/reconcile"
+  ]) {
+    assert.match(service, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), fragment);
+  }
+  assert.doesNotMatch(service, /\/admin\/knowledge\/\$\{kbId\}\/openviking/);
 });
