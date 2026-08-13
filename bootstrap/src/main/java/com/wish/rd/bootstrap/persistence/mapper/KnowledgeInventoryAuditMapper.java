@@ -84,13 +84,17 @@ public interface KnowledgeInventoryAuditMapper {
                            AND other.superseded_by_document_id IS NULL
                     )
                )
-               AND (#{afterDocumentId} IS NULL OR d.id > #{afterDocumentId})
+               AND d.id > #{afterDocumentId}
              ORDER BY d.id
              LIMIT #{limit}
             """)
+    /**
+     * 键集分页。首页传 0 而不是 null：文档 id 是正的雪花 id，{@code d.id > 0} 恒真，
+     * 而 {@code #{param} IS NULL} 会让 PostgreSQL 无法推断参数类型并直接报错。
+     */
     List<KnowledgeDocumentRow> nextBackfillCandidates(
             @Param("knowledgeBaseId") Long knowledgeBaseId,
-            @Param("afterDocumentId") Long afterDocumentId,
+            @Param("afterDocumentId") long afterDocumentId,
             @Param("limit") int limit
     );
 

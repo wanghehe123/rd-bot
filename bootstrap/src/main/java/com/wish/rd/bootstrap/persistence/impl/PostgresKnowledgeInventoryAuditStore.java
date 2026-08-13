@@ -66,8 +66,8 @@ public class PostgresKnowledgeInventoryAuditStore implements KnowledgeInventoryA
         if (limit <= 0) {
             return List.of();
         }
-        Long afterId = afterDocumentId == null || afterDocumentId.isBlank()
-                ? null
+        long afterId = afterDocumentId == null || afterDocumentId.isBlank()
+                ? 0L
                 : PostgresPersistenceSupport.parseId(afterDocumentId);
         return mapper.nextBackfillCandidates(parseId(knowledgeBaseId), afterId, limit).stream()
                 .map(this::toDocument)

@@ -24,8 +24,8 @@ public interface KnowledgeReconcileFindingMapper extends BaseMapper<KnowledgeRec
                AND finding_type = #{findingType}
                AND remote_uri = #{remoteUri}
                AND (
-                    (#{documentId} IS NULL AND document_id IS NULL)
-                    OR document_id = #{documentId}
+                    (#{documentId,jdbcType=BIGINT} IS NULL AND document_id IS NULL)
+                    OR document_id = #{documentId,jdbcType=BIGINT}
                )
              LIMIT 1
             """)
