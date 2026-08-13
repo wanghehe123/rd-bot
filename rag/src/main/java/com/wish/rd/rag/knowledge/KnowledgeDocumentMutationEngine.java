@@ -8,6 +8,7 @@ import com.wish.rd.rag.ingestion.model.IngestionTaskCommand;
 import com.wish.rd.rag.ingestion.model.IngestionTaskResult;
 import com.wish.rd.rag.ingestion.model.PipelineDefinition;
 import com.wish.rd.rag.knowledge.model.KnowledgeBase;
+import com.wish.rd.rag.knowledge.model.KnowledgeBaseLifecycle;
 import com.wish.rd.rag.knowledge.model.KnowledgeChunk;
 import com.wish.rd.rag.knowledge.model.KnowledgeDocument;
 import com.wish.rd.rag.knowledge.model.KnowledgeDocumentRevision;
@@ -15,6 +16,8 @@ import com.wish.rd.rag.knowledge.model.KnowledgeDocumentSource;
 import com.wish.rd.rag.knowledge.model.KnowledgeDocumentStatus;
 import com.wish.rd.rag.knowledge.model.WriteKnowledgeDocumentCommand;
 import com.wish.rd.rag.knowledge.projection.ExternalIndexIdempotencyKeys;
+import com.wish.rd.rag.knowledge.projection.InventorySupersedeConflictException;
+import com.wish.rd.rag.knowledge.projection.KnowledgeExternalIndexBindingStore;
 import com.wish.rd.rag.knowledge.projection.KnowledgeMutationTransactionPort;
 import com.wish.rd.rag.knowledge.projection.KnowledgeProjectionWakePort;
 import com.wish.rd.rag.knowledge.projection.OpenVikingProjectionUris;
@@ -23,9 +26,17 @@ import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeObservedState
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeOperationStatus;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeOperationType;
 import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeProjectionStatus;
+import com.wish.rd.rag.knowledge.projection.model.InventoryBackfillOutcome;
+import com.wish.rd.rag.knowledge.projection.model.InventoryBackfillStatus;
+import com.wish.rd.rag.knowledge.projection.model.InventorySupersedeOutcome;
 import com.wish.rd.rag.knowledge.projection.model.KnowledgeDocumentMutationBundle;
 import com.wish.rd.rag.knowledge.projection.model.KnowledgeExternalIndexBinding;
 import com.wish.rd.rag.knowledge.projection.model.KnowledgeExternalIndexOperation;
+import com.wish.rd.rag.knowledge.projection.model.KnowledgeProjectionBackfillBundle;
+import com.wish.rd.rag.knowledge.projection.model.KnowledgeProjectionBackfillCommitResult;
+import com.wish.rd.rag.knowledge.projection.model.KnowledgeProjectionSupersedeBundle;
+import com.wish.rd.rag.knowledge.projection.model.KnowledgeProjectionSupersedeLoser;
+import com.wish.rd.rag.knowledge.projection.model.SupersedeTarget;
 import com.wish.rd.rag.knowledge.store.KnowledgeBaseStore;
 import com.wish.rd.rag.knowledge.store.KnowledgeChunkStore;
 import com.wish.rd.rag.knowledge.store.KnowledgeDocumentRevisionStore;
@@ -62,6 +73,7 @@ public final class KnowledgeDocumentMutationEngine implements KnowledgeDocumentM
     private final KnowledgeChunkStore chunkStore;
     private final KnowledgeMutationTransactionPort transactionPort;
     private final KnowledgeProjectionWakePort wakePort;
+    private final KnowledgeExternalIndexBindingStore bindingStore;
 
     public KnowledgeDocumentMutationEngine(
             SnowflakeIdGenerator idGenerator,
@@ -72,6 +84,20 @@ public final class KnowledgeDocumentMutationEngine implements KnowledgeDocumentM
             KnowledgeMutationTransactionPort transactionPort,
             @Autowired(required = false) KnowledgeProjectionWakePort wakePort
     ) {
+        this(idGenerator, baseStore, documentStore, revisionStore, chunkStore, transactionPort, wakePort, null);
+    }
+
+    @Autowired
+    public KnowledgeDocumentMutationEngine(
+            SnowflakeIdGenerator idGenerator,
+            KnowledgeBaseStore baseStore,
+            KnowledgeDocumentStore documentStore,
+            KnowledgeDocumentRevisionStore revisionStore,
+            KnowledgeChunkStore chunkStore,
+            KnowledgeMutationTransactionPort transactionPort,
+            @Autowired(required = false) KnowledgeProjectionWakePort wakePort,
+            @Autowired(required = false) KnowledgeExternalIndexBindingStore bindingStore
+    ) {
         this.idGenerator = Objects.requireNonNull(idGenerator, "idGenerator must not be null");
         this.baseStore = Objects.requireNonNull(baseStore, "baseStore must not be null");
         this.documentStore = Objects.requireNonNull(documentStore, "documentStore must not be null");
@@ -79,6 +105,7 @@ public final class KnowledgeDocumentMutationEngine implements KnowledgeDocumentM
         this.chunkStore = Objects.requireNonNull(chunkStore, "chunkStore must not be null");
         this.transactionPort = Objects.requireNonNull(transactionPort, "transactionPort must not be null");
         this.wakePort = wakePort == null ? KnowledgeProjectionWakePort.noop() : wakePort;
+        this.bindingStore = bindingStore;
     }
 
     @Override
@@ -440,6 +467,192 @@ public final class KnowledgeDocumentMutationEngine implements KnowledgeDocumentM
             ));
         }
         return targets.size();
+    }
+
+    /**
+     * 存量回填：补身份、修订、绑定与 UPSERT，不重切块、不递增 {@code sync_version}。
+     */
+    public InventoryBackfillOutcome backfillProjection(String documentId, long nowEpochMillis) {
+        if (documentId == null || documentId.isBlank()) {
+            return InventoryBackfillOutcome.skipped(
+                    "", InventoryBackfillStatus.SKIPPED_NOT_ELIGIBLE, "document id is blank");
+        }
+        KnowledgeDocument document = documentStore.findById(documentId).orElse(null);
+        if (document == null) {
+            return InventoryBackfillOutcome.skipped(
+                    documentId, InventoryBackfillStatus.SKIPPED_NOT_ELIGIBLE, "document not found");
+        }
+        String ineligible = ineligibleReason(document);
+        if (ineligible != null) {
+            return InventoryBackfillOutcome.skipped(
+                    documentId, InventoryBackfillStatus.SKIPPED_NOT_ELIGIBLE, ineligible);
+        }
+        String identity = document.sourceIdentityKey().isBlank()
+                ? SourceIdentityKeys.from(document.sourceType(), document.sourceToken(), document.sourceUrl())
+                : document.sourceIdentityKey();
+        KnowledgeDocumentRevision revision = revisionStore.findByDocumentIdAndChecksum(
+                        document.id(), document.checksum())
+                .orElseGet(() -> new KnowledgeDocumentRevision(
+                        idGenerator.nextIdString(),
+                        document.id(),
+                        document.syncVersion(),
+                        document.revisionId(),
+                        document.checksum(),
+                        document.mimeType(),
+                        documentStore.rawContent(document.id()),
+                        "rd-bot-default",
+                        "1",
+                        nowEpochMillis
+                ));
+        String operationId = idGenerator.nextIdString();
+        KnowledgeExternalIndexBinding binding = backfillBinding(document, operationId, nowEpochMillis);
+        KnowledgeExternalIndexOperation outbox = projectionOperation(
+                document.withIdentityRevision(identity, revision.id()).withRowVersion(document.rowVersion()),
+                ExternalKnowledgeOperationType.UPSERT_DOCUMENT,
+                nowEpochMillis,
+                operationId
+        );
+        KnowledgeProjectionBackfillCommitResult result = transactionPort.commitBackfill(
+                new KnowledgeProjectionBackfillBundle(
+                        document.id(),
+                        document.rowVersion(),
+                        identity,
+                        revision.id(),
+                        revision,
+                        binding,
+                        outbox,
+                        nowEpochMillis
+                )
+        );
+        return switch (result) {
+            case APPLIED -> {
+                wakeQuietly();
+                yield InventoryBackfillOutcome.applied(document.id());
+            }
+            case ALREADY_BOUND -> InventoryBackfillOutcome.skipped(
+                    document.id(),
+                    InventoryBackfillStatus.SKIPPED_ALREADY_BOUND,
+                    "document already has an external index binding");
+            case CONCURRENT_MODIFICATION -> InventoryBackfillOutcome.skipped(
+                    document.id(),
+                    InventoryBackfillStatus.SKIPPED_CONCURRENT_MODIFICATION,
+                    "document row_version changed during backfill");
+        };
+    }
+
+    /**
+     * 操作员确认的重复收敛。任一 loser CAS 失败则整笔不提交。
+     */
+    public InventorySupersedeOutcome supersedeDuplicate(
+            String survivorId,
+            List<SupersedeTarget> losers,
+            long nowEpochMillis
+    ) {
+        if (survivorId == null || survivorId.isBlank()) {
+            return InventorySupersedeOutcome.conflict("survivor id is blank");
+        }
+        if (losers == null || losers.isEmpty()) {
+            return InventorySupersedeOutcome.conflict("losers must not be empty");
+        }
+        KnowledgeDocument survivor = documentStore.findById(survivorId).orElse(null);
+        if (survivor == null || !survivor.visible()) {
+            return InventorySupersedeOutcome.conflict("survivor is not a visible document");
+        }
+        ArrayList<KnowledgeProjectionSupersedeLoser> bundleLosers = new ArrayList<>();
+        for (SupersedeTarget target : losers) {
+            if (target == null || target.documentId().isBlank()) {
+                return InventorySupersedeOutcome.conflict("loser id is blank");
+            }
+            if (survivorId.equals(target.documentId())) {
+                return InventorySupersedeOutcome.conflict("survivor cannot supersede itself");
+            }
+            KnowledgeDocument loser = documentStore.findById(target.documentId()).orElse(null);
+            if (loser == null) {
+                return InventorySupersedeOutcome.conflict("loser not found: " + target.documentId());
+            }
+            if (!survivor.knowledgeBaseId().equals(loser.knowledgeBaseId())) {
+                return InventorySupersedeOutcome.conflict("loser is not in the survivor knowledge base");
+            }
+            KnowledgeExternalIndexBinding absent = null;
+            KnowledgeExternalIndexOperation deleteOperation = null;
+            if (bindingStore != null) {
+                Optional<KnowledgeExternalIndexBinding> existing = bindingStore.findByProviderAndDocumentId(
+                        PROVIDER, loser.id());
+                if (existing.isPresent()) {
+                    String operationId = idGenerator.nextIdString();
+                    absent = projectionBinding(loser, ExternalKnowledgeDesiredState.ABSENT, nowEpochMillis, operationId);
+                    deleteOperation = projectionOperation(
+                            loser, ExternalKnowledgeOperationType.DELETE_DOCUMENT, nowEpochMillis, operationId);
+                }
+            }
+            bundleLosers.add(new KnowledgeProjectionSupersedeLoser(
+                    loser.id(), target.expectedRowVersion(), absent, deleteOperation));
+        }
+        try {
+            transactionPort.commitSupersede(new KnowledgeProjectionSupersedeBundle(
+                    survivorId, bundleLosers, nowEpochMillis));
+            wakeQuietly();
+            return InventorySupersedeOutcome.applied();
+        } catch (InventorySupersedeConflictException exception) {
+            return InventorySupersedeOutcome.conflict(exception.getMessage());
+        }
+    }
+
+    private String ineligibleReason(KnowledgeDocument document) {
+        if (!document.visible()) {
+            return "document is not visible";
+        }
+        KnowledgeBase base = baseStore.findById(document.knowledgeBaseId()).orElse(null);
+        if (base == null || base.lifecycleStatus() != KnowledgeBaseLifecycle.ACTIVE) {
+            return "knowledge base is not active";
+        }
+        if (document.localOnlyOverride()) {
+            return "document is marked local-only override";
+        }
+        if (document.chunkCount() <= 0 || document.checksum().isBlank()) {
+            return "document has no indexable content";
+        }
+        return null;
+    }
+
+    private KnowledgeExternalIndexBinding backfillBinding(
+            KnowledgeDocument document,
+            String operationId,
+            long now
+    ) {
+        String remoteUri = OpenVikingProjectionUris.documentRootUri(document.knowledgeBaseId(), document.id());
+        return new KnowledgeExternalIndexBinding(
+                PROVIDER,
+                document.id(),
+                document.knowledgeBaseId(),
+                remoteUri,
+                OpenVikingProjectionUris.ownershipMarker(document.knowledgeBaseId(), document.id()),
+                ExternalKnowledgeDesiredState.PRESENT,
+                document.syncVersion(),
+                document.checksum(),
+                ExternalKnowledgeObservedState.UNKNOWN,
+                0L,
+                "",
+                ExternalKnowledgeProjectionStatus.PENDING,
+                operationId,
+                "",
+                "",
+                0L,
+                0L,
+                "",
+                "",
+                0L,
+                now,
+                now
+        );
+    }
+
+    private void wakeQuietly() {
+        try {
+            wakePort.wake();
+        } catch (RejectedExecutionException ignored) {
+            // PENDING outbox is already durable.
+        }
     }
 
     private KnowledgeDocument indexDocument(

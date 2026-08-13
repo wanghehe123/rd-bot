@@ -268,6 +268,99 @@ public record KnowledgeDocument(
         );
     }
 
+    public KnowledgeDocument withSupersededBy(String survivorDocumentId) {
+        return new KnowledgeDocument(
+                id,
+                knowledgeBaseId,
+                sourceName,
+                knowledgeType,
+                mimeType,
+                status,
+                enabled,
+                chunkCount,
+                nodeLogs,
+                createdAtEpochMillis,
+                sourceType,
+                sourceToken,
+                sourceUrl,
+                revisionId,
+                checksum,
+                rawPreview,
+                lastSyncedAtEpochMillis,
+                nextRefreshAtEpochMillis,
+                syncVersion,
+                currentRevisionId,
+                sourceIdentityKey,
+                deletedAtEpochMillis,
+                purgeAfterEpochMillis,
+                survivorDocumentId,
+                rowVersion + 1L,
+                localOnlyOverride
+        );
+    }
+
+    public KnowledgeDocument withIdentityRevision(String newIdentityKey, String newCurrentRevisionId) {
+        return new KnowledgeDocument(
+                id,
+                knowledgeBaseId,
+                sourceName,
+                knowledgeType,
+                mimeType,
+                status,
+                enabled,
+                chunkCount,
+                nodeLogs,
+                createdAtEpochMillis,
+                sourceType,
+                sourceToken,
+                sourceUrl,
+                revisionId,
+                checksum,
+                rawPreview,
+                lastSyncedAtEpochMillis,
+                nextRefreshAtEpochMillis,
+                syncVersion,
+                newCurrentRevisionId,
+                newIdentityKey,
+                deletedAtEpochMillis,
+                purgeAfterEpochMillis,
+                supersededByDocumentId,
+                rowVersion + 1L,
+                localOnlyOverride
+        );
+    }
+
+    public KnowledgeDocument withRowVersion(long newRowVersion) {
+        return new KnowledgeDocument(
+                id,
+                knowledgeBaseId,
+                sourceName,
+                knowledgeType,
+                mimeType,
+                status,
+                enabled,
+                chunkCount,
+                nodeLogs,
+                createdAtEpochMillis,
+                sourceType,
+                sourceToken,
+                sourceUrl,
+                revisionId,
+                checksum,
+                rawPreview,
+                lastSyncedAtEpochMillis,
+                nextRefreshAtEpochMillis,
+                syncVersion,
+                currentRevisionId,
+                sourceIdentityKey,
+                deletedAtEpochMillis,
+                purgeAfterEpochMillis,
+                supersededByDocumentId,
+                newRowVersion,
+                localOnlyOverride
+        );
+    }
+
     public KnowledgeDocument withSoftDeleted(long deletedAt, long purgeAfter) {
         return copy(
                 sourceName,

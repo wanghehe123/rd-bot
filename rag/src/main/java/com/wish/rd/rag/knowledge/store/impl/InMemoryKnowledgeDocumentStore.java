@@ -75,4 +75,47 @@ public final class InMemoryKnowledgeDocumentStore implements KnowledgeDocumentSt
         documents.remove(documentId);
         rawContents.remove(documentId);
     }
+
+    @Override
+    public synchronized boolean updateIdentityIfUnchanged(
+            String documentId,
+            long expectedRowVersion,
+            String sourceIdentityKey,
+            String currentRevisionId,
+            long nowEpochMillis
+    ) {
+        KnowledgeDocument current = documents.get(documentId);
+        if (current == null) {
+            return false;
+        }
+        if (current.rowVersion() != expectedRowVersion) {
+            return false;
+        }
+        if (!current.sourceIdentityKey().isBlank()) {
+            return false;
+        }
+        documents.put(documentId, current.withIdentityRevision(sourceIdentityKey, currentRevisionId));
+        return true;
+    }
+
+    @Override
+    public synchronized boolean markSupersededIfVersionMatches(
+            String documentId,
+            long expectedRowVersion,
+            String survivorDocumentId,
+            long nowEpochMillis
+    ) {
+        KnowledgeDocument current = documents.get(documentId);
+        if (current == null) {
+            return false;
+        }
+        if (current.rowVersion() != expectedRowVersion) {
+            return false;
+        }
+        if (!current.supersededByDocumentId().isBlank() || current.deletedAtEpochMillis() > 0L) {
+            return false;
+        }
+        documents.put(documentId, current.withSupersededBy(survivorDocumentId));
+        return true;
+    }
 }

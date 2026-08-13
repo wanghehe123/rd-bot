@@ -119,6 +119,11 @@ public final class PostgresKnowledgeExternalIndexBindingStore implements Knowled
                 .eq("document_id", PostgresPersistenceSupport.parseId(documentId)));
     }
 
+    @Override
+    public boolean insertIfAbsent(KnowledgeExternalIndexBinding binding) {
+        return mapper.insertIfAbsent(toRow(binding)) > 0;
+    }
+
     private KnowledgeExternalIndexBindingRow toRow(KnowledgeExternalIndexBinding binding) {
         KnowledgeExternalIndexBindingRow row = new KnowledgeExternalIndexBindingRow();
         row.provider = binding.provider();

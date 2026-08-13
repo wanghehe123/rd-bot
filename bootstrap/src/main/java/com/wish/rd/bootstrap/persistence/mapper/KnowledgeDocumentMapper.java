@@ -4,6 +4,10 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.wish.rd.bootstrap.persistence.entity.KnowledgeDocumentRow;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
+
+import java.time.OffsetDateTime;
 
 @Mapper
 public interface KnowledgeDocumentMapper extends BaseMapper<KnowledgeDocumentRow> {
@@ -51,4 +55,41 @@ public interface KnowledgeDocumentMapper extends BaseMapper<KnowledgeDocumentRow
                 local_only_override = EXCLUDED.local_only_override
             """)
     void upsert(KnowledgeDocumentRow row);
+
+    @Select("""
+            UPDATE knowledge_documents
+               SET source_identity_key = #{sourceIdentityKey},
+                   current_revision_id = #{currentRevisionId},
+                   row_version = row_version + 1,
+                   updated_at = #{updatedAt}
+             WHERE id = #{id}
+               AND row_version = #{expectedRowVersion}
+               AND source_identity_key IS NULL
+            RETURNING *
+            """)
+    KnowledgeDocumentRow updateIdentityIfUnchanged(
+            @Param("id") Long id,
+            @Param("expectedRowVersion") long expectedRowVersion,
+            @Param("sourceIdentityKey") String sourceIdentityKey,
+            @Param("currentRevisionId") Long currentRevisionId,
+            @Param("updatedAt") OffsetDateTime updatedAt
+    );
+
+    @Select("""
+            UPDATE knowledge_documents
+               SET superseded_by_document_id = #{survivorDocumentId},
+                   row_version = row_version + 1,
+                   updated_at = #{updatedAt}
+             WHERE id = #{id}
+               AND row_version = #{expectedRowVersion}
+               AND superseded_by_document_id IS NULL
+               AND deleted_at IS NULL
+            RETURNING *
+            """)
+    KnowledgeDocumentRow markSupersededIfVersionMatches(
+            @Param("id") Long id,
+            @Param("expectedRowVersion") long expectedRowVersion,
+            @Param("survivorDocumentId") Long survivorDocumentId,
+            @Param("updatedAt") OffsetDateTime updatedAt
+    );
 }

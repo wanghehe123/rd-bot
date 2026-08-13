@@ -111,6 +111,40 @@ public final class PostgresKnowledgeDocumentStore implements KnowledgeDocumentSt
         mapper.deleteById(PostgresPersistenceSupport.parseId(documentId));
     }
 
+    @Override
+    public boolean updateIdentityIfUnchanged(
+            String documentId,
+            long expectedRowVersion,
+            String sourceIdentityKey,
+            String currentRevisionId,
+            long nowEpochMillis
+    ) {
+        KnowledgeDocumentRow updated = mapper.updateIdentityIfUnchanged(
+                PostgresPersistenceSupport.parseId(documentId),
+                expectedRowVersion,
+                blankToNull(sourceIdentityKey),
+                PostgresPersistenceSupport.parseOptionalId(currentRevisionId),
+                PostgresPersistenceSupport.toDateTime(nowEpochMillis)
+        );
+        return updated != null;
+    }
+
+    @Override
+    public boolean markSupersededIfVersionMatches(
+            String documentId,
+            long expectedRowVersion,
+            String survivorDocumentId,
+            long nowEpochMillis
+    ) {
+        KnowledgeDocumentRow updated = mapper.markSupersededIfVersionMatches(
+                PostgresPersistenceSupport.parseId(documentId),
+                expectedRowVersion,
+                PostgresPersistenceSupport.parseId(survivorDocumentId),
+                PostgresPersistenceSupport.toDateTime(nowEpochMillis)
+        );
+        return updated != null;
+    }
+
     private KnowledgeDocumentRow toRow(KnowledgeDocument document, String rawContent) {
         OffsetDateTime now = OffsetDateTime.now();
         KnowledgeDocumentRow row = new KnowledgeDocumentRow();

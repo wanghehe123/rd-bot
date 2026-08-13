@@ -60,4 +60,11 @@ public interface KnowledgeExternalIndexBindingStore {
     List<KnowledgeExternalIndexBinding> listAll();
 
     void delete(String provider, String documentId);
+
+    /**
+     * 插入绑定，已存在时不覆盖 {@code observed_*}。
+     *
+     * @return 新插入时为 true，已存在时为 false
+     */
+    boolean insertIfAbsent(KnowledgeExternalIndexBinding binding);
 }

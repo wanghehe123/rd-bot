@@ -1,10 +1,16 @@
 package com.wish.rd.bootstrap.persistence.impl;
 
 import com.wish.rd.rag.knowledge.model.KnowledgeDocument;
+import com.wish.rd.rag.knowledge.projection.InventorySupersedeConflictException;
 import com.wish.rd.rag.knowledge.projection.KnowledgeExternalIndexBindingStore;
 import com.wish.rd.rag.knowledge.projection.KnowledgeExternalIndexOutboxStore;
 import com.wish.rd.rag.knowledge.projection.KnowledgeMutationTransactionPort;
 import com.wish.rd.rag.knowledge.projection.model.KnowledgeDocumentMutationBundle;
+import com.wish.rd.rag.knowledge.projection.model.KnowledgeExternalIndexBinding;
+import com.wish.rd.rag.knowledge.projection.model.KnowledgeProjectionBackfillBundle;
+import com.wish.rd.rag.knowledge.projection.model.KnowledgeProjectionBackfillCommitResult;
+import com.wish.rd.rag.knowledge.projection.model.KnowledgeProjectionSupersedeBundle;
+import com.wish.rd.rag.knowledge.projection.model.KnowledgeProjectionSupersedeLoser;
 import com.wish.rd.rag.knowledge.store.KnowledgeBaseStore;
 import com.wish.rd.rag.knowledge.store.KnowledgeChunkStore;
 import com.wish.rd.rag.knowledge.store.KnowledgeDocumentRevisionStore;
@@ -82,5 +88,67 @@ public class PostgresKnowledgeMutationTransactionAdapter implements KnowledgeMut
             baseStore.save(bundle.knowledgeBase());
         }
         return saved;
+    }
+
+    @Override
+    @Transactional
+    public KnowledgeProjectionBackfillCommitResult commitBackfill(KnowledgeProjectionBackfillBundle bundle) {
+        Objects.requireNonNull(bundle, "bundle must not be null");
+        if (bindingStore.findByProviderAndDocumentId(
+                KnowledgeExternalIndexBinding.OPENVIKING, bundle.documentId()).isPresent()) {
+            return KnowledgeProjectionBackfillCommitResult.ALREADY_BOUND;
+        }
+        KnowledgeDocument current = documentStore.findById(bundle.documentId()).orElse(null);
+        if (current == null) {
+            return KnowledgeProjectionBackfillCommitResult.CONCURRENT_MODIFICATION;
+        }
+        if (current.sourceIdentityKey().isBlank()) {
+            boolean cas = documentStore.updateIdentityIfUnchanged(
+                    bundle.documentId(),
+                    bundle.expectedRowVersion(),
+                    bundle.sourceIdentityKey(),
+                    bundle.currentRevisionId(),
+                    bundle.nowEpochMillis());
+            if (!cas) {
+                return KnowledgeProjectionBackfillCommitResult.CONCURRENT_MODIFICATION;
+            }
+        } else if (current.rowVersion() != bundle.expectedRowVersion()) {
+            return KnowledgeProjectionBackfillCommitResult.CONCURRENT_MODIFICATION;
+        }
+        if (bundle.revision() != null
+                && revisionStore.findByDocumentIdAndChecksum(
+                        bundle.revision().documentId(), bundle.revision().checksum()).isEmpty()) {
+            revisionStore.save(bundle.revision());
+        }
+        if (bundle.binding() != null) {
+            bindingStore.insertIfAbsent(bundle.binding());
+        }
+        if (bundle.outbox() != null) {
+            outboxStore.enqueue(bundle.outbox());
+        }
+        return KnowledgeProjectionBackfillCommitResult.APPLIED;
+    }
+
+    @Override
+    @Transactional
+    public void commitSupersede(KnowledgeProjectionSupersedeBundle bundle) {
+        Objects.requireNonNull(bundle, "bundle must not be null");
+        for (KnowledgeProjectionSupersedeLoser loser : bundle.losers()) {
+            boolean cas = documentStore.markSupersededIfVersionMatches(
+                    loser.documentId(),
+                    loser.expectedRowVersion(),
+                    bundle.survivorDocumentId(),
+                    bundle.nowEpochMillis());
+            if (!cas) {
+                throw new InventorySupersedeConflictException(
+                        "row_version mismatch while superseding " + loser.documentId());
+            }
+            if (loser.absentBinding() != null) {
+                bindingStore.save(loser.absentBinding());
+            }
+            if (loser.deleteOperation() != null) {
+                outboxStore.enqueue(loser.deleteOperation());
+            }
+        }
     }
 }

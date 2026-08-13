@@ -49,6 +49,24 @@ public interface KnowledgeExternalIndexBindingMapper extends BaseMapper<Knowledg
             """)
     void upsert(KnowledgeExternalIndexBindingRow row);
 
+    @Insert("""
+            INSERT INTO knowledge_external_index_bindings (
+                provider, document_id, knowledge_base_id, remote_uri, ownership_marker,
+                desired_state, desired_version, desired_checksum, observed_state, observed_version,
+                observed_checksum, projection_status, active_operation_id, remote_task_id,
+                semantic_config_fingerprint, last_submitted_at, last_verified_at,
+                last_error_code, last_error_message, row_version, created_at, updated_at
+            ) VALUES (
+                #{provider}, #{documentId}, #{knowledgeBaseId}, #{remoteUri}, #{ownershipMarker},
+                #{desiredState}, #{desiredVersion}, #{desiredChecksum}, #{observedState}, #{observedVersion},
+                #{observedChecksum}, #{projectionStatus}, #{activeOperationId}, #{remoteTaskId},
+                #{semanticConfigFingerprint}, #{lastSubmittedAt}, #{lastVerifiedAt},
+                #{lastErrorCode}, #{lastErrorMessage}, #{rowVersion}, #{createdAt}, #{updatedAt}
+            )
+            ON CONFLICT (provider, document_id) DO NOTHING
+            """)
+    int insertIfAbsent(KnowledgeExternalIndexBindingRow row);
+
     /**
      * 以 CAS 写入观测结果。SET 子句刻意不包含任何 {@code desired_*} 列：
      * desired 归本地 mutation 事务所有，Worker/Poller 覆盖它会把刚提交的更高版本意图退回。

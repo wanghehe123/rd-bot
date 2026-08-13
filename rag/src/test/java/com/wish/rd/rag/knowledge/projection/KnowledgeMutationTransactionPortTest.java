@@ -14,6 +14,10 @@ import com.wish.rd.rag.knowledge.projection.model.ExternalKnowledgeProjectionSta
 import com.wish.rd.rag.knowledge.projection.model.KnowledgeDocumentMutationBundle;
 import com.wish.rd.rag.knowledge.projection.model.KnowledgeExternalIndexBinding;
 import com.wish.rd.rag.knowledge.projection.model.KnowledgeExternalIndexOperation;
+import com.wish.rd.rag.knowledge.projection.model.KnowledgeProjectionBackfillBundle;
+import com.wish.rd.rag.knowledge.projection.model.KnowledgeProjectionBackfillCommitResult;
+import com.wish.rd.rag.knowledge.projection.model.KnowledgeProjectionSupersedeBundle;
+import com.wish.rd.rag.knowledge.projection.model.KnowledgeProjectionSupersedeLoser;
 import com.wish.rd.rag.knowledge.store.impl.InMemoryKnowledgeChunkStore;
 import com.wish.rd.rag.knowledge.store.impl.InMemoryKnowledgeDocumentRevisionStore;
 import com.wish.rd.rag.knowledge.store.impl.InMemoryKnowledgeDocumentStore;
@@ -165,6 +169,127 @@ class KnowledgeMutationTransactionPortTest {
                 NOW + 3_000L
         ).orElseThrow();
         assertEquals(ExternalKnowledgeOperationStatus.SUCCEEDED, settled.status());
+    }
+
+    @Test
+    void commitBackfillSkipsWhenBindingAlreadyExistsAndDoesNotOverwriteObserved() {
+        Fixture fixture = Fixture.empty();
+        fixture.port.commit(fixture.sourceUpsertBundle("checksum-v1"));
+        KnowledgeExternalIndexBinding inSync = fixture.bindings.findByProviderAndDocumentId(PROVIDER, "201").orElseThrow();
+        KnowledgeExternalIndexBinding observed = new KnowledgeExternalIndexBinding(
+                inSync.provider(),
+                inSync.documentId(),
+                inSync.knowledgeBaseId(),
+                inSync.remoteUri(),
+                inSync.ownershipMarker(),
+                inSync.desiredState(),
+                inSync.desiredVersion(),
+                inSync.desiredChecksum(),
+                ExternalKnowledgeObservedState.READY,
+                4L,
+                "checksum-v1",
+                ExternalKnowledgeProjectionStatus.IN_SYNC,
+                inSync.activeOperationId(),
+                inSync.remoteTaskId(),
+                inSync.semanticConfigFingerprint(),
+                inSync.lastSubmittedAtEpochMillis(),
+                NOW,
+                inSync.lastErrorCode(),
+                inSync.lastErrorMessage(),
+                9L,
+                inSync.createdAtEpochMillis(),
+                NOW
+        );
+        fixture.bindings.save(observed);
+        int outboxSize = fixture.outbox.listByDocumentId("201").size();
+
+        var result = fixture.port.commitBackfill(new KnowledgeProjectionBackfillBundle(
+                "201",
+                observed.rowVersion(),
+                "identity-1",
+                "401",
+                null,
+                observed,
+                fixture.outboxOperation("999", "checksum-v1"),
+                NOW
+        ));
+
+        assertEquals(KnowledgeProjectionBackfillCommitResult.ALREADY_BOUND, result);
+        KnowledgeExternalIndexBinding after = fixture.bindings.findByProviderAndDocumentId(PROVIDER, "201").orElseThrow();
+        assertEquals(ExternalKnowledgeObservedState.READY, after.observedState());
+        assertEquals(4L, after.observedVersion());
+        assertEquals(9L, after.rowVersion());
+        assertEquals(outboxSize, fixture.outbox.listByDocumentId("201").size());
+    }
+
+    @Test
+    void commitBackfillReportsConcurrentModificationOnCasMiss() {
+        Fixture fixture = Fixture.empty();
+        fixture.port.commit(fixture.sourceUpsertBundle("checksum-v1"));
+        fixture.bindings.delete(PROVIDER, "201");
+        KnowledgeDocument current = fixture.documents.findById("201").orElseThrow();
+
+        var result = fixture.port.commitBackfill(new KnowledgeProjectionBackfillBundle(
+                "201",
+                current.rowVersion() + 5L,
+                "identity-1",
+                current.currentRevisionId(),
+                null,
+                fixture.bindings.findByProviderAndDocumentId(PROVIDER, "201").orElse(null),
+                fixture.outboxOperation("999", "checksum-v1"),
+                NOW
+        ));
+
+        assertEquals(KnowledgeProjectionBackfillCommitResult.CONCURRENT_MODIFICATION, result);
+        assertTrue(fixture.bindings.findByProviderAndDocumentId(PROVIDER, "201").isEmpty());
+    }
+
+    @Test
+    void commitSupersedeRollsBackEveryLoserWhenALaterCasMisses() {
+        Fixture fixture = Fixture.empty();
+        fixture.port.commit(fixture.sourceUpsertBundle("checksum-v1"));
+        KnowledgeDocument extra = new KnowledgeDocument(
+                "202",
+                "101",
+                "other.md",
+                "api",
+                "text/markdown",
+                KnowledgeDocumentStatus.INDEXED,
+                true,
+                0,
+                List.of(),
+                NOW,
+                "FEISHU",
+                "token-2",
+                "",
+                "rev-2",
+                "checksum-v2",
+                "preview",
+                NOW,
+                0L,
+                1L,
+                "",
+                "identity-2",
+                0L,
+                0L,
+                "",
+                3L,
+                false
+        );
+        fixture.documents.save(extra, "other");
+
+        assertThrows(InventorySupersedeConflictException.class, () -> fixture.port.commitSupersede(
+                new KnowledgeProjectionSupersedeBundle(
+                        "201",
+                        List.of(
+                                new KnowledgeProjectionSupersedeLoser("201", 0L, null, null),
+                                new KnowledgeProjectionSupersedeLoser("202", 99L, null, null)
+                        ),
+                        NOW
+                )));
+
+        assertTrue(fixture.documents.findById("201").orElseThrow().visible());
+        assertTrue(fixture.documents.findById("202").orElseThrow().visible());
     }
 
     private static final class Fixture {

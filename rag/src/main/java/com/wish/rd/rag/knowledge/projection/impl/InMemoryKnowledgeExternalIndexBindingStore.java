@@ -119,6 +119,16 @@ public final class InMemoryKnowledgeExternalIndexBindingStore implements Knowled
         bindings.remove(key(provider, documentId));
     }
 
+    @Override
+    public synchronized boolean insertIfAbsent(KnowledgeExternalIndexBinding binding) {
+        String mapKey = key(binding.provider(), binding.documentId());
+        if (bindings.containsKey(mapKey)) {
+            return false;
+        }
+        bindings.put(mapKey, binding);
+        return true;
+    }
+
     private static String key(String provider, String documentId) {
         return provider + "\0" + documentId;
     }

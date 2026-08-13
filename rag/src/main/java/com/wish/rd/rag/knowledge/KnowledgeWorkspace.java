@@ -151,7 +151,8 @@ public final class KnowledgeWorkspace {
                 chunkStore,
                 new InMemoryKnowledgeMutationTransactionAdapter(
                         documentStore, revisionStore, chunkStore, vectorStore, bindings, outbox, baseStore),
-                KnowledgeProjectionWakePort.noop()
+                KnowledgeProjectionWakePort.noop(),
+                bindings
         );
         return withStores(vectorStore, idGenerator, baseStore, documentStore, chunkStore, revisionStore, engine);
     }
