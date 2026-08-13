@@ -261,6 +261,43 @@ class OpenVikingProductionBoundaryPolicyTest {
         }
     }
 
+    @Test
+    void inventoryAuditSqlMustQueryColumnsThatActuallyExist() throws Exception {
+        String mapper = Files.readString(PROJECT_ROOT.resolve(
+                "bootstrap/src/main/java/com/wish/rd/bootstrap/persistence/mapper/"
+                        + "KnowledgeInventoryAuditMapper.java"));
+        String p0 = Files.readString(PROJECT_ROOT.resolve(
+                "bootstrap/src/main/resources/sql/postgres/p0_knowledge_productionization.sql"));
+        String p11 = Files.readString(PROJECT_ROOT.resolve(
+                "bootstrap/src/main/resources/sql/postgres/p11_openviking_projection.sql"));
+        for (String column : List.of(
+                "deleted_at",
+                "superseded_by_document_id",
+                "source_identity_key",
+                "local_only_override",
+                "chunk_count",
+                "checksum",
+                "lifecycle_status",
+                "projection_status",
+                "desired_state",
+                "last_synced_at",
+                "created_at",
+                "status"
+        )) {
+            assertTrue(mapper.contains(column), "inventory audit SQL must read " + column);
+            assertTrue(
+                    p0.contains(column) || p11.contains(column),
+                    column + " must exist in p0 or p11 or the inventory audit silently mis-counts"
+            );
+        }
+        assertTrue(mapper.contains("TOMBSTONE"));
+        assertTrue(mapper.contains("PENDING_BACKFILL"));
+        assertTrue(mapper.contains("knowledge_external_index_bindings"));
+        assertTrue(mapper.contains("knowledge_external_index_outbox"));
+        assertTrue(mapper.contains("LEFT JOIN knowledge_external_index_bindings"));
+        assertTrue(mapper.contains("b.document_id IS NULL"));
+    }
+
     private static String methodBody(String source, String signature) {
         int start = source.indexOf(signature);
         assertTrue(start >= 0, "missing method " + signature);
