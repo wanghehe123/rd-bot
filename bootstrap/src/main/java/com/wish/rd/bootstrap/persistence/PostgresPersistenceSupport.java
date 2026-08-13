@@ -19,6 +19,13 @@ public final class PostgresPersistenceSupport {
         return Long.parseLong(id);
     }
 
+    public static Long parseOptionalId(String id) {
+        if (id == null || id.isBlank()) {
+            return null;
+        }
+        return Long.parseLong(id);
+    }
+
     public static String idString(Long id) {
         return id == null ? "" : id.toString();
     }

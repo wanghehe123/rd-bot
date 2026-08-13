@@ -226,9 +226,19 @@ public RepairContextPackage prepareContext(RepairRagRequest request) {
   `./mvnw -pl bootstrap -am -Dtest=OpenVikingContractJsonFixturesTest,OpenVikingRealContractSmokePreconditionsTest -Dsurefire.failIfNoSpecifiedTests=false test`；
   真实合同还需 `scripts/openviking/up.sh` 后加 `-Drd.openviking.smoke=true` 跑 `OpenVikingRealContractSmokeTest`。
 
+### 3.5.7 知识文档稳定身份、revision 与软删除【强制】
+
+- 【强制】同一知识库内，同一外部来源身份（`source_type + source_token`，否则规范化 `source_url`）只保留一个可见 `documentId`。内容变化原地更新并递增 `sync_version`，写入不可变 `KnowledgeDocumentRevision`。相同 canonical checksum 不得新增 revision，也不得递增 `sync_version`。
+- 【强制】`rechunkDocument` 只重建本地 chunk/vector，不得改 `documentId` 或 `sync_version`。手工 `createChunk`/`updateChunk` 必须标记 `rd.projection_mode=LOCAL_ONLY_OVERRIDE`，不得伪装成已同步到 OpenViking。
+- 【强制】文档删除是软删除：保留墓碑行与原文，移出向量；默认列表/`getDocument` 隐藏墓碑。知识库删除进入 `DELETING`，`listBases`/`getBase` 隐藏，`inspectBase` 仍可见。HTTP `DELETE` 仍返回 `{deleted:true}`。
+- 【强制】PostgreSQL `p11_openviking_projection.sql` 增加身份/revision/软删除列与 `knowledge_document_revisions`（`ON DELETE RESTRICT`）。禁止在 WP-6 存量重复组审计完成前创建 `(knowledge_base_id, source_identity_key)` 的 active-only 唯一索引。禁止在本 WP 加入 binding/outbox 表。
+- 【强制】验证：`./mvnw -pl rag -am -Dtest=KnowledgeDocumentIdentityMutationTest,FeishuDocKnowledgeImporterTest,KnowledgeWorkspacePersistenceTest -Dsurefire.failIfNoSpecifiedTests=false test`；
+  `./mvnw -pl engine -am -Dtest=KnowledgeAdminFlowTest -Dsurefire.failIfNoSpecifiedTests=false test`；
+  `./mvnw -pl bootstrap -am -Dtest=RuntimeComponentRegistrationPolicyTest,OpenVikingProjectionSqlPolicyTest -Dsurefire.failIfNoSpecifiedTests=false test`。
+
 ### 3.6 聚合根（Aggregate Root）【强制用于"强一致实体群"】
 
-- **已落地**：`KnowledgeWorkspace` 是知识域聚合根，统一管理 知识库→文档→分块→向量 的级联一致性（删除知识库级联删文档/分块/向量；更新文档同步刷新分块与向量库）。
+- **已落地**：`KnowledgeWorkspace` 是知识域聚合根，统一管理 知识库→文档→分块→向量 的级联一致性（删除知识库进入 `DELETING` 并对下属文档软删除、移出向量；更新文档同步刷新分块与向量库）。
 - 【强制】聚合内的跨实体一致性操作必须通过聚合根方法完成，外部不得绕过根直接改子实体。
 
 ### 3.7 值对象与不可变性（Value Object）【强制】

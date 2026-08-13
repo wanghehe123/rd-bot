@@ -134,7 +134,19 @@ public final class PostgresKnowledgeDocumentStore implements KnowledgeDocumentSt
         row.nextRefreshAt = PostgresPersistenceSupport.nullableDateTime(document.nextRefreshAtEpochMillis());
         row.createdAt = PostgresPersistenceSupport.toDateTime(document.createdAtEpochMillis());
         row.updatedAt = now;
+        row.syncVersion = document.syncVersion();
+        row.currentRevisionId = PostgresPersistenceSupport.parseOptionalId(document.currentRevisionId());
+        row.sourceIdentityKey = blankToNull(document.sourceIdentityKey());
+        row.deletedAt = PostgresPersistenceSupport.nullableDateTime(document.deletedAtEpochMillis());
+        row.purgeAfter = PostgresPersistenceSupport.nullableDateTime(document.purgeAfterEpochMillis());
+        row.supersededByDocumentId = PostgresPersistenceSupport.parseOptionalId(document.supersededByDocumentId());
+        row.rowVersion = document.rowVersion();
+        row.localOnlyOverride = document.localOnlyOverride();
         return row;
+    }
+
+    private static String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value;
     }
 
     private KnowledgeDocument toDocument(KnowledgeDocumentRow row) {
@@ -156,7 +168,15 @@ public final class PostgresKnowledgeDocumentStore implements KnowledgeDocumentSt
                 row.checksum,
                 row.rawPreview,
                 PostgresPersistenceSupport.toEpochMillis(row.lastSyncedAt),
-                PostgresPersistenceSupport.toEpochMillis(row.nextRefreshAt)
+                PostgresPersistenceSupport.toEpochMillis(row.nextRefreshAt),
+                row.syncVersion == null ? 1L : row.syncVersion,
+                PostgresPersistenceSupport.idString(row.currentRevisionId),
+                row.sourceIdentityKey == null ? "" : row.sourceIdentityKey,
+                PostgresPersistenceSupport.toEpochMillis(row.deletedAt),
+                PostgresPersistenceSupport.toEpochMillis(row.purgeAfter),
+                PostgresPersistenceSupport.idString(row.supersededByDocumentId),
+                row.rowVersion == null ? 0L : row.rowVersion,
+                Boolean.TRUE.equals(row.localOnlyOverride)
         );
     }
 

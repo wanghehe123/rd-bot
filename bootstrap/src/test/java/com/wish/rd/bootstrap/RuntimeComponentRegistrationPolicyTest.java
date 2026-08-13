@@ -58,6 +58,8 @@ class RuntimeComponentRegistrationPolicyTest {
                 Map.entry("bootstrap/src/main/java/com/wish/rd/bootstrap/persistence/impl/PostgresKnowledgeBaseStore.java", "@Component"),
                 Map.entry("rag/src/main/java/com/wish/rd/rag/knowledge/store/impl/InMemoryKnowledgeDocumentStore.java", "@Component"),
                 Map.entry("bootstrap/src/main/java/com/wish/rd/bootstrap/persistence/impl/PostgresKnowledgeDocumentStore.java", "@Component"),
+                Map.entry("rag/src/main/java/com/wish/rd/rag/knowledge/store/impl/InMemoryKnowledgeDocumentRevisionStore.java", "@Component"),
+                Map.entry("bootstrap/src/main/java/com/wish/rd/bootstrap/persistence/impl/PostgresKnowledgeDocumentRevisionStore.java", "@Component"),
                 Map.entry("rag/src/main/java/com/wish/rd/rag/knowledge/store/impl/InMemoryKnowledgeChunkStore.java", "@Component"),
                 Map.entry("bootstrap/src/main/java/com/wish/rd/bootstrap/persistence/impl/PostgresKnowledgeChunkStore.java", "@Component"),
                 Map.entry("rag/src/main/java/com/wish/rd/rag/ingestion/impl/InMemoryIngestionTaskStore.java", "@Component"),

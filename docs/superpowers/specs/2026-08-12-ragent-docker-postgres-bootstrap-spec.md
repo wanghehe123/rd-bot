@@ -17,7 +17,7 @@
 ## 操作规则
 
 - 必须确认目标库是 `ragent`，且容器名是 `postgres`；不得在未确认目标库时执行 DDL。
-- 必须按 `bootstrap/src/main/resources/sql/postgres/` 的数字顺序执行全部 `pN_*.sql`；`p8_` 的两个文件都要执行，`p10` 在 `p9` 之后。
+- 必须按 `bootstrap/src/main/resources/sql/postgres/` 的数字顺序执行全部 `pN_*.sql`；`p8_` 的两个文件都要执行，`p10` 在 `p9` 之后，`p11` 在 `p10` 之后。
 - 迁移完成后必须重跑 `p1_multi_agent_orchestration.sql` 与 `p3_task_retry_ai_review.sql` 一次，验证其幂等性。
 - 不得把“Tomcat 已监听”或“DDL 无报错”作为通过条件；至少创建并提交一条真实需求任务，检查任务详情、时间线、stage command 与后端日志。
 - 配置文件与 spec 不得记录数据库密码；只允许记录数据库名、容器名、环境变量名和命令结构。
@@ -59,7 +59,8 @@ for sql in \
   bootstrap/src/main/resources/sql/postgres/p8_pi_agent_runtime.sql \
   bootstrap/src/main/resources/sql/postgres/p8_zz_default_qa_v2.sql \
   bootstrap/src/main/resources/sql/postgres/p9_default_qa_v2_gate.sql \
-  bootstrap/src/main/resources/sql/postgres/p10_skill_hub.sql; do
+  bootstrap/src/main/resources/sql/postgres/p10_skill_hub.sql \
+  bootstrap/src/main/resources/sql/postgres/p11_openviking_projection.sql; do
   docker exec -i postgres psql -U postgres -d ragent -v ON_ERROR_STOP=1 < "$sql"
 done
 

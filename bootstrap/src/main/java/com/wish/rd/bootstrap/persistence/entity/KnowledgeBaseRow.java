@@ -16,4 +16,9 @@ public class KnowledgeBaseRow {
     public Boolean enabled;
     public OffsetDateTime createdAt;
     public OffsetDateTime updatedAt;
+    public String lifecycleStatus;
+    public OffsetDateTime deletedAt;
+    public OffsetDateTime purgeAfter;
+    public Long syncVersion;
+    public Long rowVersion;
 }

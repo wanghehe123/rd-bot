@@ -30,4 +30,12 @@ public class KnowledgeDocumentRow {
     public OffsetDateTime nextRefreshAt;
     public OffsetDateTime createdAt;
     public OffsetDateTime updatedAt;
+    public Long syncVersion;
+    public Long currentRevisionId;
+    public String sourceIdentityKey;
+    public OffsetDateTime deletedAt;
+    public OffsetDateTime purgeAfter;
+    public Long supersededByDocumentId;
+    public Long rowVersion;
+    public Boolean localOnlyOverride;
 }

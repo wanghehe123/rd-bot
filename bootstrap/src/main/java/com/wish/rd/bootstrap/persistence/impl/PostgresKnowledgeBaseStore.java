@@ -5,6 +5,7 @@ import com.wish.rd.bootstrap.persistence.PostgresPersistenceSupport;
 import com.wish.rd.bootstrap.persistence.entity.KnowledgeBaseRow;
 import com.wish.rd.bootstrap.persistence.mapper.KnowledgeBaseMapper;
 import com.wish.rd.rag.knowledge.model.KnowledgeBase;
+import com.wish.rd.rag.knowledge.model.KnowledgeBaseLifecycle;
 import com.wish.rd.rag.knowledge.store.KnowledgeBaseStore;
 
 import java.time.OffsetDateTime;
@@ -69,6 +70,11 @@ public final class PostgresKnowledgeBaseStore implements KnowledgeBaseStore {
         row.enabled = base.enabled();
         row.createdAt = PostgresPersistenceSupport.toDateTime(base.createdAtEpochMillis());
         row.updatedAt = now;
+        row.lifecycleStatus = base.lifecycleStatus().name();
+        row.deletedAt = PostgresPersistenceSupport.nullableDateTime(base.deletedAtEpochMillis());
+        row.purgeAfter = PostgresPersistenceSupport.nullableDateTime(base.purgeAfterEpochMillis());
+        row.syncVersion = base.syncVersion();
+        row.rowVersion = base.rowVersion();
         return row;
     }
 
@@ -78,7 +84,19 @@ public final class PostgresKnowledgeBaseStore implements KnowledgeBaseStore {
                 row.name,
                 row.description,
                 Boolean.TRUE.equals(row.enabled),
-                PostgresPersistenceSupport.toEpochMillis(row.createdAt)
+                PostgresPersistenceSupport.toEpochMillis(row.createdAt),
+                lifecycle(row.lifecycleStatus),
+                PostgresPersistenceSupport.toEpochMillis(row.deletedAt),
+                PostgresPersistenceSupport.toEpochMillis(row.purgeAfter),
+                row.syncVersion == null ? 1L : row.syncVersion,
+                row.rowVersion == null ? 0L : row.rowVersion
         );
+    }
+
+    private static KnowledgeBaseLifecycle lifecycle(String value) {
+        if (value == null || value.isBlank()) {
+            return KnowledgeBaseLifecycle.ACTIVE;
+        }
+        return KnowledgeBaseLifecycle.valueOf(value);
     }
 }

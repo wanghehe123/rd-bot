@@ -4,6 +4,7 @@ import com.wish.rd.framework.id.SnowflakeIdGenerator;
 import com.wish.rd.rag.core.chunk.model.ChunkingMode;
 import com.wish.rd.rag.knowledge.store.impl.InMemoryKnowledgeBaseStore;
 import com.wish.rd.rag.knowledge.store.impl.InMemoryKnowledgeChunkStore;
+import com.wish.rd.rag.knowledge.store.impl.InMemoryKnowledgeDocumentRevisionStore;
 import com.wish.rd.rag.knowledge.store.impl.InMemoryKnowledgeDocumentStore;
 import com.wish.rd.rag.vector.impl.InMemoryVectorStore;
 import org.junit.jupiter.api.Test;
@@ -27,6 +28,7 @@ class KnowledgeWorkspacePersistenceTest {
         InMemoryKnowledgeBaseStore baseStore = new InMemoryKnowledgeBaseStore();
         InMemoryKnowledgeDocumentStore documentStore = new InMemoryKnowledgeDocumentStore();
         InMemoryKnowledgeChunkStore chunkStore = new InMemoryKnowledgeChunkStore();
+        InMemoryKnowledgeDocumentRevisionStore revisionStore = new InMemoryKnowledgeDocumentRevisionStore();
         InMemoryVectorStore vectorStore = new InMemoryVectorStore();
         SnowflakeIdGenerator idGenerator = generatorWithMovingClock();
 
@@ -35,7 +37,8 @@ class KnowledgeWorkspacePersistenceTest {
                 idGenerator,
                 baseStore,
                 documentStore,
-                chunkStore
+                chunkStore,
+                revisionStore
         );
         KnowledgeBase base = firstRuntime.createBase(new CreateKnowledgeBaseCommand("支付系统", "生产知识库"));
         KnowledgeDocument document = firstRuntime.writeDocument(new WriteKnowledgeDocumentCommand(
@@ -54,11 +57,14 @@ class KnowledgeWorkspacePersistenceTest {
                 idGenerator,
                 baseStore,
                 documentStore,
-                chunkStore
+                chunkStore,
+                revisionStore
         );
 
         assertEquals(base, reloadedRuntime.getBase(base.id()));
         assertEquals(document.id(), reloadedRuntime.getDocument(document.id()).id());
+        assertEquals(1, reloadedRuntime.listRevisions(document.id()).size());
+        assertEquals(document.currentRevisionId(), reloadedRuntime.getDocument(document.id()).currentRevisionId());
         assertFalse(reloadedRuntime.listChunks(document.id()).isEmpty());
         assertTrue(reloadedRuntime.previewDocument(document.id()).contains("orders.amount"));
         assertFalse(reloadedRuntime.vectorStore().vectorSearch("orders.amount", java.util.List.of(base.id()), 3).isEmpty());

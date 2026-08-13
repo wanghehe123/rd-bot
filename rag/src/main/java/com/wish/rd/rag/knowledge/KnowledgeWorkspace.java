@@ -10,9 +10,11 @@ import com.wish.rd.rag.ingestion.model.PipelineDefinition;
 import com.wish.rd.rag.ingestion.TaskIngestionEngine;
 import com.wish.rd.rag.knowledge.store.impl.InMemoryKnowledgeBaseStore;
 import com.wish.rd.rag.knowledge.store.impl.InMemoryKnowledgeChunkStore;
+import com.wish.rd.rag.knowledge.store.impl.InMemoryKnowledgeDocumentRevisionStore;
 import com.wish.rd.rag.knowledge.store.impl.InMemoryKnowledgeDocumentStore;
 import com.wish.rd.rag.knowledge.store.KnowledgeBaseStore;
 import com.wish.rd.rag.knowledge.store.KnowledgeChunkStore;
+import com.wish.rd.rag.knowledge.store.KnowledgeDocumentRevisionStore;
 import com.wish.rd.rag.knowledge.store.KnowledgeDocumentStore;
 import com.wish.rd.rag.vector.impl.InMemoryVectorStore;
 import com.wish.rd.rag.vector.VectorStore;
@@ -26,11 +28,13 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import org.springframework.stereotype.Component;
 import com.wish.rd.rag.knowledge.model.CreateKnowledgeBaseCommand;
 import com.wish.rd.rag.knowledge.model.KnowledgeBase;
 import com.wish.rd.rag.knowledge.model.KnowledgeChunk;
 import com.wish.rd.rag.knowledge.model.KnowledgeDocument;
+import com.wish.rd.rag.knowledge.model.KnowledgeDocumentRevision;
 import com.wish.rd.rag.knowledge.model.KnowledgeDocumentSource;
 import com.wish.rd.rag.knowledge.model.KnowledgeDocumentStatus;
 import com.wish.rd.rag.knowledge.model.WriteKnowledgeDocumentCommand;
@@ -45,24 +49,29 @@ import com.wish.rd.rag.knowledge.model.WriteKnowledgeDocumentCommand;
 @Component
 public final class KnowledgeWorkspace {
 
+    private static final long TOMBSTONE_GRACE_MILLIS = 7L * 24L * 60L * 60L * 1000L;
+
     private final VectorStore vectorStore;
     private final SnowflakeIdGenerator idGenerator;
     private final KnowledgeBaseStore baseStore;
     private final KnowledgeDocumentStore documentStore;
     private final KnowledgeChunkStore chunkStore;
+    private final KnowledgeDocumentRevisionStore revisionStore;
 
     public KnowledgeWorkspace(
             VectorStore vectorStore,
             SnowflakeIdGenerator idGenerator,
             KnowledgeBaseStore baseStore,
             KnowledgeDocumentStore documentStore,
-            KnowledgeChunkStore chunkStore
+            KnowledgeChunkStore chunkStore,
+            KnowledgeDocumentRevisionStore revisionStore
     ) {
         this.vectorStore = vectorStore;
         this.idGenerator = idGenerator;
         this.baseStore = baseStore;
         this.documentStore = documentStore;
         this.chunkStore = chunkStore;
+        this.revisionStore = revisionStore;
     }
 
     /**
@@ -86,7 +95,8 @@ public final class KnowledgeWorkspace {
                 idGenerator,
                 new InMemoryKnowledgeBaseStore(),
                 new InMemoryKnowledgeDocumentStore(),
-                new InMemoryKnowledgeChunkStore()
+                new InMemoryKnowledgeChunkStore(),
+                new InMemoryKnowledgeDocumentRevisionStore()
         );
     }
 
@@ -107,7 +117,43 @@ public final class KnowledgeWorkspace {
             KnowledgeDocumentStore documentStore,
             KnowledgeChunkStore chunkStore
     ) {
-        return new KnowledgeWorkspace(vectorStore, idGenerator, baseStore, documentStore, chunkStore);
+        return withStores(
+                vectorStore,
+                idGenerator,
+                baseStore,
+                documentStore,
+                chunkStore,
+                new InMemoryKnowledgeDocumentRevisionStore()
+        );
+    }
+
+    /**
+     * 用指定 Store 组装工作区，供 PostgreSQL 适配层和 Store 边界测试使用。
+     *
+     * @param vectorStore    向量库端口
+     * @param idGenerator    ID 生成器
+     * @param baseStore      知识库 Store
+     * @param documentStore  文档 Store
+     * @param chunkStore     分块 Store
+     * @param revisionStore  revision Store
+     * @return 知识工作区 facade
+     */
+    public static KnowledgeWorkspace withStores(
+            VectorStore vectorStore,
+            SnowflakeIdGenerator idGenerator,
+            KnowledgeBaseStore baseStore,
+            KnowledgeDocumentStore documentStore,
+            KnowledgeChunkStore chunkStore,
+            KnowledgeDocumentRevisionStore revisionStore
+    ) {
+        return new KnowledgeWorkspace(
+                vectorStore,
+                idGenerator,
+                baseStore,
+                documentStore,
+                chunkStore,
+                revisionStore
+        );
     }
 
     /**
@@ -173,89 +219,135 @@ public final class KnowledgeWorkspace {
             WriteKnowledgeDocumentCommand command,
             KnowledgeDocumentSource source
     ) {
+        requireActiveBase(command.knowledgeBaseId());
         String checksum = checksum(command.content());
-        return documentStore.findBySource(
-                        command.knowledgeBaseId(),
-                        source.sourceType(),
-                        source.sourceToken(),
-                        source.sourceUrl()
-                )
-                .filter(existing -> sameRevision(existing, source, checksum))
-                .orElseGet(() -> writeDocument(command, source));
+        String identity = SourceIdentityKeys.from(source);
+        if (!identity.isBlank()) {
+            Optional<KnowledgeDocument> existing = documentStore.listByKnowledgeBaseId(command.knowledgeBaseId()).stream()
+                    .filter(KnowledgeDocument::visible)
+                    .filter(document -> identity.equals(document.sourceIdentityKey())
+                            || matchesLegacySource(document, source))
+                    .findFirst();
+            if (existing.isPresent()) {
+                KnowledgeDocument current = existing.get();
+                if (checksum.equals(current.checksum())) {
+                    if (!source.revisionId().isBlank() && !source.revisionId().equals(current.revisionId())) {
+                        KnowledgeDocument touched = current.withSyncState(
+                                source.revisionId(),
+                                current.checksum(),
+                                current.rawPreview(),
+                                source.lastSyncedAtEpochMillis() > 0L
+                                        ? source.lastSyncedAtEpochMillis()
+                                        : System.currentTimeMillis(),
+                                source.nextRefreshAtEpochMillis()
+                        );
+                        return documentStore.save(touched, documentStore.rawContent(current.id()));
+                    }
+                    return current;
+                }
+                return indexDocument(
+                        PipelineDefinition.defaultDocumentPipeline(),
+                        command,
+                        source,
+                        current,
+                        true
+                );
+            }
+        }
+        return writeDocument(command, source);
     }
 
-    /** 返回全部知识库快照。 */
+    /** 返回全部可见知识库快照。 */
     public synchronized List<KnowledgeBase> listBases() {
-        return baseStore.list();
+        return baseStore.list().stream().filter(KnowledgeBase::visible).toList();
     }
 
-    /** 按 ID 查询知识库，不存在抛异常。 */
+    /** 按 ID 查询知识库，不存在或已删除抛异常。 */
     public synchronized KnowledgeBase getBase(String knowledgeBaseId) {
-        return requireBase(knowledgeBaseId);
+        return requireActiveBase(knowledgeBaseId);
+    }
+
+    /** 按 ID 查看知识库，含 DELETING/DELETED 墓碑，供内部对账。 */
+    public synchronized KnowledgeBase inspectBase(String knowledgeBaseId) {
+        return baseStore.findById(knowledgeBaseId)
+                .orElseThrow(() -> new IllegalArgumentException("knowledge base not found: " + knowledgeBaseId));
     }
 
     /** 重命名知识库。 */
     public synchronized KnowledgeBase updateBase(String knowledgeBaseId, String name) {
-        KnowledgeBase updated = requireBase(knowledgeBaseId).withName(name);
+        KnowledgeBase updated = requireActiveBase(knowledgeBaseId).withName(name);
         return baseStore.save(updated);
     }
 
-    /** 删除知识库及其下属全部文档、分块和向量。 */
+    /** 知识库进入 DELETING，下属文档软删除；普通列表不再可见。 */
     public synchronized void deleteBase(String knowledgeBaseId) {
-        KnowledgeBase base = requireBase(knowledgeBaseId);
-        documentStore.listByKnowledgeBaseId(base.id())
-                .stream()
+        KnowledgeBase base = requireActiveBase(knowledgeBaseId);
+        long now = System.currentTimeMillis();
+        documentStore.listByKnowledgeBaseId(base.id()).stream()
+                .filter(KnowledgeDocument::visible)
                 .map(KnowledgeDocument::id)
                 .toList()
                 .forEach(this::deleteDocument);
-        baseStore.delete(base.id());
+        baseStore.save(base.withDeleting(now, now + TOMBSTONE_GRACE_MILLIS));
     }
 
     /** 按名称/描述模糊搜索知识库，关键词为空时返回全部。 */
     public synchronized List<KnowledgeBase> searchBases(String keyword) {
         String normalizedKeyword = normalize(keyword);
-        return baseStore.list().stream()
+        return listBases().stream()
                 .filter(base -> normalizedKeyword.isBlank()
                         || normalize(base.name()).contains(normalizedKeyword)
                         || normalize(base.description()).contains(normalizedKeyword))
                 .toList();
     }
 
-    /** 统计指定知识库下的文档数。 */
+    /** 统计指定知识库下的可见文档数。 */
     public synchronized long countDocuments(String knowledgeBaseId) {
-        requireBase(knowledgeBaseId);
-        return documentStore.listByKnowledgeBaseId(knowledgeBaseId).size();
+        return listDocuments(knowledgeBaseId).size();
     }
 
-    /** 按 ID 查询文档，不存在抛异常。 */
+    /** 按 ID 查询可见文档，不存在或已删除抛异常。 */
     public synchronized KnowledgeDocument getDocument(String documentId) {
-        return documentStore.findById(documentId)
+        KnowledgeDocument document = documentStore.findById(documentId)
                 .orElseThrow(() -> new IllegalArgumentException("knowledge document not found: " + documentId));
+        if (!document.visible()) {
+            throw new IllegalArgumentException("knowledge document not found: " + documentId);
+        }
+        return document;
     }
 
-    /** 列出指定知识库下的文档。 */
+    /** 列出指定知识库下的可见文档。 */
     public synchronized List<KnowledgeDocument> listDocuments(String knowledgeBaseId) {
-        requireBase(knowledgeBaseId);
-        return documentStore.listByKnowledgeBaseId(knowledgeBaseId);
+        KnowledgeBase base = inspectBase(knowledgeBaseId);
+        if (!base.visible()) {
+            return List.of();
+        }
+        return visibleDocuments(documentStore.listByKnowledgeBaseId(knowledgeBaseId));
     }
 
     /** 在指定知识库范围内按关键词、状态过滤文档，任一条件为空则忽略该条件。 */
     public synchronized List<KnowledgeDocument> searchDocuments(
             String knowledgeBaseId, String keyword, KnowledgeDocumentStatus status
     ) {
-        requireBase(knowledgeBaseId);
+        requireActiveBase(knowledgeBaseId);
         String normalizedKeyword = normalize(keyword);
         String normalizedStatus = status == null ? "" : normalize(status.name());
-        return documentStore.listByKnowledgeBaseId(knowledgeBaseId).stream()
+        return listDocuments(knowledgeBaseId).stream()
                 .filter(document -> normalizedKeyword.isBlank() || matchesDocument(document, normalizedKeyword))
                 .filter(document -> normalizedStatus.isBlank()
                         || normalize(document.status().name()).equals(normalizedStatus))
                 .toList();
     }
 
-    /** 列出全部文档。 */
+    /** 列出全部可见文档。 */
     public synchronized List<KnowledgeDocument> listAllDocuments() {
-        return documentStore.listAll();
+        return visibleDocuments(documentStore.listAll());
+    }
+
+    /** 列出文档的规范正文 revision，按 sync_version 升序。 */
+    public synchronized List<KnowledgeDocumentRevision> listRevisions(String documentId) {
+        getDocument(documentId);
+        return revisionStore.listByDocumentId(documentId);
     }
 
     /** 按 ID 查询分块，不存在抛异常。 */
@@ -293,13 +385,6 @@ public final class KnowledgeWorkspace {
     ) {
         KnowledgeDocument document = getDocument(documentId);
         String rawContent = documentStore.rawContent(documentId);
-        // 清理旧分块与向量，避免重复
-        List<String> oldChunkIds = chunkStore.listByDocumentId(document.id()).stream()
-                .map(KnowledgeChunk::id)
-                .toList();
-        vectorStore.removeChunks(oldChunkIds);
-        chunkStore.deleteByDocumentId(document.id());
-
         KnowledgeDocumentSource source = new KnowledgeDocumentSource(
                 document.sourceType(),
                 document.sourceToken(),
@@ -319,12 +404,16 @@ public final class KnowledgeWorkspace {
                 chunkSize,
                 overlapSize
         );
-        return writeDocument(command, source);
+        return indexDocument(PipelineDefinition.defaultDocumentPipeline(), command, source, document, false);
     }
 
-    /** 列出全部分块。 */
+    /** 列出全部可见文档的分块。 */
     public synchronized List<KnowledgeChunk> listAllChunks() {
-        return chunkStore.listAll();
+        return chunkStore.listAll().stream()
+                .filter(chunk -> documentStore.findById(chunk.documentId())
+                        .filter(KnowledgeDocument::visible)
+                        .isPresent())
+                .toList();
     }
 
     /** 预览文档原始文本内容。 */
@@ -373,15 +462,18 @@ public final class KnowledgeWorkspace {
         return updated;
     }
 
-    /** 删除文档及其全部分块、原文与向量库条目。 */
+    /** 软删除文档：从检索中移除向量，保留墓碑行；普通列表隐藏。 */
     public synchronized void deleteDocument(String documentId) {
         KnowledgeDocument document = getDocument(documentId);
         List<String> chunkIds = chunkStore.listByDocumentId(document.id()).stream()
                 .map(KnowledgeChunk::id)
                 .toList();
         vectorStore.removeChunks(chunkIds);
-        chunkStore.deleteByDocumentId(document.id());
-        documentStore.delete(document.id());
+        long now = System.currentTimeMillis();
+        documentStore.save(
+                document.withSoftDeleted(now, now + TOMBSTONE_GRACE_MILLIS),
+                documentStore.rawContent(document.id())
+        );
     }
 
     /** 为文档手工新增分块并立即写入向量库。 */
@@ -404,12 +496,16 @@ public final class KnowledgeWorkspace {
                 Map.of(
                         "documentId", document.id(),
                         "chunkIndex", String.valueOf(chunkIndex),
-                        "manual", "true"
+                        "manual", "true",
+                        KnowledgeChunk.PROJECTION_MODE_KEY, KnowledgeChunk.LOCAL_ONLY_OVERRIDE
                 )
         );
         chunkStore.save(chunk);
         int newChunkCount = chunkStore.listByDocumentId(document.id()).size();
-        documentStore.save(document.withChunkCount(newChunkCount), documentStore.rawContent(document.id()));
+        documentStore.save(
+                document.withChunkCount(newChunkCount).withLocalOnlyOverride(true),
+                documentStore.rawContent(document.id())
+        );
         vectorStore.index(List.of(toRetrievedChunk(chunk)));
         return chunk;
     }
@@ -417,9 +513,11 @@ public final class KnowledgeWorkspace {
     /** 更新分块内容并替换向量库条目。 */
     public synchronized KnowledgeChunk updateChunk(String documentId, String chunkId, String content) {
         ensureChunkBelongsToDocument(documentId, chunkId);
-        KnowledgeChunk updated = getChunk(chunkId).withContent(content == null ? "" : content);
+        KnowledgeChunk updated = getChunk(chunkId).withContent(content == null ? "" : content).withLocalOnlyOverride();
         chunkStore.save(updated);
         vectorStore.replace(toRetrievedChunk(updated));
+        KnowledgeDocument document = getDocument(documentId);
+        documentStore.save(document.withLocalOnlyOverride(true), documentStore.rawContent(documentId));
         return updated;
     }
 
@@ -457,6 +555,7 @@ public final class KnowledgeWorkspace {
         String normalizedKeyword = normalize(keyword);
         int safeLimit = limit <= 0 ? 8 : limit;
         return documentStore.listAll().stream()
+                .filter(KnowledgeDocument::visible)
                 .filter(document -> matchesDocument(document, normalizedKeyword))
                 .limit(safeLimit)
                 .toList();
@@ -466,6 +565,7 @@ public final class KnowledgeWorkspace {
     public synchronized List<KnowledgeDocument> dueRefreshDocuments(long nowEpochMillis, int limit) {
         int safeLimit = limit <= 0 ? 20 : limit;
         return documentStore.listAll().stream()
+                .filter(KnowledgeDocument::visible)
                 .filter(document -> document.nextRefreshAtEpochMillis() > 0L)
                 .filter(document -> document.nextRefreshAtEpochMillis() <= nowEpochMillis)
                 .limit(safeLimit)
@@ -482,8 +582,25 @@ public final class KnowledgeWorkspace {
             WriteKnowledgeDocumentCommand command,
             KnowledgeDocumentSource source
     ) {
-        requireBase(command.knowledgeBaseId());
-        String documentId = idGenerator.nextIdString();
+        requireActiveBase(command.knowledgeBaseId());
+        return indexDocument(pipeline, command, source, null, true);
+    }
+
+    private KnowledgeDocument indexDocument(
+            PipelineDefinition pipeline,
+            WriteKnowledgeDocumentCommand command,
+            KnowledgeDocumentSource source,
+            KnowledgeDocument previous,
+            boolean sourceMutation
+    ) {
+        String documentId = previous == null ? idGenerator.nextIdString() : previous.id();
+        if (previous != null) {
+            List<String> oldChunkIds = chunkStore.listByDocumentId(previous.id()).stream()
+                    .map(KnowledgeChunk::id)
+                    .toList();
+            vectorStore.removeChunks(oldChunkIds);
+            chunkStore.deleteByDocumentId(previous.id());
+        }
         IngestionTaskResult ingestionResult = TaskIngestionEngine.inMemory(new InMemoryVectorStore()).execute(
                 pipeline,
                 new IngestionTaskCommand(
@@ -521,27 +638,84 @@ public final class KnowledgeWorkspace {
         }
         String rawContent = new String(command.content(), StandardCharsets.UTF_8);
         long now = System.currentTimeMillis();
-        KnowledgeDocument document = new KnowledgeDocument(
-                documentId,
-                command.knowledgeBaseId(),
-                command.sourceName(),
-                command.knowledgeType(),
-                command.mimeType(),
-                KnowledgeDocumentStatus.INDEXED,
-                true,
-                persistedChunks.size(),
-                ingestionResult.nodeLogs(),
-                now,
-                source.sourceType(),
-                source.sourceToken(),
-                source.sourceUrl(),
-                source.revisionId(),
-                checksum(command.content()),
-                preview(rawContent),
-                source.lastSyncedAtEpochMillis() > 0L ? source.lastSyncedAtEpochMillis() : now,
-                source.nextRefreshAtEpochMillis()
-        );
+        String digest = checksum(command.content());
+        String identity = previous != null && !previous.sourceIdentityKey().isBlank()
+                ? previous.sourceIdentityKey()
+                : SourceIdentityKeys.from(source);
+        long syncVersion = previous == null ? 1L : previous.syncVersion();
+        String currentRevisionId = previous == null ? "" : previous.currentRevisionId();
+        KnowledgeDocumentRevision pendingRevision = null;
+        if (sourceMutation) {
+            final long revisionSyncVersion = previous == null ? 1L : previous.syncVersion() + 1L;
+            syncVersion = revisionSyncVersion;
+            pendingRevision = revisionStore.findByDocumentIdAndChecksum(documentId, digest)
+                    .orElseGet(() -> new KnowledgeDocumentRevision(
+                            idGenerator.nextIdString(),
+                            documentId,
+                            revisionSyncVersion,
+                            source.revisionId(),
+                            digest,
+                            command.mimeType(),
+                            rawContent,
+                            "rd-bot-default",
+                            "1",
+                            now
+                    ));
+            currentRevisionId = pendingRevision.id();
+        }
+        KnowledgeDocument document;
+        if (previous == null) {
+            document = new KnowledgeDocument(
+                    documentId,
+                    command.knowledgeBaseId(),
+                    command.sourceName(),
+                    command.knowledgeType(),
+                    command.mimeType(),
+                    KnowledgeDocumentStatus.INDEXED,
+                    true,
+                    persistedChunks.size(),
+                    ingestionResult.nodeLogs(),
+                    now,
+                    source.sourceType(),
+                    source.sourceToken(),
+                    source.sourceUrl(),
+                    source.revisionId(),
+                    digest,
+                    preview(rawContent),
+                    source.lastSyncedAtEpochMillis() > 0L ? source.lastSyncedAtEpochMillis() : now,
+                    source.nextRefreshAtEpochMillis(),
+                    syncVersion,
+                    currentRevisionId,
+                    identity,
+                    0L,
+                    0L,
+                    "",
+                    0L,
+                    false
+            );
+        } else {
+            document = previous.withIndexedSnapshot(
+                    command.sourceName(),
+                    command.knowledgeType(),
+                    command.mimeType(),
+                    KnowledgeDocumentStatus.INDEXED,
+                    persistedChunks.size(),
+                    ingestionResult.nodeLogs(),
+                    source.revisionId().isBlank() ? previous.revisionId() : source.revisionId(),
+                    digest,
+                    preview(rawContent),
+                    source.lastSyncedAtEpochMillis() > 0L ? source.lastSyncedAtEpochMillis() : now,
+                    source.nextRefreshAtEpochMillis(),
+                    syncVersion,
+                    currentRevisionId,
+                    identity,
+                    false
+            );
+        }
         KnowledgeDocument savedDocument = documentStore.save(document, rawContent);
+        if (pendingRevision != null) {
+            revisionStore.save(pendingRevision);
+        }
         chunkStore.saveAll(persistedChunks);
         vectorStore.index(indexedChunks);
         return savedDocument;
@@ -568,10 +742,18 @@ public final class KnowledgeWorkspace {
                 || normalize(documentStore.rawContent(document.id())).contains(normalizedKeyword);
     }
 
-    private boolean sameRevision(KnowledgeDocument existing, KnowledgeDocumentSource source, String checksum) {
-        boolean revisionMatches = !source.revisionId().isBlank() && source.revisionId().equals(existing.revisionId());
-        boolean checksumMatches = !checksum.isBlank() && checksum.equals(existing.checksum());
-        return revisionMatches || checksumMatches;
+    private boolean matchesLegacySource(KnowledgeDocument existing, KnowledgeDocumentSource source) {
+        if (!existing.sourceType().equals(source.sourceType())) {
+            return false;
+        }
+        if (!source.sourceToken().isBlank() && source.sourceToken().equals(existing.sourceToken())) {
+            return true;
+        }
+        return !source.sourceUrl().isBlank() && source.sourceUrl().equals(existing.sourceUrl());
+    }
+
+    private List<KnowledgeDocument> visibleDocuments(List<KnowledgeDocument> documents) {
+        return documents.stream().filter(KnowledgeDocument::visible).toList();
     }
 
     private void ensureChunkBelongsToDocument(String documentId, String chunkId) {
@@ -593,9 +775,12 @@ public final class KnowledgeWorkspace {
         );
     }
 
-    private KnowledgeBase requireBase(String knowledgeBaseId) {
-        return baseStore.findById(knowledgeBaseId)
-                .orElseThrow(() -> new IllegalArgumentException("knowledge base not found: " + knowledgeBaseId));
+    private KnowledgeBase requireActiveBase(String knowledgeBaseId) {
+        KnowledgeBase base = inspectBase(knowledgeBaseId);
+        if (!base.visible()) {
+            throw new IllegalArgumentException("knowledge base not found: " + knowledgeBaseId);
+        }
+        return base;
     }
 
     private int chunkIndex(RetrievedChunk chunk, int fallback) {
