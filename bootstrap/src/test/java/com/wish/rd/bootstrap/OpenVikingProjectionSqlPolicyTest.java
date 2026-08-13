@@ -56,6 +56,52 @@ class OpenVikingProjectionSqlPolicyTest {
     }
 
     @Test
+    void shouldKeepTombstonesWhenForeignKeysRestrictAndDeletesStaySoft() throws Exception {
+        String p11 = readP11();
+        String documentsAlter = p11.substring(p11.indexOf("ALTER TABLE knowledge_documents"));
+        assertTrue(documentsAlter.contains("ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ"),
+                "tombstones require a soft-delete column on knowledge_documents");
+
+        String revisions = tableBody(p11, "knowledge_document_revisions");
+        String bindings = tableBody(p11, "knowledge_external_index_bindings");
+        String outbox = tableBody(p11, "knowledge_external_index_outbox");
+        assertTrue(revisions.contains("REFERENCES knowledge_documents(id) ON DELETE RESTRICT"),
+                "FK cascade must not wipe tombstones");
+        assertFalse(revisions.contains("ON DELETE CASCADE"));
+        assertFalse(bindings.contains("ON DELETE CASCADE"));
+        assertFalse(outbox.contains("ON DELETE CASCADE"));
+
+        Path projectRoot = Path.of(System.getProperty("user.dir")).getParent();
+        String engine = Files.readString(projectRoot.resolve(
+                "rag/src/main/java/com/wish/rd/rag/knowledge/KnowledgeDocumentMutationEngine.java"));
+        String deleteDocument = methodBody(engine, "public void deleteDocument(String documentId)");
+        assertTrue(deleteDocument.contains("DELETE_DOCUMENT"),
+                "the delete path must enqueue a tombstone projection, not drop the row");
+        assertTrue(deleteDocument.contains("withSoftDeleted("));
+        assertFalse(deleteDocument.contains("deleteById("));
+        assertFalse(deleteDocument.contains("DELETE FROM knowledge_documents"));
+    }
+
+    private static String methodBody(String source, String signature) {
+        int start = source.indexOf(signature);
+        assertTrue(start >= 0, "missing method " + signature);
+        int brace = source.indexOf('{', start);
+        int depth = 0;
+        for (int index = brace; index < source.length(); index++) {
+            char character = source.charAt(index);
+            if (character == '{') {
+                depth++;
+            } else if (character == '}') {
+                depth--;
+                if (depth == 0) {
+                    return source.substring(start, index + 1);
+                }
+            }
+        }
+        throw new AssertionError("unbalanced method body for " + signature);
+    }
+
+    @Test
     void shouldClaimOutboxWithSkipLockedAndTransactionalAdapter() throws Exception {
         Path projectRoot = Path.of(System.getProperty("user.dir")).getParent();
         String mapper = Files.readString(projectRoot.resolve(
