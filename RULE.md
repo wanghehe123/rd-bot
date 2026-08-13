@@ -430,6 +430,18 @@ public RepairContextPackage prepareContext(RepairRagRequest request) {
 
 ### 3.5.12 身份唯一索引门与重复新建预检【强制】
 
+- 【强制】重复判定按「生效身份」而非已落库的 `source_identity_key`：存量行的身份键还是
+  NULL，但 `source_token`/`source_url` 可能早就撞在一起。只看列会把这种潜在重复判成
+  `PENDING_BACKFILL`——回填给第一篇写上身份后第二篇撞唯一索引，而它既不会变成
+  `DUPLICATE_UNRESOLVED`（身份仍为 NULL）也永远回填不成功，直接违反「100% eligible
+  文档有明确投影状态」。生效身份 = `COALESCE(NULLIF(source_identity_key,''), 现算值)`。
+- 【强制】SQL 侧现算值只允许来自 p13 的 `knowledge_source_identity_key(source_type,
+  source_token, source_url)`（`IMMUTABLE`），禁止在各条查询里复制规范化规则。它必须与
+  `rag/.../knowledge/SourceIdentityKeys.java` 逐字节一致：默认 `LOCAL`、大写、去空白、
+  token 优先于 url、`\0` 分隔后取 SHA-256 十六进制；本地匿名上传返回 NULL。
+  审计分类、候选排除、重复列表、p13 守卫四处都必须调它。
+- 【强制】身份值的权威在 Java：唯一索引守的是已落库的列，SQL 只负责在回填前发现尚未
+  落库的碰撞。不得让索引改用函数表达式，那会让同一约束出现两个权威。
 - 【强制】`(knowledge_base_id, source_identity_key)` 的 active-only 唯一索引只允许定义在
   `bootstrap/src/main/resources/sql/postgres/p13_openviking_identity_backfill.sql`，谓词必须同时排除
   `deleted_at IS NOT NULL` 与 `superseded_by_document_id IS NOT NULL`：墓碑保留身份用于审计，
@@ -446,9 +458,10 @@ public RepairContextPackage prepareContext(RepairRagRequest request) {
   身份为空（本地匿名上传）时预检必须放行；`writeDocumentIfChanged` 已扫描过身份，
   落到新建时直接调 `indexDocument`，不重复扫描。
 - 【强制】验证：`./mvnw -pl bootstrap -am -Dtest='OpenVikingProjectionSqlPolicyTest' -Dsurefire.failIfNoSpecifiedTests=false test`；
-  `./mvnw -pl rag -am -Dtest='KnowledgeDocumentIdentityMutationTest' -Dsurefire.failIfNoSpecifiedTests=false test`；
+  `./mvnw -pl rag -am -Dtest='KnowledgeDocumentIdentityMutationTest,KnowledgeInventoryAuditStoreContractTest' -Dsurefire.failIfNoSpecifiedTests=false test`；
   真机：`psql -f p13` 在有未解决重复时必须失败，解决后必须成功建索引，
-  且索引建成后两个活动行共享身份被库层拒绝、一方 superseded 后允许共存。
+  且索引建成后两个活动行共享身份被库层拒绝、一方 superseded 后允许共存；
+  `SELECT knowledge_source_identity_key(...)` 的结果必须与 Java 对同一组输入逐字节相同。
 
 ### 3.6 聚合根（Aggregate Root）【强制用于"强一致实体群"】
 

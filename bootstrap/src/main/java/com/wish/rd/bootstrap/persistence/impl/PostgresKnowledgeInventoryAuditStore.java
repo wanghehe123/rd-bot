@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wish.rd.bootstrap.persistence.PostgresPersistenceSupport;
 import com.wish.rd.bootstrap.persistence.entity.InventoryCategoryCountRow;
 import com.wish.rd.bootstrap.persistence.entity.InventoryDriftRow;
+import com.wish.rd.bootstrap.persistence.entity.InventoryDuplicateMemberRow;
 import com.wish.rd.bootstrap.persistence.entity.KnowledgeDocumentRow;
 import com.wish.rd.bootstrap.persistence.mapper.KnowledgeInventoryAuditMapper;
 import com.wish.rd.rag.ingestion.model.IngestionNodeLog;
@@ -82,8 +83,8 @@ public class PostgresKnowledgeInventoryAuditStore implements KnowledgeInventoryA
         ArrayList<DuplicateIdentityGroup> groups = new ArrayList<>();
         String currentKey = null;
         ArrayList<DuplicateIdentityMember> members = new ArrayList<>();
-        for (KnowledgeDocumentRow row : mapper.listDuplicateMembers(parseId(knowledgeBaseId))) {
-            String identity = row.sourceIdentityKey == null ? "" : row.sourceIdentityKey;
+        for (InventoryDuplicateMemberRow row : mapper.listDuplicateMembers(parseId(knowledgeBaseId))) {
+            String identity = row.identity == null ? "" : row.identity;
             if (currentKey != null && !currentKey.equals(identity)) {
                 groups.add(group(knowledgeBaseId, currentKey, members));
                 members = new ArrayList<>();

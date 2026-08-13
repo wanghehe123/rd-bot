@@ -27,7 +27,9 @@ final class InventoryClassifier {
         if (!document.supersededByDocumentId().isBlank()) {
             return InventoryCategory.SUPERSEDED;
         }
-        if (document.visible() && !document.sourceIdentityKey().isBlank() && duplicateIdentity) {
+        // duplicateIdentity 由调用方按生效身份算出，因此存量行身份键还是 NULL 时
+        // 也会命中；这里不能再要求 sourceIdentityKey 非空，否则潜在重复会漏成待回填。
+        if (document.visible() && duplicateIdentity) {
             return InventoryCategory.DUPLICATE_UNRESOLVED;
         }
         if (base == null || base.lifecycleStatus() != KnowledgeBaseLifecycle.ACTIVE) {

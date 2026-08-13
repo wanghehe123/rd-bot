@@ -5,6 +5,7 @@ import com.wish.rd.rag.knowledge.model.KnowledgeBaseLifecycle;
 import com.wish.rd.rag.knowledge.model.KnowledgeDocument;
 import com.wish.rd.rag.knowledge.projection.KnowledgeExternalIndexBindingStore;
 import com.wish.rd.rag.knowledge.projection.KnowledgeExternalIndexOutboxStore;
+import com.wish.rd.rag.knowledge.SourceIdentityKeys;
 import com.wish.rd.rag.knowledge.projection.KnowledgeInventoryAuditStore;
 import com.wish.rd.rag.knowledge.projection.model.DuplicateIdentityGroup;
 import com.wish.rd.rag.knowledge.projection.model.DuplicateIdentityMember;
@@ -66,8 +67,8 @@ public final class InMemoryKnowledgeInventoryAuditStore implements KnowledgeInve
             KnowledgeExternalIndexBinding binding = bindingStore
                     .findByProviderAndDocumentId(PROVIDER, document.id())
                     .orElse(null);
-            boolean duplicate = !document.sourceIdentityKey().isBlank()
-                    && duplicateIdentities.contains(document.sourceIdentityKey());
+            String identity = effectiveIdentity(document);
+            boolean duplicate = !identity.isBlank() && duplicateIdentities.contains(identity);
             InventoryCategory category = InventoryClassifier.classify(document, base, binding, duplicate);
             counts.merge(category, 1L, Long::sum);
         }
@@ -94,8 +95,7 @@ public final class InMemoryKnowledgeInventoryAuditStore implements KnowledgeInve
                 .filter(KnowledgeDocument::visible)
                 .filter(document -> !document.localOnlyOverride())
                 .filter(document -> document.chunkCount() > 0 && !document.checksum().isBlank())
-                .filter(document -> document.sourceIdentityKey().isBlank()
-                        || !duplicateIdentities.contains(document.sourceIdentityKey()))
+                .filter(document -> !duplicateIdentities.contains(effectiveIdentity(document)))
                 .filter(document -> bindingStore.findByProviderAndDocumentId(PROVIDER, document.id()).isEmpty())
                 .filter(document -> after.isBlank() || compareDocumentIds(document.id(), after) > 0)
                 .sorted(Comparator.comparing(KnowledgeDocument::id, InMemoryKnowledgeInventoryAuditStore::compareDocumentIds))
@@ -110,10 +110,11 @@ public final class InMemoryKnowledgeInventoryAuditStore implements KnowledgeInve
         }
         LinkedHashMap<String, List<KnowledgeDocument>> grouped = new LinkedHashMap<>();
         for (KnowledgeDocument document : documentsInBase(knowledgeBaseId)) {
-            if (!document.visible() || document.sourceIdentityKey().isBlank()) {
+            String identity = effectiveIdentity(document);
+            if (!document.visible() || identity.isBlank()) {
                 continue;
             }
-            grouped.computeIfAbsent(document.sourceIdentityKey(), key -> new ArrayList<>()).add(document);
+            grouped.computeIfAbsent(identity, key -> new ArrayList<>()).add(document);
         }
         ArrayList<DuplicateIdentityGroup> groups = new ArrayList<>();
         for (Map.Entry<String, List<KnowledgeDocument>> entry : grouped.entrySet()) {
@@ -178,13 +179,30 @@ public final class InMemoryKnowledgeInventoryAuditStore implements KnowledgeInve
     private Set<String> duplicateIdentities(String knowledgeBaseId) {
         return documentsInBase(knowledgeBaseId).stream()
                 .filter(KnowledgeDocument::visible)
-                .filter(document -> !document.sourceIdentityKey().isBlank())
-                .collect(Collectors.groupingBy(KnowledgeDocument::sourceIdentityKey, Collectors.counting()))
+                .map(InMemoryKnowledgeInventoryAuditStore::effectiveIdentity)
+                .filter(identity -> !identity.isBlank())
+                .collect(Collectors.groupingBy(identity -> identity, Collectors.counting()))
                 .entrySet()
                 .stream()
                 .filter(entry -> entry.getValue() > 1L)
                 .map(Map.Entry::getKey)
                 .collect(Collectors.toSet());
+    }
+
+    /**
+     * 生效身份：已落库的键，或存量行按来源字段现算出来的那个。
+     *
+     * <p>只看已落库的列会漏掉「潜在重复」：存量行身份键还是 NULL，但 source_token /
+     * source_url 早就撞在一起了。那种行会被判成待回填，回填给第一篇写上身份后第二篇撞
+     * 唯一索引，而它既不会变成重复未解决也永远回填不成功。Postgres 侧由
+     * {@code knowledge_source_identity_key} 算同一个值。
+     */
+    private static String effectiveIdentity(KnowledgeDocument document) {
+        String stored = document.sourceIdentityKey();
+        if (!stored.isBlank()) {
+            return stored;
+        }
+        return SourceIdentityKeys.from(document.sourceType(), document.sourceToken(), document.sourceUrl());
     }
 
     static int compareDocumentIds(String left, String right) {

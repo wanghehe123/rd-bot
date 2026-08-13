@@ -2,6 +2,7 @@ package com.wish.rd.bootstrap.persistence.mapper;
 
 import com.wish.rd.bootstrap.persistence.entity.InventoryCategoryCountRow;
 import com.wish.rd.bootstrap.persistence.entity.InventoryDriftRow;
+import com.wish.rd.bootstrap.persistence.entity.InventoryDuplicateMemberRow;
 import com.wish.rd.bootstrap.persistence.entity.KnowledgeDocumentRow;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
@@ -24,7 +25,6 @@ public interface KnowledgeInventoryAuditMapper {
                              WHEN d.superseded_by_document_id IS NOT NULL THEN 'SUPERSEDED'
                              WHEN d.deleted_at IS NULL
                               AND d.superseded_by_document_id IS NULL
-                              AND d.source_identity_key IS NOT NULL
                               AND dup.cnt > 1 THEN 'DUPLICATE_UNRESOLVED'
                              WHEN kb.lifecycle_status IS DISTINCT FROM 'ACTIVE' THEN 'EXCLUDED_BASE_INACTIVE'
                              WHEN d.local_only_override = TRUE THEN 'EXCLUDED_LOCAL_ONLY'
@@ -39,14 +39,25 @@ public interface KnowledgeInventoryAuditMapper {
                       LEFT JOIN knowledge_external_index_bindings b
                         ON b.document_id = d.id AND b.provider = 'OPENVIKING'
                       LEFT JOIN (
-                            SELECT knowledge_base_id, source_identity_key, COUNT(*) AS cnt
+                            SELECT knowledge_base_id,
+                                   COALESCE(NULLIF(source_identity_key, ''),
+                                            knowledge_source_identity_key(
+                                                source_type, source_token, source_url)) AS identity,
+                                   COUNT(*) AS cnt
                               FROM knowledge_documents
                              WHERE deleted_at IS NULL
                                AND superseded_by_document_id IS NULL
-                               AND source_identity_key IS NOT NULL
-                             GROUP BY knowledge_base_id, source_identity_key
+                               AND COALESCE(NULLIF(source_identity_key, ''),
+                                            knowledge_source_identity_key(
+                                                source_type, source_token, source_url)) IS NOT NULL
+                             GROUP BY knowledge_base_id,
+                                      COALESCE(NULLIF(source_identity_key, ''),
+                                               knowledge_source_identity_key(
+                                                   source_type, source_token, source_url))
                       ) dup ON dup.knowledge_base_id = d.knowledge_base_id
-                           AND dup.source_identity_key = d.source_identity_key
+                           AND dup.identity = COALESCE(NULLIF(d.source_identity_key, ''),
+                                                       knowledge_source_identity_key(
+                                                           d.source_type, d.source_token, d.source_url))
                      WHERE d.knowledge_base_id = #{knowledgeBaseId}
               ) classified
              GROUP BY classified.category
@@ -72,17 +83,19 @@ public interface KnowledgeInventoryAuditMapper {
                AND d.chunk_count > 0
                AND d.checksum IS NOT NULL AND d.checksum <> ''
                AND b.document_id IS NULL
-               AND (
-                    d.source_identity_key IS NULL
-                    OR NOT EXISTS (
-                        SELECT 1
-                          FROM knowledge_documents other
-                         WHERE other.knowledge_base_id = d.knowledge_base_id
-                           AND other.source_identity_key = d.source_identity_key
-                           AND other.id <> d.id
-                           AND other.deleted_at IS NULL
-                           AND other.superseded_by_document_id IS NULL
-                    )
+               AND NOT EXISTS (
+                    SELECT 1
+                      FROM knowledge_documents other
+                     WHERE other.knowledge_base_id = d.knowledge_base_id
+                       AND other.id <> d.id
+                       AND other.deleted_at IS NULL
+                       AND other.superseded_by_document_id IS NULL
+                       AND COALESCE(NULLIF(other.source_identity_key, ''),
+                                    knowledge_source_identity_key(
+                                        other.source_type, other.source_token, other.source_url))
+                           = COALESCE(NULLIF(d.source_identity_key, ''),
+                                      knowledge_source_identity_key(
+                                          d.source_type, d.source_token, d.source_url))
                )
                AND d.id > #{afterDocumentId}
              ORDER BY d.id
@@ -99,28 +112,43 @@ public interface KnowledgeInventoryAuditMapper {
     );
 
     @Select("""
-            SELECT d.*
+            SELECT d.id AS id,
+                   COALESCE(NULLIF(d.source_identity_key, ''),
+                            knowledge_source_identity_key(
+                                d.source_type, d.source_token, d.source_url)) AS identity,
+                   d.last_synced_at AS lastSyncedAt,
+                   d.created_at AS createdAt,
+                   d.row_version AS rowVersion
               FROM knowledge_documents d
              WHERE d.knowledge_base_id = #{knowledgeBaseId}
                AND d.deleted_at IS NULL
                AND d.superseded_by_document_id IS NULL
-               AND d.source_identity_key IS NOT NULL
-               AND d.source_identity_key IN (
-                    SELECT source_identity_key
+               AND COALESCE(NULLIF(d.source_identity_key, ''),
+                            knowledge_source_identity_key(
+                                d.source_type, d.source_token, d.source_url)) IN (
+                    SELECT COALESCE(NULLIF(source_identity_key, ''),
+                                    knowledge_source_identity_key(
+                                        source_type, source_token, source_url))
                       FROM knowledge_documents
                      WHERE knowledge_base_id = #{knowledgeBaseId}
                        AND deleted_at IS NULL
                        AND superseded_by_document_id IS NULL
-                       AND source_identity_key IS NOT NULL
-                     GROUP BY source_identity_key
+                       AND COALESCE(NULLIF(source_identity_key, ''),
+                                    knowledge_source_identity_key(
+                                        source_type, source_token, source_url)) IS NOT NULL
+                     GROUP BY COALESCE(NULLIF(source_identity_key, ''),
+                                       knowledge_source_identity_key(
+                                           source_type, source_token, source_url))
                     HAVING COUNT(*) > 1
                )
-             ORDER BY d.source_identity_key,
+             ORDER BY COALESCE(NULLIF(d.source_identity_key, ''),
+                               knowledge_source_identity_key(
+                                   d.source_type, d.source_token, d.source_url)),
                       d.last_synced_at DESC NULLS LAST,
                       d.created_at DESC,
                       d.id DESC
             """)
-    List<KnowledgeDocumentRow> listDuplicateMembers(@Param("knowledgeBaseId") Long knowledgeBaseId);
+    List<InventoryDuplicateMemberRow> listDuplicateMembers(@Param("knowledgeBaseId") Long knowledgeBaseId);
 
     @Select("""
             SELECT b.knowledge_base_id AS knowledgeBaseId,

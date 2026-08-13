@@ -4,6 +4,7 @@ import com.wish.rd.rag.knowledge.model.KnowledgeBase;
 import com.wish.rd.rag.knowledge.model.KnowledgeBaseLifecycle;
 import com.wish.rd.rag.knowledge.model.KnowledgeDocument;
 import com.wish.rd.rag.knowledge.model.KnowledgeDocumentStatus;
+import com.wish.rd.rag.knowledge.SourceIdentityKeys;
 import com.wish.rd.rag.knowledge.projection.impl.InMemoryKnowledgeExternalIndexBindingStore;
 import com.wish.rd.rag.knowledge.projection.impl.InMemoryKnowledgeExternalIndexOutboxStore;
 import com.wish.rd.rag.knowledge.projection.impl.InMemoryKnowledgeInventoryAuditStore;
@@ -119,12 +120,71 @@ class KnowledgeInventoryAuditStoreContractTest {
         assertEquals(List.of("14", "5", "4"), group.members().stream().map(member -> member.documentId()).toList());
     }
 
+    /**
+     * 存量行的身份键还是 NULL，但来源 token 早就撞在一起了。只看已落库的列会把它们判成
+     * 待回填：回填给第一篇写上身份后第二篇撞唯一索引，而它既不会变成重复未解决也永远
+     * 回填不成功。判定必须按生效身份来。
+     */
+    @Test
+    void latentDuplicatesAreUnresolvedDuplicatesEvenBeforeTheirIdentityIsMaterialised() {
+        Fixture fixture = new Fixture();
+        fixture.bases.save(new KnowledgeBase(KB, "active", "", true, NOW));
+        fixture.documents.save(sourcedDoc("20", "FEISHU", "shared-token", "", NOW - 10, NOW - 10), "body");
+        fixture.documents.save(sourcedDoc("21", "FEISHU", "shared-token", "", NOW - 1, NOW - 2), "body");
+        fixture.documents.save(sourcedDoc("22", "FEISHU", "lonely-token", "", NOW, NOW), "body");
+
+        InventoryCategoryCounts counts = fixture.audit.countByCategory(KB);
+        assertEquals(fixture.audit.countDocuments(KB), counts.sum());
+        assertEquals(2L, counts.count(InventoryCategory.DUPLICATE_UNRESOLVED),
+                "a latent duplicate pair must not hide in PENDING_BACKFILL");
+        assertEquals(1L, counts.count(InventoryCategory.PENDING_BACKFILL));
+
+        assertEquals(List.of("22"),
+                fixture.audit.nextBackfillCandidates(KB, "", 20).stream().map(KnowledgeDocument::id).toList(),
+                "backfill must skip the latent duplicates and only take the unambiguous document");
+
+        List<DuplicateIdentityGroup> groups = fixture.audit.listDuplicateGroups(KB, 10);
+        assertEquals(1, groups.size());
+        assertEquals(SourceIdentityKeys.from("FEISHU", "shared-token", ""), groups.getFirst().identityKey(),
+                "the group key must be the identity the backfill would have written");
+        assertEquals("21", groups.getFirst().proposedSurvivorDocumentId());
+    }
+
+    /**
+     * SQL 侧的生效身份必须由迁移里那个函数算，而不是在每条查询里各自复制一遍
+     * 规范化规则；函数注释也必须指回 Java 定义，否则两边迟早分叉。
+     */
+    @Test
+    void postgresComputesEffectiveIdentityThroughTheSharedMigrationFunction() throws Exception {
+        Path repoRoot = repoRoot();
+        String mapper = Files.readString(repoRoot.resolve(
+                "bootstrap/src/main/java/com/wish/rd/bootstrap/persistence/mapper/KnowledgeInventoryAuditMapper.java"));
+        String p13 = Files.readString(repoRoot.resolve(
+                "bootstrap/src/main/resources/sql/postgres/p13_openviking_identity_backfill.sql"));
+
+        assertTrue(p13.contains("CREATE OR REPLACE FUNCTION knowledge_source_identity_key"));
+        assertTrue(p13.contains("IMMUTABLE"), "an expression used for grouping must be immutable");
+        assertTrue(p13.contains("SourceIdentityKeys.java"),
+                "the SQL definition must point at the Java definition it mirrors");
+        assertTrue(p13.contains("'LOCAL'") && p13.contains("upper(btrim(source_type))"),
+                "SQL must apply the same default type and upper-casing as Java");
+        assertTrue(p13.indexOf("convert_to('token'") < p13.indexOf("convert_to('url'"),
+                "SQL must prefer the token over the url exactly like Java");
+        assertTrue(p13.contains("sha256") && p13.contains("'hex'"),
+                "SQL must produce the same hex SHA-256 as Java");
+
+        for (String query : List.of("DUPLICATE_UNRESOLVED", "nextBackfillCandidates", "listDuplicateMembers")) {
+            assertTrue(mapper.contains(query));
+        }
+        assertEquals(0, countOccurrences(mapper, "sha256"),
+                "queries must call the shared function, not re-implement the hash");
+        assertTrue(countOccurrences(mapper, "knowledge_source_identity_key") >= 3,
+                "duplicate counting, candidate exclusion and duplicate listing must all use it");
+    }
+
     @Test
     void postgresMapperSqlUsesTheSameColumnsAndD5Order() throws Exception {
-        Path repoRoot = Path.of("").toAbsolutePath();
-        if (!Files.isDirectory(repoRoot.resolve("bootstrap"))) {
-            repoRoot = repoRoot.getParent();
-        }
+        Path repoRoot = repoRoot();
         String mapper = Files.readString(repoRoot.resolve(
                 "bootstrap/src/main/java/com/wish/rd/bootstrap/persistence/mapper/KnowledgeInventoryAuditMapper.java"));
         String p0 = Files.readString(repoRoot.resolve(
@@ -173,6 +233,59 @@ class KnowledgeInventoryAuditStoreContractTest {
                 || mapper.contains("LEFT JOIN knowledge_external_index_bindings"),
                 "candidates must require the absence of a binding");
         assertFalse(mapper.contains("JdbcTemplate"));
+    }
+
+    private static Path repoRoot() {
+        Path root = Path.of("").toAbsolutePath();
+        return Files.isDirectory(root.resolve("bootstrap")) ? root : root.getParent();
+    }
+
+    private static int countOccurrences(String haystack, String needle) {
+        int count = 0;
+        int from = haystack.indexOf(needle);
+        while (from >= 0) {
+            count++;
+            from = haystack.indexOf(needle, from + needle.length());
+        }
+        return count;
+    }
+
+    private static KnowledgeDocument sourcedDoc(
+            String id,
+            String sourceType,
+            String sourceToken,
+            String sourceUrl,
+            long lastSynced,
+            long created
+    ) {
+        return new KnowledgeDocument(
+                id,
+                KB,
+                "sourced-" + id + ".md",
+                "api",
+                "text/markdown",
+                KnowledgeDocumentStatus.INDEXED,
+                true,
+                1,
+                List.of(),
+                created,
+                sourceType,
+                sourceToken,
+                sourceUrl,
+                "",
+                "ck-" + id,
+                "preview",
+                lastSynced,
+                0L,
+                1L,
+                "",
+                "",
+                0L,
+                0L,
+                "",
+                0L,
+                false
+        );
     }
 
     private static final class Fixture {
