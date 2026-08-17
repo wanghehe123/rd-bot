@@ -72,6 +72,24 @@ class QaRepositoryProfileDetectorTest {
     }
 
     @Test
+    void toJsonDoesNotEmitEmptyBuildCommandsAsSkipWhenUndeclared() throws Exception {
+        Files.writeString(repository.resolve("package.json"), """
+                {
+                  "scripts": {"dev": "vite"},
+                  "dependencies": {"react": "latest", "vite": "latest"}
+                }
+                """);
+
+        QaExecutionProfile profile = detector.detect(command(Map.of()), repository);
+        String json = detector.toJson(profile);
+
+        assertFalse(profile.buildCommandsDeclared());
+        assertTrue(profile.buildCommands().isEmpty());
+        assertFalse(json.contains("\"buildCommands\":[]"), json);
+        assertFalse(json.contains("\"staticCommands\":[]"), json);
+    }
+
+    @Test
     void shouldAutoDetectViteWebProjectWhenNoExplicitProfileExists() throws Exception {
         Files.writeString(repository.resolve("package.json"), """
                 {

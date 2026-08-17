@@ -84,6 +84,34 @@ class QaValidationProfileServiceTest {
                 "AUTO", "", "", "", List.of(), List.of(),
                 List.of("npx vite --host 0.0.0.0"),
                 List.of()));
+        assertThrows(IllegalArgumentException.class, () -> new QaValidationProfileCommand(
+                "AUTO", "", "", "", List.of(), List.of(),
+                List.of("vite --host"),
+                List.of()));
+        assertThrows(IllegalArgumentException.class, () -> new QaValidationProfileCommand(
+                "AUTO", "", "", "", List.of(), List.of(),
+                List.of("vite --host 0.0.0.0"),
+                List.of()));
+    }
+
+    @Test
+    void acceptsProductionBuildCommandsThatAreNotDevServers() {
+        QaValidationProfileCommand development = new QaValidationProfileCommand(
+                "AUTO", "", "", "", List.of(), List.of(),
+                List.of("npm run development"),
+                List.of());
+        QaValidationProfileCommand viteBuild = new QaValidationProfileCommand(
+                "AUTO", "", "", "", List.of(), List.of(),
+                List.of("vite build"),
+                List.of());
+        QaValidationProfileCommand viteBuildHost = new QaValidationProfileCommand(
+                "AUTO", "", "", "", List.of(), List.of(),
+                List.of("vite build --host 0.0.0.0"),
+                List.of());
+
+        assertEquals(List.of("npm run development"), development.buildCommands());
+        assertEquals(List.of("vite build"), viteBuild.buildCommands());
+        assertEquals(List.of("vite build --host 0.0.0.0"), viteBuildHost.buildCommands());
     }
 
     @Test

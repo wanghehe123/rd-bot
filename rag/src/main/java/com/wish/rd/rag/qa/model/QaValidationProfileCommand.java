@@ -30,6 +30,14 @@ public record QaValidationProfileCommand(
             "(?i)(password|secret|token|api[_-]?key|access[_-]?key|authorization|cookie)"
                     + "(?:\\s*=|\\s+)[\\s]*[^$\\s][^\\s]*"
     );
+    private static final Pattern NPM_RUN_DEV = Pattern.compile(
+            "(?:^|\\s)npm\\s+run\\s+dev(?:\\s|$)",
+            Pattern.CASE_INSENSITIVE
+    );
+    private static final Pattern NEXT_DEV = Pattern.compile(
+            "(?:^|\\s)next\\s+dev(?:\\s|$)",
+            Pattern.CASE_INSENSITIVE
+    );
 
     /**
      * Creates a profile command.
@@ -147,13 +155,43 @@ public record QaValidationProfileCommand(
 
     private static void rejectDevServerBuild(List<String> buildCommands) {
         for (String command : buildCommands) {
-            String lower = command.toLowerCase(Locale.ROOT);
-            if (lower.contains("npm run dev")
-                    || lower.contains("next dev")
-                    || lower.matches(".*\\bvite\\b.*--host.*")) {
+            if (NPM_RUN_DEV.matcher(command).find()
+                    || NEXT_DEV.matcher(command).find()
+                    || isViteDevServerWithHost(command)) {
                 throw new IllegalArgumentException("buildCommands must not start a dev server");
             }
         }
+    }
+
+    /**
+     * Rejects {@code vite --host} style dev servers, including {@code npx vite --host}.
+     * Allows {@code vite build --host} because that is a production bind, not {@code vite} dev.
+     */
+    private static boolean isViteDevServerWithHost(String command) {
+        for (String part : command.split("[;&|]+")) {
+            String[] tokens = part.strip().split("\\s+");
+            int viteAt = -1;
+            for (int i = 0; i < tokens.length; i++) {
+                if ("vite".equalsIgnoreCase(tokens[i])) {
+                    viteAt = i;
+                    break;
+                }
+            }
+            if (viteAt < 0) {
+                continue;
+            }
+            // vite build --host 是生产构建绑 host，不是 vite 开发服务器
+            if (viteAt + 1 < tokens.length && "build".equalsIgnoreCase(tokens[viteAt + 1])) {
+                continue;
+            }
+            for (int i = viteAt + 1; i < tokens.length; i++) {
+                String token = tokens[i].toLowerCase(Locale.ROOT);
+                if ("--host".equals(token) || token.startsWith("--host=")) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private static List<String> strings(List<String> values) {

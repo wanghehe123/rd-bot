@@ -1,5 +1,8 @@
 package com.wish.rd.exec.repair.qa.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonProperty;
+
 import java.util.LinkedHashSet;
 import java.util.List;
 
@@ -8,6 +11,10 @@ import java.util.List;
  *
  * <p>{@code buildCommandsDeclared} / {@code staticCommandsDeclared} distinguish an omitted
  * list from an explicit empty skip. Convenience constructors leave both undeclared.
+ *
+ * <p>JSON emits {@code buildCommands}/{@code staticCommands} as {@code null} when undeclared
+ * and as {@code []} when the step is explicitly skipped. In-memory accessors still return
+ * an empty list when undeclared so Java callers do not need null checks.
  */
 public record QaExecutionProfile(
         boolean browserRequired,
@@ -18,10 +25,10 @@ public record QaExecutionProfile(
         String healthPath,
         List<String> allowedHosts,
         List<String> regressionCommands,
-        List<String> buildCommands,
-        List<String> staticCommands,
-        boolean buildCommandsDeclared,
-        boolean staticCommandsDeclared,
+        @JsonIgnore List<String> buildCommands,
+        @JsonIgnore List<String> staticCommands,
+        @JsonIgnore boolean buildCommandsDeclared,
+        @JsonIgnore boolean staticCommandsDeclared,
         String reason
 ) {
 
@@ -111,6 +118,26 @@ public record QaExecutionProfile(
                 List.of(),
                 reason
         );
+    }
+
+    /**
+     * JSON view of BUILD commands.
+     *
+     * @return {@code null} when undeclared, otherwise the normalized list (possibly empty)
+     */
+    @JsonProperty("buildCommands")
+    public List<String> jsonBuildCommands() {
+        return buildCommandsDeclared ? buildCommands : null;
+    }
+
+    /**
+     * JSON view of STATIC commands.
+     *
+     * @return {@code null} when undeclared, otherwise the normalized list (possibly empty)
+     */
+    @JsonProperty("staticCommands")
+    public List<String> jsonStaticCommands() {
+        return staticCommandsDeclared ? staticCommands : null;
     }
 
     private static List<String> copyDistinct(List<String> values) {
