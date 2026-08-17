@@ -12,6 +12,8 @@ public class QaValidationProfileRow {
     public String healthPath;
     public String allowedHostsJson;
     public String regressionCommandsJson;
+    public String buildCommandsJson;
+    public String staticCommandsJson;
     public OffsetDateTime createdAt;
     public OffsetDateTime updatedAt;
 }

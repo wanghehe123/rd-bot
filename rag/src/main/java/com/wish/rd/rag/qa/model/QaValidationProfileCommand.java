@@ -6,14 +6,23 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.regex.Pattern;
 
-/** Editable task or project QA validation profile. */
+/**
+ * Editable task or project QA validation profile.
+ *
+ * <p>{@code buildCommands} / {@code staticCommands} treat {@code null} as undeclared
+ * (continue to a lower layer) and an empty list as an explicit skip.
+ */
 public record QaValidationProfileCommand(
         String mode,
         String baseUrl,
         String startCommand,
         String healthPath,
         List<String> allowedHosts,
-        List<String> regressionCommands
+        List<String> regressionCommands,
+        List<String> buildCommands,
+        List<String> staticCommands,
+        boolean buildCommandsDeclared,
+        boolean staticCommandsDeclared
 ) {
 
     private static final Pattern HOST_PATTERN = Pattern.compile("[A-Za-z0-9.-]+");
@@ -22,6 +31,43 @@ public record QaValidationProfileCommand(
                     + "(?:\\s*=|\\s+)[\\s]*[^$\\s][^\\s]*"
     );
 
+    /**
+     * Creates a profile command.
+     *
+     * @param mode QA mode
+     * @param baseUrl browser base URL
+     * @param startCommand QA start command
+     * @param healthPath HTTP health path
+     * @param allowedHosts allowed browser hosts
+     * @param regressionCommands QA regression commands
+     * @param buildCommands host BUILD commands; {@code null} means undeclared
+     * @param staticCommands host STATIC commands; {@code null} means undeclared
+     * @throws IllegalArgumentException when a field is unsafe or a BUILD command starts a dev server
+     */
+    public QaValidationProfileCommand(
+            String mode,
+            String baseUrl,
+            String startCommand,
+            String healthPath,
+            List<String> allowedHosts,
+            List<String> regressionCommands,
+            List<String> buildCommands,
+            List<String> staticCommands
+    ) {
+        this(
+                mode,
+                baseUrl,
+                startCommand,
+                healthPath,
+                allowedHosts,
+                regressionCommands,
+                strings(buildCommands),
+                strings(staticCommands),
+                buildCommands != null,
+                staticCommands != null
+        );
+    }
+
     public QaValidationProfileCommand {
         mode = normalizeMode(mode);
         baseUrl = text(baseUrl);
@@ -29,9 +75,14 @@ public record QaValidationProfileCommand(
         healthPath = text(healthPath);
         allowedHosts = strings(allowedHosts);
         regressionCommands = strings(regressionCommands);
+        buildCommands = buildCommandsDeclared ? strings(buildCommands) : List.of();
+        staticCommands = staticCommandsDeclared ? strings(staticCommands) : List.of();
         validateUrlAndHosts(mode, baseUrl, healthPath, allowedHosts);
         validateCommand(startCommand, "startCommand");
         regressionCommands.forEach(command -> validateCommand(command, "regressionCommands"));
+        buildCommands.forEach(command -> validateCommand(command, "buildCommands"));
+        staticCommands.forEach(command -> validateCommand(command, "staticCommands"));
+        rejectDevServerBuild(buildCommands);
         if ("REQUIRED".equals(mode)
                 && (baseUrl.isBlank() || startCommand.isBlank() || allowedHosts.isEmpty())) {
             throw new IllegalArgumentException(
@@ -91,6 +142,17 @@ public record QaValidationProfileCommand(
         }
         if (CREDENTIAL_LITERAL.matcher(command).find()) {
             throw new IllegalArgumentException(fieldName + " must not contain credential literals");
+        }
+    }
+
+    private static void rejectDevServerBuild(List<String> buildCommands) {
+        for (String command : buildCommands) {
+            String lower = command.toLowerCase(Locale.ROOT);
+            if (lower.contains("npm run dev")
+                    || lower.contains("next dev")
+                    || lower.matches(".*\\bvite\\b.*--host.*")) {
+                throw new IllegalArgumentException("buildCommands must not start a dev server");
+            }
         }
     }
 

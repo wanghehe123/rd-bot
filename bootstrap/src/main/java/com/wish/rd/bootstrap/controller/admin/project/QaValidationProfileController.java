@@ -16,7 +16,13 @@ import org.springframework.web.server.ResponseStatusException;
 import java.util.List;
 import java.util.Map;
 
-/** Admin API for project QA defaults and task-specific overrides. */
+/**
+ * Admin API for project QA defaults and task-specific overrides.
+ *
+ * <p>Omitted {@code buildCommands}/{@code staticCommands} JSON keys stay {@code null}
+ * (undeclared). Send {@code []} only to skip that host-verification step. Do not default
+ * an empty editor box on first load of an old profile to {@code []}.
+ */
 @RestController
 public final class QaValidationProfileController {
 
@@ -26,11 +32,24 @@ public final class QaValidationProfileController {
         this.service = service;
     }
 
+    /**
+     * Returns the project QA profile.
+     *
+     * @param projectId project identifier
+     * @return persisted project profile
+     */
     @GetMapping("/admin/projects/{projectId}/qa-profile")
     public QaValidationProfile getProject(@PathVariable("projectId") String projectId) {
         return service.getProject(projectId).orElseThrow(() -> notFound("project", projectId));
     }
 
+    /**
+     * Replaces the project QA profile.
+     *
+     * @param projectId project identifier
+     * @param request profile body; omitted command lists stay undeclared
+     * @return saved project profile
+     */
     @PutMapping("/admin/projects/{projectId}/qa-profile")
     public QaValidationProfile updateProject(
             @PathVariable("projectId") String projectId,
@@ -39,11 +58,24 @@ public final class QaValidationProfileController {
         return service.updateProject(projectId, toCommand(request));
     }
 
+    /**
+     * Returns the task QA override.
+     *
+     * @param taskId task identifier
+     * @return persisted task profile
+     */
     @GetMapping("/admin/rd-tasks/{taskId}/qa-profile")
     public QaValidationProfile getTask(@PathVariable("taskId") String taskId) {
         return service.getTask(taskId).orElseThrow(() -> notFound("task", taskId));
     }
 
+    /**
+     * Replaces the task QA override.
+     *
+     * @param taskId task identifier
+     * @param request profile body; omitted command lists stay undeclared
+     * @return saved task profile
+     */
     @PutMapping("/admin/rd-tasks/{taskId}/qa-profile")
     public QaValidationProfile updateTask(
             @PathVariable("taskId") String taskId,
@@ -62,7 +94,9 @@ public final class QaValidationProfileController {
                 request.startCommand(),
                 request.healthPath(),
                 request.allowedHosts(),
-                request.regressionCommands()
+                request.regressionCommands(),
+                request.buildCommands(),
+                request.staticCommands()
         );
     }
 
@@ -75,13 +109,21 @@ public final class QaValidationProfileController {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of("message", exception.getMessage()));
     }
 
+    /**
+     * PUT body for a project or task QA profile.
+     *
+     * <p>Jackson omitted {@code buildCommands}/{@code staticCommands} are {@code null}
+     * and must stay undeclared. An explicit {@code []} skips that host-verification step.
+     */
     public record ProfileRequest(
             String mode,
             String baseUrl,
             String startCommand,
             String healthPath,
             List<String> allowedHosts,
-            List<String> regressionCommands
+            List<String> regressionCommands,
+            List<String> buildCommands,
+            List<String> staticCommands
     ) {
     }
 }

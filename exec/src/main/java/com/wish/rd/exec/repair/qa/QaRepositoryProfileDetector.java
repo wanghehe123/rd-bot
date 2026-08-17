@@ -177,7 +177,9 @@ public final class QaRepositoryProfileDetector {
                     startCommand,
                     healthPath,
                     allowedHosts,
-                    regressionCommands
+                    regressionCommands,
+                    null,
+                    null
             );
             return new QaExecutionProfile(
                     true,

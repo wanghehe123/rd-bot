@@ -13,10 +13,12 @@ public interface QaValidationProfileMapper {
     @Insert("""
             INSERT INTO rd_qa_validation_profiles (
               scope_type, scope_id, mode, base_url, start_command, health_path,
-              allowed_hosts_json, regression_commands_json, created_at, updated_at
+              allowed_hosts_json, regression_commands_json,
+              build_commands_json, static_commands_json, created_at, updated_at
             ) VALUES (
               #{scopeType}, #{scopeId}, #{mode}, #{baseUrl}, #{startCommand}, #{healthPath},
               CAST(#{allowedHostsJson} AS jsonb), CAST(#{regressionCommandsJson} AS jsonb),
+              CAST(#{buildCommandsJson} AS jsonb), CAST(#{staticCommandsJson} AS jsonb),
               #{createdAt}, #{updatedAt}
             ) ON CONFLICT (scope_type, scope_id) DO UPDATE SET
               mode=EXCLUDED.mode,
@@ -25,6 +27,8 @@ public interface QaValidationProfileMapper {
               health_path=EXCLUDED.health_path,
               allowed_hosts_json=EXCLUDED.allowed_hosts_json,
               regression_commands_json=EXCLUDED.regression_commands_json,
+              build_commands_json=EXCLUDED.build_commands_json,
+              static_commands_json=EXCLUDED.static_commands_json,
               updated_at=EXCLUDED.updated_at
             """)
     int upsert(QaValidationProfileRow row);
@@ -33,6 +37,8 @@ public interface QaValidationProfileMapper {
             SELECT scope_type, scope_id, mode, base_url, start_command, health_path,
                    allowed_hosts_json::text AS allowed_hosts_json,
                    regression_commands_json::text AS regression_commands_json,
+                   build_commands_json::text AS build_commands_json,
+                   static_commands_json::text AS static_commands_json,
                    created_at, updated_at
             FROM rd_qa_validation_profiles
             WHERE scope_type=#{scopeType} AND scope_id=#{scopeId}

@@ -219,7 +219,9 @@ public final class CleanHostVerifierWorkspaceFactory implements HostVerifierWork
                     text(profile, "startCommand"),
                     text(profile, "healthPath"),
                     strings(profile.path("allowedHosts")),
-                    List.of()
+                    List.of(),
+                    null,
+                    null
             );
             if (!"REQUIRED".equals(validated.mode())) {
                 throw new IllegalStateException("Host verifier runtime requires a REQUIRED QA profile");

@@ -677,7 +677,9 @@ class EngineRequirementExecutorAdapterTest {
                 "npm run preview -- --host 0.0.0.0",
                 "/health",
                 List.of("127.0.0.1", "localhost"),
-                List.of("npm test")
+                List.of("npm test"),
+                null,
+                null
         ));
         EngineRequirementExecutorAdapter adapter = new EngineRequirementExecutorAdapter(
                 repairExecutor,

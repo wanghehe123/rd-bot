@@ -73,6 +73,10 @@ public final class QaValidationProfileService {
                 command.healthPath(),
                 command.allowedHosts(),
                 command.regressionCommands(),
+                command.buildCommands(),
+                command.staticCommands(),
+                command.buildCommandsDeclared(),
+                command.staticCommandsDeclared(),
                 createdAt,
                 now
         ));

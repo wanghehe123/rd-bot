@@ -37,6 +37,8 @@ public final class PostgresQaValidationProfileStore implements QaValidationProfi
         row.healthPath = profile.healthPath();
         row.allowedHostsJson = write(profile.allowedHosts());
         row.regressionCommandsJson = write(profile.regressionCommands());
+        row.buildCommandsJson = writeDeclared(profile.buildCommands(), profile.buildCommandsDeclared());
+        row.staticCommandsJson = writeDeclared(profile.staticCommands(), profile.staticCommandsDeclared());
         row.createdAt = PostgresPersistenceSupport.toDateTime(profile.createTimeEpochMillis());
         row.updatedAt = PostgresPersistenceSupport.toDateTime(profile.updateTimeEpochMillis());
         mapper.upsert(row);
@@ -53,6 +55,8 @@ public final class PostgresQaValidationProfileStore implements QaValidationProfi
     }
 
     private QaValidationProfile toProfile(QaValidationProfileRow row) {
+        DeclaredCommands buildCommands = readDeclared(row.buildCommandsJson);
+        DeclaredCommands staticCommands = readDeclared(row.staticCommandsJson);
         return new QaValidationProfile(
                 row.scopeType,
                 PostgresPersistenceSupport.idString(row.scopeId),
@@ -62,9 +66,24 @@ public final class PostgresQaValidationProfileStore implements QaValidationProfi
                 row.healthPath,
                 read(row.allowedHostsJson),
                 read(row.regressionCommandsJson),
+                buildCommands.commands(),
+                staticCommands.commands(),
+                buildCommands.declared(),
+                staticCommands.declared(),
                 PostgresPersistenceSupport.toEpochMillis(row.createdAt),
                 PostgresPersistenceSupport.toEpochMillis(row.updatedAt)
         );
+    }
+
+    private String writeDeclared(List<String> commands, boolean declared) {
+        return declared ? write(commands) : null;
+    }
+
+    private DeclaredCommands readDeclared(String json) {
+        if (json == null || json.isBlank() || "null".equalsIgnoreCase(json.strip())) {
+            return new DeclaredCommands(List.of(), false);
+        }
+        return new DeclaredCommands(read(json), true);
     }
 
     private String write(Object value) {
@@ -81,5 +100,8 @@ public final class PostgresQaValidationProfileStore implements QaValidationProfi
         } catch (Exception exception) {
             throw new IllegalStateException("failed to deserialize QA validation profile", exception);
         }
+    }
+
+    private record DeclaredCommands(List<String> commands, boolean declared) {
     }
 }

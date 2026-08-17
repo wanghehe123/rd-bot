@@ -27,6 +27,9 @@ Scripts are applied in **numeric** `pN_` order (then filename). `p10` runs after
 | 10 | `p10_skill_hub.sql` |
 | 11 | `p11_openviking_projection.sql` |
 | 12 | `p12_openviking_reconcile.sql` |
+| 13 | `p13_openviking_identity_backfill.sql` |
+| 14 | `p14_agent_strategy_profiles.sql` |
+| 15 | `p15_host_verification.sql` |
 
 Skip `README.md` and any non-`.sql` files.
 
