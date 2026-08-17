@@ -724,6 +724,8 @@ class RequirementAgentStageOrchestratorTest {
         assertFalse(result.success());
         assertTrue(result.resultJson().contains("NEEDS_HUMAN"), result.resultJson());
         assertTrue(result.errorMessage().contains("npm registry unreachable"), result.errorMessage());
+        assertTrue(result.resultJson().contains("\"failurePhase\":\"HOST_VERIFY\""), result.resultJson());
+        assertTrue(result.resultJson().contains("\"failedVerificationRunId\":\"verify-1\""), result.resultJson());
         assertEquals(1, harness.executor.executedRoleCount(AgentRole.CODING_AGENT));
         assertEquals(0, harness.executor.executedRoleCount(AgentRole.QA_AGENT));
         assertEquals(1, stageCount(harness, AgentRole.CODING_AGENT));

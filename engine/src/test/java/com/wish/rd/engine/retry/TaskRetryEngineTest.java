@@ -131,6 +131,39 @@ class TaskRetryEngineTest {
     }
 
     @Test
+    void previewUsesAuthoritativeHostVerifyProvenanceInsteadOfErrorText() {
+        InMemoryAgentStageRunStore stages = new InMemoryAgentStageRunStore();
+        stages.save(stage("coding-1", AgentRole.CODING_AGENT, 1, AgentStageStatus.SUCCEEDED));
+        InMemoryRetrievalRunStore retrievals = new InMemoryRetrievalRunStore();
+        InMemoryAiReviewRunStore reviews = new InMemoryAiReviewRunStore();
+        InMemoryTaskRetryCheckpointStore checkpoints = new InMemoryTaskRetryCheckpointStore();
+        FakeTaskPort tasks = new FakeTaskPort(task(RdTaskStatus.FAILED_NEEDS_HUMAN,
+                "{\"errorMessage\":\"QA failed; publication blocked\"}"));
+        InMemoryTaskRetryFailureProvenanceStore provenance = new InMemoryTaskRetryFailureProvenanceStore();
+        provenance.save(new TaskRetryFailureProvenance(
+                "provenance-verify", "task-1", "command-verify", 1,
+                "HOST_VERIFY", TaskFailurePhase.HOST_VERIFY,
+                RdTaskStatus.FAILED_NEEDS_HUMAN, 300L, 400L,
+                "", "", "", "policy-1", PLAN_DIGEST, "",
+                "PRODUCT_DEFECT", 500L, "verify-9"));
+        TaskFailureRecoveryService recovery = new TaskFailureRecoveryService(
+                tasks, stages, new InMemoryAgentStageArtifactStore(), retrievals, reviews, checkpoints,
+                provenance, new TaskRetryPointResolver(), new TaskFailureDiagnosticParser());
+        TaskRetryEngine engine = new TaskRetryEngine(
+                tasks, stages, retrievals, reviews, checkpoints, new InMemoryTaskMaterialStore(), recovery,
+                new TaskRetryPointResolver(), (taskId, point) -> { }, () -> "retry-1", () -> 1_000L);
+
+        TaskRetryPoint preview = engine.preview("task-1");
+        TaskRetryPoint snapshot = recovery.snapshot("task-1").retryPoint();
+
+        assertEquals(TaskFailurePhase.HOST_VERIFY, preview.failurePhase());
+        assertEquals(AgentRole.CODING_AGENT, preview.retryFromRole());
+        assertEquals(snapshot.failurePhase(), preview.failurePhase());
+        assertEquals(snapshot.retryFromRole(), preview.retryFromRole());
+        assertEquals(snapshot.failedStageCommandId(), preview.failedStageCommandId());
+    }
+
+    @Test
     void createsNewAttemptsFromFailedCodingRoleAndDispatchesOnce() {
         InMemoryAgentStageRunStore stages = new InMemoryAgentStageRunStore();
         stages.save(stage("reviewer-1", AgentRole.REQUIREMENT_REVIEWER, 1, AgentStageStatus.SUCCEEDED));

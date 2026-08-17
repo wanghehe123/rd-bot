@@ -38,6 +38,10 @@ CREATE TABLE IF NOT EXISTS rd_host_verification_steps (
     CONSTRAINT chk_rd_host_verify_step CHECK (step IN ('BUILD','STATIC'))
 );
 
+ALTER TABLE rd_task_failure_provenance
+    ADD COLUMN IF NOT EXISTS failed_verification_run_id BIGINT
+        REFERENCES rd_host_verification_runs(id) ON DELETE RESTRICT;
+
 CREATE TABLE IF NOT EXISTS rd_host_verification_artifacts (
     id BIGINT PRIMARY KEY,
     task_id BIGINT NOT NULL,

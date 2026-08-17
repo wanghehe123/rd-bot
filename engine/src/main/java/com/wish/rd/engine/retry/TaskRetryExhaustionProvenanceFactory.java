@@ -148,6 +148,9 @@ public final class TaskRetryExhaustionProvenanceFactory {
             }
             failedStage = "PUBLICATION:" + publicationOperationId;
         }
+        if (failurePhase == TaskFailurePhase.HOST_VERIFY) {
+            failedStage = HostVerifyFailureJson.STAGE;
+        }
 
         return new ExhaustionProvenanceDraft(
                 provenanceId,

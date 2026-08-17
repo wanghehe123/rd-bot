@@ -20,7 +20,8 @@ public final class TaskRetryRoutePlanner {
      * <p>This is the inverse of the frozen stage identities used by {@link #plan(TaskRetryPoint)}.
      * An unmappable stage fails closed instead of degrading to {@code CONTEXT}.
      * For {@code ROLE_EXECUTION:<role>}, a checkpoint source lineage of {@link TaskFailurePhase#RAG}
-     * preserves {@code RAG}; every other lineage maps to {@link TaskFailurePhase#AGENT_ROLE}.
+     * preserves {@code RAG} and {@link TaskFailurePhase#HOST_VERIFY} preserves {@code HOST_VERIFY};
+     * every other lineage maps to {@link TaskFailurePhase#AGENT_ROLE}.
      *
      * @param stage durable command stage
      * @param sourceLineagePhase optional checkpoint source phase for ROLE_EXECUTION disambiguation
@@ -49,6 +50,9 @@ public final class TaskRetryRoutePlanner {
         if (normalized.equals("AI_REVIEW")) {
             return TaskFailurePhase.AI_REVIEW;
         }
+        if (normalized.equals(HostVerifyFailureJson.STAGE)) {
+            return TaskFailurePhase.HOST_VERIFY;
+        }
         if (normalized.equals("PUBLICATION")) {
             return TaskFailurePhase.PR_PUBLICATION;
         }
@@ -56,9 +60,13 @@ public final class TaskRetryRoutePlanner {
             return TaskFailurePhase.PR_PUBLICATION;
         }
         if (normalized.startsWith("ROLE_EXECUTION:") && normalized.length() > "ROLE_EXECUTION:".length()) {
-            return sourceLineagePhase == TaskFailurePhase.RAG
-                    ? TaskFailurePhase.RAG
-                    : TaskFailurePhase.AGENT_ROLE;
+            if (sourceLineagePhase == TaskFailurePhase.RAG) {
+                return TaskFailurePhase.RAG;
+            }
+            if (sourceLineagePhase == TaskFailurePhase.HOST_VERIFY) {
+                return TaskFailurePhase.HOST_VERIFY;
+            }
+            return TaskFailurePhase.AGENT_ROLE;
         }
         throw new IllegalStateException("unmappable exhausted command stage: " + normalized);
     }
@@ -88,6 +96,14 @@ public final class TaskRetryRoutePlanner {
                     throw ambiguous(point);
                 }
                 yield roleRoute(point);
+            }
+            case HOST_VERIFY -> {
+                requirePolicy(point);
+                requireStage(point, HostVerifyFailureJson.STAGE);
+                if (point.retryFromRole() != AgentRole.CODING_AGENT) {
+                    throw ambiguous(point);
+                }
+                yield aiRoleRoute(point);
             }
             case DETERMINISTIC_REVIEW -> {
                 requirePolicy(point);

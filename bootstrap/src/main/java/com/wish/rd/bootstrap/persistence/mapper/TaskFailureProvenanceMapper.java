@@ -16,11 +16,13 @@ public interface TaskFailureProvenanceMapper extends BaseMapper<TaskFailureProve
                 (id, task_id, failed_stage_command_id, failed_command_attempt_no, failed_stage,
                  failure_phase, outcome_status, failed_task_version, failed_task_fencing_token,
                  failed_stage_run_id, failed_retrieval_run_id, failed_ai_review_run_id, source_policy_run_id,
-                 source_plan_digest, publication_operation_id, failure_kind, recorded_at)
+                 source_plan_digest, publication_operation_id, failure_kind, recorded_at,
+                 failed_verification_run_id)
             VALUES (#{id}, #{taskId}, #{failedStageCommandId}, #{failedCommandAttemptNo}, #{failedStage},
                     #{failurePhase}, #{outcomeStatus}, #{failedTaskVersion}, #{failedTaskFencingToken},
                     #{failedStageRunId}, #{failedRetrievalRunId}, #{failedAiReviewRunId}, #{sourcePolicyRunId},
-                    #{sourcePlanDigest}, #{publicationOperationId}, #{failureKind}, #{recordedAt})
+                    #{sourcePlanDigest}, #{publicationOperationId}, #{failureKind}, #{recordedAt},
+                    #{failedVerificationRunId})
             ON CONFLICT DO NOTHING
             """)
     int insertIfAbsent(TaskFailureProvenanceRow row);

@@ -66,7 +66,8 @@ public class PostgresTaskRetryFailureProvenanceStore implements TaskRetryFailure
                 safe(row.sourcePlanDigest),
                 safe(row.publicationOperationId),
                 safe(row.failureKind),
-                PostgresPersistenceSupport.toEpochMillis(row.recordedAt));
+                PostgresPersistenceSupport.toEpochMillis(row.recordedAt),
+                PostgresPersistenceSupport.idString(row.failedVerificationRunId));
     }
 
     private static long number(Long value) {

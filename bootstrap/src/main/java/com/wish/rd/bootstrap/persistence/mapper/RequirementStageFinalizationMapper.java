@@ -41,6 +41,14 @@ public interface RequirementStageFinalizationMapper extends BaseMapper<Requireme
                             OR command.stage = 'PUBLICATION:' || #{row.publicationOperationId}
                         )
                     )
+                    OR (
+                        #{row.failurePhase} = 'HOST_VERIFY'
+                        AND (
+                            command.stage = #{row.failedStage}
+                            OR command.stage = 'ROLE_EXECUTION:CODING_AGENT'
+                            OR command.stage = 'HOST_VERIFY'
+                        )
+                    )
                )
                AND (
                     (
@@ -113,6 +121,14 @@ public interface RequirementStageFinalizationMapper extends BaseMapper<Requireme
                              WHERE publication.operation_id = #{row.publicationOperationId}
                                AND publication.task_id = command.task_id
                         ))
+                    OR (#{row.failurePhase} = 'HOST_VERIFY'
+                        AND #{row.failedVerificationRunId,jdbcType=BIGINT} IS NOT NULL
+                        AND EXISTS (
+                            SELECT 1
+                              FROM rd_host_verification_runs verify
+                             WHERE verify.id = #{row.failedVerificationRunId}
+                               AND verify.task_id = command.task_id
+                        ))
                )
                AND (
                     (#{row.failurePhase} IN ('MATERIAL', 'CONTEXT', 'PLAN')
@@ -164,6 +180,15 @@ public interface RequirementStageFinalizationMapper extends BaseMapper<Requireme
                           FROM rd_ai_review_runs review_run
                          WHERE review_run.id = #{row.failedAiReviewRunId}
                            AND review_run.task_id = command.task_id
+                    )
+               )
+               AND (
+                    #{row.failedVerificationRunId,jdbcType=BIGINT} IS NULL
+                    OR EXISTS (
+                        SELECT 1
+                          FROM rd_host_verification_runs verify_run
+                         WHERE verify_run.id = #{row.failedVerificationRunId}
+                           AND verify_run.task_id = command.task_id
                     )
                )
                AND (

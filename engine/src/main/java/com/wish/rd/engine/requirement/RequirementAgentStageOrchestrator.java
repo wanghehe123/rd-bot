@@ -2687,7 +2687,8 @@ public class RequirementAgentStageOrchestrator {
                     task,
                     pullRequestUrl,
                     stageResults,
-                    "QA_INFRASTRUCTURE: host verification executor is unavailable"
+                    "QA_INFRASTRUCTURE: host verification executor is unavailable",
+                    null
             );
         }
         HostVerificationRun verification;
@@ -2701,7 +2702,8 @@ public class RequirementAgentStageOrchestrator {
                     "QA_INFRASTRUCTURE: " + firstNonBlank(
                             exception.getMessage(),
                             "host verification executor is unavailable"
-                    )
+                    ),
+                    null
             );
         }
         if (verification == null) {
@@ -2709,7 +2711,8 @@ public class RequirementAgentStageOrchestrator {
                     task,
                     pullRequestUrl,
                     stageResults,
-                    "QA_INFRASTRUCTURE: host verification returned no result"
+                    "QA_INFRASTRUCTURE: host verification returned no result",
+                    null
             );
         }
         if (verification.status() == HostVerificationStatus.SUCCEEDED
@@ -2738,7 +2741,8 @@ public class RequirementAgentStageOrchestrator {
                 task,
                 pullRequestUrl,
                 stageResults,
-                firstNonBlank(verification.errorMessage(), "host verification failed")
+                firstNonBlank(verification.errorMessage(), "host verification failed"),
+                verification
         );
     }
 
@@ -2792,13 +2796,38 @@ public class RequirementAgentStageOrchestrator {
             RdRequirementTask task,
             String pullRequestUrl,
             List<String> stageResults,
-            String reason
+            String reason,
+            HostVerificationRun verification
     ) {
         return RequirementExecutionResult.failure(
                 task.taskId(),
                 reason,
-                aggregateAgentResultsJson("NEEDS_HUMAN", pullRequestUrl, stageResults)
+                aggregateHostVerifyFailureJson(verification, pullRequestUrl, stageResults)
         );
+    }
+
+    private String aggregateHostVerifyFailureJson(
+            HostVerificationRun verification,
+            String pullRequestUrl,
+            List<String> stageResults
+    ) {
+        String runId = verification == null ? "" : verification.runId();
+        boolean stampHostVerify = !runId.isBlank()
+                && verification != null
+                && (verification.status() == HostVerificationStatus.FAILED_RETRYABLE
+                || verification.status() == HostVerificationStatus.FAILED_NEEDS_HUMAN);
+        if (!stampHostVerify) {
+            return aggregateAgentResultsJson("NEEDS_HUMAN", pullRequestUrl, stageResults);
+        }
+        return """
+                {"status":%s,"failurePhase":%s,"failedVerificationRunId":%s,"pullRequestUrl":%s,"stages":%s}
+                """.formatted(
+                json("NEEDS_HUMAN"),
+                json(TaskFailurePhase.HOST_VERIFY.name()),
+                json(runId),
+                json(pullRequestUrl),
+                stageResultsJson(stageResults)
+        ).strip();
     }
 
     private List<AgentStageRun> createQaRemediationAttempts(String taskId) {

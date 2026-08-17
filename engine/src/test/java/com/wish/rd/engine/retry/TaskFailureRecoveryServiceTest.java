@@ -137,6 +137,31 @@ class TaskFailureRecoveryServiceTest {
     }
 
     @Test
+    void resolvesHostVerifyProvenanceToCodingWithoutReadingErrorText() {
+        InMemoryTaskRetryFailureProvenanceStore provenance = new InMemoryTaskRetryFailureProvenanceStore();
+        provenance.save(new TaskRetryFailureProvenance(
+                "provenance-verify", "task-1", "command-verify", 1,
+                "HOST_VERIFY", TaskFailurePhase.HOST_VERIFY,
+                RdTaskStatus.FAILED_NEEDS_HUMAN, 17L, 29L,
+                "", "", "", "policy-1", "sha256:" + "b".repeat(64), "",
+                "PRODUCT_DEFECT", 50L, "verify-9"));
+        RdRequirementTask failed = new RdRequirementTask(
+                "task-1", "REQUIREMENT", "ADMIN", "source", "", "P1", RdTaskStatus.FAILED_NEEDS_HUMAN,
+                "订单状态筛选", "project-1", "waimai", "外卖项目", "https://github.example/waimai",
+                "owner", "repo", "main", "feature/status", "支持状态筛选", "[\"筛选正确\"]",
+                "prompt", "{\"errorMessage\":\"QA publication failed\"}",
+                "", "QA publication failed", 10L, 300L, false, 0L, 17L, 29L);
+
+        TaskFailureRecoverySnapshot snapshot = service(new InMemoryAgentStageRunStore(), provenance, failed)
+                .snapshot("task-1");
+
+        assertEquals(TaskFailurePhase.HOST_VERIFY, snapshot.retryPoint().failurePhase());
+        assertEquals(AgentRole.CODING_AGENT, snapshot.retryPoint().retryFromRole());
+        assertEquals("command-verify", snapshot.retryPoint().failedStageCommandId());
+        assertEquals("HOST_VERIFY", snapshot.retryPoint().failedStage());
+    }
+
+    @Test
     void rejectsWhenNoExactDurableProvenanceMatchesTheCurrentFailedSnapshot() {
         InMemoryTaskRetryFailureProvenanceStore provenance = new InMemoryTaskRetryFailureProvenanceStore();
         provenance.save(new TaskRetryFailureProvenance(

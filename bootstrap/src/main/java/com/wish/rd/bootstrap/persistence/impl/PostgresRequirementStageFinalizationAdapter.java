@@ -35,6 +35,7 @@ import com.wish.rd.engine.requirement.job.model.RequirementStageExecutionPlan;
 import com.wish.rd.engine.requirement.job.model.RequirementTaskMutation;
 import com.wish.rd.engine.requirement.job.model.ExternalEffectReceipt;
 import com.wish.rd.engine.requirement.policy.model.RequirementPolicyRun;
+import com.wish.rd.engine.retry.HostVerifyFailureJson;
 import com.wish.rd.engine.retry.model.TaskFailurePhase;
 import com.wish.rd.engine.retry.model.TaskRetryCheckpoint;
 import com.wish.rd.engine.retry.model.TaskRetryCheckpointStatus;
@@ -450,7 +451,9 @@ public class PostgresRequirementStageFinalizationAdapter implements RequirementS
         if (finalizationMapper.finalizePrepared(toRow(finalized)) != 1) {
             throw new IllegalStateException("stage finalization compare-and-set failed: " + marker.commandId());
         }
-        recordAgentRoleFailureProvenance(command, finalized);
+        if (!recordHostVerifyFailureProvenance(command, finalized)) {
+            recordAgentRoleFailureProvenance(command, finalized);
+        }
         recordPublicationFailureProvenance(command, finalized, deferRetryableMutation);
         return new FinalizationResult(finalized, completed, next);
     }
@@ -680,7 +683,8 @@ public class PostgresRequirementStageFinalizationAdapter implements RequirementS
                 safe(existing.sourcePlanDigest),
                 safe(existing.publicationOperationId),
                 safe(existing.failureKind),
-                existing.recordedAt == null ? 0L : existing.recordedAt.toInstant().toEpochMilli());
+                existing.recordedAt == null ? 0L : existing.recordedAt.toInstant().toEpochMilli(),
+                existing.failedVerificationRunId == null ? "" : String.valueOf(existing.failedVerificationRunId));
         TaskRetryCheckpoint settledCheckpoint = null;
         String checkpointId = completedCommand.retryCheckpointId();
         if (!checkpointId.isBlank() && checkpointMapper != null) {
@@ -922,6 +926,64 @@ public class PostgresRequirementStageFinalizationAdapter implements RequirementS
      * outcome marker durable. PostgreSQL retry resolution intentionally has no heuristic fallback,
      * so omitting this snapshot would make a real, terminal role failure non-retryable.
      */
+    private boolean recordHostVerifyFailureProvenance(
+            FinalizationCommand command, RequirementStageFinalization finalized
+    ) {
+        RequirementStageCommand stageCommand = command.stageCommand();
+        if (command.taskMutationDisposition() != TaskMutationDisposition.APPLY
+                || !stageCommand.stage().startsWith("ROLE_EXECUTION:")
+                || (finalized.outcomeStatus() != RdTaskStatus.FAILED_RETRYABLE
+                && finalized.outcomeStatus() != RdTaskStatus.FAILED_NEEDS_HUMAN)) {
+            return false;
+        }
+        String resultJson = lastMutationResultJson(command.plan());
+        if (!HostVerifyFailureJson.isStructuredHostVerify(resultJson)) {
+            return false;
+        }
+        if (failureProvenanceMapper == null || policyRunMapper == null
+                || stageCommand.policyRunId().isBlank()) {
+            throw new IllegalStateException("terminal host-verify failure provenance persistence is unavailable: "
+                    + stageCommand.commandId());
+        }
+        RequirementPolicyRunRow policy = policyRunMapper.findById(
+                PostgresPersistenceSupport.parseId(stageCommand.policyRunId()));
+        if (policy == null || policy.taskId == null
+                || policy.taskId.longValue() != PostgresPersistenceSupport.parseId(stageCommand.taskId())
+                || safe(policy.planDigest).isBlank()) {
+            throw new IllegalStateException("terminal host-verify failure has no matching policy generation: "
+                    + stageCommand.commandId());
+        }
+        String verificationRunId = HostVerifyFailureJson.verificationRunId(resultJson);
+        TaskFailureProvenanceRow row = new TaskFailureProvenanceRow();
+        row.id = eventIdGenerator.nextId();
+        row.taskId = policy.taskId;
+        row.failedStageCommandId = PostgresPersistenceSupport.parseId(stageCommand.commandId());
+        row.failedCommandAttemptNo = stageCommand.attemptNo();
+        row.failedStage = HostVerifyFailureJson.STAGE;
+        row.failurePhase = TaskFailurePhase.HOST_VERIFY.name();
+        row.outcomeStatus = finalized.outcomeStatus().name();
+        row.failedTaskVersion = command.plan().postVersion();
+        row.failedTaskFencingToken = command.plan().postFencingToken();
+        row.sourcePolicyRunId = policy.id;
+        row.sourcePlanDigest = safe(policy.planDigest);
+        row.failureKind = HostVerifyFailureJson.STAGE;
+        row.failedVerificationRunId = blankToNullId(verificationRunId);
+        row.recordedAt = PostgresPersistenceSupport.toDateTime(command.nowEpochMillis());
+        if (failureProvenanceMapper.insertIfAbsent(row) != 1) {
+            throw new IllegalStateException("terminal host-verify failure provenance conflicts: "
+                    + stageCommand.commandId());
+        }
+        return true;
+    }
+
+    private static String lastMutationResultJson(RequirementStageExecutionPlan plan) {
+        if (plan == null || plan.mutations() == null) {
+            return "";
+        }
+        return HostVerifyFailureJson.lastNonBlank(
+                plan.mutations().stream().map(RequirementTaskMutation::executionResultJson).toList());
+    }
+
     private void recordAgentRoleFailureProvenance(
             FinalizationCommand command, RequirementStageFinalization finalized
     ) {

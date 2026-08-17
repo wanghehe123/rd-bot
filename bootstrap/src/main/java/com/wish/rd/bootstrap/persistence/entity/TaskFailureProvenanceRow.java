@@ -27,4 +27,5 @@ public class TaskFailureProvenanceRow {
     public String publicationOperationId;
     public String failureKind;
     public OffsetDateTime recordedAt;
+    public Long failedVerificationRunId;
 }

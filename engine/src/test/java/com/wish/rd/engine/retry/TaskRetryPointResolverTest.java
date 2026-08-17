@@ -20,6 +20,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class TaskRetryPointResolverTest {
@@ -193,6 +194,44 @@ class TaskRetryPointResolverTest {
                 () -> resolver.resolve(task(RdTaskStatus.FAILED_NEEDS_HUMAN, "{}", 41L, 71L), roleWithPublication,
                         List.of(stage("coding-later", AgentRole.CODING_AGENT, 3,
                                 AgentStageStatus.FAILED_RETRYABLE, 9_999L)), List.of(), List.of()));
+    }
+
+    @Test
+    void resolvesHostVerifyFromStructuredProvenanceWithoutParsingErrorText() {
+        String misleadingError = "QA failed after pull request publication: HOST_VERIFY text must not choose the role";
+        TaskRetryFailureProvenance provenance = new TaskRetryFailureProvenance(
+                "provenance-host-verify", "task-1", "command-verify", 2,
+                "HOST_VERIFY", TaskFailurePhase.HOST_VERIFY,
+                RdTaskStatus.FAILED_NEEDS_HUMAN, 41L, 71L,
+                "", "", "", "policy-1", "sha256:" + "a".repeat(64), "",
+                "PRODUCT_DEFECT", 400L, "verify-9");
+
+        var point = resolver.resolve(
+                task(RdTaskStatus.FAILED_NEEDS_HUMAN, "{\"errorMessage\":\"" + misleadingError + "\"}", 41L, 71L),
+                provenance, List.of(), List.of(), List.of());
+
+        assertEquals(TaskFailurePhase.HOST_VERIFY, point.failurePhase());
+        assertEquals(AgentRole.CODING_AGENT, point.retryFromRole());
+        assertEquals("command-verify", point.failedStageCommandId());
+        assertEquals("HOST_VERIFY", point.failedStage());
+        assertEquals(AgentRole.CODING_AGENT, point.retryFromRole());
+        assertFalse(point.retryFromRole() == AgentRole.QA_AGENT);
+    }
+
+    @Test
+    void rejectsHostVerifyProvenanceWithoutAPersistedVerificationRunId() {
+        TaskRetryFailureProvenance missingRunId = new TaskRetryFailureProvenance(
+                "provenance-host-verify", "task-1", "command-verify", 2,
+                "HOST_VERIFY", TaskFailurePhase.HOST_VERIFY,
+                RdTaskStatus.FAILED_NEEDS_HUMAN, 41L, 71L,
+                "", "", "", "policy-1", "sha256:" + "a".repeat(64), "",
+                "PRODUCT_DEFECT", 400L);
+
+        IllegalStateException failure = assertThrows(IllegalStateException.class,
+                () -> resolver.resolve(task(RdTaskStatus.FAILED_NEEDS_HUMAN, "{}", 41L, 71L), missingRunId,
+                        List.of(), List.of(), List.of()));
+
+        assertEquals("RETRY_POINT_AMBIGUOUS: task-1", failure.getMessage());
     }
 
     @Test

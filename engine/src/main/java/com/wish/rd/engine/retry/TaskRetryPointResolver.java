@@ -67,6 +67,7 @@ public final class TaskRetryPointResolver {
                     ? parseRoleStage(provenance.failedStage()) : failedStage.role();
             case RAG -> failedRetrieval == null ? null : parseRole(failedRetrieval.role());
             case AI_REVIEW -> failedReview == null ? null : parseRole(failedReview.retryFromRole());
+            case HOST_VERIFY -> AgentRole.CODING_AGENT;
             default -> null;
         };
         String reason = firstNonBlank(
@@ -313,6 +314,7 @@ public final class TaskRetryPointResolver {
             case AI_REVIEW -> !provenance.failedAiReviewRunId().isBlank()
                     && review != null
                     && isRetryableReview(review);
+            case HOST_VERIFY -> !provenance.failedVerificationRunId().isBlank();
             default -> true;
         };
         if (!valid) {
@@ -360,6 +362,7 @@ public final class TaskRetryPointResolver {
                     || stage.equals("APPROVAL_RESUME");
             case RAG, AGENT_ROLE -> stage.startsWith("ROLE_EXECUTION:")
                     && parseRoleStage(stage) != null;
+            case HOST_VERIFY -> stage.equals(HostVerifyFailureJson.STAGE);
             case DETERMINISTIC_REVIEW -> stage.equals("DETERMINISTIC_REVIEW");
             case AI_REVIEW -> stage.equals("AI_REVIEW");
             case PR_PUBLICATION -> stage.equals("PUBLICATION:" + provenance.publicationOperationId());

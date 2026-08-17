@@ -8,6 +8,7 @@ public enum TaskFailurePhase {
     POLICY,
     RAG,
     AGENT_ROLE,
+    HOST_VERIFY,
     DETERMINISTIC_REVIEW,
     AI_REVIEW,
     PR_PUBLICATION

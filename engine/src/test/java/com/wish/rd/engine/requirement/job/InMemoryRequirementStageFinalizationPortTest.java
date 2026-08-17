@@ -822,6 +822,77 @@ class InMemoryRequirementStageFinalizationPortTest {
     }
 
     @Test
+    void hostVerifyFailureFinalizationWritesStructuredProvenanceAndRecoversFromCoding() {
+        long now = 1_784_910_600_000L;
+        String taskId = "task-host-verify";
+        InMemoryRdTaskStore taskStore = new InMemoryRdTaskStore();
+        InMemoryRdTaskStatusEventStore events = new InMemoryRdTaskStatusEventStore();
+        taskStore.saveRequirementTask(RdRequirementTask.created(taskId, new CreateRequirementTaskCommand(
+                        "Task title", "P1", "https://example.invalid/repo.git", "owner", "repo", "main",
+                        "deliver", List.of("criterion"), false), now)
+                .withState(RdTaskStatus.EXECUTING, "", "{}", "", "", now)
+                .withConcurrency(8L, 15L));
+        InMemoryRequirementPolicyRunStore policyRuns = new InMemoryRequirementPolicyRunStore();
+        String planJson = "{}";
+        policyRuns.createOrGet(new RequirementPolicyRun(
+                "policy-1", taskId, 8L, 15L, planJson, RequirementPolicyRun.canonicalJsonDigest(planJson),
+                "", "", "", RequirementPolicyRunState.PLAN_READY,
+                8L, 15L, null, null, "", "", "", 0L, "", "", 0L, 0L, now, now));
+        InMemoryRequirementStageCommandStore commands = new InMemoryRequirementStageCommandStore();
+        RequirementStageCommand pending = RequirementStageCommand.pending(
+                "command-coding", taskId, 8L, 15L, AgentRole.CODING_AGENT.name(),
+                "ROLE_EXECUTION:CODING_AGENT",
+                0, 1, now + 60_000L, ScheduleResourceClass.GENERIC, Set.of(ScheduleResourceClass.GENERIC),
+                "project-1", "", "P1", "policy-1", "", 0L, "", now);
+        commands.enqueue(pending);
+        RequirementStageCommand claimed = commands.claim(pending.commandId(), "worker-1", now, 30_000L)
+                .orElseThrow();
+        InMemoryTaskRetryFailureProvenanceStore provenanceStore = new InMemoryTaskRetryFailureProvenanceStore();
+        InMemoryRequirementStageFinalizationPort finalizer = new InMemoryRequirementStageFinalizationPort(
+                commands, new InMemoryRequirementDeliveryJobStore(), taskStore,
+                new CoordinatedRdTaskStatePersistence(taskStore, events),
+                new SnowflakeIdGenerator(1, 1, () -> now), null, policyRuns,
+                provenanceStore, null, null, null);
+        String resultJson = """
+                {"status":"NEEDS_HUMAN","failurePhase":"HOST_VERIFY","failedVerificationRunId":"verify-9",\
+                "errorMessage":"QA publication failed"}
+                """;
+        RequirementStageExecutionPlan plan = new RequirementStageExecutionPlan(
+                RequirementStageExecutionPlan.CURRENT_SCHEMA_VERSION, taskId, 8L, 15L, RdTaskStatus.EXECUTING,
+                List.of(RequirementTaskMutation.statusTransition(
+                        RdTaskStatus.EXECUTING, RdTaskStatus.FAILED_NEEDS_HUMAN, "", resultJson, "",
+                        "QA publication failed", "")),
+                CommandDisposition.TERMINAL_FAILURE, ContinuationSpec.terminal(),
+                ExternalEffectReceipt.none());
+        RequirementStageFinalization marker = finalizer.recordOutcome(
+                finalizer.prepare(claimed, "worker-1", RdTaskStatus.EXECUTING, now),
+                claimed, "worker-1", plan, now + 1L);
+        finalizer.finalize(new RequirementStageFinalizationPort.FinalizationCommand(
+                marker, claimed, "worker-1", plan, null, null,
+                RequirementStageFinalizationPort.JobDisposition.NONE,
+                RequirementStageFinalizationPort.TaskMutationDisposition.APPLY, now + 2L));
+
+        RdRequirementTask failedTask = taskStore.findRequirementTask(taskId).orElseThrow();
+        TaskRetryFailureProvenance provenance = provenanceStore.findExact(
+                taskId, failedTask.status(), failedTask.version(), failedTask.fencingToken()).orElseThrow();
+        assertEquals(TaskFailurePhase.HOST_VERIFY, provenance.failurePhase());
+        assertEquals("HOST_VERIFY", provenance.failedStage());
+        assertEquals("verify-9", provenance.failedVerificationRunId());
+        assertEquals("policy-1", provenance.sourcePolicyRunId());
+
+        TaskFailureRecoveryService recovery = new TaskFailureRecoveryService(
+                new FakeRecoveryTaskPort(failedTask), new InMemoryAgentStageRunStore(),
+                new InMemoryAgentStageArtifactStore(), new InMemoryRetrievalRunStore(),
+                new InMemoryAiReviewRunStore(), new InMemoryTaskRetryCheckpointStore(),
+                provenanceStore, new TaskRetryPointResolver(), new TaskFailureDiagnosticParser());
+        TaskFailureRecoverySnapshot snapshot = recovery.snapshot(taskId);
+        TaskRetryRoute route = new TaskRetryRoutePlanner().plan(snapshot.retryPoint());
+        assertEquals(TaskFailurePhase.HOST_VERIFY, snapshot.retryPoint().failurePhase());
+        assertEquals(AgentRole.CODING_AGENT, snapshot.retryPoint().retryFromRole());
+        assertEquals("ROLE_EXECUTION:CODING_AGENT", route.firstStage());
+    }
+
+    @Test
     void publicationFailureWithoutProvenanceStoreFailsClosed() {
         long now = 1_784_800_360_000L;
         String taskId = "task-publication-missing-store";

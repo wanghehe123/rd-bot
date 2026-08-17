@@ -20,11 +20,13 @@ import com.wish.rd.engine.requirement.publication.model.RequirementPublicationSt
 import com.wish.rd.engine.requirement.policy.RequirementPolicyRunStore;
 import com.wish.rd.engine.requirement.policy.model.RequirementPolicyRun;
 import com.wish.rd.engine.requirement.policy.model.RequirementPolicyRunState;
+import com.wish.rd.engine.retry.HostVerifyFailureJson;
 import com.wish.rd.engine.retry.TaskRetryAttemptBindingStore;
 import com.wish.rd.engine.retry.TaskRetryCheckpointStore;
 import com.wish.rd.engine.retry.TaskRetryFailureProvenanceStore;
 import com.wish.rd.engine.retry.impl.InMemoryTaskRetryCheckpointStore;
 import com.wish.rd.engine.retry.impl.InMemoryTaskRetryFailureProvenanceStore;
+import com.wish.rd.engine.retry.model.TaskFailurePhase;
 import com.wish.rd.engine.retry.model.TaskRetryAttemptBinding;
 import com.wish.rd.engine.retry.model.TaskRetryCheckpoint;
 import com.wish.rd.engine.retry.model.TaskRetryCheckpointStatus;
@@ -618,6 +620,7 @@ public final class InMemoryRequirementStageFinalizationPort implements Requireme
             completed = stageCommandStore.complete(command.stageCommand(), command.leaseOwner(), command.nowEpochMillis());
         }
         recordPublicationFailureProvenance(command, marker, deferRetryableMutation);
+        recordHostVerifyFailureProvenance(command, marker, deferRetryableMutation);
         if (deferRetryableMutation) {
             return new FinalizationResult(marker, completed, next);
         }
@@ -625,6 +628,79 @@ public final class InMemoryRequirementStageFinalizationPort implements Requireme
                 command.outcome(), next == null ? "" : next.commandId(), command.nowEpochMillis());
         finalizations.put(key(marker.commandId(), marker.attemptNo()), finalized);
         return new FinalizationResult(finalized, completed, next);
+    }
+
+    private void recordHostVerifyFailureProvenance(
+            FinalizationCommand command,
+            RequirementStageFinalization finalized,
+            boolean deferRetryableMutation
+    ) {
+        if (deferRetryableMutation) {
+            return;
+        }
+        RequirementStageCommand stageCommand = command.stageCommand();
+        if (!stageCommand.stage().startsWith("ROLE_EXECUTION:")) {
+            return;
+        }
+        if (finalized.outcomeStatus() != RdTaskStatus.FAILED_RETRYABLE
+                && finalized.outcomeStatus() != RdTaskStatus.FAILED_NEEDS_HUMAN) {
+            return;
+        }
+        String resultJson = lastMutationResultJson(command.plan());
+        if (!HostVerifyFailureJson.isStructuredHostVerify(resultJson)) {
+            return;
+        }
+        if (failureProvenanceStore == null) {
+            throw new IllegalStateException("terminal host-verify failure provenance persistence is unavailable: "
+                    + stageCommand.commandId());
+        }
+        if (policyRunStore == null) {
+            throw new IllegalStateException("terminal host-verify failure provenance persistence is unavailable: "
+                    + stageCommand.commandId());
+        }
+        if (stageCommand.policyRunId().isBlank()) {
+            throw new IllegalStateException("terminal host-verify failure has no policy generation: "
+                    + stageCommand.commandId());
+        }
+        RequirementPolicyRun policy = policyRunStore.findById(stageCommand.policyRunId())
+                .orElseThrow(() -> new IllegalStateException(
+                        "terminal host-verify failure has no matching policy generation: "
+                                + stageCommand.commandId()));
+        if (!stageCommand.taskId().equals(policy.taskId()) || policy.planDigest().isBlank()) {
+            throw new IllegalStateException("terminal host-verify failure has no matching policy generation: "
+                    + stageCommand.commandId());
+        }
+        String verificationRunId = HostVerifyFailureJson.verificationRunId(resultJson);
+        failureProvenanceStore.save(new TaskRetryFailureProvenance(
+                Long.toString(eventIdGenerator.nextId()),
+                stageCommand.taskId(),
+                stageCommand.commandId(),
+                stageCommand.attemptNo(),
+                HostVerifyFailureJson.STAGE,
+                TaskFailurePhase.HOST_VERIFY,
+                finalized.outcomeStatus(),
+                command.plan().postVersion(),
+                command.plan().postFencingToken(),
+                "", "", "",
+                policy.id(),
+                policy.planDigest(),
+                "",
+                firstNonBlank(HostVerifyFailureJson.failurePhase(resultJson), HostVerifyFailureJson.STAGE),
+                command.nowEpochMillis(),
+                verificationRunId));
+    }
+
+    private static String lastMutationResultJson(RequirementStageExecutionPlan plan) {
+        if (plan == null || plan.mutations() == null) {
+            return "";
+        }
+        return HostVerifyFailureJson.lastNonBlank(
+                plan.mutations().stream().map(RequirementTaskMutation::executionResultJson).toList());
+    }
+
+    private static String firstNonBlank(String first, String second) {
+        String normalized = first == null ? "" : first.strip();
+        return normalized.isBlank() ? (second == null ? "" : second.strip()) : normalized;
     }
 
     private void recordPublicationFailureProvenance(
