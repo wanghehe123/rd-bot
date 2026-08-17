@@ -1,0 +1,208 @@
+package com.wish.rd.bootstrap.verify;
+
+import com.wish.rd.engine.agent.model.AgentRole;
+import com.wish.rd.engine.agent.model.AgentStageRun;
+import com.wish.rd.engine.requirement.model.AgentWorkflowPlan;
+import com.wish.rd.engine.requirement.verify.model.HostVerificationArtifact;
+import com.wish.rd.engine.requirement.verify.model.HostVerificationRun;
+import com.wish.rd.engine.requirement.verify.model.HostVerificationStatus;
+import com.wish.rd.engine.requirement.verify.model.HostVerificationStep;
+import com.wish.rd.engine.requirement.verify.model.HostVerificationStepName;
+import com.wish.rd.engine.requirement.verify.model.HostVerificationStepStatus;
+import com.wish.rd.engine.requirement.verify.impl.InMemoryHostVerificationStore;
+import com.wish.rd.exec.repair.verify.HostVerificationCommandDetector;
+import com.wish.rd.exec.repair.verify.model.HostVerificationCommandResult;
+import com.wish.rd.rag.runtime.model.CreateRequirementTaskCommand;
+import com.wish.rd.rag.runtime.model.RdRequirementTask;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+class HostVerificationExecutorAdapterTest {
+
+    @TempDir
+    Path workspace;
+
+    @TempDir
+    Path evidenceRoot;
+
+    private InMemoryHostVerificationStore store;
+    private FakeCommandRunner runner;
+    private AtomicLong ids;
+    private AtomicLong clock;
+
+    @BeforeEach
+    void setUp() {
+        store = new InMemoryHostVerificationStore();
+        runner = new FakeCommandRunner();
+        ids = new AtomicLong(8000);
+        clock = new AtomicLong(1_700_000_000_000L);
+    }
+
+    @Test
+    void docsOnlyChangedFilesSkipBuildAndStaticWithoutRunningCommands() throws Exception {
+        writeVitePackageJson();
+        HostVerificationExecutorAdapter adapter = adapter(List.of("README.md"));
+
+        HostVerificationRun run = adapter.verify(task(), codingStage(), AgentWorkflowPlan.production(), 1);
+
+        assertEquals(HostVerificationStatus.SKIPPED_DOCS_ONLY, run.status());
+        assertTrue(run.docsOnly());
+        assertEquals(1, run.remediationCount());
+        assertEquals(1, run.attemptNo());
+        assertEquals("", run.parentRunId());
+        assertEquals(HostVerificationStepStatus.SKIPPED, step(run, HostVerificationStepName.BUILD).status());
+        assertEquals(HostVerificationStepStatus.SKIPPED, step(run, HostVerificationStepName.STATIC).status());
+        assertTrue(runner.commands.isEmpty(), runner.commands.toString());
+    }
+
+    @Test
+    void buildNonZeroSkipsStaticAndClassifiesProductDefect() throws Exception {
+        writeVitePackageJson();
+        runner.buildExitCode = 1;
+        HostVerificationExecutorAdapter adapter = adapter(List.of("src/App.tsx"));
+
+        HostVerificationRun run = adapter.verify(task(), codingStage(), AgentWorkflowPlan.production(), 0);
+
+        assertEquals(HostVerificationStatus.FAILED_RETRYABLE, run.status());
+        assertEquals("PRODUCT_DEFECT", run.failureCategory());
+        assertEquals(HostVerificationStepStatus.FAILED, step(run, HostVerificationStepName.BUILD).status());
+        HostVerificationStep staticStep = step(run, HostVerificationStepName.STATIC);
+        assertEquals(HostVerificationStepStatus.SKIPPED, staticStep.status());
+        assertTrue(staticStep.errorMessage().toLowerCase().contains("build"), staticStep.errorMessage());
+        assertFalse(runner.commands.stream().anyMatch(command -> command.contains("typecheck")), runner.commands.toString());
+        assertFalse(runner.commands.isEmpty());
+    }
+
+    @Test
+    void buildZeroThenStaticRunsAndSucceeds() throws Exception {
+        writeVitePackageJson();
+        HostVerificationExecutorAdapter adapter = adapter(List.of("src/App.tsx"));
+
+        HostVerificationRun first = adapter.verify(task(), codingStage(), AgentWorkflowPlan.production(), 0);
+        assertEquals(HostVerificationStatus.SUCCEEDED, first.status());
+        assertEquals(HostVerificationStepStatus.SUCCEEDED, step(first, HostVerificationStepName.BUILD).status());
+        assertEquals(HostVerificationStepStatus.SUCCEEDED, step(first, HostVerificationStepName.STATIC).status());
+        assertTrue(runner.commands.stream().anyMatch(command -> command.contains("build") || command.contains("npm install")),
+                runner.commands.toString());
+        assertTrue(runner.commands.stream().anyMatch(command -> command.contains("typecheck")), runner.commands.toString());
+        List<HostVerificationArtifact> artifacts = store.listArtifacts(first.runId());
+        assertTrue(artifacts.stream().anyMatch(artifact -> artifact.relativePath().contains("verify-evidence/build/")));
+        assertTrue(artifacts.stream().anyMatch(artifact -> artifact.relativePath().contains("verify-evidence/static/")));
+        assertTrue(artifacts.stream().allMatch(artifact -> artifact.sha256() != null && !artifact.sha256().isBlank()));
+
+        HostVerificationRun second = adapter.verify(task(), codingStage(), AgentWorkflowPlan.production(), 0);
+        assertEquals(2, second.attemptNo());
+        assertEquals(first.runId(), second.parentRunId());
+    }
+
+    @Test
+    void timeoutIsInfrastructureAndNeedsHuman() throws Exception {
+        writeVitePackageJson();
+        runner.timedOut = true;
+        HostVerificationExecutorAdapter adapter = adapter(List.of("src/App.tsx"));
+
+        HostVerificationRun run = adapter.verify(task(), codingStage(), AgentWorkflowPlan.production(), 0);
+
+        assertEquals(HostVerificationStatus.FAILED_NEEDS_HUMAN, run.status());
+        assertEquals("QA_INFRASTRUCTURE", run.failureCategory());
+        assertEquals(HostVerificationStepStatus.FAILED, step(run, HostVerificationStepName.BUILD).status());
+        assertEquals(HostVerificationStepStatus.SKIPPED, step(run, HostVerificationStepName.STATIC).status());
+        assertFalse(runner.commands.stream().anyMatch(command -> command.contains("typecheck")), runner.commands.toString());
+    }
+
+    @Test
+    void ambiguousEmptyRepositoryNeedsHumanWithoutRunnerCalls() {
+        HostVerificationExecutorAdapter adapter = adapter(List.of("src/App.tsx"));
+
+        HostVerificationRun run = adapter.verify(task(), codingStage(), AgentWorkflowPlan.production(), 0);
+
+        assertEquals(HostVerificationStatus.FAILED_NEEDS_HUMAN, run.status());
+        assertEquals("REQUIREMENT_AMBIGUITY", run.failureCategory());
+        assertTrue(runner.commands.isEmpty(), runner.commands.toString());
+        assertEquals(HostVerificationStepStatus.SKIPPED, step(run, HostVerificationStepName.BUILD).status());
+        assertEquals(HostVerificationStepStatus.SKIPPED, step(run, HostVerificationStepName.STATIC).status());
+    }
+
+    private HostVerificationExecutorAdapter adapter(List<String> changedFiles) {
+        return new HostVerificationExecutorAdapter(
+                store,
+                new HostVerificationCommandDetector(),
+                runner,
+                (task, codingStage) -> workspace,
+                (task, codingStage, prepared) -> changedFiles,
+                ids::incrementAndGet,
+                clock::incrementAndGet,
+                600,
+                evidenceRoot
+        );
+    }
+
+    private HostVerificationStep step(HostVerificationRun run, HostVerificationStepName name) {
+        return store.listSteps(run.runId()).stream()
+                .filter(step -> step.step() == name)
+                .findFirst()
+                .orElseThrow();
+    }
+
+    private static RdRequirementTask task() {
+        return RdRequirementTask.created(
+                "9001",
+                new CreateRequirementTaskCommand(
+                        "title",
+                        "P2",
+                        "https://example.com/repo.git",
+                        "acme",
+                        "repo",
+                        "main",
+                        "ok",
+                        List.of(),
+                        false
+                ),
+                1L
+        );
+    }
+
+    private static AgentStageRun codingStage() {
+        return AgentStageRun.pending("7001", "9001", AgentRole.CODING_AGENT, 1, "idem-1", 1L);
+    }
+
+    private void writeVitePackageJson() throws Exception {
+        Files.writeString(workspace.resolve("package.json"), """
+                {
+                  "scripts": {
+                    "dev": "vite",
+                    "build": "vite build",
+                    "typecheck": "tsc --noEmit"
+                  }
+                }
+                """);
+    }
+
+    private static final class FakeCommandRunner implements HostVerificationExecutorAdapter.CommandExecutor {
+        private final List<String> commands = new ArrayList<>();
+        private int buildExitCode = 0;
+        private boolean timedOut;
+
+        @Override
+        public HostVerificationCommandResult run(String command, Path workingDirectory, Duration timeout) {
+            commands.add(command);
+            if (timedOut) {
+                return new HostVerificationCommandResult(-1, "command timed out", true);
+            }
+            int exitCode = command.contains("typecheck") ? 0 : buildExitCode;
+            return new HostVerificationCommandResult(exitCode, "output for " + command, false);
+        }
+    }
+}
