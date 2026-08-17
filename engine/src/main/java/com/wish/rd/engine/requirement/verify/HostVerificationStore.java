@@ -98,4 +98,16 @@ public interface HostVerificationStore {
      * @return immutable snapshots
      */
     List<HostVerificationArtifact> listArtifacts(String runId);
+
+    /**
+     * Deletes every evidence row owned by a task.
+     *
+     * <p>Callers must delete file/s3 objects first. Runs and steps stay so
+     * failure provenance can keep referencing a verification run id.
+     *
+     * @param taskId owning RD task id
+     * @return number of artifact rows removed
+     * @throws IllegalArgumentException when {@code taskId} is blank
+     */
+    int deleteByTask(String taskId);
 }

@@ -6,7 +6,12 @@ import com.wish.rd.engine.agent.model.AgentRole;
 import com.wish.rd.engine.agent.impl.InMemoryAgentStageArtifactStore;
 import com.wish.rd.engine.agent.model.AgentStageArtifact;
 import com.wish.rd.engine.agent.model.AgentStageRun;
+import com.wish.rd.bootstrap.executor.impl.HostVerificationRetentionService;
 import com.wish.rd.bootstrap.executor.impl.QaEvidenceRetentionService;
+import com.wish.rd.engine.requirement.verify.impl.InMemoryHostVerificationStore;
+import com.wish.rd.engine.requirement.verify.model.HostVerificationArtifact;
+import com.wish.rd.engine.requirement.verify.model.HostVerificationRun;
+import com.wish.rd.engine.requirement.verify.model.HostVerificationStatus;
 import com.wish.rd.bootstrap.threading.RequirementDeliveryDispatchService;
 import com.wish.rd.engine.bugfix.RdBotFixEngine;
 import com.wish.rd.engine.bugfix.model.RdBotFixCommand;
@@ -280,6 +285,62 @@ class RdTaskControllerTest {
                 .andExpect(jsonPath("$.deleted", is(true)));
 
         assertEquals(0, artifactStore.listByTask(taskId).size());
+        org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalArgumentException.class,
+                () -> objectStorage.openStream(uri)
+        );
+    }
+
+    @Test
+    void shouldDeleteHostVerificationEvidenceWhenTaskIsDeleted() throws Exception {
+        String taskId = createTask("FS-3005-HV", "带宿主验证证据的任务", "P2");
+        InMemoryObjectStorageService objectStorage = new InMemoryObjectStorageService();
+        byte[] content = "build-log".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        String uri = objectStorage.upload(
+                "rd-qa-evidence",
+                new ByteArrayInputStream(content),
+                content.length,
+                "build.log",
+                "text/plain"
+        ).url();
+        InMemoryHostVerificationStore verificationStore = new InMemoryHostVerificationStore();
+        verificationStore.create(new HostVerificationRun(
+                "8001",
+                taskId,
+                "7001",
+                "",
+                1,
+                HostVerificationStatus.FAILED_NEEDS_HUMAN,
+                false,
+                "PRODUCT_DEFECT",
+                "build failed",
+                0,
+                1L,
+                1L,
+                1L
+        ));
+        verificationStore.appendArtifact(new HostVerificationArtifact(
+                "6001",
+                taskId,
+                "8001",
+                "VERIFY_BUILD_LOG",
+                "verify-evidence/build/build.log",
+                uri,
+                "text/plain",
+                content.length,
+                "sha256:test",
+                1L
+        ));
+        RdTaskController controller = new RdTaskController(registry);
+        controller.setHostVerificationRetentionService(
+                new HostVerificationRetentionService(verificationStore, objectStorage));
+        mockMvc = MockMvcBuilders.standaloneSetup(controller).build();
+
+        mockMvc.perform(delete("/admin/rd-tasks/{taskId}", taskId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.deleted", is(true)));
+
+        assertEquals(0, verificationStore.listArtifacts("8001").size());
         org.junit.jupiter.api.Assertions.assertThrows(
                 IllegalArgumentException.class,
                 () -> objectStorage.openStream(uri)

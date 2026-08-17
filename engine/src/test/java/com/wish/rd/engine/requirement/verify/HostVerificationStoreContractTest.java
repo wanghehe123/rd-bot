@@ -194,6 +194,43 @@ class HostVerificationStoreContractTest {
         assertEquals("8002", store.find("8002").orElseThrow().runId(), name);
     }
 
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("stores")
+    void deleteByTaskRemovesArtifactsAndLeavesOtherTasks(String name, HostVerificationStore store) {
+        store.create(created("8001", "9001", 1));
+        store.create(created("8011", "9002", 1));
+        store.appendArtifact(new HostVerificationArtifact(
+                "6001",
+                "9001",
+                "8001",
+                "VERIFY_BUILD_LOG",
+                "verify-evidence/build.log",
+                "s3://rd-qa-evidence/verify/6001",
+                "text/plain",
+                12L,
+                "abc123",
+                NOW
+        ));
+        store.appendArtifact(new HostVerificationArtifact(
+                "6011",
+                "9002",
+                "8011",
+                "VERIFY_STATIC_LOG",
+                "verify-evidence/static.log",
+                "file:///tmp/verify-6011.log",
+                "text/plain",
+                4L,
+                "def456",
+                NOW
+        ));
+
+        assertEquals(1, store.deleteByTask("9001"), name);
+        assertTrue(store.listArtifacts("8001").isEmpty(), name);
+        assertEquals(1, store.listByTask("9001").size(), name);
+        assertEquals(1, store.listArtifacts("8011").size(), name);
+        assertEquals(0, store.deleteByTask("9001"), name);
+    }
+
     private static HostVerificationRun created(String runId, String taskId, int attemptNo) {
         return new HostVerificationRun(
                 runId,

@@ -158,6 +158,16 @@ public class PostgresHostVerificationStore implements HostVerificationStore {
                 .toList();
     }
 
+    @Override
+    @Transactional
+    public int deleteByTask(String taskId) {
+        String normalized = safe(taskId);
+        if (normalized.isBlank()) {
+            throw new IllegalArgumentException("taskId must not be blank");
+        }
+        return mapper.deleteArtifactsByTaskId(PostgresPersistenceSupport.parseId(normalized));
+    }
+
     private HostVerificationRun require(String runId) {
         return find(runId).orElseThrow(() -> new NoSuchElementException("host verification run not found: " + runId));
     }

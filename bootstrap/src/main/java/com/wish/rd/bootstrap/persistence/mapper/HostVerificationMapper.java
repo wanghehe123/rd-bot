@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.wish.rd.bootstrap.persistence.entity.HostVerificationArtifactRow;
 import com.wish.rd.bootstrap.persistence.entity.HostVerificationRunRow;
 import com.wish.rd.bootstrap.persistence.entity.HostVerificationStepRow;
+import org.apache.ibatis.annotations.Delete;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
@@ -189,4 +190,13 @@ public interface HostVerificationMapper extends BaseMapper<HostVerificationRunRo
              ORDER BY created_at ASC, id ASC
             """)
     List<HostVerificationArtifactRow> listArtifacts(@Param("runId") long runId);
+
+    /**
+     * Deletes every evidence object owned by a task.
+     *
+     * @param taskId owning task id
+     * @return number of rows removed
+     */
+    @Delete("DELETE FROM rd_host_verification_artifacts WHERE task_id = #{taskId}")
+    int deleteArtifactsByTaskId(@Param("taskId") long taskId);
 }

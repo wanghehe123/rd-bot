@@ -117,6 +117,21 @@ public final class InMemoryHostVerificationStore implements HostVerificationStor
         return List.copyOf(artifacts.get(normalize(runId)));
     }
 
+    @Override
+    public synchronized int deleteByTask(String taskId) {
+        String normalized = normalize(taskId);
+        if (normalized.isBlank()) {
+            throw new IllegalArgumentException("taskId must not be blank");
+        }
+        int deleted = 0;
+        for (List<HostVerificationArtifact> stored : artifacts.values()) {
+            int before = stored.size();
+            stored.removeIf(artifact -> artifact.taskId().equals(normalized));
+            deleted += before - stored.size();
+        }
+        return deleted;
+    }
+
     private HostVerificationRun require(String runId) {
         HostVerificationRun run = runs.get(normalize(runId));
         if (run == null) {

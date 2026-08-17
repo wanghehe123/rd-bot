@@ -6,6 +6,7 @@ import com.fasterxml.jackson.annotation.JsonAlias;
 import com.wish.rd.adapter.model.TicketSnapshot;
 import com.wish.rd.bootstrap.threading.BugFixExecutionDispatchService;
 import com.wish.rd.bootstrap.threading.RequirementDeliveryDispatchService;
+import com.wish.rd.bootstrap.executor.impl.HostVerificationRetentionService;
 import com.wish.rd.bootstrap.executor.impl.QaEvidenceRetentionService;
 import com.wish.rd.engine.audit.impl.NoopRepairAuditSink;
 import com.wish.rd.engine.audit.model.RepairAuditEvent;
@@ -115,6 +116,7 @@ public class RdTaskController {
     private final RdProjectService projectService;
     private RdTaskExecutionControlEngine taskExecutionControlEngine;
     private QaEvidenceRetentionService qaEvidenceRetentionService;
+    private HostVerificationRetentionService hostVerificationRetentionService;
     private AgentStageRunStore agentStageRunStore;
     private RequirementPolicyTransactionPort requirementPolicyTransactionPort;
     private final Object materialUploadMonitor = new Object();
@@ -135,6 +137,11 @@ public class RdTaskController {
     @Autowired(required = false)
     void setQaEvidenceRetentionService(QaEvidenceRetentionService qaEvidenceRetentionService) {
         this.qaEvidenceRetentionService = qaEvidenceRetentionService;
+    }
+
+    @Autowired(required = false)
+    void setHostVerificationRetentionService(HostVerificationRetentionService hostVerificationRetentionService) {
+        this.hostVerificationRetentionService = hostVerificationRetentionService;
     }
 
     @Autowired(required = false)
@@ -561,6 +568,9 @@ public class RdTaskController {
     public DeleteResponse delete(@PathVariable("taskId") String taskId) {
         if (qaEvidenceRetentionService != null) {
             qaEvidenceRetentionService.deleteForTask(taskId);
+        }
+        if (hostVerificationRetentionService != null) {
+            hostVerificationRetentionService.deleteForTask(taskId);
         }
         return new DeleteResponse(registry.deleteTask(taskId));
     }
