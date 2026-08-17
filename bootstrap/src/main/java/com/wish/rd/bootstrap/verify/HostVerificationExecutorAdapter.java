@@ -15,6 +15,8 @@ import com.wish.rd.engine.requirement.verify.model.HostVerificationStepStatus;
 import com.wish.rd.exec.repair.verify.HostVerificationCommandDetector;
 import com.wish.rd.exec.repair.verify.model.HostVerificationCommandResult;
 import com.wish.rd.exec.repair.verify.model.HostVerificationCommandSet;
+import com.wish.rd.rag.qa.QaValidationProfileService;
+import com.wish.rd.rag.qa.model.QaValidationProfile;
 import com.wish.rd.rag.runtime.model.RdRequirementTask;
 
 import java.io.IOException;
@@ -44,6 +46,7 @@ public final class HostVerificationExecutorAdapter implements HostVerificationPo
     /** Default wall-clock budget for the whole BUILD+STATIC sequence. */
     public static final int DEFAULT_TIMEOUT_SECONDS = 600;
 
+    private static final int MAX_ERROR_MESSAGE_CHARS = 4_000;
     private static final String BUILD_SKIPPED_AFTER_FAILURE = "not executed because BUILD failed";
     private static final String BUILD_SKIPPED_AMBIGUOUS = "not executed because BUILD commands could not be resolved";
 
@@ -56,6 +59,7 @@ public final class HostVerificationExecutorAdapter implements HostVerificationPo
     private final LongSupplier clock;
     private final int timeoutSeconds;
     private final Path evidenceRoot;
+    private final QaValidationProfileService qaValidationProfileService;
 
     /**
      * Creates the host verification adapter.
@@ -81,6 +85,46 @@ public final class HostVerificationExecutorAdapter implements HostVerificationPo
             int timeoutSeconds,
             Path evidenceRoot
     ) {
+        this(
+                store,
+                detector,
+                commandExecutor,
+                workspaceFactory,
+                changeSetResolver,
+                idGenerator,
+                clock,
+                timeoutSeconds,
+                evidenceRoot,
+                null
+        );
+    }
+
+    /**
+     * Creates the host verification adapter with an optional QA profile resolver.
+     *
+     * @param store                       run/step/artifact persistence
+     * @param detector                    BUILD/STATIC command resolver
+     * @param commandExecutor             process runner; tests inject a fake
+     * @param workspaceFactory            prepared repository seam
+     * @param changeSetResolver           candidate path list; tests inject README.md or src/App.tsx
+     * @param idGenerator                 run and artifact ids
+     * @param clock                       epoch millis
+     * @param timeoutSeconds              wall-clock budget, default 600
+     * @param evidenceRoot                directory that will contain {@code verify-evidence/}
+     * @param qaValidationProfileService  task then project QA profile; {@code null} means auto-detect
+     */
+    public HostVerificationExecutorAdapter(
+            HostVerificationStore store,
+            HostVerificationCommandDetector detector,
+            CommandExecutor commandExecutor,
+            HostVerificationWorkspaceFactory workspaceFactory,
+            HostVerificationChangeSetResolver changeSetResolver,
+            LongSupplier idGenerator,
+            LongSupplier clock,
+            int timeoutSeconds,
+            Path evidenceRoot,
+            QaValidationProfileService qaValidationProfileService
+    ) {
         this.store = Objects.requireNonNull(store, "store must not be null");
         this.detector = detector == null ? new HostVerificationCommandDetector() : detector;
         this.commandExecutor = Objects.requireNonNull(commandExecutor, "commandExecutor must not be null");
@@ -90,6 +134,7 @@ public final class HostVerificationExecutorAdapter implements HostVerificationPo
         this.clock = clock == null ? System::currentTimeMillis : clock;
         this.timeoutSeconds = timeoutSeconds < 1 ? DEFAULT_TIMEOUT_SECONDS : timeoutSeconds;
         this.evidenceRoot = evidenceRoot;
+        this.qaValidationProfileService = qaValidationProfileService;
     }
 
     /**
@@ -115,7 +160,9 @@ public final class HostVerificationExecutorAdapter implements HostVerificationPo
         // 工作区由调用方准备；这里只跑白名单命令，禁止清理 cache/ 或 node_modules
         Path workspace = workspaceFactory.prepare(task, codingStage);
         List<String> changedFiles = changeSetResolver.resolve(task, codingStage, workspace);
-        HostVerificationCommandSet commands = detector.detect(workspace, changedFiles);
+        // 任务覆盖 > 项目配置 > 仓库自动探测；Declared=false 的一侧仍走自动探测
+        QaValidationProfile profile = resolveQaProfile(task);
+        HostVerificationCommandSet commands = detector.detect(workspace, changedFiles, profile);
         HostVerificationRun run = store.create(newRun(task, codingStage, remediationCountAlreadyUsed, commands.docsOnly()));
         run = transition(run, HostVerificationStatus.CREATED, HostVerificationStatus.PREPARING, "", "");
         if (commands.docsOnly()) {
@@ -220,13 +267,15 @@ public final class HostVerificationExecutorAdapter implements HostVerificationPo
             }
             lastExit = result.exitCode();
             if (result.timedOut()) {
-                String artifactId = writeLog(run, stepName, log.toString());
-                return StepOutcome.timeout(stepName, executed, log.toString(), now() - started, artifactId);
+                String artifactLog = log.toString();
+                String artifactId = writeLog(run, stepName, artifactLog);
+                return StepOutcome.timeout(stepName, executed, artifactLog, now() - started, artifactId);
             }
             if (result.exitCode() != 0) {
-                String artifactId = writeLog(run, stepName, log.toString());
+                String artifactLog = log.toString();
+                String artifactId = writeLog(run, stepName, artifactLog);
                 return StepOutcome.failed(
-                        stepName, executed, result.exitCode(), result.output(), now() - started, artifactId);
+                        stepName, executed, result.exitCode(), artifactLog, now() - started, artifactId);
             }
         }
         String artifactId = writeLog(run, stepName, log.toString());
@@ -274,6 +323,8 @@ public final class HostVerificationExecutorAdapter implements HostVerificationPo
             StepOutcome outcome
     ) {
         FailureClass classified = classify(outcome);
+        // 廉价返工把 run.errorMessage 注入编码上下文，附上日志尾以免只看到 exit code
+        String message = withLogTail(classified.message(), outcome.output());
         store.saveStep(new HostVerificationStep(
                 run.runId(),
                 outcome.stepName(),
@@ -282,9 +333,9 @@ public final class HostVerificationExecutorAdapter implements HostVerificationPo
                 outcome.exitCode(),
                 outcome.durationMillis(),
                 outcome.logArtifactId(),
-                classified.message()
+                message
         ));
-        return transition(run, expected, classified.status(), classified.category(), classified.message());
+        return transition(run, expected, classified.status(), classified.category(), message);
     }
 
     private FailureClass classify(StepOutcome outcome) {
@@ -343,6 +394,32 @@ public final class HostVerificationExecutorAdapter implements HostVerificationPo
     private static String summarizeFailure(StepOutcome outcome) {
         String command = outcome.commands().isEmpty() ? "command" : outcome.commands().getLast();
         return command + " exited " + outcome.exitCode();
+    }
+
+    private QaValidationProfile resolveQaProfile(RdRequirementTask task) {
+        if (qaValidationProfileService == null) {
+            return null;
+        }
+        return qaValidationProfileService.resolve(task.taskId(), task.projectId())
+                .profile()
+                .orElse(null);
+    }
+
+    private static String withLogTail(String summary, String output) {
+        String safeSummary = summary == null ? "" : summary.strip();
+        String safeOutput = output == null ? "" : output.strip();
+        if (safeOutput.isBlank()) {
+            return clip(safeSummary);
+        }
+        String combined = safeSummary.isBlank() ? safeOutput : safeSummary + System.lineSeparator() + safeOutput;
+        return clip(combined);
+    }
+
+    private static String clip(String value) {
+        if (value.length() <= MAX_ERROR_MESSAGE_CHARS) {
+            return value;
+        }
+        return value.substring(0, MAX_ERROR_MESSAGE_CHARS) + "...(truncated)";
     }
 
     private String writeLog(HostVerificationRun run, HostVerificationStepName stepName, String content) {

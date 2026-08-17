@@ -12,6 +12,9 @@ import com.wish.rd.engine.requirement.verify.model.HostVerificationStepStatus;
 import com.wish.rd.engine.requirement.verify.impl.InMemoryHostVerificationStore;
 import com.wish.rd.exec.repair.verify.HostVerificationCommandDetector;
 import com.wish.rd.exec.repair.verify.model.HostVerificationCommandResult;
+import com.wish.rd.rag.qa.QaValidationProfileService;
+import com.wish.rd.rag.qa.impl.InMemoryQaValidationProfileStore;
+import com.wish.rd.rag.qa.model.QaValidationProfileCommand;
 import com.wish.rd.rag.runtime.model.CreateRequirementTaskCommand;
 import com.wish.rd.rag.runtime.model.RdRequirementTask;
 import org.junit.jupiter.api.BeforeEach;
@@ -77,6 +80,8 @@ class HostVerificationExecutorAdapterTest {
 
         assertEquals(HostVerificationStatus.FAILED_RETRYABLE, run.status());
         assertEquals("PRODUCT_DEFECT", run.failureCategory());
+        assertTrue(run.errorMessage().contains("exited 1"), run.errorMessage());
+        assertTrue(run.errorMessage().contains("output for"), run.errorMessage());
         assertEquals(HostVerificationStepStatus.FAILED, step(run, HostVerificationStepName.BUILD).status());
         HostVerificationStep staticStep = step(run, HostVerificationStepName.STATIC);
         assertEquals(HostVerificationStepStatus.SKIPPED, staticStep.status());
@@ -135,7 +140,60 @@ class HostVerificationExecutorAdapterTest {
         assertEquals(HostVerificationStepStatus.SKIPPED, step(run, HostVerificationStepName.STATIC).status());
     }
 
+    @Test
+    void taskProfileBuildCommandsOverrideAutoDetectFromPackageJson() throws Exception {
+        writePackageJsonThatAutoDetectsInstallTestAndBuild();
+        QaValidationProfileService profiles = new QaValidationProfileService(new InMemoryQaValidationProfileStore());
+        profiles.updateTask("9001", new QaValidationProfileCommand(
+                "AUTO",
+                "",
+                "",
+                "",
+                List.of(),
+                List.of(),
+                List.of("npm run build"),
+                null
+        ));
+        HostVerificationExecutorAdapter adapter = adapter(List.of("src/App.tsx"), profiles);
+
+        HostVerificationRun run = adapter.verify(task(), codingStage(), AgentWorkflowPlan.production(), 0);
+
+        assertEquals(HostVerificationStatus.SUCCEEDED, run.status());
+        assertEquals(List.of("npm run build"), step(run, HostVerificationStepName.BUILD).commands());
+        assertEquals(List.of("npm run build"), runner.commands.stream().filter(command -> !command.contains("typecheck")).toList());
+        assertFalse(runner.commands.contains("npm ci"), runner.commands.toString());
+        assertFalse(runner.commands.contains("npm install"), runner.commands.toString());
+        assertFalse(runner.commands.contains("npm test"), runner.commands.toString());
+    }
+
+    @Test
+    void projectProfileBuildCommandsUsedWhenTaskOverrideAbsent() throws Exception {
+        writePackageJsonThatAutoDetectsInstallTestAndBuild();
+        QaValidationProfileService profiles = new QaValidationProfileService(new InMemoryQaValidationProfileStore());
+        profiles.updateProject("proj-1", new QaValidationProfileCommand(
+                "AUTO",
+                "",
+                "",
+                "",
+                List.of(),
+                List.of(),
+                List.of("npm run build"),
+                null
+        ));
+        HostVerificationExecutorAdapter adapter = adapter(List.of("src/App.tsx"), profiles);
+
+        HostVerificationRun run = adapter.verify(task("proj-1"), codingStage(), AgentWorkflowPlan.production(), 0);
+
+        assertEquals(HostVerificationStatus.SUCCEEDED, run.status());
+        assertEquals(List.of("npm run build"), step(run, HostVerificationStepName.BUILD).commands());
+        assertFalse(runner.commands.contains("npm test"), runner.commands.toString());
+    }
+
     private HostVerificationExecutorAdapter adapter(List<String> changedFiles) {
+        return adapter(changedFiles, null);
+    }
+
+    private HostVerificationExecutorAdapter adapter(List<String> changedFiles, QaValidationProfileService profiles) {
         return new HostVerificationExecutorAdapter(
                 store,
                 new HostVerificationCommandDetector(),
@@ -145,7 +203,8 @@ class HostVerificationExecutorAdapterTest {
                 ids::incrementAndGet,
                 clock::incrementAndGet,
                 600,
-                evidenceRoot
+                evidenceRoot,
+                profiles
         );
     }
 
@@ -157,16 +216,27 @@ class HostVerificationExecutorAdapterTest {
     }
 
     private static RdRequirementTask task() {
+        return task("");
+    }
+
+    private static RdRequirementTask task(String projectId) {
         return RdRequirementTask.created(
                 "9001",
                 new CreateRequirementTaskCommand(
                         "title",
                         "P2",
+                        "ADMIN",
+                        "",
+                        "",
+                        projectId,
+                        "",
+                        "",
                         "https://example.com/repo.git",
                         "acme",
                         "repo",
                         "main",
                         "ok",
+                        List.of(),
                         List.of(),
                         false
                 ),
@@ -188,6 +258,19 @@ class HostVerificationExecutorAdapterTest {
                   }
                 }
                 """);
+    }
+
+    private void writePackageJsonThatAutoDetectsInstallTestAndBuild() throws Exception {
+        Files.writeString(workspace.resolve("package.json"), """
+                {
+                  "scripts": {
+                    "test": "vitest",
+                    "build": "vite build",
+                    "typecheck": "tsc --noEmit"
+                  }
+                }
+                """);
+        Files.writeString(workspace.resolve("package-lock.json"), "{}");
     }
 
     private static final class FakeCommandRunner implements HostVerificationExecutorAdapter.CommandExecutor {

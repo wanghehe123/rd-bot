@@ -14,6 +14,7 @@ import com.wish.rd.exec.repair.oracle.HostVerifierWorkspaceFactory;
 import com.wish.rd.exec.repair.verify.HostVerificationCommandDetector;
 import com.wish.rd.exec.repair.verify.HostVerificationCommandRunner;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
+import com.wish.rd.rag.qa.QaValidationProfileService;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -125,6 +126,7 @@ public class HostVerificationExecutorConfiguration {
      * @param workspaceFactory       prepared checkout
      * @param changeSetResolver      optional change-set; empty means undeterminable
      * @param idGeneratorProvider    Snowflake ids when available
+     * @param qaProfiles             optional task/project QA profile resolver
      * @param timeoutSeconds         wall-clock budget
      * @param evidenceRoot           log root; defaults under {@code java.io.tmpdir}
      * @return adapter or no bean when required seams are absent
@@ -137,6 +139,7 @@ public class HostVerificationExecutorConfiguration {
             HostVerificationWorkspaceFactory workspaceFactory,
             HostVerificationChangeSetResolver changeSetResolver,
             ObjectProvider<SnowflakeIdGenerator> idGeneratorProvider,
+            ObjectProvider<QaValidationProfileService> qaProfiles,
             @Value("${rd.host-verify.timeout-seconds:600}") int timeoutSeconds,
             @Value("${rd.host-verify.evidence-root:}") String evidenceRoot
     ) {
@@ -154,7 +157,8 @@ public class HostVerificationExecutorConfiguration {
                 idGenerator::nextId,
                 System::currentTimeMillis,
                 timeoutSeconds,
-                root
+                root,
+                qaProfiles.getIfAvailable()
         );
     }
 }
