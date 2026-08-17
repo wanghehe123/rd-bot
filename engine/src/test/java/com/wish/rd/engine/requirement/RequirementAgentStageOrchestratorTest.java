@@ -589,6 +589,41 @@ class RequirementAgentStageOrchestratorTest {
     }
 
     @Test
+    void coding_prompt_tells_host_verify_gate_is_authoritative_under_legacy_protocol() {
+        AgentWorkflowPlan plan = AgentWorkflowPlan.production();
+        OrchestratorTestHarness harness = new OrchestratorTestHarness()
+                .prestageRoles(plan.roles())
+                .prestageRoleContexts(plan.roles());
+
+        RequirementExecutionResult result = harness.orchestrator.run(
+                plan, harness.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION, null);
+
+        assertTrue(result.success(), result.errorMessage());
+        assertCodingPromptOwnsHostVerifyAndQaDoesNot(
+                harness.executor.lastPromptByRole.get(AgentRole.CODING_AGENT),
+                harness.executor.lastPromptByRole.get(AgentRole.QA_AGENT));
+    }
+
+    @Test
+    void coding_prompt_tells_host_verify_gate_is_authoritative_under_facts_v1_protocol() {
+        AgentWorkflowPlan plan = AgentWorkflowPlan.production();
+        OrchestratorTestHarness harness = new OrchestratorTestHarness()
+                .prestageRoles(plan.roles())
+                .prestageRoleContexts(plan.roles());
+        harness.orchestrator.setExecutionProfileResolver(new FactsProfileResolver());
+
+        RequirementExecutionResult result = harness.orchestrator.run(
+                plan, harness.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION, null);
+
+        assertTrue(result.success(), result.errorMessage());
+        String codingPrompt = harness.executor.lastPromptByRole.get(AgentRole.CODING_AGENT);
+        assertCodingPromptOwnsHostVerifyAndQaDoesNot(
+                codingPrompt,
+                harness.executor.lastPromptByRole.get(AgentRole.QA_AGENT));
+        assertTrue(codingPrompt.contains("\"facts\""), codingPrompt);
+    }
+
+    @Test
     void recordRetrieval_returns_empty_succeed_outcome_when_recorder_missing() {
         AgentWorkflowPlan plan = AgentWorkflowPlan.codingBenchmark(CodingBenchmarkArm.C);
         OrchestratorTestHarness harness = new OrchestratorTestHarness()
@@ -685,6 +720,7 @@ class RequirementAgentStageOrchestratorTest {
         assertTrue(codingPrompt.contains("上一轮失败反馈"), codingPrompt);
         assertTrue(codingPrompt.contains("cannot find symbol Foo"), codingPrompt);
         assertTrue(codingPrompt.contains("PRODUCT_DEFECT"), codingPrompt);
+        assertTrue(codingPrompt.contains("宿主会在本阶段成功后"), codingPrompt);
     }
 
     @Test
@@ -1083,6 +1119,17 @@ class RequirementAgentStageOrchestratorTest {
                     }""";
             return RequirementExecutionProfileResolution.of("snap-facts-" + stageRunId, snapshotJson);
         }
+    }
+
+    private static void assertCodingPromptOwnsHostVerifyAndQaDoesNot(String codingPrompt, String qaPrompt) {
+        assertNotNull(codingPrompt, "coding prompt should be captured");
+        assertTrue(codingPrompt.contains("宿主会在本阶段成功后"), codingPrompt);
+        assertTrue(codingPrompt.contains("`testStatus` 只是交接信息，不是放行依据"), codingPrompt);
+        assertTrue(codingPrompt.contains("不要删 `/work/cache` 或 `node_modules`"), codingPrompt);
+        assertNotNull(qaPrompt, "QA prompt should be captured");
+        assertFalse(qaPrompt.contains("宿主会在本阶段成功后"), qaPrompt);
+        assertFalse(qaPrompt.contains("BUILD/STATIC"), qaPrompt);
+        assertFalse(qaPrompt.contains("替代宿主"), qaPrompt);
     }
 
     private static int stageCount(OrchestratorTestHarness harness, AgentRole role) {

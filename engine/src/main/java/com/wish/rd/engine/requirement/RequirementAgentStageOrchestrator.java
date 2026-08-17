@@ -3138,6 +3138,8 @@ public class RequirementAgentStageOrchestrator {
                     - 根据需求评审和方案执行代码修改。
                     - 上游环境备忘视为已验证事实直接沿用，不要重复探测；本轮新发现的环境事实（含可用的测试执行方式）追加写入 result.json 的 environmentNotes，供 QA 直接沿用。
                     - 依赖树和 /work/cache 是当前任务与重试共享的状态：不得删除 node_modules、package-lock.json 或 /work/cache。先检查现有依赖；仅在依赖确实缺失时执行一次与 lockfile 匹配的安装。安装失败时保留诊断并停止重复清理、重复安装或绕过包管理器的手工下载。
+                    - 宿主会在本阶段成功后重跑安装、构建、仓库测试和静态检查。`testStatus` 只是交接信息，不是放行依据。
+                    - 若存在上一轮宿主验证失败，只修反馈中的命令和日志，不要删 `/work/cache` 或 `node_modules`。
                     - Next.js 服务验收必须使用生产模式：执行 npm run build && npm run start；不得以 npm run dev 作为交付验证服务。
                     - HTTP 请求必须设置不超过 30 秒的请求超时；启动服务和每个 bash 命令都必须有有限 deadline。超时后停止临时服务、保留日志，并提交 FAILED 结构化结果；不得无限等待。
                     - 该阶段只负责代码修改和交付候选证据，不创建 PR。
@@ -3198,6 +3200,8 @@ public class RequirementAgentStageOrchestrator {
                     - 上游 facts 视为已验证事实直接沿用，不要重复探测；本轮新发现的环境事实（含可用的测试执行方式）追加写入 facts[]，供 QA 直接沿用。
                     - 不要自由填写 environmentNotes；Harness 会从 fresh OBSERVED facts 派生 environmentNotes。
                     - 依赖树和 /work/cache 是当前任务与重试共享的状态：不得删除 node_modules、package-lock.json 或 /work/cache。先检查现有依赖；仅在依赖确实缺失时执行一次与 lockfile 匹配的安装。安装失败时保留诊断并停止重复清理、重复安装或绕过包管理器的手工下载。
+                    - 宿主会在本阶段成功后重跑安装、构建、仓库测试和静态检查。`testStatus` 只是交接信息，不是放行依据。
+                    - 若存在上一轮宿主验证失败，只修反馈中的命令和日志，不要删 `/work/cache` 或 `node_modules`。
                     - Next.js 服务验收必须使用生产模式：执行 npm run build && npm run start；不得以 npm run dev 作为交付验证服务。
                     - HTTP 请求必须设置不超过 30 秒的请求超时；启动服务和每个 bash 命令都必须有有限 deadline。超时后停止临时服务、保留日志，并提交 FAILED 结构化结果；不得无限等待。
                     - 该阶段只负责代码修改和交付候选证据，不创建 PR。
