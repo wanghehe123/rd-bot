@@ -98,6 +98,7 @@ import com.wish.rd.engine.requirement.publication.model.RequirementPublicationSt
 import com.wish.rd.engine.requirement.policy.model.RequirementPolicyEvaluationProposal;
 import com.wish.rd.engine.requirement.policy.RequirementPolicyRunStore;
 import com.wish.rd.engine.requirement.policy.model.RequirementPolicyRun;
+import com.wish.rd.engine.requirement.verify.HostVerificationPort;
 import com.wish.rd.engine.requirement.policy.model.RequirementPolicyRunState;
 import com.wish.rd.engine.provider.ProviderSideEffectStatusPort;
 
@@ -157,6 +158,7 @@ public class RequirementDeliveryEngine {
             RequirementExecutionProfileResolverPort.unavailable();
     private ProviderSideEffectStatusPort providerSideEffectStatusPort =
             ProviderSideEffectStatusPort.unavailable();
+    private HostVerificationPort hostVerificationPort = HostVerificationPort.noop();
     private RequirementAgentStageOrchestrator stageOrchestrator;
     private InterruptedStageRecoveryService interruptedStageRecoveryService;
     private RequirementPolicyRunStore requirementPolicyRunStore;
@@ -284,6 +286,22 @@ public class RequirementDeliveryEngine {
     }
 
     /**
+     * Forwards the host BUILD/STATIC adapter into the stage orchestrator.
+     *
+     * <p>Bootstrap supplies the adapter via {@code ObjectProvider} when the
+     * store-backed bean exists. {@code null} fails closed when verification is required.
+     *
+     * @param hostVerificationPort adapter when present
+     */
+    @Autowired(required = false)
+    public void setHostVerificationPort(HostVerificationPort hostVerificationPort) {
+        this.hostVerificationPort = hostVerificationPort;
+        if (this.stageOrchestrator != null) {
+            this.stageOrchestrator.setHostVerificationPort(hostVerificationPort);
+        }
+    }
+
+    /**
      * Wired by Spring after construction when {@link RequirementAgentStageOrchestrator} is a bean.
      * The engine never reaches into orchestrator internals — it only delegates to its public API.
      * Tests / non-Spring code paths keep working because the constructor already builds a default
@@ -294,6 +312,7 @@ public class RequirementDeliveryEngine {
         if (stageOrchestrator != null) {
             this.stageOrchestrator = stageOrchestrator;
             this.stageOrchestrator.setProviderSideEffectStatusPort(providerSideEffectStatusPort);
+            this.stageOrchestrator.setHostVerificationPort(hostVerificationPort);
         }
     }
 
@@ -751,6 +770,7 @@ public class RequirementDeliveryEngine {
                 executor,
                 this.idGenerator
         );
+        this.stageOrchestrator.setHostVerificationPort(this.hostVerificationPort);
         this.interruptedStageRecoveryService = new InterruptedStageRecoveryService(
                 InterruptedStageWorkspaceRecoveryPort.unavailable(),
                 stageRunStore,

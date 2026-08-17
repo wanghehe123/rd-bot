@@ -11,6 +11,9 @@ import com.wish.rd.engine.requirement.model.RequirementPlan;
 import com.wish.rd.engine.requirement.model.RequirementPolicyDecision;
 import com.wish.rd.engine.requirement.model.RequirementExecutionRequest;
 import com.wish.rd.engine.requirement.model.RequirementExecutionProfileResolution;
+import com.wish.rd.engine.requirement.verify.HostVerificationPort;
+import com.wish.rd.engine.requirement.verify.model.HostVerificationRun;
+import com.wish.rd.engine.requirement.verify.model.HostVerificationStatus;
 import com.wish.rd.engine.agent.AgentStageRunStore;
 import com.wish.rd.engine.agent.impl.InMemoryAgentStageRunStore;
 import com.wish.rd.engine.agent.AgentStageArtifactStore;
@@ -625,6 +628,177 @@ class RequirementAgentStageOrchestratorTest {
         assertNotNull(result);
     }
 
+    @Test
+    void coding_success_and_verify_succeeded_dispatches_qa() {
+        AgentWorkflowPlan plan = AgentWorkflowPlan.production();
+        OrchestratorTestHarness harness = new OrchestratorTestHarness()
+                .prestageRoles(plan.roles())
+                .prestageRoleContexts(plan.roles());
+
+        RequirementExecutionResult result = harness.orchestrator.run(
+                plan, harness.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION, null);
+
+        assertTrue(result.success(), result.errorMessage());
+        assertEquals(1, harness.hostVerificationPort.verifyCalls.get());
+        assertEquals(1, harness.executor.executedRoleCount(AgentRole.QA_AGENT));
+        assertEquals(1, stageCount(harness, AgentRole.QA_AGENT));
+    }
+
+    @Test
+    void coding_success_and_docs_only_verify_dispatches_qa() {
+        AgentWorkflowPlan plan = AgentWorkflowPlan.production();
+        OrchestratorTestHarness harness = new OrchestratorTestHarness()
+                .prestageRoles(plan.roles())
+                .prestageRoleContexts(plan.roles());
+        harness.hostVerificationPort.withOutcomes(hostVerify(
+                HostVerificationStatus.SKIPPED_DOCS_ONLY, "", ""));
+
+        RequirementExecutionResult result = harness.orchestrator.run(
+                plan, harness.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION, null);
+
+        assertTrue(result.success(), result.errorMessage());
+        assertEquals(1, harness.executor.executedRoleCount(AgentRole.QA_AGENT));
+    }
+
+    @Test
+    void product_defect_then_succeeded_retries_coding_once_then_dispatches_qa() {
+        AgentWorkflowPlan plan = AgentWorkflowPlan.production();
+        OrchestratorTestHarness harness = new OrchestratorTestHarness()
+                .prestageRoles(plan.roles())
+                .prestageRoleContexts(plan.roles());
+        harness.hostVerificationPort.withOutcomes(
+                hostVerify(HostVerificationStatus.FAILED_RETRYABLE, "PRODUCT_DEFECT",
+                        "BUILD exit 1: cannot find symbol Foo"),
+                hostVerify(HostVerificationStatus.SUCCEEDED, "", "")
+        );
+
+        RequirementExecutionResult result = harness.orchestrator.run(
+                plan, harness.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION, null);
+
+        assertTrue(result.success(), result.errorMessage());
+        assertEquals(2, harness.executor.executedRoleCount(AgentRole.CODING_AGENT));
+        assertEquals(1, harness.executor.executedRoleCount(AgentRole.QA_AGENT));
+        assertEquals(2, stageCount(harness, AgentRole.CODING_AGENT));
+        assertEquals(1, stageCount(harness, AgentRole.QA_AGENT));
+        String codingPrompt = harness.executor.lastPromptByRole.get(AgentRole.CODING_AGENT);
+        assertNotNull(codingPrompt);
+        assertTrue(codingPrompt.contains("上一轮失败反馈"), codingPrompt);
+        assertTrue(codingPrompt.contains("cannot find symbol Foo"), codingPrompt);
+        assertTrue(codingPrompt.contains("PRODUCT_DEFECT"), codingPrompt);
+    }
+
+    @Test
+    void three_product_defects_exhaust_cheap_remediations_without_qa() {
+        AgentWorkflowPlan plan = AgentWorkflowPlan.production();
+        OrchestratorTestHarness harness = new OrchestratorTestHarness()
+                .prestageRoles(plan.roles())
+                .prestageRoleContexts(plan.roles());
+        harness.hostVerificationPort.withOutcomes(hostVerify(
+                HostVerificationStatus.FAILED_RETRYABLE, "PRODUCT_DEFECT", "BUILD exit 1: still broken"));
+
+        RequirementExecutionResult result = harness.orchestrator.run(
+                plan, harness.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION, null);
+
+        assertFalse(result.success());
+        assertTrue(result.resultJson().contains("NEEDS_HUMAN"), result.resultJson());
+        assertTrue(result.errorMessage().contains("still broken"), result.errorMessage());
+        assertEquals(3, harness.executor.executedRoleCount(AgentRole.CODING_AGENT));
+        assertEquals(0, harness.executor.executedRoleCount(AgentRole.QA_AGENT));
+        assertEquals(3, maxAttemptNo(harness, AgentRole.CODING_AGENT));
+        assertEquals(1, stageCount(harness, AgentRole.QA_AGENT));
+        assertEquals(3, harness.hostVerificationPort.verifyCalls.get());
+    }
+
+    @Test
+    void environment_verify_failure_goes_human_without_coding_retry() {
+        AgentWorkflowPlan plan = AgentWorkflowPlan.production();
+        OrchestratorTestHarness harness = new OrchestratorTestHarness()
+                .prestageRoles(plan.roles())
+                .prestageRoleContexts(plan.roles());
+        harness.hostVerificationPort.withOutcomes(hostVerify(
+                HostVerificationStatus.FAILED_NEEDS_HUMAN, "ENVIRONMENT", "npm registry unreachable"));
+
+        RequirementExecutionResult result = harness.orchestrator.run(
+                plan, harness.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION, null);
+
+        assertFalse(result.success());
+        assertTrue(result.resultJson().contains("NEEDS_HUMAN"), result.resultJson());
+        assertTrue(result.errorMessage().contains("npm registry unreachable"), result.errorMessage());
+        assertEquals(1, harness.executor.executedRoleCount(AgentRole.CODING_AGENT));
+        assertEquals(0, harness.executor.executedRoleCount(AgentRole.QA_AGENT));
+        assertEquals(1, stageCount(harness, AgentRole.CODING_AGENT));
+    }
+
+    @Test
+    void coding_attempt_three_product_defect_does_not_create_another_coding() {
+        AgentWorkflowPlan plan = AgentWorkflowPlan.production();
+        OrchestratorTestHarness harness = new OrchestratorTestHarness()
+                .prestageRoles(plan.roles())
+                .prestageRoleContexts(plan.roles())
+                .prestageRole(AgentRole.CODING_AGENT, 3);
+        harness.hostVerificationPort.withOutcomes(hostVerify(
+                HostVerificationStatus.FAILED_RETRYABLE, "PRODUCT_DEFECT", "BUILD exit 1: attempt 3 still broken"));
+
+        RequirementExecutionResult result = harness.orchestrator.run(
+                plan, harness.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION, null);
+
+        assertFalse(result.success());
+        assertTrue(result.resultJson().contains("NEEDS_HUMAN"), result.resultJson());
+        assertEquals(1, harness.executor.executedRoleCount(AgentRole.CODING_AGENT));
+        assertEquals(0, harness.executor.executedRoleCount(AgentRole.QA_AGENT));
+        assertEquals(3, maxAttemptNo(harness, AgentRole.CODING_AGENT));
+        assertEquals(2, stageCount(harness, AgentRole.CODING_AGENT));
+    }
+
+    @Test
+    void verify_failure_does_not_invoke_qa_executor() {
+        AgentWorkflowPlan plan = AgentWorkflowPlan.production();
+        OrchestratorTestHarness harness = new OrchestratorTestHarness()
+                .prestageRoles(plan.roles())
+                .prestageRoleContexts(plan.roles());
+        harness.hostVerificationPort.withOutcomes(hostVerify(
+                HostVerificationStatus.FAILED_RETRYABLE, "REQUIREMENT_AMBIGUITY", "no BUILD command"));
+
+        RequirementExecutionResult result = harness.orchestrator.run(
+                plan, harness.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION, null);
+
+        assertFalse(result.success());
+        assertEquals(0, harness.executor.executedRoleCount(AgentRole.QA_AGENT));
+        assertEquals(1, harness.executor.executedRoleCount(AgentRole.CODING_AGENT));
+    }
+
+    @Test
+    void host_verify_is_skipped_when_plan_disables_it() {
+        AgentWorkflowPlan plan = AgentWorkflowPlan.codingBenchmark(CodingBenchmarkArm.A);
+        OrchestratorTestHarness harness = new OrchestratorTestHarness()
+                .prestageRoles(plan.roles())
+                .prestageRoleContexts(plan.roles());
+
+        RequirementExecutionResult result = harness.orchestrator.run(
+                plan, harness.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION, null);
+
+        assertTrue(result.success(), result.errorMessage());
+        assertEquals(0, harness.hostVerificationPort.verifyCalls.get());
+        assertEquals(1, harness.executor.executedRoleCount(AgentRole.CODING_AGENT));
+    }
+
+    @Test
+    void missing_host_verification_port_fails_closed_when_verify_required() {
+        AgentWorkflowPlan plan = AgentWorkflowPlan.production();
+        OrchestratorTestHarness harness = new OrchestratorTestHarness()
+                .prestageRoles(plan.roles())
+                .prestageRoleContexts(plan.roles());
+        harness.orchestrator.setHostVerificationPort(null);
+
+        RequirementExecutionResult result = harness.orchestrator.run(
+                plan, harness.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION, null);
+
+        assertFalse(result.success());
+        assertTrue(result.resultJson().contains("NEEDS_HUMAN"), result.resultJson());
+        assertTrue(result.errorMessage().contains("QA_INFRASTRUCTURE"), result.errorMessage());
+        assertEquals(0, harness.executor.executedRoleCount(AgentRole.QA_AGENT));
+    }
+
     // ============================================================
     // 测试 harness：把 orchestrator 装配起来并提供 stub collaborator
     // ============================================================
@@ -701,6 +875,7 @@ class RequirementAgentStageOrchestratorTest {
         final RequirementExecutionProfileResolverPort executionProfileResolver = new SnapshotProfileResolver();
         final RagStreamTaskRegistry taskRegistry = RagStreamTaskRegistry.inMemory();
         final SnowflakeIdGenerator idGenerator = SnowflakeIdGenerator.defaultGenerator();
+        final FakeHostVerificationPort hostVerificationPort = new FakeHostVerificationPort();
         final RequirementAgentStageOrchestrator orchestrator;
 
         OrchestratorTestHarness() {
@@ -718,6 +893,7 @@ class RequirementAgentStageOrchestratorTest {
                     executor,
                     idGenerator
             );
+            this.orchestrator.setHostVerificationPort(hostVerificationPort);
         }
 
         /** Pre-create pending stages for the given roles so the orchestrator has them available. */
@@ -770,6 +946,11 @@ class RequirementAgentStageOrchestratorTest {
                 );
                 roleContextPackageStore.save(roleContext);
             }
+            return this;
+        }
+
+        OrchestratorTestHarness prestageRole(AgentRole role, int attemptNo) {
+            stageRunStore.save(makeStageRun(task.taskId(), role, attemptNo));
             return this;
         }
 
@@ -899,6 +1080,89 @@ class RequirementAgentStageOrchestratorTest {
                       "agentStateSchemaVersion":"rd-agent-state/v1"
                     }""";
             return RequirementExecutionProfileResolution.of("snap-facts-" + stageRunId, snapshotJson);
+        }
+    }
+
+    private static int stageCount(OrchestratorTestHarness harness, AgentRole role) {
+        return (int) harness.stageRunStore.listByTask(harness.task.taskId()).stream()
+                .filter(stage -> stage.role() == role)
+                .count();
+    }
+
+    private static int maxAttemptNo(OrchestratorTestHarness harness, AgentRole role) {
+        return harness.stageRunStore.listByTask(harness.task.taskId()).stream()
+                .filter(stage -> stage.role() == role)
+                .mapToInt(AgentStageRun::attemptNo)
+                .max()
+                .orElse(0);
+    }
+
+    private static HostVerificationRun hostVerify(
+            HostVerificationStatus status,
+            String failureCategory,
+            String errorMessage
+    ) {
+        return new HostVerificationRun(
+                "verify-template",
+                "task-1",
+                "coding-1",
+                "",
+                1,
+                status,
+                status == HostVerificationStatus.SKIPPED_DOCS_ONLY,
+                failureCategory,
+                errorMessage,
+                0,
+                1L,
+                1L,
+                2L
+        );
+    }
+
+    /**
+     * Scripted host-verify port. Default outcome is {@link HostVerificationStatus#SUCCEEDED}
+     * so existing D-plan tests keep dispatching QA.
+     */
+    static final class FakeHostVerificationPort implements HostVerificationPort {
+        final AtomicInteger verifyCalls = new AtomicInteger();
+        final List<Integer> seenRemediationCounts = new CopyOnWriteArrayList<>();
+        private final List<HostVerificationRun> outcomes = new CopyOnWriteArrayList<>();
+
+        FakeHostVerificationPort() {
+            outcomes.add(hostVerify(HostVerificationStatus.SUCCEEDED, "", ""));
+        }
+
+        FakeHostVerificationPort withOutcomes(HostVerificationRun... runs) {
+            outcomes.clear();
+            outcomes.addAll(List.of(runs));
+            return this;
+        }
+
+        @Override
+        public HostVerificationRun verify(
+                RdRequirementTask task,
+                AgentStageRun codingStage,
+                AgentWorkflowPlan plan,
+                int remediationCountAlreadyUsed
+        ) {
+            int index = verifyCalls.getAndIncrement();
+            seenRemediationCounts.add(remediationCountAlreadyUsed);
+            HostVerificationRun template = outcomes.get(Math.min(index, outcomes.size() - 1));
+            return new HostVerificationRun(
+                    "verify-" + (index + 1),
+                    task.taskId(),
+                    codingStage.stageRunId(),
+                    "",
+                    Math.max(1, index + 1),
+                    template.status(),
+                    template.docsOnly(),
+                    template.failureCategory(),
+                    template.errorMessage(),
+                    remediationCountAlreadyUsed,
+                    1L,
+                    1L,
+                    2L
+            );
         }
     }
 

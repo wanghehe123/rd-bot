@@ -55,6 +55,9 @@ import com.wish.rd.engine.requirement.model.RequirementExecutionRequest;
 import com.wish.rd.engine.requirement.model.RequirementExecutionResult;
 import com.wish.rd.engine.requirement.model.RequirementPlan;
 import com.wish.rd.engine.requirement.model.RequirementPolicyDecision;
+import com.wish.rd.engine.requirement.verify.HostVerificationPort;
+import com.wish.rd.engine.requirement.verify.model.HostVerificationRun;
+import com.wish.rd.engine.requirement.verify.model.HostVerificationStatus;
 import com.wish.rd.engine.retry.model.TaskFailurePhase;
 import com.wish.rd.engine.retry.model.TaskRetryCheckpoint;
 import com.wish.rd.engine.provider.ProviderFallbackPolicyEnforcer;
@@ -76,6 +79,7 @@ import com.wish.rd.engine.provider.model.ProviderWorkRisk;
  *     <li>{@link RoleContextPackageStore} / {@link RoleContextVersionManager}：角色上下文</li>
  *     <li>{@link RequirementContextRetrievalRecorder}：项目级 RAG 检索录制（可选）</li>
  *     <li>{@link RequirementExecutionProfileResolverPort}：执行 Profile 解析（可选）</li>
+ *     <li>{@link HostVerificationPort}：Coding 成功后的宿主 BUILD/STATIC 门（可选；关闭时不调用）</li>
  *     <li>{@link RdProjectTokenBudgetService}：项目级 Token 额度（可选）</li>
  *     <li>{@link AgentWorkflowAlertSinkPort} / {@link WorkflowExperienceStore}：告警与经验沉淀</li>
  *     <li>{@link RagStreamTaskRegistry}：任务状态推进</li>
@@ -128,6 +132,11 @@ public class RequirementAgentStageOrchestrator {
     private final ProviderFallbackPolicyEnforcer providerFallbackPolicy;
     private volatile ProviderSideEffectStatusPort providerSideEffectStatusPort =
             ProviderSideEffectStatusPort.unavailable();
+    /**
+     * Default is a succeeding no-op. Disabled plans never call it; enabled plans
+     * must inject a real or test port via {@link #setHostVerificationPort}.
+     */
+    private volatile HostVerificationPort hostVerificationPort = HostVerificationPort.noop();
 
     public RequirementAgentStageOrchestrator(
             AgentStageRunStore stageRunStore,
@@ -182,6 +191,18 @@ public class RequirementAgentStageOrchestrator {
     }
 
     /**
+     * Injects the host BUILD/STATIC verifier used after Coding succeeds.
+     *
+     * <p>{@code null} fails closed with {@code QA_INFRASTRUCTURE} when the plan
+     * requires verification. Disabled plans never call the port.
+     *
+     * @param hostVerificationPort adapter, test fake, or {@code null}
+     */
+    public void setHostVerificationPort(HostVerificationPort hostVerificationPort) {
+        this.hostVerificationPort = hostVerificationPort;
+    }
+
+    /**
      * 按给定 plan 驱动多角色阶段链路，返回与原 {@code executeAgentStages} 字节级等价的
      * {@link RequirementExecutionResult}。
      */
@@ -198,11 +219,11 @@ public class RequirementAgentStageOrchestrator {
             throw new IllegalArgumentException("AgentWorkflowPlan must not be null");
         }
         enforceBudgetLedger(plan, task);
-        return runInternal(plan, task, materials, context, planSnapshot, policyDecision, activeRetry, "", 0);
+        return runInternal(plan, task, materials, context, planSnapshot, policyDecision, activeRetry, "", "", 0, 0);
     }
 
     /**
-     * 内部驱动方法：递归实现一次性 QA 修复回路（深度上限 {@code plan.qaMaxRemediationPasses}）。
+     * 内部驱动方法：递归实现一次性 QA 修复回路与宿主验证廉价 Coding 返工。
      */
     private RequirementExecutionResult runInternal(
             AgentWorkflowPlan plan,
@@ -213,6 +234,8 @@ public class RequirementAgentStageOrchestrator {
             RequirementPolicyDecision policyDecision,
             TaskRetryCheckpoint activeRetry,
             String qaRemediationResultJson,
+            String hostVerifyFailureFeedback,
+            int hostVerifyRemediationCount,
             int qaRemediationCount
     ) {
         // 多角色执行链路（按 plan.roles() 顺序）：对照原 executeAgentStages 行为，PENDING -> CONTEXT_READY
@@ -318,9 +341,13 @@ public class RequirementAgentStageOrchestrator {
                         )
                 );
             }
+            String previousFailure = previousFailureFeedbackSection(task.taskId(), role, stage.attemptNo());
+            if (role == AgentRole.CODING_AGENT && !safe(hostVerifyFailureFeedback).isBlank()) {
+                previousFailure = joinPromptSections(hostVerifyFailureFeedback, previousFailure);
+            }
             String recoverySection = joinPromptSections(
                     recoveryPromptSection(activeRetry, role, roleContext),
-                    previousFailureFeedbackSection(task.taskId(), role, stage.attemptNo())
+                    previousFailure
             );
             String rolePrompt = buildAgentPrompt(
                     role,
@@ -472,6 +499,8 @@ public class RequirementAgentStageOrchestrator {
                                 policyDecision,
                                 activeRetry,
                                 roleResult.resultJson(),
+                                hostVerifyFailureFeedback,
+                                hostVerifyRemediationCount,
                                 qaRemediationCount + 1
                         );
                     }
@@ -553,6 +582,27 @@ public class RequirementAgentStageOrchestrator {
                 stage = transitionStage(stage, AgentStageStatus.SUCCEEDED, "", "");
                 stageResults.add(stageResultJson(role, roleResult));
                 captureExperience(stage, roleResult, experienceTypeForRole(role));
+            }
+            // Coding 成功后先过宿主 BUILD/STATIC；未成功不得派发 QA。
+            if (role == AgentRole.CODING_AGENT && plan.hostVerifyRemediationAllowed()) {
+                RequirementExecutionResult hostVerifyGate = gateQaBehindHostVerification(
+                        plan,
+                        task,
+                        materials,
+                        context,
+                        planSnapshot,
+                        policyDecision,
+                        activeRetry,
+                        qaRemediationResultJson,
+                        hostVerifyRemediationCount,
+                        qaRemediationCount,
+                        stage,
+                        pullRequestUrl,
+                        stageResults
+                );
+                if (hostVerifyGate != null) {
+                    return hostVerifyGate;
+                }
             }
         }
         // 全部角色 SUCCEEDED：聚合为交付执行最终结果并返回，交付层将进入 PR 复核与发布。
@@ -2610,6 +2660,144 @@ public class RequirementAgentStageOrchestrator {
                 ).strip(),
                 collectedAtEpochMillis,
                 collectedAtEpochMillis
+        );
+    }
+
+    /**
+     * Runs host BUILD/STATIC after Coding succeeds. Returning {@code null} lets
+     * the role loop continue toward QA.
+     */
+    private RequirementExecutionResult gateQaBehindHostVerification(
+            AgentWorkflowPlan plan,
+            RdRequirementTask task,
+            List<TaskMaterial> materials,
+            RequirementContextPackage context,
+            RequirementPlan planSnapshot,
+            RequirementPolicyDecision policyDecision,
+            TaskRetryCheckpoint activeRetry,
+            String qaRemediationResultJson,
+            int hostVerifyRemediationCount,
+            int qaRemediationCount,
+            AgentStageRun codingStage,
+            String pullRequestUrl,
+            List<String> stageResults
+    ) {
+        if (hostVerificationPort == null) {
+            return hostVerifyNeedsHuman(
+                    task,
+                    pullRequestUrl,
+                    stageResults,
+                    "QA_INFRASTRUCTURE: host verification executor is unavailable"
+            );
+        }
+        HostVerificationRun verification;
+        try {
+            verification = hostVerificationPort.verify(task, codingStage, plan, hostVerifyRemediationCount);
+        } catch (RuntimeException exception) {
+            return hostVerifyNeedsHuman(
+                    task,
+                    pullRequestUrl,
+                    stageResults,
+                    "QA_INFRASTRUCTURE: " + firstNonBlank(
+                            exception.getMessage(),
+                            "host verification executor is unavailable"
+                    )
+            );
+        }
+        if (verification == null) {
+            return hostVerifyNeedsHuman(
+                    task,
+                    pullRequestUrl,
+                    stageResults,
+                    "QA_INFRASTRUCTURE: host verification returned no result"
+            );
+        }
+        if (verification.status() == HostVerificationStatus.SUCCEEDED
+                || verification.status() == HostVerificationStatus.SKIPPED_DOCS_ONLY) {
+            return null;
+        }
+        if (shouldCheapRemediate(plan, verification, hostVerifyRemediationCount)) {
+            List<AgentStageRun> created = createHostVerifyRemediationAttempt(task.taskId());
+            if (!created.isEmpty()) {
+                return runInternal(
+                        plan,
+                        task,
+                        materials,
+                        context,
+                        planSnapshot,
+                        policyDecision,
+                        activeRetry,
+                        qaRemediationResultJson,
+                        hostVerifyFailureFeedbackSection(verification),
+                        hostVerifyRemediationCount + 1,
+                        qaRemediationCount
+                );
+            }
+        }
+        return hostVerifyNeedsHuman(
+                task,
+                pullRequestUrl,
+                stageResults,
+                firstNonBlank(verification.errorMessage(), "host verification failed")
+        );
+    }
+
+    private boolean shouldCheapRemediate(
+            AgentWorkflowPlan plan,
+            HostVerificationRun verification,
+            int hostVerifyRemediationCount
+    ) {
+        return plan.hostVerifyRemediationAllowed()
+                && hostVerifyRemediationCount < plan.hostVerifyMaxRemediationPasses()
+                && "PRODUCT_DEFECT".equals(verification.failureCategory());
+    }
+
+    private List<AgentStageRun> createHostVerifyRemediationAttempt(String taskId) {
+        List<AgentStageRun> existing = stageRunStore.listByTask(taskId);
+        AgentStageRun latest = existing.stream()
+                .filter(stage -> stage.role() == AgentRole.CODING_AGENT)
+                .max(STAGE_RUN_RECENCY)
+                .orElse(null);
+        if (latest != null && latest.attemptNo() >= 3) {
+            return List.of();
+        }
+        int attemptNo = latest == null ? 1 : latest.attemptNo() + 1;
+        long now = System.currentTimeMillis();
+        return List.of(stageRunStore.save(AgentStageRun.pending(
+                idGenerator.nextIdString(),
+                taskId,
+                AgentRole.CODING_AGENT,
+                attemptNo,
+                taskId + ":" + AgentRole.CODING_AGENT.name() + ":" + attemptNo,
+                now
+        )));
+    }
+
+    private String hostVerifyFailureFeedbackSection(HostVerificationRun verification) {
+        String detail = firstNonBlank(verification.errorMessage(), "host verification failed");
+        if (detail.length() > MAX_FAILURE_FEEDBACK_CHARS) {
+            detail = detail.substring(0, MAX_FAILURE_FEEDBACK_CHARS) + "...(truncated)";
+        }
+        String category = verification.failureCategory().isBlank() ? "UNKNOWN" : verification.failureCategory();
+        return """
+                # 上一轮失败反馈
+                上一次 HOST_VERIFY 尝试（attempt %d）失败，错误分类：%s。
+                失败明细：
+                %s
+                请针对以上明细修正本轮输出（逐条补齐缺失或非法的结果字段），不要原样重复上一轮输出。
+                """.formatted(verification.attemptNo(), category, detail).strip();
+    }
+
+    private RequirementExecutionResult hostVerifyNeedsHuman(
+            RdRequirementTask task,
+            String pullRequestUrl,
+            List<String> stageResults,
+            String reason
+    ) {
+        return RequirementExecutionResult.failure(
+                task.taskId(),
+                reason,
+                aggregateAgentResultsJson("NEEDS_HUMAN", pullRequestUrl, stageResults)
         );
     }
 

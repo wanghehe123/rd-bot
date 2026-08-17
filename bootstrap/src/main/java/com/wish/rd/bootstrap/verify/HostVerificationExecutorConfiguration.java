@@ -3,6 +3,7 @@ package com.wish.rd.bootstrap.verify;
 import com.wish.rd.bootstrap.executor.impl.RoleHandoffAttachmentResolver;
 import com.wish.rd.bootstrap.oracle.impl.CleanHostVerifierWorkspaceFactory;
 import com.wish.rd.engine.agent.AgentStageArtifactStore;
+import com.wish.rd.engine.requirement.RequirementDeliveryEngine;
 import com.wish.rd.engine.requirement.verify.HostVerificationChangeSetResolver;
 import com.wish.rd.engine.requirement.verify.HostVerificationPort;
 import com.wish.rd.engine.requirement.verify.HostVerificationStore;
@@ -14,6 +15,7 @@ import com.wish.rd.exec.repair.verify.HostVerificationCommandDetector;
 import com.wish.rd.exec.repair.verify.HostVerificationCommandRunner;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -27,11 +29,29 @@ import java.nio.file.Path;
  *
  * <p>{@link HostVerificationWorkspaceFactory} and
  * {@link HostVerificationChangeSetResolver} are registered here so the port
- * is created whenever a {@link HostVerificationStore} exists. Orchestrator
- * injection is Task 6.
+ * is created whenever a {@link HostVerificationStore} exists. The adapter is
+ * forwarded to {@link RequirementDeliveryEngine} when both beans exist.
  */
 @Configuration(proxyBeanMethods = false)
 public class HostVerificationExecutorConfiguration {
+
+    /**
+     * Injects the optional adapter into the delivery orchestrator.
+     *
+     * @param engines delivery engine when the control plane is present
+     * @param ports   store-backed adapter when the verification store exists
+     */
+    @Autowired
+    void attachHostVerificationPort(
+            ObjectProvider<RequirementDeliveryEngine> engines,
+            ObjectProvider<HostVerificationPort> ports
+    ) {
+        HostVerificationPort port = ports.getIfAvailable();
+        RequirementDeliveryEngine engine = engines.getIfAvailable();
+        if (port != null && engine != null) {
+            engine.setHostVerificationPort(port);
+        }
+    }
 
     /**
      * Production source for the coding stage's verified candidate patch.
