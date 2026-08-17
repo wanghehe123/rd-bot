@@ -278,6 +278,81 @@ export interface RdTaskQaEvidence {
   contentUrl: string;
 }
 
+export type HostVerificationStatus =
+  | "CREATED"
+  | "PREPARING"
+  | "BUILDING"
+  | "STATIC_CHECKING"
+  | "SUCCEEDED"
+  | "FAILED_RETRYABLE"
+  | "FAILED_NEEDS_HUMAN"
+  | "SKIPPED_DOCS_ONLY"
+  | "CANCELLED";
+
+export type HostVerificationStepName = "BUILD" | "STATIC";
+
+export type HostVerificationStepStatus =
+  | "PENDING"
+  | "RUNNING"
+  | "SUCCEEDED"
+  | "FAILED"
+  | "SKIPPED";
+
+export type HostVerificationFailureCategory =
+  | ""
+  | "NONE"
+  | "PRODUCT_DEFECT"
+  | "ENVIRONMENT"
+  | "AUTHENTICATION"
+  | "QA_INFRASTRUCTURE"
+  | "REQUIREMENT_AMBIGUITY"
+  | "FLAKY";
+
+export interface HostVerificationArtifact {
+  artifactId: string;
+  type: string; // VERIFY_BUILD_LOG | VERIFY_STATIC_LOG | …
+  name: string;
+  relativePath: string;
+  contentType: string;
+  sizeBytes: number;
+  sha256: string;
+  previewable: boolean;
+  contentUrl: string;
+}
+
+export interface HostVerificationStep {
+  step: HostVerificationStepName;
+  status: HostVerificationStepStatus;
+  commands: string[];
+  exitCode: number | null;
+  durationMillis: number;
+  logArtifactId: string;
+  errorMessage: string;
+}
+
+export interface HostVerificationRun {
+  runId: string;
+  codingStageRunId: string;
+  parentRunId: string;
+  attemptNo: number;
+  status: HostVerificationStatus;
+  docsOnly: boolean;
+  failureCategory: HostVerificationFailureCategory;
+  errorMessage: string;
+  remediationCount: number;
+  createdAtEpochMillis: number;
+  startedAtEpochMillis: number;
+  finishedAtEpochMillis: number;
+  steps: HostVerificationStep[];
+  artifacts: HostVerificationArtifact[];
+}
+
+export interface HostVerificationList {
+  taskId: string;
+  cheapRemediationsUsed?: number;
+  runs: HostVerificationRun[];
+}
+
 export interface RdTaskListQuery {
   taskType?: string;
   status?: string;
@@ -416,6 +491,15 @@ export const getRdTaskMaterials = (taskId: string): Promise<TaskMaterial[]> =>
 
 export const getRdTaskQaEvidence = (taskId: string): Promise<RdTaskQaEvidence[]> =>
   api.get<RdTaskQaEvidence[], RdTaskQaEvidence[]>(`/admin/rd-tasks/${taskId}/qa-evidence`);
+
+export const getRdTaskHostVerifications = (taskId: string): Promise<HostVerificationList> =>
+  api.get<HostVerificationList, HostVerificationList>(`/admin/rd-tasks/${taskId}/host-verifications`);
+
+export const getRdTaskHostVerification = (taskId: string, runId: string): Promise<HostVerificationRun> =>
+  api.get<HostVerificationRun, HostVerificationRun>(`/admin/rd-tasks/${taskId}/host-verifications/${runId}`);
+
+export const hostVerificationContentUrl = (taskId: string, runId: string, artifactId: string) =>
+  `/admin/rd-tasks/${taskId}/host-verifications/${runId}/evidence/${artifactId}/content`;
 
 export const addTextTaskMaterial = (
   taskId: string,

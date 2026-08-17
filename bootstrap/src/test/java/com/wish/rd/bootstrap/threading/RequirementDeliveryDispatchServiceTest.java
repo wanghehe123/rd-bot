@@ -179,6 +179,45 @@ class RequirementDeliveryDispatchServiceTest {
     }
 
     @Test
+    void leaseLostBeforeApprovalResumeIsObservedWithoutCallingThePolicyConsumer() {
+        long now = System.currentTimeMillis();
+        HeartbeatRacingStageCommandStore commands = new HeartbeatRacingStageCommandStore();
+        RequirementStageCommand resume = approvalResumeCommand("approval-resume-lease-lost", "approval-lease", 10L, 20L)
+                .claimed("test-worker", now + 60_000L, now);
+        RequirementStageCommand next = RequirementStageCommand.pending(
+                "approval-lease-first-role", "approval-lease", 11L, 21L,
+                AgentRole.REQUIREMENT_REVIEWER.name(),
+                "ROLE_EXECUTION:" + AgentRole.REQUIREMENT_REVIEWER.name(),
+                0, 3, now + 1_000L, ScheduleResourceClass.PROVIDER,
+                Set.of(ScheduleResourceClass.PROVIDER), "project-1", "provider", "P1",
+                resume.policyRunId(), now);
+        commands.enqueue(next);
+        TaskScheduler heartbeatScheduler = mock(TaskScheduler.class);
+        when(heartbeatScheduler.scheduleAtFixedRate(any(Runnable.class), any(Duration.class)))
+                .thenAnswer(invocation -> {
+                    invocation.getArgument(0, Runnable.class).run();
+                    return mock(ScheduledFuture.class);
+                });
+        RecordingPolicyTransactionPort policyPort = new RecordingPolicyTransactionPort(
+                new RequirementPolicyResumeResult(appliedPolicyRun("approval-lease", resume, 11L, 21L, now),
+                        resume.succeeded(now), next, 11L, 21L));
+        RequirementDeliveryDispatchService dispatcher = new RequirementDeliveryDispatchService(
+                null, new TaskExecutorAdapter(new SyncTaskExecutor()),
+                new InMemoryRequirementDeliveryJobStore(), SnowflakeIdGenerator.defaultGenerator(), null,
+                "test-worker", 3, 60_000L, heartbeatScheduler, null, commands,
+                command -> { throw new AssertionError("resume must not use the generic executor"); }, null,
+                RequirementDeliverySchedulingPolicy.defaults(), null);
+        dispatcher.setRequirementPolicyTransactionPort(policyPort);
+
+        CompletableFuture<RequirementDeliveryResult> future = new CompletableFuture<>();
+        invokeRunClaimedCommand(dispatcher, resume, future);
+
+        assertTrue(future.isCompletedExceptionally());
+        assertEquals(1L, dispatcher.metricsSnapshot().leaseLost());
+        assertEquals(0, policyPort.consumeCalls.get());
+    }
+
+    @Test
     void approvalResumeConsumerFailureOnlyRetriesCurrentCommandWithoutTaskOrJobMutation() {
         long now = 1_784_100_000_000L;
         InMemoryRequirementStageCommandStore commands = new InMemoryRequirementStageCommandStore();
@@ -1055,6 +1094,8 @@ class RequirementDeliveryDispatchServiceTest {
         assertDoesNotThrow(() -> dispatcher.submit("task-stage-pending"));
 
         assertEquals(1, stages.listByStatus(RequirementStageCommand.Status.FAILED_RETRYABLE).size());
+        assertEquals(1L, dispatcher.metricsSnapshot().queueRejections());
+        assertTrue(dispatcher.metricsSnapshot().claimed() >= 1L);
     }
 
     @Test
@@ -1081,6 +1122,8 @@ class RequirementDeliveryDispatchServiceTest {
         verify(stageExecutor).execute(any(RequirementStageCommand.class));
         verify(engine, never()).submit(any());
         assertEquals(1, stages.listByStatus(RequirementStageCommand.Status.SUCCEEDED).size());
+        assertTrue(dispatcher.metricsSnapshot().claimed() >= 1L);
+        assertTrue(dispatcher.metricsSnapshot().completed() >= 1L);
     }
 
     @Test
@@ -1280,6 +1323,7 @@ class RequirementDeliveryDispatchServiceTest {
 
         assertEquals(RequirementDeliveryJobStatus.FAILED_RETRYABLE,
                 store.findByTask("task-3").orElseThrow().status());
+        assertTrue(dispatcher.metricsSnapshot().retries() >= 1L);
     }
 
     @Test
@@ -1348,6 +1392,8 @@ class RequirementDeliveryDispatchServiceTest {
         assertEquals(RequirementDeliveryJobStatus.PENDING, jobs.findByTask("t-a2").orElseThrow().status());
         assertEquals(RequirementDeliveryJobStatus.SUCCEEDED, jobs.findByTask("t-b1").orElseThrow().status());
         assertEquals(2, jobs.listInFlight(System.currentTimeMillis()).size());
+        assertTrue(dispatcher.metricsSnapshot().inFlightSamples() >= 0L);
+        assertTrue(dispatcher.metricsSnapshot().projectClaims().isEmpty());
     }
 
     @Test

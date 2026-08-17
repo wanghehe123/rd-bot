@@ -127,6 +127,20 @@ class ObservabilityMetricsEvidenceFileTest {
         assertFalse(evidence.validated());
     }
 
+    @Test
+    void prometheusPathStaysCompatibleAndPresenceDoesNotEquateContextLatencyToMeanRepairTime() throws Exception {
+        Path evidenceJson = tempDir.resolve("observability-metrics-production-acceptance.json");
+        Files.writeString(evidenceJson, validEvidenceJson("prod-equivalent-a", 200, true));
+
+        ObservabilityMetricsEvidenceFile evidence = ObservabilityMetricsEvidenceFile.from(profile(evidenceJson));
+
+        assertTrue(evidence.validated());
+        assertTrue(evidence.metricsEndpointUrl().endsWith("/actuator/prometheus"));
+        assertTrue(evidence.contextBuildLatencyMetricPresent());
+        assertTrue(evidence.meanTimeToRepairMetricPresent());
+        assertTrue(evidence.repairSuccessRateMetricPresent());
+    }
+
     private static String validEvidenceJson(
             String environmentId,
             int metricsHttpStatus,

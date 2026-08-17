@@ -1,0 +1,41 @@
+schema: spec-driven
+
+context: |
+  项目：RD-Bot，Java 21 / Spring Boot 3.5 多模块单体，前端为 React 18 + TypeScript + Vite。
+  后端模块职责与依赖方向：bootstrap（HTTP、配置、PostgreSQL、外部适配）→ engine/exec/skill/rag；
+  engine、exec、skill 只能依赖 rag。核心行为以真实代码、测试和 RULE.md 为准。
+  仓库约束：修改或规划前必须阅读 RULE.md 与功能相关 spec；公开能力必须有测试；管理端路由必须有
+  Vite proxy contract test；提交前按改动范围运行聚焦测试、Node typecheck/build 和 Maven 测试。
+  OpenViking 是可重建的外部知识投影，不是业务真值；PostgreSQL 保存 desired/canonical 状态。
+  OpenViking v0.4.13 的 URI、HTTP 信封、鉴权、错误分类和默认关闭约束以
+  docs/superpowers/specs/2026-08-13-openviking-projection-protocol-spec.md 为准。
+  重要现有约束还包括：密钥只从环境变量读取；远端 URI 必须限制在 knowledge base owned root；
+  HTTP 2xx 或 task completed 单独都不能证明 IN_SYNC；生产共享状态不得以 JVM 内存为真值。
+
+rules:
+  proposal:
+    - 先从真实代码链路和现有测试确认范围，明确当前行为、目标行为和非目标；不要把整个 brownfield 仓库一次性回填成臆造 spec。
+    - 只引用与本 change 直接相关的 RULE.md、docs/superpowers/specs/ 和测试证据；把未来计划与已实现行为分开。
+    - 使用历史资料前先查 docs/openspec/historical-spec-provenance-audit.md，并在 proposal 或 design 记录资料路径、当前代码/测试锚点和本轮实际运行的命令。
+  specs:
+    - 使用行为优先的 Requirement/Scenario 结构，每个 requirement 至少有一个可验证的 WHEN/THEN 场景。
+    - 主 spec 只能是当前能力的完整状态，不保留 ADDED/MODIFIED/REMOVED/RENAMED delta 标题；delta 只放在 change 下。
+    - 保留安全、鉴权、ownership、默认关闭、幂等、CAS 和错误分类等已验证边界；不要凭官方文档补写未观测协议字段。
+    - 用中文描述领域语义，路径和代码符号使用真实名称；避免把实现细节写成用户可见行为。
+    - 仅把本轮 current-code/current-test 已验证的历史结论写入主 spec；实施声明、历史验收、草案、裁决和未解决事项必须留在 change context、审计索引或未来任务中。
+  design:
+    - 说明真实入口、端口/适配器边界、持久化真值、状态收敛和验证命令；不得引入与本 change 无关的架构重构。
+  tasks:
+    - 每项任务必须绑定真实文件或测试证据，并先写失败测试再实现；文档同步任务也要写明验证命令。
+
+operations:
+  apply:
+    guidance:
+      - 每次执行前重新阅读 RULE.md、相关 spec 和当前 change artifacts，并先追踪现有调用链。
+      - 先运行最小聚焦测试，再按改动范围运行模块测试；前端改动还要运行 npm test、npm run typecheck、npm run build。
+      - 行为发生变化时，先更新 change 下的 delta spec，再在同一 change 中实现，禁止只改代码不更新 spec。
+  archive:
+    guidance:
+      - 归档前确认 tasks、测试与当前代码一致，运行 openspec validate --specs 和必要的真实 HTTP/合同测试。
+      - 只同步本次 change 的 delta；保留未涉及能力的现有 spec，不做无证据的全仓重写。
+      - 归档后的 openspec/specs/ 是当前行为真值，后续行为变更必须通过新的 change、delta、验证和 archive 更新。

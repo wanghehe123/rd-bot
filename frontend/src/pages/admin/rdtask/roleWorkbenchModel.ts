@@ -133,7 +133,8 @@ export function buildRoleWorkbench<
   stageRuns: readonly TStage[],
   promptStages: readonly TPrompt[],
   qaEvidence: readonly TEvidence[],
-  taskType = "REQUIREMENT"
+  taskType = "REQUIREMENT",
+  latestHostVerification?: { status?: string; errorMessage?: string } | null
 ): RoleWorkbenchView<TStage, TPrompt>[] {
   const roleOrder: readonly string[] = taskType === "BUG_FIX" ? BUG_FIX_ROLE_ORDER : REQUIREMENT_ROLE_ORDER;
   const roles = new Set<string>(roleOrder);
@@ -170,7 +171,15 @@ export function buildRoleWorkbench<
       .sort(compareAttemptDescending);
     const latestStage = stages[0];
     const status = latestStage?.status || "PENDING";
-    const blocker = resolveBlocker(latestStage);
+    let blocker = resolveBlocker(latestStage);
+    if (!blocker && (role === "QA_AGENT" || role === "BUG_CODING_AGENT") && status === "PENDING" && latestHostVerification) {
+      const hvStatus = latestHostVerification.status;
+      if (hvStatus === "FAILED_RETRYABLE" || hvStatus === "FAILED_NEEDS_HUMAN") {
+        blocker = "等待宿主验证通过";
+      } else if (hvStatus === "BUILDING" || hvStatus === "STATIC_CHECKING" || hvStatus === "PREPARING") {
+        blocker = "等待宿主验证完成";
+      }
+    }
     const latestEvidenceCount = attempts[0]?.qaEvidenceIds.length || 0;
 
     return {

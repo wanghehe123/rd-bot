@@ -16,6 +16,7 @@ public enum RepairArtifactType {
     PI_RAW_EVENTS,
     PI_SESSION,
     AGENT_RUNTIME_META,
+    RUNTIME_MEASUREMENT,
     STDOUT_LOG,
     STDERR_LOG,
     QA_COMMAND_LOG,

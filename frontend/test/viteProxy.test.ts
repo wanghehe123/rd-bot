@@ -45,6 +45,21 @@ test("proxies dashboard overview API requests without hijacking dashboard naviga
   assert.equal(target, "http://127.0.0.1:18080");
 });
 
+test("proxies delivery observability APIs without hijacking observability navigation", () => {
+  const proxy = viteConfig.server?.proxy as Record<string, string | { target?: string }> | undefined;
+  const deliveryProxy = proxy?.["/admin/observability/delivery"];
+  const target = typeof deliveryProxy === "string" ? deliveryProxy : deliveryProxy?.target;
+  assert.equal(target, "http://127.0.0.1:18080");
+  assert.equal(proxy?.["/admin/observability"], undefined, "/admin/observability SPA must not be proxied as an API prefix");
+});
+
+test("proxies model provider profile APIs to Spring Boot", () => {
+  const proxy = viteConfig.server?.proxy as Record<string, string | { target?: string }> | undefined;
+  const item = proxy?.["/admin/model-provider-profiles"];
+  const target = typeof item === "string" ? item : item?.target;
+  assert.equal(target, "http://127.0.0.1:18080");
+});
+
 test("proxies execution trace APIs to Spring Boot", () => {
   const proxy = viteConfig.server?.proxy as Record<string, string | { target?: string }> | undefined;
 
@@ -171,4 +186,28 @@ test("OpenViking service and SPA route stay aligned with the 12 nested admin API
     assert.match(service, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), fragment);
   }
   assert.doesNotMatch(service, /\/admin\/knowledge\/\$\{kbId\}\/openviking/);
+});
+
+test("bypasses project agent-strategy SPA HTML while JSON agent-strategies still hit Spring Boot", () => {
+  type ProxyEntry = {
+    target?: string;
+    bypass?: (request: {
+      method?: string;
+      url?: string;
+      headers: Record<string, string>;
+    }) => string | undefined;
+  };
+  const proxy = viteConfig.server?.proxy as Record<string, string | ProxyEntry> | undefined;
+  const projects = proxy?.["/admin/projects"] as ProxyEntry;
+  assert.equal(projects.target, "http://127.0.0.1:18080");
+  const bypass = projects.bypass;
+  assert.equal(typeof bypass, "function");
+  assert.equal(
+    bypass?.({ method: "GET", url: "/admin/projects/1/agent-strategy", headers: { accept: "text/html" } }),
+    "/admin/projects/1/agent-strategy"
+  );
+  assert.equal(
+    bypass?.({ method: "GET", url: "/admin/projects/1/agent-strategies", headers: { accept: "application/json" } }),
+    undefined
+  );
 });

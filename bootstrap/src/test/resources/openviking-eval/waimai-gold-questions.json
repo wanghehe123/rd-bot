@@ -1,86 +1,119 @@
 {
   "corpusKnowledgeBaseId": "7475766492030701568",
   "corpusKnowledgeBaseName": "waimai",
-  "corpusDocumentCount": 45,
-  "corpusChoice": "选用 45 篇 IN_SYNC、均长约 3600 字的外卖应用知识库，而不是另外两个均长不足 120 字的 QA fixture 库。design.md 所称 54 篇是三个已投影库的合计（45+5+4）。",
+  "corpusDocumentCount": 69,
+  "corpusChoice": "选用外卖应用知识库：45 篇仓库源码/运维短文，加 24 篇本轮为该项目补写的接口文档、历史 PRD、研发计划与测试文档，共 69 篇均已 IN_SYNC。不用另外两个均长不足 120 字的 QA fixture 库。24 篇新文档的接口引用经 tmp/verify_docs_grounding.py 对账：58 个真实接口全部被覆盖，无编造接口与表名。Q21-Q38 的 supportingQuotes 经 tmp/verify_gold_questions.py 逐条断言为期望文档的字节级子串。",
   "k": 8,
   "questions": [
     {
       "id": "Q01",
       "type": "SINGLE_DOCUMENT",
       "question": "用户已经看到第三方扣款成功，但订单详情还停在等付款，商家也接不了单。应该从回调处理的哪一段开始查？",
-      "expectedDocumentIds": ["7475766492466909184"],
-      "justification": "答案在支付回调状态修复手册：回调确认成功后必须改订单状态，否则前端继续显示待支付。"
+      "expectedDocumentIds": [
+        "7475766492466909184"
+      ],
+      "justification": "答案在支付回调状态修复手册：回调确认成功后必须改订单状态，否则前端继续显示待支付。",
+      "supportingQuotes": []
     },
     {
       "id": "Q02",
       "type": "SINGLE_DOCUMENT",
       "question": "支付通知校验完金额和签名之后，应该用哪个订单方法把状态写成已付？如果这笔单此前已经记成已付，还要不要再通知一次商家？",
-      "expectedDocumentIds": ["7475766492731150336"],
-      "justification": "答案在 PaymentCallbackService 推荐修复形态：事务内 markPaid，已付则幂等成功且不再通知。"
+      "expectedDocumentIds": [
+        "7475766492731150336"
+      ],
+      "justification": "答案在 PaymentCallbackService 推荐修复形态：事务内 markPaid，已付则幂等成功且不再通知。",
+      "supportingQuotes": []
     },
     {
       "id": "Q03",
       "type": "SINGLE_DOCUMENT",
       "question": "商家端什么时候才允许点接单？支付成功时间和对端流水号分别记在哪两个字段？",
-      "expectedDocumentIds": ["7475766492915699712"],
-      "justification": "答案在订单状态与支付字段短文：仅已付可接单，并列出 paid_at 与 payment_transaction_id。"
+      "expectedDocumentIds": [
+        "7475766492915699712"
+      ],
+      "justification": "答案在订单状态与支付字段短文：仅已付可接单，并列出 paid_at 与 payment_transaction_id。",
+      "supportingQuotes": []
     },
     {
       "id": "Q04",
       "type": "SINGLE_DOCUMENT",
       "question": "真正落库的 SQLite 建表语句里，订单状态列的默认值是什么，约束到底允许哪些取值？",
-      "expectedDocumentIds": ["7481208064473960448"],
-      "justification": "答案在 server/config/schema.sql 的 orders.status DEFAULT 与 CHECK 列表，与支付手册三态不是同一套词。"
+      "expectedDocumentIds": [
+        "7481208064473960448"
+      ],
+      "justification": "答案在 server/config/schema.sql 的 orders.status DEFAULT 与 CHECK 列表，与支付手册三态不是同一套词。",
+      "supportingQuotes": []
     },
     {
       "id": "Q05",
       "type": "SINGLE_DOCUMENT",
       "question": "一键启动脚本装完前后端依赖之后还会做什么？脚本结束时告诉人用浏览器打开哪个地址、接口又监听哪一侧？",
-      "expectedDocumentIds": ["7481208066139099136"],
-      "justification": "答案在 start.sh：第 3 步跑 seed.ts，最后打印前端 5173 与后端 3000。"
+      "expectedDocumentIds": [
+        "7481208066139099136"
+      ],
+      "justification": "答案在 start.sh：第 3 步跑 seed.ts，最后打印前端 5173 与后端 3000。",
+      "supportingQuotes": []
     },
     {
       "id": "Q06",
       "type": "SINGLE_DOCUMENT",
       "question": "生产环境如果没配登录令牌的签名密钥，进程还能不能起来？本地开发没配时走的是抛错还是警告？",
-      "expectedDocumentIds": ["7481208064813699072"],
-      "justification": "答案在 server/src/middleware/auth.ts：production 缺密钥直接 throw，非生产只 warn 并走开发兜底。"
+      "expectedDocumentIds": [
+        "7481208064813699072"
+      ],
+      "justification": "答案在 server/src/middleware/auth.ts：production 缺密钥直接 throw，非生产只 warn 并走开发兜底。",
+      "supportingQuotes": []
     },
     {
       "id": "Q07",
       "type": "SINGLE_DOCUMENT",
       "question": "新注册账号的登录名允许哪些字符、长度范围多少？口令最短和最长分别卡在几位？",
-      "expectedDocumentIds": ["7481208065199575040"],
-      "justification": "答案在 server/src/routes/auth.ts 的用户名/口令校验，不是登录页文案。"
+      "expectedDocumentIds": [
+        "7481208065199575040"
+      ],
+      "justification": "答案在 server/src/routes/auth.ts 的用户名/口令校验，不是登录页文案。",
+      "supportingQuotes": []
     },
     {
       "id": "Q08",
       "type": "SINGLE_DOCUMENT",
       "question": "SQLite 数据文件相对源码落在哪个目录？建立连接时打开了哪些并发和完整性开关？",
-      "expectedDocumentIds": ["7481208064683675648"],
-      "justification": "答案在 server/src/database.ts：data/waimai.db，以及 WAL 与 foreign_keys=ON。"
+      "expectedDocumentIds": [
+        "7481208064683675648"
+      ],
+      "justification": "答案在 server/src/database.ts：data/waimai.db，以及 WAL 与 foreign_keys=ON。",
+      "supportingQuotes": []
     },
     {
       "id": "Q09",
       "type": "SINGLE_DOCUMENT",
       "question": "前端开发服务器怎样把浏览器里的接口路径转到 Node，从而不用在页面里写后端主机名？",
-      "expectedDocumentIds": ["7481208064385880064"],
-      "justification": "答案在 client/vite.config.ts：/api 代理到本机 3000。"
+      "expectedDocumentIds": [
+        "7481208064385880064"
+      ],
+      "justification": "答案在 client/vite.config.ts：/api 代理到本机 3000。",
+      "supportingQuotes": []
     },
     {
       "id": "Q10",
       "type": "SINGLE_DOCUMENT",
       "question": "打折券的减免金额怎么封顶？免配送那一类抵的是商品小计还是运费本身？",
-      "expectedDocumentIds": ["7481208065312821248"],
-      "justification": "答案在 coupons.ts 的 calculateDiscount：percent 受 cap 与订单金额限制，free_delivery 抵 deliveryFee。"
+      "expectedDocumentIds": [
+        "7481208065312821248"
+      ],
+      "justification": "答案在 coupons.ts 的 calculateDiscount：percent 受 cap 与订单金额限制，free_delivery 抵 deliveryFee。",
+      "supportingQuotes": []
     },
     {
       "id": "Q11",
       "type": "SINGLE_DOCUMENT",
       "question": "骑手还没上线就去拉待抢列表会怎样？列表里只会露出哪种出餐完成且还没指派骑手的单？",
-      "expectedDocumentIds": ["7481208065837109248"],
-      "justification": "答案在 server/src/routes/riders.ts 的 available-orders：未上线 400，过滤 ready 且 rider_id 为空。"
+      "expectedDocumentIds": [
+        "7481208065837109248"
+      ],
+      "justification": "答案在 server/src/routes/riders.ts 的 available-orders：未上线 400，过滤 ready 且 rider_id 为空。",
+      "supportingQuotes": []
     },
     {
       "id": "Q12",
@@ -90,7 +123,8 @@
         "7481208061986738176",
         "7481208065946161152"
       ],
-      "justification": "README 写 customer1，seed.ts 实际插入 user1/user2/user3，口令都是 123456。必须对照两篇才能发现不一致。"
+      "justification": "README 写 customer1，seed.ts 实际插入 user1/user2/user3，口令都是 123456。必须对照两篇才能发现不一致。",
+      "supportingQuotes": []
     },
     {
       "id": "Q13",
@@ -101,7 +135,8 @@
         "7481208064473960448",
         "7475766492915699712"
       ],
-      "justification": "状态机在 orders.ts，CHECK 列表在 schema.sql，支付手册是另一套 PENDING_PAYMENT/PAID/ACCEPTED。三篇对照才完整。"
+      "justification": "状态机在 orders.ts，CHECK 列表在 schema.sql，支付手册是另一套 PENDING_PAYMENT/PAID/ACCEPTED。三篇对照才完整。",
+      "supportingQuotes": []
     },
     {
       "id": "Q14",
@@ -112,7 +147,8 @@
         "7481208062586523648",
         "7481208062355836928"
       ],
-      "justification": "auth.ts 签发 24h，AuthContext 写入 localStorage，api.ts 用 Authorization Bearer 带出。"
+      "justification": "auth.ts 签发 24h，AuthContext 写入 localStorage，api.ts 用 Authorization Bearer 带出。",
+      "supportingQuotes": []
     },
     {
       "id": "Q15",
@@ -122,7 +158,8 @@
         "7481208064473960448",
         "7481208065312821248"
       ],
-      "justification": "schema.sql 约束 type∈fixed/percent/free_delivery；coupons.ts 的 calculateDiscount 解释各类型怎么用 discount_value 与 delivery_fee。"
+      "justification": "schema.sql 约束 type∈fixed/percent/free_delivery；coupons.ts 的 calculateDiscount 解释各类型怎么用 discount_value 与 delivery_fee。",
+      "supportingQuotes": []
     },
     {
       "id": "Q16",
@@ -132,7 +169,8 @@
         "7481208065707085824",
         "7481208064473960448"
       ],
-      "justification": "orders.ts 创建订单时校验 user_coupons 为 unused 并更新为 used；schema.sql 定义 unused/used/expired。"
+      "justification": "orders.ts 创建订单时校验 user_coupons 为 unused 并更新为 used；schema.sql 定义 unused/used/expired。",
+      "supportingQuotes": []
     },
     {
       "id": "Q17",
@@ -142,28 +180,338 @@
         "7481208061986738176",
         "7481208065837109248"
       ],
-      "justification": "README 写 GET /api/riders/available，riders.ts 实际是 /available-orders。问的是对照，不是复述其中一篇。"
+      "justification": "README 写 GET /api/riders/available，riders.ts 实际是 /available-orders。问的是对照，不是复述其中一篇。",
+      "supportingQuotes": []
     },
     {
       "id": "Q18",
       "type": "UNANSWERABLE",
       "question": "接入微信支付 APIv3 时，商户证书和平台证书的轮换周期应该配成多少天？",
       "expectedDocumentIds": [],
-      "justification": "语料是自建演示支付回调与 SQLite 订单，没有微信支付商户号、证书或轮换策略。"
+      "justification": "语料是自建演示支付回调与 SQLite 订单，没有微信支付商户号、证书或轮换策略。",
+      "supportingQuotes": []
     },
     {
       "id": "Q19",
       "type": "UNANSWERABLE",
       "question": "出餐完成后如果骑手一直不接，系统自动改派的超时是多少分钟？",
       "expectedDocumentIds": [],
-      "justification": "骑手路由只有上线与手动抢单，没有超时改派或 SLA 配置。"
+      "justification": "骑手路由只有上线与手动抢单，没有超时改派或 SLA 配置。",
+      "supportingQuotes": []
     },
     {
       "id": "Q20",
       "type": "UNANSWERABLE",
       "question": "用户申请注销账号之后，订单和手机号要在多少天内删除才符合个保法？",
       "expectedDocumentIds": [],
-      "justification": "语料没有注销、留存期限或个保法删除流程。"
+      "justification": "语料没有注销、留存期限或个保法删除流程。",
+      "supportingQuotes": []
+    },
+    {
+      "id": "Q21",
+      "type": "MULTI_DOCUMENT",
+      "question": "骑手还没点抢单，就在工作台先点了到店取餐，这单还会出现在待抢列表里吗？别人还能不能再抢？到店这一步实际打的是改状态还是抢单那类接口？",
+      "expectedDocumentIds": [
+        "7493683197285371904",
+        "7493683202201096192"
+      ],
+      "justification": "接口文档写明到店取餐走订单改状态通道；用例写明不抢单直接改状态会留下无主取餐单，大厅不再展示且无法再抢。",
+      "supportingQuotes": [
+        {
+          "documentId": "7493683197285371904",
+          "quote": "| `riderArriveMerchant` / `riderPickup` | `PUT /orders/:id/status` `{ status: 'picked_up' }` |"
+        },
+        {
+          "documentId": "7493683202201096192",
+          "quote": "随后 `GET /api/riders/available-orders` 因状态不是 ready 也看不到；`POST /api/riders/accept` 会报「该订单已被接取」。出现无主取餐单。"
+        }
+      ]
+    },
+    {
+      "id": "Q22",
+      "type": "MULTI_DOCUMENT",
+      "question": "一单的配送费写成 0，骑手标记送达后累计收入会加多少？产品说「空则按店缺省」和代码里把 0 当空，是不是一回事？",
+      "expectedDocumentIds": [
+        "7493683197977432064",
+        "7493683197285371904"
+      ],
+      "justification": "骑手 PRD 只规定配送费为空按 5 元记；接口文档写明 0 在 JavaScript 里是假值，完成配送时同样会改加 5。",
+      "supportingQuotes": [
+        {
+          "documentId": "7493683197977432064",
+          "quote": "若配送费为空则按 **5 元** 记（与店铺缺省配送费口径对齐，避免空值把累计收入算成 NaN）"
+        },
+        {
+          "documentId": "7493683197285371904",
+          "quote": "若 `delivery_fee` 为 `0`，在 JavaScript 中为假值，会改加 **5**。这是当前行为。"
+        }
+      ]
+    },
+    {
+      "id": "Q23",
+      "type": "MULTI_DOCUMENT",
+      "question": "店家把店改成休息以后，公开列表和店铺详情还能看到这家店吗？已经出好餐还没人抢的单，还会留在骑手待抢列表里吗？",
+      "expectedDocumentIds": [
+        "7493683196626866176",
+        "7493683197285371904"
+      ],
+      "justification": "商家接口写明列表只出营业中店铺、详情不要求营业标记；骑手大厅明确不要求商家营业标记。",
+      "supportingQuotes": [
+        {
+          "documentId": "7493683196626866176",
+          "quote": "**当前行为**：**不**要求 `is_open=1`。列表里看不到的休息店铺，仍可用 id 拉详情。"
+        },
+        {
+          "documentId": "7493683197285371904",
+          "quote": "**当前行为**：不按距离排序（尽管 `riders` 有经纬度）。按 `created_at ASC`。不要求商家 `is_open`。"
+        }
+      ]
+    },
+    {
+      "id": "Q24",
+      "type": "MULTI_DOCUMENT",
+      "question": "客服在后台把订单直接改成已完成，完成时间会不会被补上？顾客自己点确认收货时，又会不会写那一列？",
+      "expectedDocumentIds": [
+        "7493683193367891968",
+        "7493683196912078848"
+      ],
+      "justification": "管理接口改状态不写各节点时间戳；顾客侧状态表规定改成已完成时才写 completed_at。",
+      "supportingQuotes": [
+        {
+          "documentId": "7493683193367891968",
+          "quote": "**不**写 `accepted_at` 等过程时间戳，**不**写 `order_status_logs`。"
+        },
+        {
+          "documentId": "7493683196912078848",
+          "quote": "| `delivered` | `delivered_at` |\n| `completed` | `completed_at` |"
+        }
+      ]
+    },
+    {
+      "id": "Q25",
+      "type": "MULTI_DOCUMENT",
+      "question": "菜只值 2 元、运费 5 元时用免配券，实际能免掉多少？产品有没有承认过免不干净的情况？",
+      "expectedDocumentIds": [
+        "7493683196354236416",
+        "7493683198292004864"
+      ],
+      "justification": "券接口用 2 元小计、5 元运费的例子算出优惠封顶为 2；活动 PRD 用 10/15 的例子承认不能保证运费全免。",
+      "supportingQuotes": [
+        {
+          "documentId": "7493683196354236416",
+          "quote": "`free_delivery` | 0 | 0 | 2 | 5 | 2（运费 5 大于商品额 2，最后封顶）"
+        },
+        {
+          "documentId": "7493683198292004864",
+          "quote": "不能保证运费全免**（例如小计 10、运费 15 时，优惠最多 10 元）。产品已知，见第 10 节。"
+        }
+      ]
+    },
+    {
+      "id": "Q26",
+      "type": "MULTI_DOCUMENT",
+      "question": "想做免配送的店，后台把配送费填成 0 会存成多少？骑手把这种单送到后，累计收入是按 0 加还是按缺省加？",
+      "expectedDocumentIds": [
+        "7493683201194463232",
+        "7481208065837109248"
+      ],
+      "justification": "管理端用例写明开店时把 0 当成缺省存成 5 元配送；骑手送达代码用假值合并把 0 再加成 5。",
+      "supportingQuotes": [
+        {
+          "documentId": "7493683201194463232",
+          "quote": "`delivery_fee || 5`、`min_order || 20` 把 0 当成缺省，店铺建成 5 元配送、20 元起送。要测「免配送店铺」目前建不出来。"
+        },
+        {
+          "documentId": "7481208065837109248",
+          "quote": "order.delivery_fee || 5, riderId);"
+        }
+      ]
+    },
+    {
+      "id": "Q27",
+      "type": "MULTI_DOCUMENT",
+      "question": "自己注册时填一个四类之外的角色，接口会回什么？运营后台代建账号时填同样的值呢？",
+      "expectedDocumentIds": [
+        "7493683195678953472",
+        "7493683193367891968"
+      ],
+      "justification": "注册接口对不在允许列表的角色返回 400；后台代建账号不校验四类，非法值在表约束处变成 500。",
+      "supportingQuotes": [
+        {
+          "documentId": "7493683195678953472",
+          "quote": "`role` 不在允许列表 → **400** `{ \"error\": \"无效的角色类型\" }`"
+        },
+        {
+          "documentId": "7493683193367891968",
+          "quote": "`role` **不**校验是否属于 `customer|merchant|rider|admin`。非法值走 CHECK 失败 → 500。"
+        }
+      ]
+    },
+    {
+      "id": "Q28",
+      "type": "MULTI_DOCUMENT",
+      "question": "已送达那张披萨种子单，明细上的菜名和商品编号在商品表里对得上吗？做只读对账时该信明细快照还是信商品表？",
+      "expectedDocumentIds": [
+        "7481208065946161152",
+        "7493683202201096192"
+      ],
+      "justification": "种子脚本按编号 33 插入披萨明细；订单用例指出该编号在商品表是另一道菜，只读对账必须以明细快照为准。",
+      "supportingQuotes": [
+        {
+          "documentId": "7481208065946161152",
+          "quote": "insertOrderItem.run(4, 33, '超级至尊披萨', 58, 1, 58);"
+        },
+        {
+          "documentId": "7493683202201096192",
+          "quote": "明细写着「超级至尊披萨」、单价 58，但 `product_id=33` 在商品表是「奶油培根意面」（32 元）。订单 7 明细「番茄麻辣烫」26 元，`product_id=13` 实际是「麻辣拌」。只读断言以 **order_items 快照字段**为准，不要用 product_id 反查名称做强相等。"
+        }
+      ]
+    },
+    {
+      "id": "Q29",
+      "type": "MULTI_DOCUMENT",
+      "question": "骑手查看自己名下的单，响应外层是数组还是带总数的对象？运营后台拉全量订单列表呢？",
+      "expectedDocumentIds": [
+        "7493683197285371904",
+        "7493683193367891968"
+      ],
+      "justification": "骑手我的配送返回带 data/total 的分页对象；管理端订单列表成功体是数组且没有 total。",
+      "supportingQuotes": [
+        {
+          "documentId": "7493683197285371904",
+          "quote": "{\n  \"data\": [],\n  \"total\": 0,\n  \"page\": 1,\n  \"limit\": 20\n}"
+        },
+        {
+          "documentId": "7493683193367891968",
+          "quote": "成功：**数组**（不是 `{list,total}`）。同样用 username 覆盖 `orders.customer_name`。"
+        }
+      ]
+    },
+    {
+      "id": "Q30",
+      "type": "MULTI_DOCUMENT",
+      "question": "反推的分期里，券页和管理商品表格算哪一期交付？顾客下单页算不算在那一期？验收还看页面标题吗？",
+      "expectedDocumentIds": [
+        "7493683199902617600",
+        "7493683202570194944"
+      ],
+      "justification": "迭代计划写明 P7 不含顾客下单等真实表格；测试策略规定占位页不能当作功能验收通过。",
+      "supportingQuotes": [
+        {
+          "documentId": "7493683199902617600",
+          "quote": "**P7 明确不包含：** 顾客浏览下单、商家出餐、骑手抢单、管理仪表盘的真实表格。那些路由在 `App.tsx` 有，页面没有调 API。"
+        },
+        {
+          "documentId": "7493683202570194944",
+          "quote": "占位页面 | 仅渲染标题 | 顾客首页/订单、商家三页、骑手两页、管理仪表盘/商家/订单/骑手/账号 | 不能当作功能验收通过，必须改走接口或标为 UI 未实现"
+        }
+      ]
+    },
+    {
+      "id": "Q31",
+      "type": "SINGLE_DOCUMENT",
+      "question": "按仓库反推的分期，优惠券能力被标成第几期？它必须先有哪一期的下单入口？",
+      "expectedDocumentIds": [
+        "7493683199902617600"
+      ],
+      "justification": "只有 2025 迭代计划给出 P6 依赖 P3 下单入口、P7 依赖 P5/P6 管理接口的分期矩阵。",
+      "supportingQuotes": [
+        {
+          "documentId": "7493683199902617600",
+          "quote": "P6 依赖 P3 的下单入口。P7 依赖 P5/P6 的管理 API。"
+        }
+      ]
+    },
+    {
+      "id": "Q32",
+      "type": "SINGLE_DOCUMENT",
+      "question": "新页面样式是跟 Tailwind、CSS Modules，还是写在标签上？仓库里有没有现成的 ESLint 配置可以沿用？",
+      "expectedDocumentIds": [
+        "7493683199655153664"
+      ],
+      "justification": "工程约定是唯一写明没有 CSS Modules/Tailwind、没有测试目录也没有 ESLint 配置的文档。",
+      "supportingQuotes": [
+        {
+          "documentId": "7493683199655153664",
+          "quote": "没有 CSS Modules / Tailwind；全局只有 `index.css` 的 `body`/`#root`。页面样式用 inline `style={{ ... }}`。"
+        }
+      ]
+    },
+    {
+      "id": "Q33",
+      "type": "SINGLE_DOCUMENT",
+      "question": "生产环境前端打包之后，后端进程会不会直接挂静态资源？入口文件里有没有这一步？",
+      "expectedDocumentIds": [
+        "7493683200548540416"
+      ],
+      "justification": "技术栈文档是语料里唯一写明当前入口没有托管前端构建产物这一步的地方。",
+      "supportingQuotes": [
+        {
+          "documentId": "7493683200548540416",
+          "quote": "当前 `index.ts` 没有 `express.static`"
+        }
+      ]
+    },
+    {
+      "id": "Q34",
+      "type": "SINGLE_DOCUMENT",
+      "question": "改表有没有独立的版本号表？旧库缺列时靠什么补上？",
+      "expectedDocumentIds": [
+        "7493683199202168832"
+      ],
+      "justification": "数据模型演进文档是唯一写明没有版本号表、只靠建表脚本与手写缺列探测补列的文档。",
+      "supportingQuotes": [
+        {
+          "documentId": "7493683199202168832",
+          "quote": "无 Flyway/Prisma；仅 `IF NOT EXISTS` + 手写 `columnExists`"
+        }
+      ]
+    },
+    {
+      "id": "Q35",
+      "type": "SINGLE_DOCUMENT",
+      "question": "干净种子、还没人点确认收货时，管理看板的店铺数、订单总数、完成单、营收分别应是多少？",
+      "expectedDocumentIds": [
+        "7493683201194463232"
+      ],
+      "justification": "只有管理后台用例给出种子库看板四个字段的完整期望值，并写明完成单按已送达计。",
+      "supportingQuotes": [
+        {
+          "documentId": "7493683201194463232",
+          "quote": "`totalMerchants=4`\n  - `totalRiders=3`（统计 `users.role='rider'`，不是 `riders` 表行数）\n  - `totalOrders=8`\n  - `totalCustomers=3`\n  - `pendingOrders=1`（仅单 7）\n  - `completedOrders=1`（SQL 是 `status='delivered'`，**不是** `completed`；种子有 3 条 completed + 1 条 delivered，此处为 **1**）\n  - `totalRevenue=72`（只 SUM `delivered` 单的 `total_amount`，即披萨单）"
+        }
+      ]
+    },
+    {
+      "id": "Q36",
+      "type": "SINGLE_DOCUMENT",
+      "question": "顾客查看自己已领的券，这条路径会不会被带数字编号的领取接口抢走？服务端是按什么顺序挂这些路由的？",
+      "expectedDocumentIds": [
+        "7493683196354236416"
+      ],
+      "justification": "只有券接口文档写明 GET /my 的注册顺序以及它不会被 /:id 吃掉。",
+      "supportingQuotes": [
+        {
+          "documentId": "7493683196354236416",
+          "quote": "Express 注册顺序：先 `GET /`，再 `POST /:id/claim`，再 `GET /my`，再 `POST /calculate`。`GET /my` 不会被 `/:id` 吃掉（没有 `GET /:id`）。"
+        }
+      ]
+    },
+    {
+      "id": "Q37",
+      "type": "UNANSWERABLE",
+      "question": "顾客下单后要开电子发票，抬头和税号走哪个接口提交？开票金额是按商品小计还是按券后实付？",
+      "expectedDocumentIds": [],
+      "justification": "69 篇文档都没有发票、抬头、税号字段或开票接口。",
+      "supportingQuotes": []
+    },
+    {
+      "id": "Q38",
+      "type": "UNANSWERABLE",
+      "question": "平台向商家抽成的比例是多少，按什么周期打到对公账户？",
+      "expectedDocumentIds": [],
+      "justification": "语料没有平台抽成、佣金比例或对公结算周期。",
+      "supportingQuotes": []
     }
   ]
 }

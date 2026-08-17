@@ -87,9 +87,12 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
     private static final Set<String> NETWORK_NONE_ROLES = Set.of(
             "REQUIREMENT_REVIEWER", "SOLUTION_ARCHITECT"
     );
+    // Docker only gives a tmpfs the 1777 mode for /tmp; everywhere else it lands as
+    // root-owned 0755, so the rdbot user (uid 999 in the image) cannot create its
+    // per-session directory and the agent harness dies before it can run a command.
     private static final Map<String, String> CLAUDE_TMPFS_MOUNTS = Map.of(
             "/tmp", "rw,noexec,nosuid,size=1g",
-            "/home/rdbot/.claude/session-env", "rw,noexec,nosuid,size=64m"
+            "/home/rdbot/.claude/session-env", "rw,noexec,nosuid,size=64m,uid=999,gid=999"
     );
     private static final ContainerSecurityPolicy CLAUDE_SECURITY_POLICY = claudeSecurityPolicy(512);
     private static final ContainerSecurityPolicy CLAUDE_QA_SECURITY_POLICY = claudeSecurityPolicy(1024);

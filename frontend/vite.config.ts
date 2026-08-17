@@ -37,6 +37,8 @@ export default defineConfig({
       "/knowledge-base": backendTarget,
       "/admin/overview": backendTarget,
       "/admin/dashboard/overview": backendTarget,
+      "/admin/observability/delivery": backendTarget,
+      "/admin/model-provider-profiles": backendTarget,
       "/admin/execution-traces": backendTarget,
       "/admin/operations": backendTarget,
       "/admin/rd-tasks": {
@@ -81,7 +83,41 @@ export default defineConfig({
         entryFileNames: "admin-knowledge.js",
         chunkFileNames: "admin-[name].js",
         assetFileNames: (assetInfo) =>
-          assetInfo.name?.endsWith(".css") ? "admin-knowledge.css" : "admin-[name][extname]"
+          assetInfo.name?.endsWith(".css") ? "admin-knowledge.css" : "admin-[name][extname]",
+        manualChunks(id) {
+          if (id.includes("node_modules")) {
+            if (
+              id.includes("react-markdown") ||
+              id.includes("react-syntax-highlighter") ||
+              id.includes("remark") ||
+              id.includes("rehype") ||
+              id.includes("prismjs")
+            ) {
+              return "vendor-markdown";
+            }
+            if (id.includes("lucide-react")) {
+              return "vendor-icons";
+            }
+            if (
+              id.includes("@radix-ui") ||
+              id.includes("clsx") ||
+              id.includes("tailwind-merge") ||
+              id.includes("class-variance-authority") ||
+              id.includes("sonner")
+            ) {
+              return "vendor-ui";
+            }
+            if (
+              id.includes("react-router-dom") ||
+              id.includes("react-router") ||
+              id.includes("react") ||
+              id.includes("react-dom") ||
+              id.includes("scheduler")
+            ) {
+              return "vendor-react";
+            }
+          }
+        }
       }
     }
   }

@@ -104,7 +104,8 @@ public class RequirementAgentStageOrchestrator {
             RoleExecutionInputManifest.ARTIFACT_TYPE,
             "AGENT_STATE_EVENTS",
             "AGENT_STATE_SNAPSHOT",
-            "RUNTIME_CONTEXT_MANIFEST"
+            "RUNTIME_CONTEXT_MANIFEST",
+            "RUNTIME_MEASUREMENT"
     );
     /** 角色预算份额越限时抛出，由上游归类为 TIMEOUT。上游不强制捕获，但接口包对外可观察。 */
     private static final double EPSILON = 1.0e-9d;

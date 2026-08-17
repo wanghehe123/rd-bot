@@ -246,7 +246,7 @@ class OpenVikingShadowRetrievalEvaluationRealSmokeTest {
         System.out.println("WP-7 evaluation wrote " + output.toAbsolutePath());
         System.out.println(renderTable(localPath, ovPath, k, localLatencies.size(), ovLatencies.size()));
 
-        assertEquals(20, perQuestion.size());
+        assertEquals(gold.questions().size(), perQuestion.size());
         assertEquals(0, crossKbAdmitted, "allowlist must keep cross-KB evidence at 0");
         assertEquals(gold.questions().size() * reps, localLatencies.size());
         assertEquals(gold.questions().size() * reps, ovLatencies.size());

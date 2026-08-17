@@ -37,7 +37,9 @@ import com.wish.rd.exec.repair.runtime.AgentExecutionEventSink;
 import com.wish.rd.exec.repair.runtime.AgentRuntimeExecutorPort;
 import com.wish.rd.exec.repair.runtime.model.AgentRuntimeExecutionRequest;
 import com.wish.rd.exec.repair.runtime.usage.AgentEventTokenUsageParser;
+import com.wish.rd.exec.repair.runtime.usage.AgentRuntimeMeasurementParser;
 import com.wish.rd.exec.repair.runtime.usage.model.AgentEventTokenUsageSnapshot;
+import com.wish.rd.exec.repair.runtime.usage.model.AgentRuntimeMeasurementSummary;
 import com.wish.rd.exec.repair.security.SecretRedactor;
 import com.wish.rd.exec.repair.security.model.ExecutionAllowlistPolicy;
 import com.wish.rd.rag.project.agent.model.AgentExecutionProfileSnapshot;
@@ -63,6 +65,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -422,7 +425,12 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                 );
             }
             eventCapture.finish();
-            List<RepairArtifact> artifacts = collectArtifacts(workspace.outputDirectory());
+            List<RepairArtifact> artifacts = withRuntimeMeasurement(
+                    workspace.outputDirectory(),
+                    collectArtifacts(workspace.outputDirectory()),
+                    snapshot,
+                    provider
+            );
             try {
                 List<RepairArtifact> privateArtifacts = privateArtifactPublisher.publish(
                         command,
@@ -1659,6 +1667,7 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
             case "agent-state-latest.json" -> RepairArtifactType.AGENT_STATE_SNAPSHOT;
             case "runtime-context-manifest.json" -> RepairArtifactType.RUNTIME_CONTEXT_MANIFEST;
             case "runtime-meta.json" -> RepairArtifactType.AGENT_RUNTIME_META;
+            case "runtime-measurement.json" -> RepairArtifactType.RUNTIME_MEASUREMENT;
             case "docker-meta.json" -> RepairArtifactType.DOCKER_METADATA;
             case "handoff/next.md" -> RepairArtifactType.HANDOFF_MARKDOWN;
             case "qa-evidence/manifest.json" -> RepairArtifactType.QA_EVIDENCE_MANIFEST;
@@ -1856,12 +1865,23 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
             EventCapture events
     ) {
         AgentEventTokenUsageSnapshot usage = tokenUsageFromArtifacts(artifacts);
+        AgentRuntimeMeasurementSummary measurement = measurementFromArtifacts(artifacts, provider);
         Map<String, Object> attempt = new LinkedHashMap<>();
         attempt.put("provider", provider == null ? "" : provider.providerId());
         attempt.put("attempt", 1);
+        attempt.put("attemptId", measurementAttemptId(measurement, provider));
         attempt.put("status", result == null || result.exitCode() != 0 ? "FAILED" : "SUCCESS");
         attempt.put("tokenUsageAvailable", usage.available());
         attempt.put("tokenUsageFinalized", usage.finalized());
+        attempt.put("measurementSchemaVersion", AgentRuntimeMeasurementSummary.SCHEMA_VERSION);
+        attempt.put("firstTokenAvailable", measurement.firstTokenAvailable());
+        attempt.put("firstProviderResponseAvailable", measurement.firstProviderResponseAvailable());
+        if (measurement.firstTokenAvailable()) {
+            attempt.put("firstTokenMillis", measurement.firstTokenDurationMillis());
+        }
+        if (measurement.firstProviderResponseAvailable()) {
+            attempt.put("firstProviderResponseMillis", measurement.firstProviderResponseDurationMillis());
+        }
         if (usage.available()) {
             attempt.put("inputTokens", usage.inputTokens());
             attempt.put("outputTokens", usage.outputTokens());
@@ -1882,6 +1902,100 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         } catch (JsonProcessingException exception) {
             return "[]";
         }
+    }
+
+    private static List<RepairArtifact> withRuntimeMeasurement(
+            Path outputDirectory,
+            List<RepairArtifact> artifacts,
+            AgentExecutionProfileSnapshot snapshot,
+            ProviderSpec provider
+    ) {
+        List<RepairArtifact> safe = artifacts == null ? List.of() : artifacts;
+        try {
+            AgentRuntimeMeasurementSummary summary = measurementFromArtifacts(safe, provider);
+            if (snapshot != null && (summary.taskId().isBlank() || summary.stageRunId().isBlank())) {
+                summary = new AgentRuntimeMeasurementSummary(
+                        summary.schemaVersion(),
+                        summary.taskId().isBlank() ? snapshot.taskId() : summary.taskId(),
+                        summary.stageRunId().isBlank() ? snapshot.stageRunId() : summary.stageRunId(),
+                        summary.role(),
+                        summary.runtime(),
+                        summary.provider(),
+                        summary.modelAlias(),
+                        summary.agentStartedAtEpochMillis(),
+                        summary.firstProviderRespondedAtEpochMillis(),
+                        summary.firstTextAtEpochMillis(),
+                        summary.finishedAtEpochMillis(),
+                        summary.totalDurationMillis(),
+                        summary.firstTokenDurationMillis(),
+                        summary.firstProviderResponseDurationMillis(),
+                        summary.toolDurationMillis(),
+                        summary.firstTokenAvailable(),
+                        summary.firstProviderResponseAvailable(),
+                        summary.usageAvailable(),
+                        summary.inputTokens(),
+                        summary.outputTokens(),
+                        summary.cacheReadTokens(),
+                        summary.cacheWriteTokens(),
+                        summary.totalTokens(),
+                        summary.estimatedCostUsd(),
+                        summary.estimatedCostCurrency(),
+                        summary.parseErrorCategory(),
+                        summary.usageEventCount(),
+                        summary.providerRetryCount(),
+                        summary.droppedObservations(),
+                        summary.finalized(),
+                        summary.available()
+                );
+            }
+            Path file = outputDirectory.resolve("runtime-measurement.json");
+            OBJECT_MAPPER.writeValue(file.toFile(), summary);
+            List<RepairArtifact> next = new ArrayList<>(safe);
+            next.add(toArtifact(outputDirectory, file));
+            return List.copyOf(next);
+        } catch (IOException | RuntimeException ignored) {
+            return safe;
+        }
+    }
+
+    private static AgentRuntimeMeasurementSummary measurementFromArtifacts(
+            List<RepairArtifact> artifacts,
+            ProviderSpec provider
+    ) {
+        AgentRuntimeMeasurementParser parser = new AgentRuntimeMeasurementParser();
+        String providerId = provider == null ? "OTHER" : provider.providerId();
+        String model = provider == null ? "" : provider.model();
+        if (artifacts != null) {
+            for (RepairArtifact artifact : artifacts) {
+                if (artifact.type() != RepairArtifactType.AGENT_EVENTS) {
+                    continue;
+                }
+                String uri = artifact.uri();
+                if (uri == null || !uri.startsWith("file:")) {
+                    continue;
+                }
+                try {
+                    AgentRuntimeMeasurementSummary parsed = parser.parse(
+                            Path.of(java.net.URI.create(uri)), "pi", providerId, model);
+                    if (parsed.available() || !parsed.parseErrorCategory().isBlank()) {
+                        return parsed;
+                    }
+                } catch (RuntimeException ignored) {
+                    return AgentRuntimeMeasurementSummary.unavailable("PARSE_ERROR");
+                }
+            }
+        }
+        return AgentRuntimeMeasurementSummary.unavailable("");
+    }
+
+    private static String measurementAttemptId(
+            AgentRuntimeMeasurementSummary measurement,
+            ProviderSpec provider
+    ) {
+        if (measurement != null && !measurement.stageRunId().isBlank()) {
+            return measurement.stageRunId() + ":1";
+        }
+        return (provider == null || provider.providerId().isBlank() ? "pi" : provider.providerId()) + ":1";
     }
 
     private static AgentEventTokenUsageSnapshot tokenUsageFromArtifacts(List<RepairArtifact> artifacts) {

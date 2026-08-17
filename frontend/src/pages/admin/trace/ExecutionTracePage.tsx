@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
+  Activity,
   ArrowLeft,
   ChevronLeft,
   ChevronRight,
@@ -8,6 +9,8 @@ import {
   ClipboardList,
   Filter,
   FlaskConical,
+  GitCommit,
+  Layers,
   RefreshCw,
   Search,
   TimerReset,
@@ -20,7 +23,6 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Empty, PageHeader } from "@/components/Ui";
 import { useAsyncData } from "@/hooks";
 import { useProjectScope } from "@/hooks/useProjectScope";
 import { getErrorMessage } from "@/utils/error";
@@ -86,26 +88,31 @@ export function ExecutionTracePage() {
   };
 
   return (
-    <div className="admin-page execution-trace-page">
-      <PageHeader
-        title="执行追踪"
-        description="以交付任务为根，查看角色阶段、Provider、重试与状态推进。"
-        action={
-          <div className="trace-header-actions">
-            <ProjectScopeSelector
-              projects={projectsState.data.records}
-              projectId={projectScope.projectId}
-              onProjectChange={projectScope.setProjectId}
-              allowAll
-              loading={projectsState.loading}
-              unavailable={Boolean(projectsState.error)}
-            />
-            <Button variant="outline" size="icon" onClick={refresh} aria-label="刷新执行追踪" title="刷新执行追踪">
-              <RefreshCw className={traceState.loading ? "spin" : undefined} aria-hidden="true" />
-            </Button>
-          </div>
-        }
-      />
+    <div className="admin-page execution-trace-page space-y-4">
+      <div className="admin-page-header">
+        <div>
+          <h1 className="admin-page-title flex items-center gap-2.5">
+            <Layers className="h-6 w-6 text-primary" />
+            <span>执行追踪</span>
+          </h1>
+          <p className="admin-page-subtitle">
+            以交付任务为根，查看角色阶段、Provider、重试与状态推进
+          </p>
+        </div>
+        <div className="trace-header-actions flex flex-wrap items-center gap-2">
+          <ProjectScopeSelector
+            projects={projectsState.data.records}
+            projectId={projectScope.projectId}
+            onProjectChange={projectScope.setProjectId}
+            allowAll
+            loading={projectsState.loading}
+            unavailable={Boolean(projectsState.error)}
+          />
+          <Button variant="outline" size="icon" onClick={refresh} aria-label="刷新执行追踪" title="刷新执行追踪">
+            <RefreshCw className={traceState.loading ? "spin" : undefined} aria-hidden="true" />
+          </Button>
+        </div>
+      </div>
 
       <section className="trace-filter-strip" aria-label="执行追踪筛选">
         <div className="trace-search-field"><Search aria-hidden="true" /><Input value={keywordInput} onChange={(event) => setKeywordInput(event.target.value)} onKeyDown={(event) => event.key === "Enter" && applySearch()} placeholder="搜索任务标题或 ID" aria-label="搜索执行追踪" /></div>
@@ -128,7 +135,11 @@ export function ExecutionTracePage() {
               <TableHeader><TableRow><TableHead>任务</TableHead><TableHead>项目</TableHead><TableHead>状态</TableHead><TableHead>当前阶段</TableHead><TableHead>Provider</TableHead><TableHead>进度</TableHead><TableHead>耗时</TableHead><TableHead>重试</TableHead><TableHead className="text-right">查看</TableHead></TableRow></TableHeader>
               <TableBody>{traceState.data.records.map((trace) => <TraceRow key={trace.taskId} trace={trace} />)}</TableBody>
             </Table>
-          ) : <Empty>{traceState.loading ? "正在加载执行追踪..." : "当前筛选范围没有执行记录。"}</Empty>}
+          ) : (
+            <div className="py-12 text-center text-xs text-muted-foreground">
+              {traceState.loading ? "正在加载执行追踪..." : "当前筛选范围没有执行记录。"}
+            </div>
+          )}
           <TracePagination page={traceState.data.page} pages={traceState.data.pages} total={traceState.data.total} onPageChange={setPage} />
         </CardContent>
       </Card>
@@ -180,14 +191,47 @@ export function ExecutionTraceDetailPage() {
   };
 
   return (
-    <div className="admin-page execution-trace-detail-page">
-      <PageHeader
-        title="执行详情"
-        description={detail?.task.title || taskId}
-        action={<div className="trace-detail-actions"><Button variant="outline" onClick={() => void evaluateCurrentRun()} disabled={!detail || evaluating}><FlaskConical className={evaluating ? "spin" : undefined} aria-hidden="true" />{evaluating ? "创建评测中" : "评测本次执行"}</Button><Button asChild variant="outline"><Link to="/admin/traces"><ArrowLeft aria-hidden="true" />返回执行追踪</Link></Button><Button asChild variant="outline"><Link to={`/admin/rd-tasks/${taskId}`}><ClipboardList aria-hidden="true" />任务详情</Link></Button><Button variant="outline" size="icon" onClick={() => void detailState.refresh()} aria-label="刷新执行详情" title="刷新执行详情"><RefreshCw className={detailState.loading ? "spin" : undefined} aria-hidden="true" /></Button></div>}
-      />
+    <div className="admin-page execution-trace-detail-page space-y-4">
+      <div className="admin-page-header">
+        <div>
+          <h1 className="admin-page-title flex items-center gap-2.5">
+            <Layers className="h-6 w-6 text-primary" />
+            <span>执行详情</span>
+          </h1>
+          <p className="admin-page-subtitle">
+            {detail?.task.title || taskId}
+          </p>
+        </div>
+        <div className="trace-detail-actions flex flex-wrap items-center gap-2">
+          <Button variant="outline" onClick={() => void evaluateCurrentRun()} disabled={!detail || evaluating}>
+            <FlaskConical className={evaluating ? "spin" : undefined} aria-hidden="true" />
+            {evaluating ? "创建评测中" : "评测本次执行"}
+          </Button>
+          <Button asChild variant="outline">
+            <Link to="/admin/traces">
+              <ArrowLeft className="mr-1.5 h-4 w-4" aria-hidden="true" />
+              返回执行追踪
+            </Link>
+          </Button>
+          <Button asChild variant="outline">
+            <Link to={`/admin/rd-tasks/${taskId}`}>
+              <ClipboardList className="mr-1.5 h-4 w-4" aria-hidden="true" />
+              任务详情
+            </Link>
+          </Button>
+          <Button variant="outline" size="icon" onClick={() => void detailState.refresh()} aria-label="刷新执行详情" title="刷新执行详情">
+            <RefreshCw className={detailState.loading ? "spin" : undefined} aria-hidden="true" />
+          </Button>
+        </div>
+      </div>
       {detailState.error ? <div className="trace-inline-notice" role="status">{detailState.error}</div> : null}
-      {!detail ? <Empty>{detailState.loading ? "正在加载任务执行详情..." : "未找到执行详情。"}</Empty> : <TraceDetailContent detail={detail} />}
+      {!detail ? (
+        <div className="py-12 text-center text-xs text-muted-foreground">
+          {detailState.loading ? "正在加载任务执行详情..." : "未找到执行详情。"}
+        </div>
+      ) : (
+        <TraceDetailContent detail={detail} />
+      )}
     </div>
   );
 }
@@ -204,13 +248,55 @@ function TraceDetailContent({ detail }: { detail: ExecutionTraceDetail }) {
 
     <Card className="trace-detail-card">
       <CardHeader><CardTitle>角色阶段与 Provider 尝试</CardTitle><CardDescription>每个角色保留历史 attempt；阶段产物只展示受控 ID，不在此页面执行任务操作。</CardDescription></CardHeader>
-      <CardContent><div className="trace-stage-timeline">{detail.overview.stageRuns.length ? detail.overview.stageRuns.map((stage) => <StageRun key={stage.stageRunId} stage={stage} />) : <Empty>尚未生成角色阶段记录。</Empty>}</div></CardContent>
+      <CardContent>
+        <div className="trace-stage-timeline">
+          {detail.overview.stageRuns.length ? (
+            detail.overview.stageRuns.map((stage) => <StageRun key={stage.stageRunId} stage={stage} />)
+          ) : (
+            <div className="py-6 text-center text-xs text-muted-foreground">尚未生成角色阶段记录。</div>
+          )}
+        </div>
+      </CardContent>
     </Card>
 
     <div className="trace-detail-grid">
-      <Card className="trace-detail-card"><CardHeader><CardTitle>状态时间线</CardTitle><CardDescription>任务主状态推进记录。</CardDescription></CardHeader><CardContent><div className="trace-event-list">{detail.timeline.length ? detail.timeline.map((event) => <div key={event.id} className="trace-event-row"><span>{traceStatusLabel(event.status)}</span><p>{event.message || event.title}</p><time>{new Date(event.enteredAtEpochMillis).toLocaleString("zh-CN")}</time></div>) : <Empty>暂无状态时间线。</Empty>}</div></CardContent></Card>
-      <Card className="trace-detail-card"><CardHeader><CardTitle>恢复与审计</CardTitle><CardDescription>按当前任务 ID 查询，不拉取无关审计事件。</CardDescription></CardHeader><CardContent><div className="trace-event-list">{detail.auditEvents.length ? detail.auditEvents.map((event, index) => <div key={`${event.type}-${event.createdAtEpochMillis}-${index}`} className="trace-event-row"><span>{event.type}</span><p>{event.summary}</p><time>{new Date(event.createdAtEpochMillis).toLocaleString("zh-CN")}</time></div>) : <Empty>暂无恢复或审计事件。</Empty>}</div></CardContent></Card>
-      <Card className="trace-detail-card"><CardHeader><CardTitle>材料与交付产物</CardTitle><CardDescription>材料、测试结论和 PR 仍以任务详情作为权威入口。</CardDescription></CardHeader><CardContent><div className="trace-event-list">{detail.materials.length ? detail.materials.map((material) => <div key={material.materialId} className="trace-event-row"><span>{material.materialType}</span><p>{material.title || material.sourceUri || material.materialId}</p><time>{material.mimeType || material.sourceType}</time></div>) : <Empty>暂无已归档材料。</Empty>}{detail.task.executionEvidence?.testStatus ? <div className="trace-event-row"><span>TEST</span><p>{detail.task.executionEvidence.testStatus}</p><time>{detail.task.executionEvidence.pullRequestUrl || "未创建 PR"}</time></div> : null}</div></CardContent></Card>
+      <Card className="trace-detail-card">
+        <CardHeader><CardTitle>状态时间线</CardTitle><CardDescription>任务主状态推进记录。</CardDescription></CardHeader>
+        <CardContent>
+          <div className="trace-event-list">
+            {detail.timeline.length ? (
+              detail.timeline.map((event) => <div key={event.id} className="trace-event-row"><span>{traceStatusLabel(event.status)}</span><p>{event.message || event.title}</p><time>{new Date(event.enteredAtEpochMillis).toLocaleString("zh-CN")}</time></div>)
+            ) : (
+              <div className="py-6 text-center text-xs text-muted-foreground">暂无状态时间线。</div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+      <Card className="trace-detail-card">
+        <CardHeader><CardTitle>恢复与审计</CardTitle><CardDescription>按当前任务 ID 查询，不拉取无关审计事件。</CardDescription></CardHeader>
+        <CardContent>
+          <div className="trace-event-list">
+            {detail.auditEvents.length ? (
+              detail.auditEvents.map((event, index) => <div key={`${event.type}-${event.createdAtEpochMillis}-${index}`} className="trace-event-row"><span>{event.type}</span><p>{event.summary}</p><time>{new Date(event.createdAtEpochMillis).toLocaleString("zh-CN")}</time></div>)
+            ) : (
+              <div className="py-6 text-center text-xs text-muted-foreground">暂无恢复或审计事件。</div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+      <Card className="trace-detail-card">
+        <CardHeader><CardTitle>材料与交付产物</CardTitle><CardDescription>材料、测试结论和 PR 仍以任务详情作为权威入口。</CardDescription></CardHeader>
+        <CardContent>
+          <div className="trace-event-list">
+            {detail.materials.length ? (
+              detail.materials.map((material) => <div key={material.materialId} className="trace-event-row"><span>{material.materialType}</span><p>{material.title || material.sourceUri || material.materialId}</p><time>{material.mimeType || material.sourceType}</time></div>)
+            ) : (
+              <div className="py-6 text-center text-xs text-muted-foreground">暂无已归档材料。</div>
+            )}
+            {detail.task.executionEvidence?.testStatus ? <div className="trace-event-row"><span>TEST</span><p>{detail.task.executionEvidence.testStatus}</p><time>{detail.task.executionEvidence.pullRequestUrl || "未创建 PR"}</time></div> : null}
+          </div>
+        </CardContent>
+      </Card>
     </div>
   </>;
 }
@@ -218,3 +304,4 @@ function TraceDetailContent({ detail }: { detail: ExecutionTraceDetail }) {
 function StageRun({ stage }: { stage: Awaited<ReturnType<typeof getExecutionTraceDetail>>["overview"]["stageRuns"][number] }) {
   return <article className={`trace-stage-run ${stage.status.includes("FAILED") ? "is-failed" : stage.status === "SUCCEEDED" ? "is-succeeded" : ""}`}><div className="trace-stage-run-head"><div><strong>{traceRoleLabel(stage.role)}</strong><span>Attempt {stage.attemptNo} · {stage.status}</span></div><time>{formatTraceDuration(stage.elapsedMillis)}</time></div><dl><div><dt>Provider</dt><dd>{stage.providerName || "--"}</dd></div><div><dt>上下文</dt><dd>{stage.contextPackageId || "--"}</dd></div><div><dt>产物</dt><dd>{stage.resultArtifactId || stage.promptArtifactId || "--"}</dd></div></dl>{stage.errorMessage ? <p className="trace-stage-error"><CircleAlert aria-hidden="true" />{stage.errorCategory || "执行错误"}：{stage.errorMessage}</p> : null}{stage.providerAttempts.length ? <details className="trace-provider-attempts"><summary>Provider 尝试 {stage.providerAttempts.length}</summary><pre>{JSON.stringify(stage.providerAttempts, null, 2)}</pre></details> : null}</article>;
 }
+

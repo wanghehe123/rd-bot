@@ -1,4 +1,5 @@
 import { api } from "@/services/api";
+import { asArray } from "@/services/jsonArray";
 
 export interface RdProject {
   projectId: string;
@@ -87,6 +88,8 @@ export interface ProjectQaProfile {
   healthPath: string;
   allowedHosts: string[];
   regressionCommands: string[];
+  buildCommands?: string[] | null;
+  staticCommands?: string[] | null;
   createTimeEpochMillis: number;
   updateTimeEpochMillis: number;
 }
@@ -98,6 +101,8 @@ export interface ProjectQaProfilePayload {
   healthPath: string;
   allowedHosts: string[];
   regressionCommands: string[];
+  buildCommands?: string[] | null;
+  staticCommands?: string[] | null;
 }
 
 export type ProjectRuntimeRole =
@@ -184,6 +189,139 @@ export interface AgentExecutionProfileSnapshot {
   resolvedAtEpochMillis: number;
 }
 
+export const getProject = (projectId: string): Promise<RdProject> =>
+  api.get<RdProject, RdProject>(`/admin/projects/${projectId}`);
+
+export type AgentStrategyImageMode = "LOCAL_DEFAULT" | "CUSTOM";
+
+export interface AgentStrategyRoleSlot {
+  role: AgentExecutionRole;
+  runtimeType: AgentRuntimeType;
+  providerProfileId: string;
+  modelOverride: string;
+  extensionSetId: string;
+  extensionSetVersion: number;
+  toolPolicyId: string;
+  toolPolicyVersion: number;
+  imageMode: AgentStrategyImageMode;
+  image: string;
+  dockerfileName: string;
+  dockerfileSha256: string;
+  dockerfileArtifactUri: string;
+  dockerfileText: string;
+}
+
+export interface AgentStrategyProfile {
+  strategyId: string;
+  projectId: string;
+  name: string;
+  enabled: boolean;
+  version: number;
+  roles: AgentStrategyRoleSlot[];
+}
+
+export interface AgentStrategyConsole {
+  projectId: string;
+  defaultStrategyId: string;
+  synthesizedFromLegacy: boolean;
+  agentRuntimeEnabled: boolean;
+  defaultPiImage: string;
+  defaultPiQaImage: string;
+  defaultClaudeImage: string;
+  strategies: AgentStrategyProfile[];
+}
+
+export const getAgentStrategies = async (projectId: string): Promise<AgentStrategyConsole> => {
+  const payload = await api.get<AgentStrategyConsole, AgentStrategyConsole>(
+    `/admin/projects/${projectId}/agent-strategies`
+  );
+  return {
+    projectId: payload?.projectId || projectId,
+    defaultStrategyId: payload?.defaultStrategyId || "",
+    synthesizedFromLegacy: Boolean(payload?.synthesizedFromLegacy),
+    agentRuntimeEnabled: Boolean(payload?.agentRuntimeEnabled),
+    defaultPiImage: payload?.defaultPiImage || "rd-bot/pi-agent:local",
+    defaultPiQaImage: payload?.defaultPiQaImage || "rd-bot/pi-agent-qa:local",
+    defaultClaudeImage: payload?.defaultClaudeImage || "rd-bot/claude-code:local",
+    strategies: asArray(payload?.strategies)
+  };
+};
+
+export const getAgentStrategy = (
+  projectId: string,
+  strategyId: string
+): Promise<AgentStrategyProfile> =>
+  api.get<AgentStrategyProfile, AgentStrategyProfile>(
+    `/admin/projects/${projectId}/agent-strategies/${encodeURIComponent(strategyId)}`
+  );
+
+export const createAgentStrategy = (
+  projectId: string,
+  payload: AgentStrategyProfile,
+  mutationToken: string
+): Promise<AgentStrategyProfile> =>
+  api.post<AgentStrategyProfile, AgentStrategyProfile>(
+    `/admin/projects/${projectId}/agent-strategies`,
+    payload,
+    { headers: { "X-RD-Agent-Runtime-Token": mutationToken } }
+  );
+
+export const updateAgentStrategy = (
+  projectId: string,
+  strategyId: string,
+  payload: AgentStrategyProfile,
+  mutationToken: string
+): Promise<AgentStrategyProfile> =>
+  api.put<AgentStrategyProfile, AgentStrategyProfile>(
+    `/admin/projects/${projectId}/agent-strategies/${encodeURIComponent(strategyId)}`,
+    payload,
+    { headers: { "X-RD-Agent-Runtime-Token": mutationToken } }
+  );
+
+export const bindProjectAgentStrategy = (
+  projectId: string,
+  strategyId: string,
+  mutationToken: string
+): Promise<{ projectId: string; strategyId: string }> =>
+  api.put<{ projectId: string; strategyId: string }, { projectId: string; strategyId: string }>(
+    `/admin/projects/${projectId}/agent-strategies/${encodeURIComponent(strategyId)}/default`,
+    {},
+    { headers: { "X-RD-Agent-Runtime-Token": mutationToken } }
+  );
+
+export const uploadAgentStrategyRoleImage = (
+  projectId: string,
+  strategyId: string,
+  role: AgentExecutionRole,
+  dockerfile: File,
+  mutationToken: string
+): Promise<AgentStrategyProfile> => {
+  const formData = new FormData();
+  formData.append("dockerfile", dockerfile);
+  return api.put<AgentStrategyProfile, AgentStrategyProfile>(
+    `/admin/projects/${projectId}/agent-strategies/${encodeURIComponent(strategyId)}/roles/${role}/image`,
+    formData,
+    {
+      headers: {
+        "Content-Type": "multipart/form-data",
+        "X-RD-Agent-Runtime-Token": mutationToken
+      },
+      timeout: 11 * 60 * 1000
+    }
+  );
+};
+
+export const clearAgentStrategyRoleImage = (
+  projectId: string,
+  strategyId: string,
+  role: AgentExecutionRole,
+  mutationToken: string
+): Promise<AgentStrategyProfile> =>
+  api.delete<AgentStrategyProfile, AgentStrategyProfile>(
+    `/admin/projects/${projectId}/agent-strategies/${encodeURIComponent(strategyId)}/roles/${role}/image`,
+    { headers: { "X-RD-Agent-Runtime-Token": mutationToken } }
+  );
+
 export const getProjectsPage = (query: RdProjectListQuery = {}): Promise<RdProjectPage> =>
   api.get<RdProjectPage, RdProjectPage>("/admin/projects", {
     params: {
@@ -243,6 +381,15 @@ export const updateProjectQaProfile = (
 ): Promise<ProjectQaProfile> =>
   api.put<ProjectQaProfile, ProjectQaProfile>(`/admin/projects/${projectId}/qa-profile`, payload);
 
+export const getTaskQaProfile = (taskId: string): Promise<ProjectQaProfile> =>
+  api.get<ProjectQaProfile, ProjectQaProfile>(`/admin/rd-tasks/${taskId}/qa-profile`);
+
+export const updateTaskQaProfile = (
+  taskId: string,
+  payload: ProjectQaProfilePayload
+): Promise<ProjectQaProfile> =>
+  api.put<ProjectQaProfile, ProjectQaProfile>(`/admin/rd-tasks/${taskId}/qa-profile`, payload);
+
 export const getProjectRuntimeProfiles = (projectId: string): Promise<ProjectRuntimeProfile[]> =>
   api.get<ProjectRuntimeProfile[], ProjectRuntimeProfile[]>(`/admin/projects/${projectId}/runtime-profiles`);
 
@@ -278,13 +425,13 @@ export const deleteProjectRuntimeProfile = (
     { headers: { "X-RD-Runtime-Profile-Token": mutationToken } }
   );
 
-export const getModelProviderProfiles = (): Promise<ModelProviderProfile[]> =>
-  api.get<ModelProviderProfile[], ModelProviderProfile[]>("/admin/model-provider-profiles");
+export const getModelProviderProfiles = async (): Promise<ModelProviderProfile[]> =>
+  asArray(await api.get<unknown, unknown>("/admin/model-provider-profiles"));
 
-export const getAgentExecutionProfiles = (projectId: string): Promise<AgentExecutionProfile[]> =>
-  api.get<AgentExecutionProfile[], AgentExecutionProfile[]>(
+export const getAgentExecutionProfiles = async (projectId: string): Promise<AgentExecutionProfile[]> =>
+  asArray(await api.get<unknown, unknown>(
     `/admin/projects/${projectId}/agent-execution-profiles`
-  );
+  ));
 
 export const createAgentExecutionProfile = (
   projectId: string,

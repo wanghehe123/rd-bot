@@ -23,7 +23,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-import { Badge, Button, Card, Empty, Field, Input, PageHeader, Select, Table } from "@/components/Ui";
+import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   cancelEvaluationRun,
@@ -54,6 +54,138 @@ import {
   type EvaluationSource
 } from "@/services/evaluationService";
 import { getErrorMessage } from "@/utils/error";
+
+function Badge({
+  tone = "neutral",
+  children,
+  className = ""
+}: {
+  tone?: "neutral" | "success" | "warning" | "danger" | "info" | "primary" | "teal" | "blue" | "green" | "red";
+  children: React.ReactNode;
+  className?: string;
+}) {
+  const toneClasses: Record<string, string> = {
+    neutral: "border-slate-200 bg-slate-50 text-slate-600",
+    success: "border-emerald-200 bg-emerald-50 text-emerald-700",
+    green: "border-emerald-200 bg-emerald-50 text-emerald-700",
+    warning: "border-amber-200 bg-amber-50 text-amber-700",
+    danger: "border-rose-200 bg-rose-50 text-rose-700",
+    red: "border-rose-200 bg-rose-50 text-rose-700",
+    info: "border-sky-200 bg-sky-50 text-sky-700",
+    blue: "border-sky-200 bg-sky-50 text-sky-700",
+    teal: "border-teal-200 bg-teal-50 text-teal-700",
+    primary: "border-indigo-200 bg-indigo-50 text-indigo-700"
+  };
+  return (
+    <span
+      className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-semibold ${
+        toneClasses[tone] || toneClasses.neutral
+      } ${className}`}
+    >
+      {children}
+    </span>
+  );
+}
+
+function Button({
+  variant = "default",
+  className = "",
+  children,
+  ...props
+}: React.ButtonHTMLAttributes<HTMLButtonElement> & {
+  variant?: "default" | "primary" | "ghost" | "danger" | "outline";
+}) {
+  const variantClasses: Record<string, string> = {
+    default: "bg-slate-900 text-white hover:bg-slate-800",
+    primary: "admin-primary-gradient text-white shadow-sm hover:opacity-95",
+    ghost: "bg-transparent hover:bg-slate-100 text-slate-700",
+    danger: "bg-rose-600 text-white hover:bg-rose-700",
+    outline: "border border-slate-200 bg-white hover:bg-slate-50 text-slate-700"
+  };
+  return (
+    <button
+      {...props}
+      className={`inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
+        variantClasses[variant] || variantClasses.default
+      } ${className}`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function Card({
+  title,
+  description,
+  className = "",
+  children
+}: {
+  title?: React.ReactNode;
+  description?: React.ReactNode;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className={`rounded-xl border border-slate-200/80 bg-white shadow-xs ${className}`}>
+      {title || description ? (
+        <div className="border-b border-slate-100 p-4">
+          {title ? <h3 className="text-sm font-semibold text-slate-900">{title}</h3> : null}
+          {description ? <p className="text-xs text-muted-foreground mt-0.5">{description}</p> : null}
+        </div>
+      ) : null}
+      <div className="p-4">{children}</div>
+    </div>
+  );
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label className="field flex flex-col gap-1 text-xs">
+      <span className="field-label font-medium text-slate-700">{label}</span>
+      {children}
+    </label>
+  );
+}
+
+function Select(props: React.SelectHTMLAttributes<HTMLSelectElement>) {
+  return (
+    <select
+      {...props}
+      className={`h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-xs shadow-xs focus:outline-none focus:ring-1 focus:ring-ring ${props.className || ""}`}
+    />
+  );
+}
+
+function Empty({ children }: { children: React.ReactNode }) {
+  return <div className="py-8 text-center text-xs text-muted-foreground">{children}</div>;
+}
+
+function Table({
+  headers,
+  children,
+  minWidth
+}: {
+  headers: (string | React.ReactNode)[];
+  children: React.ReactNode;
+  minWidth?: number;
+}) {
+  return (
+    <div className="ui-table-wrap overflow-x-auto">
+      <table className="ui-table w-full text-left text-xs" style={{ minWidth }}>
+        <thead className="ui-table-header border-b bg-slate-50/50">
+          <tr>
+            {headers.map((h, i) => (
+              <th key={i} className="p-2.5 font-medium text-muted-foreground">
+                {h}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-100">{children}</tbody>
+      </table>
+    </div>
+  );
+}
 
 import {
   evaluationDatasetKindLabel,
@@ -383,16 +515,24 @@ export function EvaluationPage() {
   };
 
   return (
-    <div className="admin-page evaluation-page">
-      <PageHeader
-        title="评测"
-        description="在管理端配置并运行本机 RAG/Agent 量化评测，持续查看过程、指标和失败样本。"
-        action={
-          <Button variant="ghost" onClick={() => void refreshAll()} disabled={loading} title="刷新评测控制台">
-            <RefreshCw className={loading ? "spin" : ""} aria-hidden="true" />刷新
+    <div className="admin-page evaluation-page space-y-4">
+      <div className="admin-page-header">
+        <div>
+          <h1 className="admin-page-title flex items-center gap-2.5">
+            <FlaskConical className="h-6 w-6 text-primary" />
+            <span>评测</span>
+          </h1>
+          <p className="admin-page-subtitle">
+            在管理端配置并运行本机 RAG/Agent 量化评测，持续查看过程、指标和失败样本
+          </p>
+        </div>
+        <div className="admin-page-actions flex items-center gap-2">
+          <Button variant="outline" onClick={() => void refreshAll()} disabled={loading} title="刷新评测控制台">
+            <RefreshCw className={loading ? "spin mr-1.5 h-4 w-4" : "mr-1.5 h-4 w-4"} aria-hidden="true" />
+            刷新
           </Button>
-        }
-      />
+        </div>
+      </div>
 
       {error ? <div className="evaluation-notice" role="alert"><CircleAlert aria-hidden="true" />{error}</div> : null}
 

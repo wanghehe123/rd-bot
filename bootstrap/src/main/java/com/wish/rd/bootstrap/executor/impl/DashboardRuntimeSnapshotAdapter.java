@@ -33,7 +33,7 @@ public final class DashboardRuntimeSnapshotAdapter implements DashboardRuntimeSn
     private static final TypeReference<List<Map<String, Object>>> PROVIDER_ATTEMPTS = new TypeReference<>() {
     };
     private static final List<String> COST_KEYS = List.of(
-            "estimatedSpendUsd", "estimatedSpend", "costUsd", "totalCostUsd", "cost"
+            "estimatedSpendUsd", "estimatedSpend", "estimatedCostUsd", "costUsd", "totalCostUsd", "cost"
     );
 
     private final AgentStageRunStore stageRunStore;
@@ -137,6 +137,11 @@ public final class DashboardRuntimeSnapshotAdapter implements DashboardRuntimeSn
         BigDecimal spendCny = BigDecimal.ZERO;
         for (AgentStageRun stageRun : stageRuns) {
             for (Map<String, Object> attempt : providerAttempts(stageRun.providerAttemptsJson())) {
+                if (attempt.containsKey("estimatedSpendCny")) {
+                    available = true;
+                    spendCny = spendCny.add(decimal(attempt.get("estimatedSpendCny")));
+                    continue;
+                }
                 for (String key : COST_KEYS) {
                     if (!attempt.containsKey(key)) {
                         continue;

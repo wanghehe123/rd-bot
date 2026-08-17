@@ -68,6 +68,22 @@ public final class AgentExecutionProfileService {
         return store.listByProject(requireText(projectId, "projectId"));
     }
 
+    /**
+     * Returns the project default profile for a role when a binding exists.
+     *
+     * @param projectId project id
+     * @param role delivery role
+     * @return bound profile when present and matching
+     */
+    public Optional<AgentExecutionProfile> findProjectDefault(String projectId, String role) {
+        String safeProjectId = requireText(projectId, "projectId");
+        String safeRole = requireRole(role);
+        return store.findProjectDefault(safeProjectId, safeRole)
+                .flatMap(store::find)
+                .filter(profile -> profile.projectId().equals(safeProjectId))
+                .filter(profile -> profile.role().equals(safeRole));
+    }
+
     public void clearTaskOverride(String taskId, String role) {
         store.clearTaskOverride(requireText(taskId, "taskId"), requireRole(role));
     }

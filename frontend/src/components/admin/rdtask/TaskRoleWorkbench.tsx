@@ -42,7 +42,8 @@ import type {
   RdTaskQaEvidence,
   RdTaskRolePromptStage,
   RdTaskStageRun,
-  TaskMaterial
+  TaskMaterial,
+  HostVerificationList
 } from "@/services/rdTaskService";
 import { retrievalRunStatusClass, retrievalRunStatusLabel, type RetrievalRun } from "@/services/retrievalRunService";
 import type { TaskFailureRecoverySnapshot } from "@/services/taskRetryService";
@@ -137,6 +138,7 @@ type TaskRoleWorkbenchProps = {
   failureRecovery: TaskFailureRecoverySnapshot | null;
   failureRecoveryLoading: boolean;
   failureRecoveryError: string;
+  hostVerifications?: HostVerificationList | null;
   selectedRole: string;
   selectedAttemptNo?: number;
   selectedTab: RoleWorkbenchTab;
@@ -164,6 +166,7 @@ export function TaskRoleWorkbench({
   failureRecovery,
   failureRecoveryLoading,
   failureRecoveryError,
+  hostVerifications,
   selectedRole,
   selectedAttemptNo,
   selectedTab,
@@ -177,8 +180,9 @@ export function TaskRoleWorkbench({
     overview?.stageRuns || [],
     promptStages,
     qaEvidence,
-    task.taskType
-  ), [overview?.stageRuns, promptStages, qaEvidence, task.taskType]);
+    task.taskType,
+    hostVerifications?.runs[0] || null
+  ), [overview?.stageRuns, promptStages, qaEvidence, task.taskType, hostVerifications?.runs]);
   const selection = useMemo(() => (
     selectRoleAttempt(roles, selectedRole, selectedAttemptNo)
   ), [roles, selectedRole, selectedAttemptNo]);
@@ -336,7 +340,7 @@ export function TaskRoleWorkbench({
 
           {!selectedStage ? (
             <div className="px-4 py-10 text-center text-sm text-slate-500 sm:px-5">
-              该角色尚未创建执行 Attempt。
+              {selectedRoleView?.blocker || "该角色尚未创建执行 Attempt。"}
             </div>
           ) : (
             <Tabs value={selectedTab} onValueChange={(value) => onTabChange(value as RoleWorkbenchTab)}>

@@ -93,7 +93,10 @@ class ObservabilityMetricsProductionAcceptanceReportTest {
         assertTrue(loaded.validated());
         assertEquals("task-observability", loaded.taskId());
         assertEquals("https://rd-bot.example.com/actuator/prometheus", loaded.metricsEndpointUrl());
+        assertTrue(loaded.metricsEndpointUrl().endsWith("/actuator/prometheus"));
         assertEquals(12, loaded.taskBoundAuditTraceLinkCount());
+        assertTrue(loaded.contextBuildLatencyMetricPresent());
+        assertTrue(loaded.meanTimeToRepairMetricPresent());
     }
 
     @Test

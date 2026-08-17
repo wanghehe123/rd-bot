@@ -2321,6 +2321,7 @@ class MultiAgentProductionAcceptanceReportTest {
         assertTrue(markdown.contains("observabilityMetricsEvidenceValidated：true"));
         assertTrue(markdown.contains("observabilityMetricsTaskId：123456"));
         assertTrue(markdown.contains("observabilityMetricsEndpointUrl：https://rd-bot.example.com/actuator/prometheus"));
+        assertTrue(markdown.contains("/actuator/prometheus"));
         assertTrue(markdown.contains("observabilityMetricsHttpStatus：200"));
         assertTrue(markdown.contains("contextBuildLatencyMetricPresent：true"));
         assertTrue(markdown.contains("repairSuccessRateMetricPresent：true"));

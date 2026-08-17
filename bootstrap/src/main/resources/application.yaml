@@ -178,6 +178,28 @@ rd:
       max-remote-calls: ${RD_RAG_NAVIGATOR_MAX_REMOTE_CALLS:15}
       token-budget: ${RD_RAG_NAVIGATOR_TOKEN_BUDGET:8000}
       time-budget: ${RD_RAG_NAVIGATOR_TIME_BUDGET:20s}
+  observability:
+    delivery:
+      default-window: ${RD_OBSERVABILITY_DELIVERY_DEFAULT_WINDOW:24h}
+      max-page-size: ${RD_OBSERVABILITY_DELIVERY_MAX_PAGE_SIZE:50}
+      min-p99-samples: ${RD_OBSERVABILITY_DELIVERY_MIN_P99_SAMPLES:30}
+      snapshot-stale-after: ${RD_OBSERVABILITY_DELIVERY_SNAPSHOT_STALE_AFTER:1m}
+      clock-skew: ${RD_OBSERVABILITY_DELIVERY_CLOCK_SKEW:5s}
+      max-timeseries-points: ${RD_OBSERVABILITY_DELIVERY_MAX_TIMESERIES_POINTS:48}
+      query-timeout: ${RD_OBSERVABILITY_DELIVERY_QUERY_TIMEOUT:2s}
+      slo:
+        observation-only: ${RD_OBSERVABILITY_SLO_OBSERVATION_ONLY:true}
+        notifications-enabled: ${RD_OBSERVABILITY_SLO_NOTIFICATIONS_ENABLED:false}
+        min-days: ${RD_OBSERVABILITY_SLO_MIN_DAYS:7}
+        min-terminal-samples: ${RD_OBSERVABILITY_SLO_MIN_TERMINAL_SAMPLES:30}
+        consecutive-duration: ${RD_OBSERVABILITY_SLO_CONSECUTIVE_DURATION:15m}
+        oldest-queue-seconds: ${RD_OBSERVABILITY_SLO_OLDEST_QUEUE_SECONDS:300}
+        end-to-end-p95-seconds: ${RD_OBSERVABILITY_SLO_E2E_P95_SECONDS:1800}
+        human-intervention-rate: ${RD_OBSERVABILITY_SLO_HUMAN_RATE:0.20}
+        unknown-failure-rate: ${RD_OBSERVABILITY_SLO_UNKNOWN_RATE:0.30}
+        estimated-cost-cny: ${RD_OBSERVABILITY_SLO_COST_CNY:50}
+        lease-lost: ${RD_OBSERVABILITY_SLO_LEASE_LOST:1}
+        queue-rejections: ${RD_OBSERVABILITY_SLO_QUEUE_REJECTIONS:1}
   knowledge:
     store: ${RD_KNOWLEDGE_STORE:postgres}
     projection:

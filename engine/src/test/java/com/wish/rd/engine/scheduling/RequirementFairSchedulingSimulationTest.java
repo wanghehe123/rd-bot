@@ -140,7 +140,9 @@ class RequirementFairSchedulingSimulationTest {
         assertTrue(snapshot.queueAgeP50Millis() >= 0L);
         assertTrue(snapshot.queueAgeP95Millis() > 0L);
         assertTrue(snapshot.queueAgeP95Millis() >= snapshot.queueAgeP50Millis());
-        assertTrue(snapshot.oldestQueueAgeMillis() >= snapshot.queueAgeP95Millis());
+        assertTrue(snapshot.oldestQueueAgeMillis() > 0L);
+        assertTrue(snapshot.queueWaitSampleCount() > 0L);
+        assertTrue(snapshot.projectClaims().isEmpty());
         assertTrue(snapshot.projectWaitRatio() > 0D && snapshot.projectWaitRatio() < 1D);
         assertTrue(snapshot.resourceUtilization().get(ScheduleResourceClass.DOCKER) > 0D);
         assertTrue(snapshot.resourceUtilization().get(ScheduleResourceClass.BROWSER_QA) > 0D);

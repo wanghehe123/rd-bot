@@ -164,6 +164,12 @@ class ObservabilityMetricsRealSmokeTest {
         assertTrue(evidence.meanTimeToRepairMetricPresent(), "mean time to repair metric must be present");
         assertTrue(evidence.topFailureCategoriesMetricPresent(), "top failure categories metric must be present");
         assertTrue(evidence.stageMetricCount() >= 4, "metrics must expose at least four role/stage series");
+        assertTrue(metricPresent(metricsBody, "rd_bot_delivery_completed_total", "delivery_completed"),
+                "v2 delivery completed series must remain on /actuator/prometheus");
+        assertTrue(metricPresent(metricsBody, "rd_bot_delivery_duration_seconds", "delivery_duration"),
+                "v2 delivery duration histogram must remain on /actuator/prometheus");
+        assertFalse(metricsBody.contains("placeholder"),
+                "context latency must not be advertised as a placeholder for mean repair time");
         return evidence;
     }
 

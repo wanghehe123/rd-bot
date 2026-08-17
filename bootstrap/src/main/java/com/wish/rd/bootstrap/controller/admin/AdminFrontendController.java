@@ -13,7 +13,8 @@ import java.nio.charset.StandardCharsets;
  * 管理后台前端路由控制器。
  *
  * <p>将 /admin、/admin/dashboard、/admin/knowledge、/admin/rd-tasks、/admin/projects、
- * /admin/users、/admin/skills、/admin/traces、/admin/evaluations、/admin/settings 等前端路由统一回退到
+ * /admin/projects/{projectId}/agent-strategy、/admin/users、/admin/skills、/admin/traces、
+ * /admin/evaluations、/admin/settings 等前端路由统一回退到
  * 类路径下的静态 index.html，以支持单页应用（SPA）的前端直连刷新。
  */
 @Controller
@@ -29,11 +30,13 @@ public final class AdminFrontendController {
             "/admin/rd-tasks",
             "/admin/rd-tasks/{taskId}",
             "/admin/projects",
+            "/admin/projects/{projectId}/agent-strategy",
             "/admin/users",
             "/admin/skills",
             "/admin/traces",
             "/admin/traces/{traceId}",
             "/admin/evaluations",
+            "/admin/observability",
             "/admin/settings"
     }, produces = MediaType.TEXT_HTML_VALUE)
     @ResponseBody

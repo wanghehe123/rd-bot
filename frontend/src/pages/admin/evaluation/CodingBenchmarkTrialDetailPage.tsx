@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ArrowLeft, RefreshCw } from "lucide-react";
+import { ArrowLeft, FlaskConical, RefreshCw } from "lucide-react";
 
-import { Badge, Button, Card, Empty, PageHeader } from "@/components/Ui";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   getCodingBenchmarkTrialArtifact,
   getCodingBenchmarkTrialDetail,
@@ -11,19 +13,19 @@ import {
 } from "@/services/evaluationService";
 import { getErrorMessage } from "@/utils/error";
 
-function statusTone(status: string): "neutral" | "success" | "warning" | "danger" | "info" {
-  if (status === "SUCCEEDED") return "success";
-  if (status === "FAILED" || status === "CANCELLED") return "danger";
-  if (String(status).startsWith("RUNNING") || status === "PREPARING") return "info";
-  if (status === "QUEUED" || status === "RETRY_PENDING") return "warning";
-  return "neutral";
+function statusBadgeClass(status: string): string {
+  if (status === "SUCCEEDED") return "border-emerald-200 bg-emerald-50 text-emerald-700";
+  if (status === "FAILED" || status === "CANCELLED") return "border-rose-200 bg-rose-50 text-rose-700";
+  if (String(status).startsWith("RUNNING") || status === "PREPARING") return "border-sky-200 bg-sky-50 text-sky-700";
+  if (status === "QUEUED" || status === "RETRY_PENDING") return "border-amber-200 bg-amber-50 text-amber-700";
+  return "border-slate-200 bg-slate-50 text-slate-600";
 }
 
-function verdictTone(verdict: string): "neutral" | "success" | "warning" | "danger" | "info" {
-  if (verdict === "PASS") return "success";
-  if (verdict === "TEST_FAIL" || verdict === "NO_PATCH" || verdict === "PROTOCOL_ERROR") return "danger";
-  if (verdict === "INFRA_ERROR") return "warning";
-  return "neutral";
+function verdictBadgeClass(verdict: string): string {
+  if (verdict === "PASS") return "border-emerald-200 bg-emerald-50 text-emerald-700";
+  if (verdict === "TEST_FAIL" || verdict === "NO_PATCH" || verdict === "PROTOCOL_ERROR") return "border-rose-200 bg-rose-50 text-rose-700";
+  if (verdict === "INFRA_ERROR") return "border-amber-200 bg-amber-50 text-amber-700";
+  return "border-slate-200 bg-slate-50 text-slate-600";
 }
 
 function statusLabel(status: string): string {
@@ -115,91 +117,125 @@ export function CodingBenchmarkTrialDetailPage() {
   const trial = detail?.trial;
 
   return (
-    <div className="admin-page coding-benchmark-page">
-      <PageHeader
-        title="Trial 详情"
-        description="查看单个评测项的生命周期、Oracle 评分与允许读取的执行产物。"
-        action={
-          <div className="coding-benchmark-detail-actions">
-            <Link className="ui-button ui-button--ghost" to="/admin/evaluations/coding-benchmarks">
-              <ArrowLeft aria-hidden="true" />返回列表
+    <div className="admin-page coding-benchmark-page space-y-4">
+      <div className="admin-page-header">
+        <div>
+          <h1 className="admin-page-title flex items-center gap-2.5">
+            <FlaskConical className="h-6 w-6 text-primary" />
+            <span>Trial 详情</span>
+          </h1>
+          <p className="admin-page-subtitle">
+            查看单个评测项的生命周期、Oracle 评分与允许读取的执行产物
+          </p>
+        </div>
+        <div className="coding-benchmark-detail-actions flex items-center gap-2">
+          <Button asChild variant="outline">
+            <Link to="/admin/evaluations/coding-benchmarks">
+              <ArrowLeft className="mr-1.5 h-4 w-4" aria-hidden="true" />
+              返回列表
             </Link>
-            <Button variant="ghost" onClick={() => void loadDetail()} disabled={loading}>
-              <RefreshCw className={loading ? "spin" : ""} aria-hidden="true" />刷新
-            </Button>
-          </div>
-        }
-      />
+          </Button>
+          <Button variant="outline" onClick={() => void loadDetail()} disabled={loading}>
+            <RefreshCw className={loading ? "spin mr-1.5 h-4 w-4" : "mr-1.5 h-4 w-4"} aria-hidden="true" />
+            刷新
+          </Button>
+        </div>
+      </div>
 
       {error ? <div className="coding-benchmark-notice" role="alert">{error}</div> : null}
 
-      {loading && !detail ? <Empty>正在加载 Trial 详情...</Empty> : null}
+      {loading && !detail ? (
+        <div className="py-12 text-center text-xs text-muted-foreground">正在加载 Trial 详情...</div>
+      ) : null}
 
       {trial ? (
         <>
-          <Card title={`${trial.caseId} · Arm ${trial.arm}`}>
-            <div className="coding-benchmark-run-summary">
-              <div className="coding-benchmark-run-meta">
-                <div className="coding-benchmark-run-head">
-                  <Badge tone={statusTone(trial.status)}>{statusLabel(trial.status)}</Badge>
-                  <Badge tone={verdictTone(trial.verdict)}>{verdictLabel(trial.verdict)}</Badge>
-                </div>
-                <div className="coding-benchmark-run-id">
-                  <code>{trial.trialId}</code>
-                  <small>campaign · {trial.campaignId}</small>
+          <Card>
+            <CardHeader className="pb-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <CardTitle className="text-sm font-semibold">{trial.caseId} · Arm {trial.arm}</CardTitle>
+                <div className="flex items-center gap-1.5">
+                  <Badge variant="outline" className={statusBadgeClass(trial.status)}>{statusLabel(trial.status)}</Badge>
+                  <Badge variant="outline" className={verdictBadgeClass(trial.verdict)}>{verdictLabel(trial.verdict)}</Badge>
                 </div>
               </div>
-              {trial.errorMessage ? (
-                <div className="coding-benchmark-run-error">
-                  <span><strong>{trial.errorCategory || "错误"}</strong>{trial.errorMessage}</span>
+              <CardDescription className="font-mono text-xs">
+                <code>{trial.trialId}</code> · campaign: {trial.campaignId}
+              </CardDescription>
+            </CardHeader>
+            {trial.errorMessage ? (
+              <CardContent className="pt-0">
+                <div className="rounded-md border border-rose-200 bg-rose-50 p-2.5 text-xs text-rose-800">
+                  <strong>{trial.errorCategory || "错误"}: </strong>{trial.errorMessage}
                 </div>
-              ) : null}
-            </div>
+              </CardContent>
+            ) : null}
           </Card>
 
-          <Card title="生命周期" description="Trial 状态流转事件。">
-            {detail.events.length === 0 ? (
-              <Empty>暂无事件。</Empty>
-            ) : (
-              <div className="coding-benchmark-timeline">
-                {detail.events.map((event) => (
-                  <div key={event.eventId} className="coding-benchmark-timeline-item">
-                    <Badge tone={statusTone(event.toStatus)}>{statusLabel(event.toStatus)}</Badge>
-                    <span>{event.message || event.errorMessage || "—"}</span>
-                    <time>{new Date(event.occurredAtEpochMillis).toLocaleString("zh-CN")}</time>
-                  </div>
-                ))}
-              </div>
-            )}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-sm font-semibold">生命周期</CardTitle>
+              <CardDescription className="text-xs">Trial 状态流转事件</CardDescription>
+            </CardHeader>
+            <CardContent className="pt-0">
+              {detail.events.length === 0 ? (
+                <div className="py-6 text-center text-xs text-muted-foreground">暂无事件。</div>
+              ) : (
+                <div className="space-y-2">
+                  {detail.events.map((event) => (
+                    <div key={event.eventId} className="flex items-center justify-between rounded-md border border-slate-100 bg-slate-50/50 p-2 text-xs">
+                      <div className="flex items-center gap-2">
+                        <Badge variant="outline" className={statusBadgeClass(event.toStatus)}>{statusLabel(event.toStatus)}</Badge>
+                        <span className="text-slate-700">{event.message || event.errorMessage || "—"}</span>
+                      </div>
+                      <time className="text-muted-foreground">{new Date(event.occurredAtEpochMillis).toLocaleString("zh-CN")}</time>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
           </Card>
 
-          <div className="coding-benchmark-detail-grid">
-            <Card title="产物" description="仅展示允许读取的结构化文件，不暴露主机绝对路径。">
-              <div className="coding-benchmark-artifact-list">
+          <div className="grid gap-4 md:grid-cols-2">
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm font-semibold">产物文件</CardTitle>
+                <CardDescription className="text-xs">仅展示允许读取的结构化文件，不暴露主机绝对路径</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-1.5 pt-0">
                 {detail.artifacts.map((item) => (
                   <button
                     key={item.key}
                     type="button"
-                    className={selectedKey === item.key ? "is-selected" : ""}
+                    className={`flex w-full items-center justify-between rounded-lg border p-2.5 text-left text-xs transition ${
+                      selectedKey === item.key
+                        ? "border-primary bg-primary/5 text-primary font-medium"
+                        : "border-slate-200 bg-white hover:bg-slate-50"
+                    } ${!item.available ? "opacity-50 cursor-not-allowed" : ""}`}
                     disabled={!item.available}
                     onClick={() => setSelectedKey(item.key)}
                   >
                     <strong>{item.label}</strong>
-                    <small>{item.available ? `${item.sizeBytes} B` : "不可用"}</small>
+                    <span className="font-mono text-[10px] text-muted-foreground">{item.available ? `${item.sizeBytes} B` : "不可用"}</span>
                   </button>
                 ))}
-              </div>
+              </CardContent>
             </Card>
 
-            <Card title={artifact?.label || "内容预览"}>
-              {artifact ? (
-                <>
-                  {artifact.truncated ? <small className="coding-benchmark-truncated">内容已截断</small> : null}
-                  <pre className="coding-benchmark-artifact-content">{artifact.content}</pre>
-                </>
-              ) : (
-                <Empty>选择左侧产物查看内容。</Empty>
-              )}
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm font-semibold">{artifact?.label || "内容预览"}</CardTitle>
+                {artifact?.truncated ? <CardDescription className="text-xs text-amber-600">内容已截断</CardDescription> : null}
+              </CardHeader>
+              <CardContent className="pt-0">
+                {artifact ? (
+                  <pre className="max-h-[400px] overflow-auto rounded-lg border border-slate-200 bg-slate-950 p-3 font-mono text-xs text-slate-100">
+                    {artifact.content}
+                  </pre>
+                ) : (
+                  <div className="py-12 text-center text-xs text-muted-foreground">选择左侧产物查看内容。</div>
+                )}
+              </CardContent>
             </Card>
           </div>
         </>
@@ -207,3 +243,4 @@ export function CodingBenchmarkTrialDetailPage() {
     </div>
   );
 }
+

@@ -2,6 +2,7 @@ import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 import {
   Activity,
+  BarChart3,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -48,6 +49,7 @@ const menuGroups: Array<{ title: string; items: MenuItem[] }> = [
       { path: "/admin/rd-tasks", label: "任务管理", icon: ListChecks },
       { path: "/admin/skills", label: "Skill Hub", icon: Sparkles },
       { path: "/admin/traces", label: "执行追踪", icon: Workflow },
+      { path: "/admin/observability", label: "交付观测", icon: BarChart3 },
       {
         id: "evaluations",
         path: "/admin/evaluations",
@@ -76,6 +78,7 @@ const breadcrumbMap: Record<string, string> = {
   "rd-tasks": "任务管理",
   skills: "Skill Hub",
   traces: "执行追踪",
+  observability: "交付观测",
   evaluations: "评测",
   "coding-benchmarks": "编码消融评测",
   users: "用户管理",
@@ -127,6 +130,7 @@ export function AdminLayout() {
     if (section === "knowledge" && parts.includes("docs")) items.push({ label: "分块管理" });
     if (section === "traces" && parts.length > 2) items.push({ label: "链路详情" });
     if (section === "rd-tasks" && parts.length > 2) items.push({ label: "任务详情" });
+    if (section === "projects" && parts.includes("agent-strategy")) items.push({ label: "Agent 执行策略" });
     return items;
   }, [location.pathname]);
 

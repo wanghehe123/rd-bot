@@ -85,6 +85,7 @@ test("keeps the supported admin routes and removes obsolete intent/ingestion/map
     "skills",
     "traces",
     "traces/:taskId",
+    "observability",
     "settings"
   ];
 
@@ -95,6 +96,8 @@ test("keeps the supported admin routes and removes obsolete intent/ingestion/map
   assert.doesNotMatch(app, /intent-tree|intent-list|IngestionPage|RetrievalRulesPage/);
   assert.doesNotMatch(layout, /意图管理|数据通道|检索规则|intent-tree|intent-list|\/admin\/ingestion|\/admin\/mappings/);
   assert.match(layout, /label: "执行追踪"/);
+  assert.match(layout, /label: "交付观测"/);
+  assert.match(layout, /path: "\/admin\/observability"/);
   assert.match(layout, /path: "\/admin\/skills"/);
   assert.match(layout, /label: "Skill Hub"/);
   assert.match(layout, /skills: "Skill Hub"/);

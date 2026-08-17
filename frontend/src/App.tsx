@@ -11,6 +11,7 @@ const KnowledgeDocumentsPage = lazy(() => import("@/pages/admin/knowledge/Knowle
 const KnowledgeChunksPage = lazy(() => import("@/pages/admin/knowledge/KnowledgeChunksPage").then((module) => ({ default: module.KnowledgeChunksPage })));
 const OpenVikingKnowledgePage = lazy(() => import("@/pages/admin/knowledge/OpenVikingKnowledgePage").then((module) => ({ default: module.OpenVikingKnowledgePage })));
 const ProjectListPage = lazy(() => import("@/pages/admin/project/ProjectListPage").then((module) => ({ default: module.ProjectListPage })));
+const AgentStrategyPage = lazy(() => import("@/pages/admin/project/AgentStrategyPage").then((module) => ({ default: module.AgentStrategyPage })));
 const RdTaskListPage = lazy(() => import("@/pages/admin/rdtask/RdTaskListPage").then((module) => ({ default: module.RdTaskListPage })));
 const RdTaskDetailPage = lazy(() => import("@/pages/admin/rdtask/RdTaskDetailPage").then((module) => ({ default: module.RdTaskDetailPage })));
 const UserListPage = lazy(() => import("./pages/AdminPages").then((module) => ({ default: module.UserListPage })));
@@ -21,6 +22,7 @@ const EvaluationPage = lazy(() => import("@/pages/admin/evaluation/EvaluationPag
 const CodingBenchmarkPage = lazy(() => import("@/pages/admin/evaluation/CodingBenchmarkPage").then((module) => ({ default: module.CodingBenchmarkPage })));
 const CodingBenchmarkTrialDetailPage = lazy(() => import("@/pages/admin/evaluation/CodingBenchmarkTrialDetailPage").then((module) => ({ default: module.CodingBenchmarkTrialDetailPage })));
 const SettingsPage = lazy(() => import("./pages/AdminPages").then((module) => ({ default: module.SettingsPage })));
+const DeliveryObservabilityPage = lazy(() => import("@/pages/admin/observability/DeliveryObservabilityPage").then((module) => ({ default: module.DeliveryObservabilityPage })));
 
 function AdminRouteFallback() {
   return (
@@ -45,6 +47,7 @@ export function App() {
             <Route path="knowledge/:kbId/openviking" element={<OpenVikingKnowledgePage />} />
             <Route path="knowledge/:kbId/docs/:docId" element={<KnowledgeChunksPage />} />
             <Route path="projects" element={<ProjectListPage />} />
+            <Route path="projects/:projectId/agent-strategy" element={<AgentStrategyPage />} />
             <Route path="rd-tasks" element={<RdTaskListPage />} />
             <Route path="rd-tasks/:taskId" element={<RdTaskDetailPage />} />
             <Route path="users" element={<UserListPage />} />
@@ -54,6 +57,7 @@ export function App() {
             <Route path="evaluations" element={<EvaluationPage />} />
             <Route path="evaluations/coding-benchmarks" element={<CodingBenchmarkPage />} />
             <Route path="evaluations/coding-benchmarks/campaigns/:runId/trials/:trialId" element={<CodingBenchmarkTrialDetailPage />} />
+            <Route path="observability" element={<DeliveryObservabilityPage />} />
             <Route path="settings" element={<SettingsPage />} />
           </Route>
           <Route path="*" element={<Navigate to="/admin/dashboard" replace />} />

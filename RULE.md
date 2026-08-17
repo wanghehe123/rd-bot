@@ -559,6 +559,26 @@ public RepairContextPackage prepareContext(RepairRagRequest request) {
 - 【强制】验证：`./mvnw -pl rag -am -Dtest='KnowledgeEvidenceAllowlistTest,KnowledgeExternalIndexBindingStoreContractTest,OpenVikingProjectionUrisTest,ThreeTierNavigationEngineTest' -Dsurefire.failIfNoSpecifiedTests=false test`；
   `./mvnw -pl engine -am -Dtest=KnowledgeRetrievalModeRouterTest -Dsurefire.failIfNoSpecifiedTests=false test`。
 
+### 3.5.14 容器 tmpfs 必须带 uid/gid【强制】
+
+- 【强制】给非 `/tmp` 路径挂 tmpfs 时，挂载选项必须写明 `uid=`/`gid=`，取值等于该镜像内
+  运行用户的数字 id。Docker 只对 `/tmp` 默认给 1777，其他路径一律落成 root 拥有的 0755，
+  容器内非 root 进程连 `mkdir` 都做不了。`DockerPiAgentExecutor.PI_TMPFS_MOUNTS` 三条挂载
+  都带 `uid=1000,gid=1000`，是正确样板。
+- 【强制】`DockerClaudeCodeExecutor.CLAUDE_TMPFS_MOUNTS` 的 `/home/rdbot/.claude/session-env`
+  必须带 `uid=999,gid=999`（镜像 `rd-bot/claude-code:local` 里 `rdbot` 的 uid/gid）。缺失时
+  Agent harness 在跑第一条命令之前就以
+  `EACCES: mkdir /home/rdbot/.claude/session-env/<session-id>` 死掉，而模型仍会把代码改完并
+  提交一份 `status=FAILED` 的结果——症状看着像"模型不听话"，实为容器权限。
+- 【强制】改这两个常量必须同时更新对应断言，不得只改主代码：
+  `DockerClaudeCodeExecutorTest#shouldApplyContainerSecurityPolicyAndRoleNetworkIsolation`
+  断言 session-env 的 uid/gid，`DockerPiAgentExecutorTest` 断言 Pi 侧挂载存在。
+- 【强制】验证：`./mvnw -q -pl exec -am -Dtest=DockerClaudeCodeExecutorTest -Dsurefire.failIfNoSpecifiedTests=false test`；
+  快速复现可用
+  `docker run --rm --user 999:999 --tmpfs '/home/rdbot/.claude/session-env:rw,noexec,nosuid,size=64m' --entrypoint sh rd-bot/claude-code:local -c 'mkdir -p /home/rdbot/.claude/session-env/probe'`
+  （修复前必然 `Permission denied`）。
+- 实测记录：`docs/superpowers/specs/2026-08-13-waimai-corpus-rag-comparison-report.md` §6.6。
+
 ### 3.6 聚合根（Aggregate Root）【强制用于"强一致实体群"】
 
 - **已落地**：`KnowledgeDocumentMutationEngine` 是知识写入聚合根，经 `KnowledgeMutationTransactionPort` 提交 document/revision/chunks/vectors/binding/outbox。`KnowledgeWorkspace` 是查询 facade，mutation 方法委托 Engine。

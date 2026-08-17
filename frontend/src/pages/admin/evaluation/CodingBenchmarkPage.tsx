@@ -1,9 +1,19 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Activity, Ban, FlaskConical, PauseCircle, Play, PlayCircle, RefreshCw } from "lucide-react";
+import { Activity, Ban, Code2, FlaskConical, PauseCircle, Play, PlayCircle, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 
-import { Badge, Button, Card, Empty, PageHeader } from "@/components/Ui";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow
+} from "@/components/ui/table";
 import {
   cancelCodingBenchmarkCampaign,
   createCodingBenchmarkFormal,
@@ -21,13 +31,13 @@ import {
 } from "@/services/evaluationService";
 import { getErrorMessage } from "@/utils/error";
 
-function statusTone(status: string): "neutral" | "success" | "warning" | "danger" | "info" {
-  if (status === "SUCCEEDED") return "success";
-  if (status === "FAILED" || status === "CANCELLED") return "danger";
-  if (status === "RUNNING_TRIALS" || status === "RECORDING" || status === "PREPARING") return "info";
-  if (status === "QUEUED" || status === "CREATED" || status === "CANCEL_REQUESTED") return "warning";
-  if (status === "SCORING" || status === "REPORTING" || status === "DIFFING") return "info";
-  return "neutral";
+function statusBadgeClass(status: string): string {
+  if (status === "SUCCEEDED") return "border-emerald-200 bg-emerald-50 text-emerald-700";
+  if (status === "FAILED" || status === "CANCELLED") return "border-rose-200 bg-rose-50 text-rose-700";
+  if (status === "RUNNING_TRIALS" || status === "RECORDING" || status === "PREPARING") return "border-sky-200 bg-sky-50 text-sky-700";
+  if (status === "QUEUED" || status === "CREATED" || status === "CANCEL_REQUESTED") return "border-amber-200 bg-amber-50 text-amber-700";
+  if (status === "SCORING" || status === "REPORTING" || status === "DIFFING") return "border-indigo-200 bg-indigo-50 text-indigo-700";
+  return "border-slate-200 bg-slate-50 text-slate-600";
 }
 
 function statusLabel(status: string): string {
@@ -51,12 +61,11 @@ function statusLabel(status: string): string {
   return labels[status] ?? status;
 }
 
-function verdictTone(verdict: string): "neutral" | "success" | "warning" | "danger" | "info" {
-  if (verdict === "PASS") return "success";
-  if (verdict === "TEST_FAIL" || verdict === "NO_PATCH" || verdict === "PROTOCOL_ERROR") return "danger";
-  if (verdict === "INFRA_ERROR") return "warning";
-  if (verdict === "PENDING") return "neutral";
-  return "info";
+function verdictBadgeClass(verdict: string): string {
+  if (verdict === "PASS") return "border-emerald-200 bg-emerald-50 text-emerald-700";
+  if (verdict === "TEST_FAIL" || verdict === "NO_PATCH" || verdict === "PROTOCOL_ERROR") return "border-rose-200 bg-rose-50 text-rose-700";
+  if (verdict === "INFRA_ERROR") return "border-amber-200 bg-amber-50 text-amber-700";
+  return "border-slate-200 bg-slate-50 text-slate-600";
 }
 
 function verdictLabel(verdict: string): string {
@@ -101,72 +110,63 @@ export function CodingBenchmarkPage() {
     }
   }, []);
 
-  const loadCampaigns = useCallback(async (preferredRunId?: string) => {
+  const refreshTrials = useCallback(async (runId: string) => {
+    if (!runId) {
+      setTrials([]);
+      return;
+    }
     try {
-      const data = await getCodingBenchmarkCampaigns(20);
+      const data = await getCodingBenchmarkTrials(runId);
+      setTrials(data);
+    } catch (requestError) {
+      toast.error(getErrorMessage(requestError, "加载 Trial 列表失败"));
+    }
+  }, []);
+
+  const refreshRun = useCallback(async (runId: string) => {
+    if (!runId) return;
+    try {
+      const data = await getEvaluationRun(runId);
+      setLatestRun(data);
+    } catch (requestError) {
+      setError(getErrorMessage(requestError, "刷新评测状态失败"));
+    }
+  }, []);
+
+  const loadCampaigns = useCallback(async (preferRunId?: string) => {
+    try {
+      const data = await getCodingBenchmarkCampaigns();
       setCampaigns(data);
-      setLatestRun((current) => {
-        if (preferredRunId) {
-          return data.find((run) => run.runId === preferredRunId) ?? current ?? data[0] ?? null;
-        }
-        if (current) {
-          return data.find((run) => run.runId === current.runId) ?? data[0] ?? current;
-        }
-        return data[0] ?? null;
-      });
+      if (preferRunId) {
+        const found = data.find((item) => item.runId === preferRunId);
+        if (found) setLatestRun(found);
+      } else if (data.length > 0) {
+        setLatestRun((current) => current ?? data[0]);
+      }
     } catch (requestError) {
       setError(getErrorMessage(requestError, "加载评测历史失败"));
     }
   }, []);
 
-  const refreshRun = useCallback(async (runId: string) => {
-    try {
-      const run = await getEvaluationRun(runId);
-      setLatestRun(run);
-      setCampaigns((current) => {
-        const others = current.filter((item) => item.runId !== run.runId);
-        return [run, ...others];
-      });
-      return run;
-    } catch {
-      return null;
-    }
-  }, []);
-
-  const refreshTrials = useCallback(async (runId: string) => {
-    try {
-      const data = await getCodingBenchmarkTrials(runId);
-      setTrials(data);
-      return data;
-    } catch {
-      setTrials([]);
-      return [];
-    }
-  }, []);
-
   useEffect(() => {
-    void (async () => {
-      await Promise.all([loadSnapshots(), loadCampaigns()]);
-    })();
+    void loadSnapshots();
+    void loadCampaigns();
   }, [loadSnapshots, loadCampaigns]);
 
   useEffect(() => {
-    if (!latestRun) {
-      setTrials([]);
-      return;
+    if (latestRun?.runId) {
+      void refreshTrials(latestRun.runId);
     }
-    void refreshTrials(latestRun.runId);
   }, [latestRun?.runId, refreshTrials]);
 
   useEffect(() => {
-    if (!latestRun) return;
-    if (!isEvaluationRunActive(latestRun.status)) return;
-    const timer = window.setInterval(async () => {
-      const updated = await refreshRun(latestRun.runId);
-      await refreshTrials(latestRun.runId);
-      if (!updated || !isEvaluationRunActive(updated.status)) {
+    if (!latestRun || !isEvaluationRunActive(latestRun.status)) return;
+    const timer = window.setInterval(() => {
+      void refreshRun(latestRun.runId);
+      void refreshTrials(latestRun.runId);
+      void loadCampaigns(latestRun.runId);
+      if (!isEvaluationRunActive(latestRun.status)) {
         window.clearInterval(timer);
-        void loadCampaigns(latestRun.runId);
       }
     }, 2_000);
     return () => window.clearInterval(timer);
@@ -231,7 +231,7 @@ export function CodingBenchmarkPage() {
 
   const cancelRun = async () => {
     if (!latestRun) return;
-    if (!window.confirm(`确认取消编码消融评测 ${latestRun.runId}？`)) return;
+    if (!window.confirm(`确认取消评测 ${latestRun.runId}？进行中的 Trial 将被中止。`)) return;
     setControlling(true);
     setError("");
     try {
@@ -278,16 +278,24 @@ export function CodingBenchmarkPage() {
   };
 
   return (
-    <div className="admin-page coding-benchmark-page">
-      <PageHeader
-        title="编码消融评测"
-        description="选择已就绪的快照，启动探针评测（2×4=8 Trials）或正式评测（20×4+4 Trials），观察执行进度与结果。"
-        action={
-          <Button variant="ghost" onClick={() => void refreshAll()} disabled={loading} title="刷新快照与结果">
-            <RefreshCw className={loading ? "spin" : ""} aria-hidden="true" />刷新
+    <div className="admin-page coding-benchmark-page space-y-4">
+      <div className="admin-page-header">
+        <div>
+          <h1 className="admin-page-title flex items-center gap-2.5">
+            <Code2 className="h-6 w-6 text-primary" />
+            <span>编码消融评测</span>
+          </h1>
+          <p className="admin-page-subtitle">
+            选择已就绪的快照，启动探针评测（2×4=8 Trials）或正式评测（20×4+4 Trials），观察执行进度与结果
+          </p>
+        </div>
+        <div className="admin-page-actions flex items-center gap-2">
+          <Button variant="outline" onClick={() => void refreshAll()} disabled={loading} title="刷新快照与结果">
+            <RefreshCw className={loading ? "spin mr-1.5 h-4 w-4" : "mr-1.5 h-4 w-4"} aria-hidden="true" />
+            刷新
           </Button>
-        }
-      />
+        </div>
+      </div>
 
       {error ? (
         <div className="coding-benchmark-notice" role="alert">
@@ -296,270 +304,299 @@ export function CodingBenchmarkPage() {
         </div>
       ) : null}
 
-      <Card
-        title="可用快照"
-        description="选择要评测的 Coding Benchmark 快照，配置由后端管理，页面不暴露任何敏感参数。"
-      >
-        {loading && snapshots.length === 0 ? (
-          <div className="coding-benchmark-loading">
-            <Empty>正在读取快照列表...</Empty>
-          </div>
-        ) : snapshots.length === 0 ? (
-          <Empty>当前没有就绪的 Coding Benchmark 快照。</Empty>
-        ) : (
-          <div className="coding-benchmark-snapshot-list">
-            <Table headers={["快照名称", "Case 数", "Digest（前 12 位）"]} minWidth={640}>
-              {snapshots.map((snap) => (
-                <tr
-                  key={snap.snapshotId}
-                  className={selectedSnapshot?.snapshotId === snap.snapshotId ? "is-selected" : ""}
-                  onClick={() => setSelectedSnapshot(snap)}
-                  style={{ cursor: "pointer" }}
-                >
-                  <td>
-                    <strong>{snap.displayLabel}</strong>
-                    <small>{snap.snapshotId}</small>
-                  </td>
-                  <td>
-                    <Badge tone="neutral">{snap.caseCount}</Badge>
-                  </td>
-                  <td>
-                    <code>{snap.snapshotDigest.slice(0, 12)}</code>
-                  </td>
-                </tr>
-              ))}
-            </Table>
-          </div>
-        )}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm font-semibold">可用快照</CardTitle>
+          <CardDescription className="text-xs">
+            选择要评测的 Coding Benchmark 快照，配置由后端管理，页面不暴露任何敏感参数
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="pt-0">
+          {loading && snapshots.length === 0 ? (
+            <div className="py-8 text-center text-xs text-muted-foreground">正在读取快照列表...</div>
+          ) : snapshots.length === 0 ? (
+            <div className="py-8 text-center text-xs text-muted-foreground">当前没有就绪的 Coding Benchmark 快照。</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <Table className="min-w-[640px]">
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>快照名称</TableHead>
+                    <TableHead className="w-[120px]">Case 数</TableHead>
+                    <TableHead className="w-[180px]">Digest（前 12 位）</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {snapshots.map((snap) => (
+                    <TableRow
+                      key={snap.snapshotId}
+                      className={selectedSnapshot?.snapshotId === snap.snapshotId ? "bg-primary/5 font-medium" : "cursor-pointer hover:bg-slate-50"}
+                      onClick={() => setSelectedSnapshot(snap)}
+                    >
+                      <TableCell>
+                        <div className="font-semibold text-slate-900">{snap.displayLabel}</div>
+                        <code className="text-[10px] text-muted-foreground">{snap.snapshotId}</code>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant="outline" className="border-slate-200 bg-slate-50 text-xs">{snap.caseCount}</Badge>
+                      </TableCell>
+                      <TableCell>
+                        <code className="font-mono text-xs text-slate-700">{snap.snapshotDigest.slice(0, 12)}</code>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </CardContent>
       </Card>
 
       {selectedSnapshot && (
-        <section className="coding-benchmark-actions" aria-label="启动评测">
-          <div className="coding-benchmark-action-card">
-            <div className="coding-benchmark-action-info">
-              <div className="coding-benchmark-action-label">
-                <FlaskConical aria-hidden="true" />
-                <span><strong>探针评测</strong><small>2 Cases × 4 Arms = 8 Trials，快速验证评测链路</small></span>
+        <section className="grid gap-3 sm:grid-cols-2" aria-label="启动评测">
+          <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="flex items-center gap-3">
+              <div className="rounded-md bg-sky-50 p-2 text-sky-600 border border-sky-100">
+                <FlaskConical className="h-5 w-5" aria-hidden="true" />
+              </div>
+              <div>
+                <strong className="text-xs font-semibold text-slate-900">探针评测</strong>
+                <p className="text-[11px] text-muted-foreground">2 Cases × 4 Arms = 8 Trials，快速验证评测链路</p>
               </div>
             </div>
             <Button
-              variant="primary"
+              className="admin-primary-gradient gap-1.5 text-xs shadow-sm"
               onClick={() => void submitProbe()}
               disabled={submitting}
             >
-              <Play aria-hidden="true" />
-              {submitting ? "正在提交..." : "启动探针"}
+              <Play className="h-3.5 w-3.5" aria-hidden="true" />
+              <span>{submitting ? "正在提交..." : "启动探针"}</span>
             </Button>
           </div>
 
-          <div className="coding-benchmark-action-card coding-benchmark-action-card--formal">
-            <div className="coding-benchmark-action-info">
-              <div className="coding-benchmark-action-label">
-                <Activity aria-hidden="true" />
-                <span><strong>正式评测</strong><small>20 Cases × 4 Arms + 4 Sentinels，完整消融实验</small></span>
+          <div className="flex items-center justify-between rounded-lg border border-indigo-200 bg-indigo-50/20 p-4 shadow-sm">
+            <div className="flex items-center gap-3">
+              <div className="rounded-md bg-indigo-50 p-2 text-indigo-600 border border-indigo-100">
+                <Activity className="h-5 w-5" aria-hidden="true" />
+              </div>
+              <div>
+                <strong className="text-xs font-semibold text-indigo-950">正式评测</strong>
+                <p className="text-[11px] text-indigo-700/80">20 Cases × 4 Arms + 4 Sentinels，完整消融实验</p>
               </div>
             </div>
             <Button
-              variant="primary"
+              className="bg-indigo-600 hover:bg-indigo-700 text-white gap-1.5 text-xs shadow-sm"
               onClick={() => void submitFormal()}
               disabled={submitting}
             >
-              <Play aria-hidden="true" />
-              {submitting ? "正在提交..." : "启动正式评测"}
+              <Play className="h-3.5 w-3.5" aria-hidden="true" />
+              <span>{submitting ? "正在提交..." : "启动正式评测"}</span>
             </Button>
           </div>
         </section>
       )}
 
-      <Card
-        title="评测历史"
-        description="最近的编码消融 Campaign。刷新页面后仍可查看，不依赖本会话是否点过启动。"
-      >
-        {campaigns.length === 0 ? (
-          <Empty>还没有编码消融评测记录。</Empty>
-        ) : (
-          <div className="coding-benchmark-campaign-list">
-            <Table headers={["名称", "状态", "通过 / 失败", "进度"]} minWidth={720}>
-              {campaigns.map((run) => (
-                <tr
-                  key={run.runId}
-                  className={latestRun?.runId === run.runId ? "is-selected" : ""}
-                  onClick={() => selectCampaign(run)}
-                  style={{ cursor: "pointer" }}
-                >
-                  <td>
-                    <strong>{run.name || run.runId}</strong>
-                    <small>{run.runId}</small>
-                  </td>
-                  <td>
-                    <Badge tone={statusTone(run.status)}>{statusLabel(run.status)}</Badge>
-                  </td>
-                  <td>
-                    <span className="coding-benchmark-pass-fail">
-                      <em>{run.passedSampleCount}</em> / <i>{run.failedSampleCount}</i>
-                      <small>共 {run.sampleCount}</small>
-                    </span>
-                  </td>
-                  <td>{run.progressPercent}%</td>
-                </tr>
-              ))}
-            </Table>
-          </div>
-        )}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm font-semibold">评测历史</CardTitle>
+          <CardDescription className="text-xs">
+            最近的编码消融 Campaign。刷新页面后仍可查看，不依赖本会话是否点过启动
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="pt-0">
+          {campaigns.length === 0 ? (
+            <div className="py-8 text-center text-xs text-muted-foreground">还没有编码消融评测记录。</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <Table className="min-w-[720px]">
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>名称</TableHead>
+                    <TableHead className="w-[120px]">状态</TableHead>
+                    <TableHead className="w-[160px]">通过 / 失败</TableHead>
+                    <TableHead className="w-[120px]">进度</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {campaigns.map((run) => (
+                    <TableRow
+                      key={run.runId}
+                      className={latestRun?.runId === run.runId ? "bg-primary/5 font-medium" : "cursor-pointer hover:bg-slate-50"}
+                      onClick={() => selectCampaign(run)}
+                    >
+                      <TableCell>
+                        <div className="font-semibold text-slate-900">{run.name || run.runId}</div>
+                        <code className="text-[10px] text-muted-foreground">{run.runId}</code>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant="outline" className={statusBadgeClass(run.status)}>{statusLabel(run.status)}</Badge>
+                      </TableCell>
+                      <TableCell>
+                        <span className="text-xs">
+                          <strong className="text-emerald-600">{run.passedSampleCount}</strong> / <strong className="text-rose-600">{run.failedSampleCount}</strong>
+                          <span className="text-[10px] text-muted-foreground ml-1">共 {run.sampleCount}</span>
+                        </span>
+                      </TableCell>
+                      <TableCell>
+                        <span className="font-mono text-xs text-slate-700">{run.progressPercent}%</span>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </CardContent>
       </Card>
 
       {latestRun && (
-        <Card title="Campaign 详情与 Trial 结果板">
-          <div className="coding-benchmark-run-summary">
-            <div className="coding-benchmark-run-meta">
-              <div className="coding-benchmark-run-head">
-                <strong>{latestRun.name || latestRun.runId}</strong>
-                <Badge tone={statusTone(latestRun.status)}>{statusLabel(latestRun.status)}</Badge>
-                {latestRun.dispatchPaused ? <Badge tone="warning">调度已暂停</Badge> : null}
+        <Card>
+          <CardHeader className="pb-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <CardTitle className="text-sm font-semibold">Campaign 详情与 Trial 结果板</CardTitle>
+                <CardDescription className="text-xs font-mono">
+                  {latestRun.name || latestRun.runId} · {latestRun.runId}
+                  {latestRun.config.snapshotId || latestRun.config.environmentId ? (
+                    <span> · snapshot: {latestRun.config.snapshotId || latestRun.config.environmentId}</span>
+                  ) : null}
+                </CardDescription>
               </div>
-              <div className="coding-benchmark-run-id">
-                <code>{latestRun.runId}</code>
-                {latestRun.config.snapshotId || latestRun.config.environmentId ? (
-                  <small>snapshot · {latestRun.config.snapshotId || latestRun.config.environmentId}</small>
+              <div className="flex items-center gap-2">
+                <Badge variant="outline" className={statusBadgeClass(latestRun.status)}>{statusLabel(latestRun.status)}</Badge>
+                {latestRun.dispatchPaused ? <Badge variant="outline" className="border-amber-300 bg-amber-50 text-amber-800">调度已暂停</Badge> : null}
+                {isEvaluationRunActive(latestRun.status) ? (
+                  <div className="flex items-center gap-1.5">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 text-xs"
+                      onClick={() => void pauseRun()}
+                      disabled={controlling || latestRun.dispatchPaused}
+                    >
+                      <PauseCircle className="mr-1 h-3.5 w-3.5" aria-hidden="true" />
+                      暂停
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 text-xs"
+                      onClick={() => void resumeRun()}
+                      disabled={controlling || !latestRun.dispatchPaused}
+                    >
+                      <PlayCircle className="mr-1 h-3.5 w-3.5" aria-hidden="true" />
+                      恢复
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 text-xs text-destructive hover:bg-destructive/10"
+                      onClick={() => void cancelRun()}
+                      disabled={controlling}
+                    >
+                      <Ban className="mr-1 h-3.5 w-3.5" aria-hidden="true" />
+                      取消
+                    </Button>
+                  </div>
                 ) : null}
               </div>
             </div>
+          </CardHeader>
 
-            <div className="coding-benchmark-progress">
-              <div className="coding-benchmark-progress-label">
-                <span>执行进度</span>
-                <span>{latestRun.progressPercent}%</span>
+          <CardContent className="space-y-4 pt-0">
+            {/* 进度与样本统计 */}
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <div className="rounded-lg border border-slate-200 bg-slate-50/50 p-3">
+                <div className="text-xs text-muted-foreground">执行进度</div>
+                <div className="text-base font-bold text-slate-900">{latestRun.progressPercent}%</div>
               </div>
-              <div className="coding-benchmark-progress-track">
-                <i style={{ width: `${latestRun.progressPercent}%` }} />
+              <div className="rounded-lg border border-slate-200 bg-slate-50/50 p-3">
+                <div className="text-xs text-muted-foreground">总样本</div>
+                <div className="text-base font-bold text-slate-900">{latestRun.sampleCount}</div>
               </div>
-            </div>
-
-            <div className="coding-benchmark-samples">
-              <div className="coding-benchmark-sample-stat">
-                <span>总样本</span>
-                <strong>{latestRun.sampleCount}</strong>
+              <div className="rounded-lg border border-emerald-200 bg-emerald-50/40 p-3">
+                <div className="text-xs font-medium text-emerald-800">通过</div>
+                <div className="text-base font-bold text-emerald-900">{latestRun.passedSampleCount}</div>
               </div>
-              <div className="coding-benchmark-sample-stat coding-benchmark-sample-stat--pass">
-                <span>通过</span>
-                <strong>{latestRun.passedSampleCount}</strong>
-              </div>
-              <div className="coding-benchmark-sample-stat coding-benchmark-sample-stat--fail">
-                <span>失败</span>
-                <strong>{latestRun.failedSampleCount}</strong>
+              <div className="rounded-lg border border-rose-200 bg-rose-50/40 p-3">
+                <div className="text-xs font-medium text-rose-800">失败</div>
+                <div className="text-base font-bold text-rose-900">{latestRun.failedSampleCount}</div>
               </div>
             </div>
 
             {latestRun.dispatchPaused && isEvaluationRunActive(latestRun.status) ? (
-              <div className="coding-benchmark-paused-notice" role="status">
-                <PauseCircle aria-hidden="true" />
+              <div className="rounded-md border border-amber-200 bg-amber-50 p-2.5 text-xs text-amber-800 flex items-center gap-2">
+                <PauseCircle className="h-4 w-4 shrink-0" aria-hidden="true" />
                 <span>调度已暂停：在途 Trial 将继续完成，不再领取新 Trial。</span>
               </div>
             ) : null}
 
-            {isEvaluationRunActive(latestRun.status) ? (
-              <div className="coding-benchmark-run-controls" aria-label="运行控制">
-                <Button
-                  variant="ghost"
-                  onClick={() => void pauseRun()}
-                  disabled={controlling || latestRun.dispatchPaused}
-                >
-                  <PauseCircle aria-hidden="true" />
-                  暂停
-                </Button>
-                <Button
-                  variant="ghost"
-                  onClick={() => void resumeRun()}
-                  disabled={controlling || !latestRun.dispatchPaused}
-                >
-                  <PlayCircle aria-hidden="true" />
-                  恢复
-                </Button>
-                <Button
-                  variant="danger"
-                  onClick={() => void cancelRun()}
-                  disabled={controlling}
-                >
-                  <Ban aria-hidden="true" />
-                  取消
-                </Button>
-              </div>
-            ) : null}
-
             {latestRun.errorMessage && (
-              <div className="coding-benchmark-run-error">
-                <Activity aria-hidden="true" />
-                <span><strong>{latestRun.errorCategory || "执行错误"}</strong>{latestRun.errorMessage}</span>
+              <div className="rounded-md border border-rose-200 bg-rose-50 p-2.5 text-xs text-rose-800">
+                <strong>{latestRun.errorCategory || "执行错误"}: </strong>{latestRun.errorMessage}
               </div>
             )}
-          </div>
 
-          <div className="coding-benchmark-trial-board" aria-label="Trial 结果板">
-            <div className="coding-benchmark-trial-board-head">
-              <strong>Trial 结果</strong>
-              <small>{trials.length} 条 · case × arm</small>
+            {/* Trial 结果列表 */}
+            <div>
+              <div className="mb-2 flex items-center justify-between">
+                <strong className="text-xs font-semibold text-slate-800">Trial 结果板</strong>
+                <span className="text-[10px] text-muted-foreground">{trials.length} 条 · case × arm</span>
+              </div>
+              {trials.length === 0 ? (
+                <div className="py-8 text-center text-xs text-muted-foreground">该 Campaign 暂无 Trial 记录。</div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <Table className="min-w-[960px]">
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Case</TableHead>
+                        <TableHead className="w-[100px]">Arm</TableHead>
+                        <TableHead className="w-[120px]">状态</TableHead>
+                        <TableHead className="w-[120px]">Verdict</TableHead>
+                        <TableHead>错误摘要</TableHead>
+                        <TableHead className="w-[80px] text-right">详情</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {trials.map((trial) => (
+                        <TableRow key={trial.trialId}>
+                          <TableCell>
+                            <div className="font-semibold text-slate-900" title={trial.caseId}>{shortCaseId(trial.caseId)}</div>
+                            <code className="text-[10px] text-muted-foreground">{trial.trialId}</code>
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant="outline" className="border-sky-200 bg-sky-50 text-sky-700 text-xs">{trial.arm}</Badge>
+                            {trial.replicateNo > 0 ? <span className="ml-1 text-[10px] text-muted-foreground">sentinel</span> : null}
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant="outline" className={statusBadgeClass(trial.status)}>{statusLabel(trial.status)}</Badge>
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant="outline" className={verdictBadgeClass(trial.verdict)}>{verdictLabel(trial.verdict)}</Badge>
+                          </TableCell>
+                          <TableCell>
+                            <span className="text-xs text-muted-foreground truncate max-w-[280px] inline-block" title={trial.errorMessage || undefined}>
+                              {trial.errorMessage || "—"}
+                            </span>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <Button asChild size="sm" variant="ghost" className="h-7 text-xs">
+                              <Link to={`/admin/evaluations/coding-benchmarks/campaigns/${latestRun.runId}/trials/${trial.trialId}`}>
+                                查看
+                              </Link>
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
             </div>
-            {trials.length === 0 ? (
-              <Empty>该 Campaign 暂无 Trial 记录。</Empty>
-            ) : (
-              <Table headers={["Case", "Arm", "状态", "Verdict", "错误摘要", "详情"]} minWidth={960}>
-                {trials.map((trial) => (
-                  <tr key={trial.trialId}>
-                    <td>
-                      <strong title={trial.caseId}>{shortCaseId(trial.caseId)}</strong>
-                      <small>{trial.trialId}</small>
-                    </td>
-                    <td>
-                      <Badge tone="info">{trial.arm}</Badge>
-                      {trial.replicateNo > 0 ? <small>sentinel</small> : null}
-                    </td>
-                    <td>
-                      <Badge tone={statusTone(trial.status)}>{statusLabel(trial.status)}</Badge>
-                    </td>
-                    <td>
-                      <Badge tone={verdictTone(trial.verdict)}>{verdictLabel(trial.verdict)}</Badge>
-                    </td>
-                    <td>
-                      <span className="coding-benchmark-trial-error" title={trial.errorMessage || undefined}>
-                        {trial.errorMessage || "—"}
-                      </span>
-                    </td>
-                    <td>
-                      <Link
-                        className="coding-benchmark-trial-link"
-                        to={`/admin/evaluations/coding-benchmarks/campaigns/${latestRun.runId}/trials/${trial.trialId}`}
-                      >
-                        查看
-                      </Link>
-                    </td>
-                  </tr>
-                ))}
-              </Table>
-            )}
-          </div>
+          </CardContent>
         </Card>
       )}
-    </div>
-  );
-}
-
-function Table({
-  headers,
-  children,
-  minWidth
-}: {
-  headers: string[];
-  children: React.ReactNode;
-  minWidth?: number;
-}) {
-  return (
-    <div className="ui-table-wrap">
-      <table className="ui-table" style={{ minWidth }}>
-        <thead className="ui-table-header">
-          <tr>{headers.map((h) => <th key={h}>{h}</th>)}</tr>
-        </thead>
-        <tbody>{children}</tbody>
-      </table>
     </div>
   );
 }

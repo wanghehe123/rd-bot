@@ -10,7 +10,14 @@ test("project operations expose a real QA browser profile editor", async () => {
 
   assert.match(service, /getProjectQaProfile/);
   assert.match(service, /updateProjectQaProfile/);
+  assert.match(service, /buildCommands/);
+  assert.match(service, /staticCommands/);
   assert.match(page, /浏览器 QA/);
+  assert.match(page, /构建命令/);
+  assert.match(page, /静态检查命令/);
+  assert.match(page, /跳过构建/);
+  assert.match(page, /跳过静态检查/);
   assert.match(page, /regressionCommands/);
   assert.match(page, /allowedHosts/);
+  assert.doesNotMatch(page, /placeholder=\{\s*"npm run dev/);
 });

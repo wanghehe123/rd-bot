@@ -1,5 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Bell, Container, Database, FolderOpen, Gauge, LayoutTemplate, MonitorCheck, Pencil, Plus, RefreshCw, SlidersHorizontal, Trash2 } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import {
+  Bell,
+  Database,
+  FolderOpen,
+  Gauge,
+  LayoutTemplate,
+  MonitorCheck,
+  MoreHorizontal,
+  Pencil,
+  Plus,
+  RefreshCw,
+  SlidersHorizontal,
+  Trash2
+} from "lucide-react";
 import { toast } from "sonner";
 
 import {
@@ -15,6 +29,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -23,6 +38,13 @@ import {
   DialogHeader,
   DialogTitle
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -54,29 +76,14 @@ import {
   getProjectTokenBudget,
   getProjectTaskTemplate,
   getProjectQaProfile,
-  getProjectRuntimeProfiles,
   updateProjectAlertConfig,
   updateProjectTokenBudget,
   updateProjectTaskTemplate,
   updateProjectQaProfile,
   updateProject,
-  uploadProjectRuntimeProfile,
-  deleteProjectRuntimeProfile,
-  bindProjectAgentExecutionProfile,
-  createAgentExecutionProfile,
-  getAgentExecutionProfiles,
-  getModelProviderProfiles,
-  updateAgentExecutionProfile,
   type RdProject,
-  type AgentExecutionProfile,
-  type AgentExecutionProfilePayload,
-  type AgentExecutionRole,
-  type AgentRuntimeType,
-  type ModelProviderProfile,
   type ProjectAlertEventType,
   type ProjectQaMode,
-  type ProjectRuntimeProfile,
-  type ProjectRuntimeRole,
   type RdProjectPayload
 } from "@/services/projectService";
 import { getKnowledgeBases, type KnowledgeBase } from "@/services/knowledgeService";
@@ -93,6 +100,7 @@ const repositoryLabel = (project: RdProject) => {
 };
 
 export function ProjectListPage() {
+  const navigate = useNavigate();
   const [records, setRecords] = useState<RdProject[]>([]);
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
@@ -108,8 +116,6 @@ export function ProjectListPage() {
   const [tokenBudgetTarget, setTokenBudgetTarget] = useState<RdProject | null>(null);
   const [templateTarget, setTemplateTarget] = useState<RdProject | null>(null);
   const [qaProfileTarget, setQaProfileTarget] = useState<RdProject | null>(null);
-  const [runtimeProfileTarget, setRuntimeProfileTarget] = useState<RdProject | null>(null);
-  const [agentProfileTarget, setAgentProfileTarget] = useState<RdProject | null>(null);
   const [knowledgeTarget, setKnowledgeTarget] = useState<RdProject | null>(null);
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const [knowledgeBasesLoading, setKnowledgeBasesLoading] = useState(false);
@@ -248,7 +254,7 @@ export function ProjectListPage() {
                   <TableHead className="w-[150px]">项目知识库</TableHead>
                   <TableHead className="w-[90px]">状态</TableHead>
                   <TableHead className="w-[130px]">更新时间</TableHead>
-                  <TableHead className="w-[270px] text-left">操作</TableHead>
+                  <TableHead className="w-[200px] text-left">操作</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -257,7 +263,7 @@ export function ProjectListPage() {
                     <TableCell className="font-medium">
                       <div className="flex min-w-0 items-center gap-2">
                         <FolderOpen className="h-4 w-4 shrink-0 text-muted-foreground" />
-                        <span className="truncate" title={project.name}>{project.name}</span>
+                        <span className="truncate font-semibold text-slate-900" title={project.name}>{project.name}</span>
                       </div>
                       {project.description ? (
                         <div className="mt-0.5 truncate text-xs text-muted-foreground" title={project.description}>
@@ -266,7 +272,7 @@ export function ProjectListPage() {
                       ) : null}
                     </TableCell>
                     <TableCell>
-                      <code className="rounded bg-slate-100 px-2 py-1 text-xs text-slate-700">
+                      <code className="rounded bg-slate-100 px-2 py-1 font-mono text-xs text-slate-700">
                         {project.projectKey}
                       </code>
                     </TableCell>
@@ -282,7 +288,7 @@ export function ProjectListPage() {
                       </a>
                     </TableCell>
                     <TableCell>
-                      <code className="rounded bg-slate-100 px-2 py-1 text-xs text-slate-700">
+                      <code className="rounded bg-slate-100 px-2 py-1 font-mono text-xs text-slate-700">
                         {project.defaultBranch || "-"}
                       </code>
                     </TableCell>
@@ -291,12 +297,14 @@ export function ProjectListPage() {
                         <span title={knowledgeBaseById.get(project.knowledgeBaseId)?.name || project.knowledgeBaseId}>
                           {knowledgeBaseById.get(project.knowledgeBaseId)?.name || project.knowledgeBaseId}
                         </span>
-                      ) : "-"}
+                      ) : (
+                        <span className="text-muted-foreground/50">-</span>
+                      )}
                     </TableCell>
                     <TableCell>
                       <Badge
                         variant="outline"
-                        className={project.enabled ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-slate-200 bg-slate-50 text-slate-500"}
+                        className={project.enabled ? "border-emerald-200 bg-emerald-50 text-emerald-700 font-medium" : "border-slate-200 bg-slate-50 text-slate-500"}
                       >
                         {project.enabled ? "启用" : "停用"}
                       </Badge>
@@ -305,76 +313,68 @@ export function ProjectListPage() {
                       <RelativeTime value={new Date(project.updateTimeEpochMillis).toISOString()} />
                     </TableCell>
                     <TableCell>
-                      <div className="flex gap-2">
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button size="icon" variant="outline" aria-label="绑定项目知识库" onClick={() => setKnowledgeTarget(project)}>
-                              <Database className="h-4 w-4" />
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent>绑定项目知识库</TooltipContent>
-                        </Tooltip>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button size="icon" variant="outline" aria-label="Token 预算" onClick={() => setTokenBudgetTarget(project)}>
-                              <Gauge className="h-4 w-4" />
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent>Token 预算</TooltipContent>
-                        </Tooltip>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button size="icon" variant="outline" aria-label="任务模板" onClick={() => setTemplateTarget(project)}>
-                              <LayoutTemplate className="h-4 w-4" />
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent>任务模板</TooltipContent>
-                        </Tooltip>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button size="icon" variant="outline" aria-label="浏览器 QA" onClick={() => setQaProfileTarget(project)}>
-                              <MonitorCheck className="h-4 w-4" />
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent>浏览器 QA</TooltipContent>
-                        </Tooltip>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button size="icon" variant="outline" aria-label="运行镜像" onClick={() => setRuntimeProfileTarget(project)}>
-                              <Container className="h-4 w-4" />
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent>运行镜像</TooltipContent>
-                        </Tooltip>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button size="icon" variant="outline" aria-label="Agent 执行策略" onClick={() => setAgentProfileTarget(project)}>
-                              <SlidersHorizontal className="h-4 w-4" />
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent>Agent 执行策略</TooltipContent>
-                        </Tooltip>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button size="icon" variant="outline" aria-label="飞书告警" onClick={() => setAlertTarget(project)}>
-                              <Bell className="h-4 w-4" />
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent>飞书告警</TooltipContent>
-                        </Tooltip>
-                        <Button size="sm" variant="outline" onClick={() => setEditTarget(project)}>
-                          <Pencil className="mr-1 h-4 w-4" />
-                          编辑
+                      <div className="flex items-center gap-1.5">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-8 gap-1 px-2.5 text-xs font-medium text-slate-700 hover:text-primary hover:border-primary/40"
+                          onClick={() => navigate(`/admin/projects/${project.projectId}/agent-strategy`)}
+                        >
+                          <SlidersHorizontal className="h-3.5 w-3.5 text-primary" />
+                          <span>策略</span>
                         </Button>
                         <Button
                           size="sm"
-                          variant="ghost"
-                          className="text-destructive hover:text-destructive"
-                          onClick={() => setDeleteTarget(project)}
+                          variant="outline"
+                          className="h-8 gap-1 px-2.5 text-xs text-slate-700 hover:text-slate-950"
+                          onClick={() => setEditTarget(project)}
                         >
-                          <Trash2 className="mr-1 h-4 w-4" />
-                          删除
+                          <Pencil className="h-3.5 w-3.5 text-slate-500" />
+                          <span>编辑</span>
                         </Button>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-8 w-8 p-0 text-slate-500 hover:text-slate-900"
+                              aria-label="更多配置"
+                              title="更多配置"
+                            >
+                              <MoreHorizontal className="h-4 w-4" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end" className="w-44">
+                            <DropdownMenuItem onClick={() => setKnowledgeTarget(project)}>
+                              <Database className="mr-2 h-4 w-4 text-muted-foreground" />
+                              <span>绑定知识库</span>
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => setTokenBudgetTarget(project)}>
+                              <Gauge className="mr-2 h-4 w-4 text-muted-foreground" />
+                              <span>Token 预算</span>
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => setTemplateTarget(project)}>
+                              <LayoutTemplate className="mr-2 h-4 w-4 text-muted-foreground" />
+                              <span>任务模板</span>
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => setQaProfileTarget(project)}>
+                              <MonitorCheck className="mr-2 h-4 w-4 text-muted-foreground" />
+                              <span>浏览器 QA</span>
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => setAlertTarget(project)}>
+                              <Bell className="mr-2 h-4 w-4 text-muted-foreground" />
+                              <span>飞书告警</span>
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                              className="text-destructive focus:bg-destructive/10 focus:text-destructive"
+                              onClick={() => setDeleteTarget(project)}
+                            >
+                              <Trash2 className="mr-2 h-4 w-4" />
+                              <span>删除项目</span>
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
                       </div>
                     </TableCell>
                   </TableRow>
@@ -419,8 +419,6 @@ export function ProjectListPage() {
       <ProjectTokenBudgetDialog project={tokenBudgetTarget} onOpenChange={(open) => !open && setTokenBudgetTarget(null)} />
       <ProjectTemplateDialog project={templateTarget} onOpenChange={(open) => !open && setTemplateTarget(null)} />
       <ProjectQaProfileDialog project={qaProfileTarget} onOpenChange={(open) => !open && setQaProfileTarget(null)} />
-      <ProjectRuntimeProfileDialog project={runtimeProfileTarget} onOpenChange={(open) => !open && setRuntimeProfileTarget(null)} />
-      <AgentExecutionProfileDialog project={agentProfileTarget} onOpenChange={(open) => !open && setAgentProfileTarget(null)} />
       <ProjectKnowledgeBindingDialog
         project={knowledgeTarget}
         knowledgeBases={knowledgeBases}
@@ -864,6 +862,10 @@ function ProjectQaProfileDialog({ project, onOpenChange }: { project: RdProject 
   const [startCommand, setStartCommand] = useState("");
   const [healthPath, setHealthPath] = useState("/");
   const [allowedHosts, setAllowedHosts] = useState("");
+  const [buildCommands, setBuildCommands] = useState("");
+  const [skipBuild, setSkipBuild] = useState(false);
+  const [staticCommands, setStaticCommands] = useState("");
+  const [skipStatic, setSkipStatic] = useState(false);
   const [regressionCommands, setRegressionCommands] = useState("");
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -877,6 +879,30 @@ function ProjectQaProfileDialog({ project, onOpenChange }: { project: RdProject 
       setStartCommand(profile.startCommand || "");
       setHealthPath(profile.healthPath || "/");
       setAllowedHosts((profile.allowedHosts || []).join("\n"));
+      if (Array.isArray(profile.buildCommands)) {
+        if (profile.buildCommands.length === 0) {
+          setSkipBuild(true);
+          setBuildCommands("");
+        } else {
+          setSkipBuild(false);
+          setBuildCommands(profile.buildCommands.join("\n"));
+        }
+      } else {
+        setSkipBuild(false);
+        setBuildCommands("");
+      }
+      if (Array.isArray(profile.staticCommands)) {
+        if (profile.staticCommands.length === 0) {
+          setSkipStatic(true);
+          setStaticCommands("");
+        } else {
+          setSkipStatic(false);
+          setStaticCommands(profile.staticCommands.join("\n"));
+        }
+      } else {
+        setSkipStatic(false);
+        setStaticCommands("");
+      }
       setRegressionCommands((profile.regressionCommands || []).join("\n"));
     }).catch(() => {
       setMode("AUTO");
@@ -884,6 +910,10 @@ function ProjectQaProfileDialog({ project, onOpenChange }: { project: RdProject 
       setStartCommand("");
       setHealthPath("/");
       setAllowedHosts("");
+      setBuildCommands("");
+      setSkipBuild(false);
+      setStaticCommands("");
+      setSkipStatic(false);
       setRegressionCommands("");
     }).finally(() => setLoading(false));
   }, [project?.projectId]);
@@ -892,6 +922,11 @@ function ProjectQaProfileDialog({ project, onOpenChange }: { project: RdProject 
   const save = async () => {
     if (!project) return;
     setSaving(true);
+    const buildLines = lines(buildCommands);
+    const staticLines = lines(staticCommands);
+    const payloadBuildCommands = skipBuild ? [] : (buildLines.length > 0 ? buildLines : null);
+    const payloadStaticCommands = skipStatic ? [] : (staticLines.length > 0 ? staticLines : null);
+
     try {
       await updateProjectQaProfile(project.projectId, {
         mode,
@@ -899,6 +934,8 @@ function ProjectQaProfileDialog({ project, onOpenChange }: { project: RdProject 
         startCommand: mode === "REQUIRED" ? startCommand.trim() : "",
         healthPath: mode === "REQUIRED" ? healthPath.trim() || "/" : "",
         allowedHosts: mode === "REQUIRED" ? lines(allowedHosts) : [],
+        buildCommands: payloadBuildCommands,
+        staticCommands: payloadStaticCommands,
         regressionCommands: mode === "DISABLED" ? [] : lines(regressionCommands)
       });
       toast.success("浏览器 QA 配置已保存");
@@ -915,7 +952,7 @@ function ProjectQaProfileDialog({ project, onOpenChange }: { project: RdProject 
       <DialogContent className="flex max-h-[calc(100vh-2rem)] flex-col overflow-hidden sm:max-w-[640px]">
         <DialogHeader>
           <DialogTitle>浏览器 QA</DialogTitle>
-          <DialogDescription>{project?.name} 的真实页面验证与回归命令</DialogDescription>
+          <DialogDescription>{project?.name} 的真实页面验证、宿主构建与回归命令</DialogDescription>
         </DialogHeader>
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
           <div>
@@ -937,406 +974,80 @@ function ProjectQaProfileDialog({ project, onOpenChange }: { project: RdProject 
               <div><label className="mb-2 block text-sm font-medium">允许访问的主机</label><Textarea value={allowedHosts} onChange={(event) => setAllowedHosts(event.target.value)} className="min-h-24 font-mono text-xs" placeholder={"127.0.0.1\nlocalhost"} /></div>
             </div>
           ) : null}
+
+          {/* 宿主构建命令 */}
+          <div className="space-y-2 rounded-md border border-slate-200 bg-slate-50/50 p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <label className="text-sm font-medium text-slate-900">构建命令（多行）</label>
+              <label className="flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer">
+                <Checkbox
+                  checked={skipBuild}
+                  onCheckedChange={(checked) => setSkipBuild(Boolean(checked))}
+                  disabled={loading}
+                />
+                <span>跳过构建</span>
+              </label>
+            </div>
+            <p className="text-xs text-slate-500">
+              安装、编译、仓库测试。留空=自动探测。勾选「跳过构建」才保存为空列表。
+            </p>
+            {!skipBuild ? (
+              <Textarea
+                value={buildCommands}
+                onChange={(event) => setBuildCommands(event.target.value)}
+                className="min-h-20 font-mono text-xs bg-white"
+                placeholder={"npm install\nnpm run build\nnpm test"}
+                disabled={loading}
+              />
+            ) : (
+              <div className="rounded border border-dashed border-slate-200 px-3 py-2 text-xs text-slate-500 bg-slate-100/60">
+                已显式配置为跳过构建步骤
+              </div>
+            )}
+          </div>
+
+          {/* 宿主静态检查命令 */}
+          <div className="space-y-2 rounded-md border border-slate-200 bg-slate-50/50 p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <label className="text-sm font-medium text-slate-900">静态检查命令（多行）</label>
+              <label className="flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer">
+                <Checkbox
+                  checked={skipStatic}
+                  onCheckedChange={(checked) => setSkipStatic(Boolean(checked))}
+                  disabled={loading}
+                />
+                <span>跳过静态检查</span>
+              </label>
+            </div>
+            <p className="text-xs text-slate-500">
+              typecheck / lint。留空=自动探测。勾选「跳过静态检查」才保存为空列表。
+            </p>
+            {!skipStatic ? (
+              <Textarea
+                value={staticCommands}
+                onChange={(event) => setStaticCommands(event.target.value)}
+                className="min-h-20 font-mono text-xs bg-white"
+                placeholder={"npm run typecheck\nnpm run lint"}
+                disabled={loading}
+              />
+            ) : (
+              <div className="rounded border border-dashed border-slate-200 px-3 py-2 text-xs text-slate-500 bg-slate-100/60">
+                已显式配置为跳过静态检查步骤
+              </div>
+            )}
+          </div>
+
           {mode !== "DISABLED" ? (
             <div>
               <label className="mb-2 block text-sm font-medium">回归命令</label>
-              <Textarea value={regressionCommands} onChange={(event) => setRegressionCommands(event.target.value)} className="min-h-28 font-mono text-xs" placeholder={"npm test\nnpm run typecheck"} />
+              <p className="mb-2 text-xs text-slate-500">业务回归测试（由 QA Agent 在容器内运行）。</p>
+              <Textarea value={regressionCommands} onChange={(event) => setRegressionCommands(event.target.value)} className="min-h-24 font-mono text-xs" placeholder={"npm test"} />
             </div>
           ) : null}
         </div>
         <DialogFooter className="shrink-0 border-t border-slate-200 pt-4">
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>取消</Button>
           <Button onClick={() => void save()} disabled={loading || saving}>{saving ? "保存中..." : "保存"}</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-const RUNTIME_ROLE_OPTIONS: Array<{ value: ProjectRuntimeRole; label: string }> = [
-  { value: "REQUIREMENT_REVIEWER", label: "需求评审" },
-  { value: "SOLUTION_ARCHITECT", label: "方案设计" },
-  { value: "CODING_AGENT", label: "编码执行" },
-  { value: "QA_AGENT", label: "质量验证" }
-];
-const RUNTIME_PROFILE_CONTRACT_MARKER = "rd-bot-runtime-contract=v2";
-
-function ProjectRuntimeProfileDialog({ project, onOpenChange }: { project: RdProject | null; onOpenChange: (open: boolean) => void }) {
-  const [role, setRole] = useState<ProjectRuntimeRole>("CODING_AGENT");
-  const [profiles, setProfiles] = useState<ProjectRuntimeProfile[]>([]);
-  const [dockerfile, setDockerfile] = useState<File | null>(null);
-  const [mutationToken, setMutationToken] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    if (!project) return;
-    setLoading(true);
-    setDockerfile(null);
-    setMutationToken("");
-    getProjectRuntimeProfiles(project.projectId).then((nextProfiles) => {
-      setProfiles(nextProfiles || []);
-    }).catch((error) => {
-      setProfiles([]);
-      toast.error(getErrorMessage(error, "加载运行镜像失败"));
-    }).finally(() => setLoading(false));
-  }, [project?.projectId]);
-
-  const activeProfile = profiles.find((profile) => profile.role === role);
-  const activeProfileUsesCurrentContract = !!activeProfile?.validationSummary.includes(RUNTIME_PROFILE_CONTRACT_MARKER);
-  const upload = async () => {
-    if (!project || !dockerfile) return;
-    if (!mutationToken.trim()) {
-      toast.error("请输入运行时操作令牌");
-      return;
-    }
-    setSaving(true);
-    try {
-      const profile = await uploadProjectRuntimeProfile(project.projectId, role, dockerfile, mutationToken);
-      setProfiles((current) => [...current.filter((item) => item.role !== role), profile]);
-      setDockerfile(null);
-      setMutationToken("");
-      toast.success("运行镜像已构建并验证");
-    } catch (error) {
-      toast.error(getErrorMessage(error, "Dockerfile 构建或 Claude Code 验证失败"));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const remove = async () => {
-    if (!project || !activeProfile) return;
-    if (!mutationToken.trim()) {
-      toast.error("请输入运行时操作令牌");
-      return;
-    }
-    setSaving(true);
-    try {
-      await deleteProjectRuntimeProfile(project.projectId, role, mutationToken);
-      setProfiles((current) => current.filter((item) => item.role !== role));
-      setMutationToken("");
-      toast.success("运行镜像已移除，后续任务将使用全局默认镜像");
-    } catch (error) {
-      toast.error(getErrorMessage(error, "移除运行镜像失败"));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <Dialog open={!!project} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[calc(100vh-2rem)] flex-col overflow-hidden sm:max-w-[680px]">
-        <DialogHeader>
-          <DialogTitle>运行镜像</DialogTitle>
-          <DialogDescription>{project?.name} 的角色级 Claude Code Docker 运行时</DialogDescription>
-        </DialogHeader>
-        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
-          <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_180px]">
-            <div>
-              <label className="mb-2 block text-sm font-medium">交付角色</label>
-              <Select value={role} onValueChange={(value) => setRole(value as ProjectRuntimeRole)} disabled={loading || saving}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {RUNTIME_ROLE_OPTIONS.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div>
-              <label className="mb-2 block text-sm font-medium">Agent</label>
-              <div className="flex h-10 items-center border border-input bg-muted px-3 text-sm text-muted-foreground">Claude Code</div>
-            </div>
-          </div>
-
-          {activeProfile ? (
-            <div className="space-y-3 border-y border-slate-200 py-4">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <Badge
-                  variant="outline"
-                  className={activeProfileUsesCurrentContract
-                    ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                    : "border-amber-200 bg-amber-50 text-amber-700"}
-                >
-                  {activeProfileUsesCurrentContract ? "已验证" : "需重新构建"}
-                </Badge>
-                <span className="text-xs text-slate-500">{activeProfile.dockerfileName}</span>
-              </div>
-              {!activeProfileUsesCurrentContract && (
-                <p className="text-sm text-amber-700">
-                  当前镜像使用旧版运行时契约，不能用于新的任务执行。请重新上传该角色的 Dockerfile。
-                </p>
-              )}
-              <div className="space-y-1">
-                <span className="text-xs text-slate-500">镜像</span>
-                <code className="block break-all text-xs text-slate-700">{activeProfile.image}</code>
-              </div>
-              <div className="space-y-1">
-                <span className="text-xs text-slate-500">构建校验</span>
-                <p className="break-words text-sm text-slate-700">{activeProfile.validationSummary}</p>
-              </div>
-              <Button variant="outline" className="text-destructive hover:text-destructive" onClick={() => void remove()} disabled={saving}>
-                <Trash2 className="mr-2 h-4 w-4" />
-                移除镜像
-              </Button>
-            </div>
-          ) : (
-            <div className="border-y border-slate-200 py-4 text-sm text-slate-500">当前角色使用全局默认镜像。</div>
-          )}
-
-          <div>
-            <label className="mb-2 block text-sm font-medium">Dockerfile</label>
-            <Input
-              type="file"
-              onChange={(event) => setDockerfile(event.target.files?.item(0) || null)}
-              disabled={loading || saving}
-            />
-          </div>
-          <div>
-            <label className="mb-2 block text-sm font-medium">操作令牌</label>
-            <Input
-              type="password"
-              value={mutationToken}
-              onChange={(event) => setMutationToken(event.target.value)}
-              autoComplete="one-time-code"
-              disabled={loading || saving}
-            />
-          </div>
-        </div>
-        <DialogFooter className="shrink-0 border-t border-slate-200 pt-4">
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>关闭</Button>
-          <Button onClick={() => void upload()} disabled={loading || saving || !dockerfile}>
-            {saving ? "构建并验证中..." : "构建并启用"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-const AGENT_RUNTIME_ROLE_OPTIONS: Array<{ value: AgentExecutionRole; label: string }> = [
-  { value: "REQUIREMENT_REVIEWER", label: "需求评审" },
-  { value: "SOLUTION_ARCHITECT", label: "方案设计" },
-  { value: "CODING_AGENT", label: "编码执行" },
-  { value: "QA_AGENT", label: "质量验证" }
-];
-
-const AGENT_RUNTIME_OPTIONS: Array<{ value: AgentRuntimeType; label: string }> = [
-  { value: "PI", label: "Pi Agent" },
-  { value: "CLAUDE_CODE", label: "Claude Code" },
-  { value: "MODEL_ONLY", label: "Model Only" }
-];
-
-function AgentExecutionProfileDialog({ project, onOpenChange }: { project: RdProject | null; onOpenChange: (open: boolean) => void }) {
-  const [profiles, setProfiles] = useState<AgentExecutionProfile[]>([]);
-  const [providers, setProviders] = useState<ModelProviderProfile[]>([]);
-  const [selectedProfileId, setSelectedProfileId] = useState("");
-  const [profileId, setProfileId] = useState("");
-  const [role, setRole] = useState<AgentExecutionRole>("CODING_AGENT");
-  const [name, setName] = useState("");
-  const [runtimeType, setRuntimeType] = useState<AgentRuntimeType>("PI");
-  const [providerProfileId, setProviderProfileId] = useState("");
-  const [modelOverride, setModelOverride] = useState("");
-  const [extensionSetId, setExtensionSetId] = useState("");
-  const [extensionSetVersion, setExtensionSetVersion] = useState("0");
-  const [toolPolicyId, setToolPolicyId] = useState("legacy-host-bound");
-  const [toolPolicyVersion, setToolPolicyVersion] = useState("1");
-  const [enabled, setEnabled] = useState(true);
-  const [version, setVersion] = useState("1");
-  const [mutationToken, setMutationToken] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
-
-  const resetForm = () => {
-    setSelectedProfileId("");
-    setProfileId("");
-    setRole("CODING_AGENT");
-    setName("");
-    setRuntimeType("PI");
-    setProviderProfileId("");
-    setModelOverride("");
-    setExtensionSetId("");
-    setExtensionSetVersion("0");
-    setToolPolicyId("legacy-host-bound");
-    setToolPolicyVersion("1");
-    setEnabled(true);
-    setVersion("1");
-  };
-
-  useEffect(() => {
-    if (!project) return;
-    setLoading(true);
-    setMutationToken("");
-    Promise.all([
-      getAgentExecutionProfiles(project.projectId),
-      getModelProviderProfiles()
-    ]).then(([nextProfiles, nextProviders]) => {
-      setProfiles(nextProfiles || []);
-      setProviders(nextProviders || []);
-      resetForm();
-    }).catch((error) => {
-      setProfiles([]);
-      setProviders([]);
-      resetForm();
-      toast.error(getErrorMessage(error, "加载 Agent 执行策略失败"));
-    }).finally(() => setLoading(false));
-  }, [project?.projectId]);
-
-  const selectProfile = (value: string) => {
-    setSelectedProfileId(value);
-    const selected = profiles.find((item) => item.profileId === value);
-    if (!selected) {
-      resetForm();
-      return;
-    }
-    setProfileId(selected.profileId);
-    setRole(selected.role);
-    setName(selected.name);
-    setRuntimeType(selected.runtimeType);
-    setProviderProfileId(selected.providerProfileId);
-    setModelOverride(selected.modelOverride);
-    setExtensionSetId(selected.extensionSetId);
-    setExtensionSetVersion(String(selected.extensionSetVersion));
-    setToolPolicyId(selected.toolPolicyId);
-    setToolPolicyVersion(String(selected.toolPolicyVersion));
-    setEnabled(selected.enabled);
-    setVersion(String(selected.version));
-  };
-
-  const payload = (): AgentExecutionProfilePayload => ({
-    profileId: profileId.trim(),
-    role,
-    name: name.trim(),
-    runtimeType,
-    providerProfileId: providerProfileId.trim(),
-    modelOverride: modelOverride.trim(),
-    extensionSetId: extensionSetId.trim(),
-    extensionSetVersion: Math.max(0, Number(extensionSetVersion) || 0),
-    toolPolicyId: toolPolicyId.trim(),
-    toolPolicyVersion: Math.max(1, Number(toolPolicyVersion) || 1),
-    enabled,
-    version: Math.max(1, Number(version) || 1)
-  });
-
-  const save = async () => {
-    if (!project || !mutationToken.trim()) {
-      toast.error("请输入 Agent 运行时操作令牌");
-      return;
-    }
-    if (!profileId.trim() || !name.trim() || !providerProfileId.trim() || !toolPolicyId.trim()) {
-      toast.error("请填写 Profile ID、名称、Provider 和 Tool Policy");
-      return;
-    }
-    if (runtimeType === "PI" && role !== "CODING_AGENT") {
-      toast.error("Pi Agent 只允许绑定编码执行角色");
-      return;
-    }
-    setSaving(true);
-    try {
-      const next = selectedProfileId
-        ? await updateAgentExecutionProfile(project.projectId, selectedProfileId, payload(), mutationToken)
-        : await createAgentExecutionProfile(project.projectId, payload(), mutationToken);
-      setProfiles((current) => [...current.filter((item) => item.profileId !== next.profileId), next]);
-      setSelectedProfileId(next.profileId);
-      setProfileId(next.profileId);
-      setVersion(String(next.version));
-      setMutationToken("");
-      toast.success("Agent 执行策略已保存");
-    } catch (error) {
-      toast.error(getErrorMessage(error, "保存 Agent 执行策略失败"));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const bindDefault = async () => {
-    if (!project || !selectedProfileId || !mutationToken.trim()) {
-      toast.error("请选择已保存的 Profile 并输入操作令牌");
-      return;
-    }
-    setSaving(true);
-    try {
-      await bindProjectAgentExecutionProfile(project.projectId, role, selectedProfileId, mutationToken);
-      setMutationToken("");
-      toast.success(`${AGENT_RUNTIME_ROLE_OPTIONS.find((item) => item.value === role)?.label || role} 默认策略已切换`);
-    } catch (error) {
-      toast.error(getErrorMessage(error, "绑定项目默认策略失败"));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <Dialog open={!!project} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[calc(100vh-2rem)] flex-col overflow-hidden sm:max-w-[760px]">
-        <DialogHeader>
-          <DialogTitle>Agent 执行策略</DialogTitle>
-          <DialogDescription>{project?.name} 的注册 Profile、Provider 与项目角色默认绑定</DialogDescription>
-        </DialogHeader>
-        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
-          <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_180px]">
-            <div>
-              <label className="mb-2 block text-sm font-medium">已注册 Profile</label>
-              <Select value={selectedProfileId || "__new__"} onValueChange={(value) => selectProfile(value === "__new__" ? "" : value)} disabled={loading || saving}>
-                <SelectTrigger><SelectValue placeholder="新建 Profile" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__new__">新建 Profile</SelectItem>
-                  {profiles.map((item) => (
-                    <SelectItem key={item.profileId} value={item.profileId}>
-                      {item.name} · {item.runtimeType} · {item.role}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="flex items-end text-xs text-slate-500">运行中的 Attempt 不会被 Profile 编辑影响。</div>
-          </div>
-
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div><label className="mb-2 block text-sm font-medium">Profile ID</label><Input value={profileId} onChange={(event) => setProfileId(event.target.value)} disabled={loading || saving || !!selectedProfileId} placeholder="coding-pi-canary" /></div>
-            <div><label className="mb-2 block text-sm font-medium">名称</label><Input value={name} onChange={(event) => setName(event.target.value)} disabled={loading || saving} placeholder="Pi 编码灰度" /></div>
-            <div>
-              <label className="mb-2 block text-sm font-medium">角色</label>
-              <Select value={role} onValueChange={(value) => setRole(value as AgentExecutionRole)} disabled={loading || saving || !!selectedProfileId}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>{AGENT_RUNTIME_ROLE_OPTIONS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent>
-              </Select>
-            </div>
-            <div>
-              <label className="mb-2 block text-sm font-medium">执行器</label>
-              <Select value={runtimeType} onValueChange={(value) => setRuntimeType(value as AgentRuntimeType)} disabled={loading || saving}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>{AGENT_RUNTIME_OPTIONS.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent>
-              </Select>
-            </div>
-            <div>
-              <label className="mb-2 block text-sm font-medium">Provider Profile</label>
-              <Select value={providerProfileId || "__empty__"} onValueChange={(value) => setProviderProfileId(value === "__empty__" ? "" : value)} disabled={loading || saving}>
-                <SelectTrigger><SelectValue placeholder="选择 Provider" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__empty__">未选择</SelectItem>
-                  {providers.filter((item) => item.enabled).map((item) => <SelectItem key={item.providerId} value={item.providerId}>{item.displayName || item.providerId} · {item.protocol}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-            <div><label className="mb-2 block text-sm font-medium">模型覆盖</label><Input value={modelOverride} onChange={(event) => setModelOverride(event.target.value)} disabled={loading || saving} placeholder="留空使用 Provider 默认模型" /></div>
-            <div><label className="mb-2 block text-sm font-medium">Extension Set ID</label><Input value={extensionSetId} onChange={(event) => setExtensionSetId(event.target.value)} disabled={loading || saving} placeholder="可选，必须已验证" /></div>
-            <div><label className="mb-2 block text-sm font-medium">Extension Set Version</label><Input type="number" min="0" value={extensionSetVersion} onChange={(event) => setExtensionSetVersion(event.target.value)} disabled={loading || saving} /></div>
-            <div><label className="mb-2 block text-sm font-medium">Tool Policy ID</label><Input value={toolPolicyId} onChange={(event) => setToolPolicyId(event.target.value)} disabled={loading || saving} placeholder="legacy-host-bound" /></div>
-            <div><label className="mb-2 block text-sm font-medium">Tool Policy Version</label><Input type="number" min="1" value={toolPolicyVersion} onChange={(event) => setToolPolicyVersion(event.target.value)} disabled={loading || saving} /></div>
-          </div>
-
-          {runtimeType === "PI" && role !== "CODING_AGENT" ? <p className="border-l-2 border-rose-500 bg-rose-50 px-3 py-2 text-xs text-rose-800">Pi Agent 当前仅允许编码执行角色，保存会被拒绝。</p> : null}
-          <div className="flex flex-wrap items-center gap-4 border-y border-slate-200 py-3 text-sm">
-            <label className="flex items-center gap-2"><input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} disabled={loading || saving} />允许解析使用</label>
-            <label className="flex items-center gap-2">Profile 版本 <Input className="h-9 w-24" type="number" min="1" value={version} onChange={(event) => setVersion(event.target.value)} disabled={loading || saving || !!selectedProfileId} /></label>
-          </div>
-          <div><label className="mb-2 block text-sm font-medium">Agent 运行时操作令牌</label><Input type="password" value={mutationToken} onChange={(event) => setMutationToken(event.target.value)} autoComplete="one-time-code" disabled={loading || saving} /></div>
-        </div>
-        <DialogFooter className="shrink-0 flex-wrap border-t border-slate-200 pt-4">
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>关闭</Button>
-          <Button variant="outline" onClick={() => void bindDefault()} disabled={loading || saving || !selectedProfileId}>绑定当前角色默认</Button>
-          <Button onClick={() => void save()} disabled={loading || saving}>{saving ? "保存中..." : selectedProfileId ? "更新 Profile" : "注册 Profile"}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

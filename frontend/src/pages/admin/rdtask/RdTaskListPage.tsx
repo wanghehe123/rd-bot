@@ -1,17 +1,22 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   AlertTriangle,
+  Bug,
+  CheckCircle2,
   ClipboardList,
+  Clock3,
   FileText,
+  FolderOpen,
   GitBranch,
+  ImagePlus,
   ListChecks,
+  MoreHorizontal,
+  Pause,
   Pencil,
   Play,
-  Pause,
   Plus,
   RefreshCw,
-  ImagePlus,
   Sparkles,
   Terminal,
   Trash2
@@ -21,6 +26,13 @@ import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -385,237 +397,324 @@ export function RdTaskListPage() {
     }
   };
 
+  const metrics = useMemo(() => {
+    let inProgress = 0;
+    let waiting = 0;
+    let failed = 0;
+    let completed = 0;
+    for (const t of records) {
+      if (["EXECUTING", "SEARCHING", "VALIDATING", "PR_CREATING", "MATERIAL_COLLECTING", "CONTEXT_BUILDING", "PLAN_GENERATING", "REPORTING", "RECOVERING", "RUNNING"].includes(t.status)) {
+        inProgress++;
+      } else if (["WAITING_APPROVAL", "WAITING_POLICY", "FAILED_NEEDS_HUMAN"].includes(t.status)) {
+        waiting++;
+      } else if (["FAILED_RETRYABLE", "DEAD_LETTERED", "REJECTED"].includes(t.status)) {
+        failed++;
+      } else if (["COMPLETED", "MERGED", "COMMITTED"].includes(t.status)) {
+        completed++;
+      }
+    }
+    return { inProgress, waiting, failed, completed };
+  }, [records]);
+
   return (
     <div className="admin-page">
       <div className="admin-page-header">
-          <div>
-            <h1 className="admin-page-title">任务管理</h1>
-            <p className="admin-page-subtitle">管理 RD 任务：检索、执行、提交、评审全流程</p>
-          </div>
-          <div className="admin-page-actions">
-            <Input
-              value={searchInput}
-              onChange={(event) => setSearchInput(event.target.value)}
-              placeholder="搜索标题 / 工单"
-              className="w-[220px]"
-              onKeyDown={(event) => event.key === "Enter" && handleSearch()}
-            />
-            <Select
-              value={statusFilter || "all"}
-              onValueChange={handleStatusChange}
-            >
-              <SelectTrigger className="w-[160px]">
-                <SelectValue placeholder="状态" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">全部状态</SelectItem>
-                {STATUS_OPTIONS.map((option) => (
-                  <SelectItem key={option.value} value={option.value}>
-                    {option.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Select
-              value={taskTypeFilter || "all"}
-              onValueChange={handleTaskTypeChange}
-            >
-              <SelectTrigger className="w-[140px]">
-                <SelectValue placeholder="类型" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">全部类型</SelectItem>
-                {TASK_TYPE_OPTIONS.map((option) => (
-                  <SelectItem key={option.value} value={option.value}>
-                    {option.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Select
-              value={projectIdFilter || "all"}
-              onValueChange={handleProjectChange}
-              disabled={filterProjectsLoading}
-            >
-              <SelectTrigger className="w-[200px]" aria-label="按项目筛选">
-                <SelectValue placeholder={filterProjectsLoading ? "加载项目中..." : "全部项目"} />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">全部项目</SelectItem>
-                {filterProjectOptions.map((project) => (
-                  <SelectItem key={project.projectId} value={project.projectId}>
-                    {project.name} · {project.projectKey}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Button variant="outline" onClick={handleRefresh}>
-              <RefreshCw className="mr-2 h-4 w-4" />
-              刷新
-            </Button>
-            <Button className="admin-primary-gradient" onClick={() => setCreateOpen(true)}>
-              <Plus className="mr-2 h-4 w-4" />
-              新建任务
-            </Button>
-          </div>
+        <div>
+          <h1 className="admin-page-title">任务管理</h1>
+          <p className="admin-page-subtitle">管理 RD 任务：检索、执行、提交、评审全流程</p>
         </div>
+        <div className="admin-page-actions">
+          <Input
+            value={searchInput}
+            onChange={(event) => setSearchInput(event.target.value)}
+            placeholder="搜索标题 / 工单"
+            className="w-[220px]"
+            onKeyDown={(event) => event.key === "Enter" && handleSearch()}
+          />
+          <Select
+            value={statusFilter || "all"}
+            onValueChange={handleStatusChange}
+          >
+            <SelectTrigger className="w-[160px]">
+              <SelectValue placeholder="状态" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部状态</SelectItem>
+              {STATUS_OPTIONS.map((option) => (
+                <SelectItem key={option.value} value={option.value}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select
+            value={taskTypeFilter || "all"}
+            onValueChange={handleTaskTypeChange}
+          >
+            <SelectTrigger className="w-[140px]">
+              <SelectValue placeholder="类型" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部类型</SelectItem>
+              {TASK_TYPE_OPTIONS.map((option) => (
+                <SelectItem key={option.value} value={option.value}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select
+            value={projectIdFilter || "all"}
+            onValueChange={handleProjectChange}
+            disabled={filterProjectsLoading}
+          >
+            <SelectTrigger className="w-[200px]" aria-label="按项目筛选">
+              <SelectValue placeholder={filterProjectsLoading ? "加载项目中..." : "全部项目"} />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部项目</SelectItem>
+              {filterProjectOptions.map((project) => (
+                <SelectItem key={project.projectId} value={project.projectId}>
+                  {project.name} · {project.projectKey}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Button variant="outline" onClick={handleRefresh}>
+            <RefreshCw className="mr-2 h-4 w-4" />
+            刷新
+          </Button>
+          <Button className="admin-primary-gradient" onClick={() => setCreateOpen(true)}>
+            <Plus className="mr-2 h-4 w-4" />
+            新建任务
+          </Button>
+        </div>
+      </div>
 
-        <Card>
-          <CardContent className="min-w-0 pt-6">
-            {loading ? (
-              <div className="py-8 text-center text-muted-foreground">加载中...</div>
-            ) : records.length === 0 ? (
-              <div className="py-8 text-center text-muted-foreground">
-                暂无任务，点击「新建任务」创建
-              </div>
-            ) : (
+      <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <div
+          role="button"
+          tabIndex={0}
+          className="flex cursor-pointer items-center justify-between rounded-lg border border-slate-200 bg-white p-3.5 shadow-sm transition hover:border-primary/40 hover:shadow"
+          onClick={() => handleStatusChange("all")}
+          onKeyDown={(e) => e.key === "Enter" && handleStatusChange("all")}
+        >
+          <div>
+            <div className="text-xs text-muted-foreground">当前页总数</div>
+            <div className="text-lg font-bold text-slate-900">{total} <span className="text-xs font-normal text-slate-400">条</span></div>
+          </div>
+          <ClipboardList className="h-5 w-5 text-slate-400" />
+        </div>
+        <div
+          role="button"
+          tabIndex={0}
+          className="flex cursor-pointer items-center justify-between rounded-lg border border-teal-200 bg-teal-50/40 p-3.5 shadow-sm transition hover:border-teal-400 hover:shadow"
+          onClick={() => handleStatusChange("EXECUTING")}
+          onKeyDown={(e) => e.key === "Enter" && handleStatusChange("EXECUTING")}
+        >
+          <div>
+            <div className="text-xs font-medium text-teal-800">进行中</div>
+            <div className="text-lg font-bold text-teal-900">{metrics.inProgress}</div>
+          </div>
+          <Play className="h-5 w-5 text-teal-600" />
+        </div>
+        <div
+          role="button"
+          tabIndex={0}
+          className="flex cursor-pointer items-center justify-between rounded-lg border border-amber-200 bg-amber-50/40 p-3.5 shadow-sm transition hover:border-amber-400 hover:shadow"
+          onClick={() => handleStatusChange("WAITING_APPROVAL")}
+          onKeyDown={(e) => e.key === "Enter" && handleStatusChange("WAITING_APPROVAL")}
+        >
+          <div>
+            <div className="text-xs font-medium text-amber-800">等待人工 / 审批</div>
+            <div className="text-lg font-bold text-amber-900">{metrics.waiting}</div>
+          </div>
+          <Clock3 className="h-5 w-5 text-amber-600" />
+        </div>
+        <div
+          role="button"
+          tabIndex={0}
+          className="flex cursor-pointer items-center justify-between rounded-lg border border-rose-200 bg-rose-50/40 p-3.5 shadow-sm transition hover:border-rose-400 hover:shadow"
+          onClick={() => handleStatusChange("FAILED_RETRYABLE")}
+          onKeyDown={(e) => e.key === "Enter" && handleStatusChange("FAILED_RETRYABLE")}
+        >
+          <div>
+            <div className="text-xs font-medium text-rose-800">异常 / 待重试</div>
+            <div className="text-lg font-bold text-rose-900">{metrics.failed}</div>
+          </div>
+          <AlertTriangle className="h-5 w-5 text-rose-600" />
+        </div>
+      </div>
+
+      <Card>
+        <CardContent className="min-w-0 pt-6">
+          {loading ? (
+            <div className="py-8 text-center text-muted-foreground">加载中...</div>
+          ) : records.length === 0 ? (
+            <div className="py-8 text-center text-muted-foreground">
+              暂无任务，点击「新建任务」创建
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
               <Table className="min-w-[1080px] table-fixed">
                 <TableHeader>
                   <TableRow>
-                    <TableHead className="w-[230px]">标题</TableHead>
-                    <TableHead className="w-[80px]">类型</TableHead>
-                    <TableHead className="w-[120px]">项目</TableHead>
-                    <TableHead className="w-[130px]">工单</TableHead>
-                    <TableHead className="w-[72px]">优先级</TableHead>
-                    <TableHead className="w-[110px]">状态</TableHead>
-                    <TableHead className="w-[64px]">暂停</TableHead>
-                    <TableHead className="w-[118px]">更新时间</TableHead>
-                    <TableHead className="w-[176px] text-left">操作</TableHead>
+                    <TableHead className="w-[320px]">任务与所属项目</TableHead>
+                    <TableHead className="w-[90px]">类型</TableHead>
+                    <TableHead className="w-[70px]">优先级</TableHead>
+                    <TableHead className="w-[120px]">状态</TableHead>
+                    <TableHead className="w-[110px]">更新时间</TableHead>
+                    <TableHead className="w-[150px] text-left">操作</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {records.map((task) => (
-                    <TableRow key={task.taskId}>
+                    <TableRow key={task.taskId} className="hover:bg-slate-50/80">
                       <TableCell className="font-medium">
-                        <button
-                          type="button"
-                          className="admin-link block max-w-full truncate"
-                          title={task.title}
-                          onClick={() => navigate(`/admin/rd-tasks/${task.taskId}`)}
-                        >
-                          {task.title || "-"}
-                        </button>
-                        {task.errorMessage ? (
-                          <div className="mt-0.5 truncate text-xs text-destructive">
-                            {truncate(task.errorMessage, 50)}
+                        <div className="min-w-0">
+                          <button
+                            type="button"
+                            className="admin-link block max-w-full truncate text-left text-sm font-semibold text-slate-900 hover:text-primary"
+                            title={task.title}
+                            onClick={() => navigate(`/admin/rd-tasks/${task.taskId}`)}
+                          >
+                            {task.title || "-"}
+                          </button>
+                          <div className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-xs text-muted-foreground">
+                            <span className="inline-flex items-center gap-1 font-medium text-slate-700" title={task.projectName || task.projectKey || "-"}>
+                              <FolderOpen className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                              <span className="max-w-[130px] truncate">{task.projectName || task.projectKey || "-"}</span>
+                            </span>
+                            <span className="text-slate-300">/</span>
+                            <span className="inline-flex items-center gap-1 font-mono text-[11px] text-slate-600" title={task.taskType === "REQUIREMENT" ? (task.baseBranch || "-") : (task.ticketId || "-")}>
+                              {task.taskType === "REQUIREMENT" ? <GitBranch className="h-3 w-3 shrink-0 text-muted-foreground" /> : <ClipboardList className="h-3 w-3 shrink-0 text-muted-foreground" />}
+                              <span className="max-w-[110px] truncate">{task.taskType === "REQUIREMENT" ? (task.baseBranch || "-") : (task.ticketId || "-")}</span>
+                            </span>
                           </div>
-                        ) : null}
+                          {task.errorMessage ? (
+                            <div className="mt-1.5 flex items-center gap-1.5 rounded border border-rose-200 bg-rose-50/80 px-2 py-0.5 text-xs text-rose-800" title={task.errorMessage}>
+                              <AlertTriangle className="h-3 w-3 shrink-0 text-rose-600" />
+                              <span className="truncate">{truncate(task.errorMessage, 45)}</span>
+                            </div>
+                          ) : null}
+                        </div>
                       </TableCell>
                       <TableCell>
-                        <Badge variant="outline">
-                          {task.taskType === "REQUIREMENT" ? "做需求" : "修 Bug"}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="truncate text-sm text-muted-foreground">
-                        <span title={task.projectName || task.projectKey || "-"}>
-                          {task.projectName || task.projectKey || "-"}
-                        </span>
-                      </TableCell>
-                      <TableCell className="truncate text-sm text-muted-foreground">
-                        <span title={task.taskType === "REQUIREMENT" ? (task.baseBranch || "-") : (task.ticketId || "-")}>
-                          {task.taskType === "REQUIREMENT" ? (task.baseBranch || "-") : (task.ticketId || "-")}
-                        </span>
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant="outline">{task.priority}</Badge>
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant="outline" className={STATUS_BADGE_CLASS[task.status] || ""}>
-                          {task.status}
+                        <Badge variant="outline" className={task.taskType === "REQUIREMENT" ? "border-sky-200 bg-sky-50 text-sky-700" : "border-amber-200 bg-amber-50 text-amber-700"}>
+                          {task.taskType === "REQUIREMENT" ? "需求" : "Bug"}
                         </Badge>
                       </TableCell>
                       <TableCell>
-                        {task.paused ? (
-                          <Badge variant="outline" className="border-amber-200 bg-amber-50 text-amber-700">
-                            已暂停
+                        <Badge variant="outline" className="font-mono text-xs">{task.priority}</Badge>
+                      </TableCell>
+                      <TableCell>
+                        <div className="space-y-1">
+                          <Badge variant="outline" className={STATUS_BADGE_CLASS[task.status] || ""}>
+                            {task.status}
                           </Badge>
-                        ) : (
-                          <span className="text-muted-foreground/40">-</span>
-                        )}
+                          {task.paused ? (
+                            <div className="inline-block rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">
+                              已暂停
+                            </div>
+                          ) : null}
+                        </div>
                       </TableCell>
-                      <TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
                         <RelativeTime value={new Date(task.updateTimeEpochMillis).toISOString()} />
                       </TableCell>
                       <TableCell>
-                        <div className="grid grid-cols-2 gap-2">
+                        <div className="flex items-center gap-1.5">
                           <Button
                             size="sm"
                             variant="outline"
+                            className="h-8 gap-1 px-2.5 text-xs font-medium text-slate-700 hover:border-primary/40 hover:text-primary"
                             onClick={() => navigate(`/admin/rd-tasks/${task.taskId}`)}
                           >
-                            <ClipboardList className="mr-1 h-4 w-4" />
-                            详情
+                            <ClipboardList className="h-3.5 w-3.5" />
+                            <span>详情</span>
                           </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => setEditTarget(task)}
-                          >
-                            <Pencil className="mr-1 h-4 w-4" />
-                            编辑
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => handleTogglePause(task)}
-                          >
-                            {task.paused ? (
-                              <>
-                                <Play className="mr-1 h-4 w-4" />
-                                重启
-                              </>
-                            ) : (
-                              <>
-                                <Pause className="mr-1 h-4 w-4" />
-                                暂停
-                              </>
-                            )}
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="text-destructive hover:text-destructive"
-                            onClick={() => setDeleteTarget(task)}
-                          >
-                            <Trash2 className="mr-1 h-4 w-4" />
-                            删除
-                          </Button>
+                          {task.paused ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-8 gap-1 border-amber-300 bg-amber-50 px-2 text-xs text-amber-800 hover:bg-amber-100"
+                              onClick={() => handleTogglePause(task)}
+                              title="恢复并重新触发"
+                            >
+                              <Play className="h-3 w-3" />
+                              <span>重启</span>
+                            </Button>
+                          ) : null}
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-8 w-8 p-0 text-slate-500 hover:text-slate-900"
+                                aria-label="更多操作"
+                                title="更多操作"
+                              >
+                                <MoreHorizontal className="h-4 w-4" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" className="w-36">
+                              <DropdownMenuItem onClick={() => setEditTarget(task)}>
+                                <Pencil className="mr-2 h-4 w-4 text-muted-foreground" />
+                                <span>编辑任务</span>
+                              </DropdownMenuItem>
+                              {!task.paused ? (
+                                <DropdownMenuItem onClick={() => handleTogglePause(task)}>
+                                  <Pause className="mr-2 h-4 w-4 text-muted-foreground" />
+                                  <span>暂停任务</span>
+                                </DropdownMenuItem>
+                              ) : null}
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem
+                                className="text-destructive focus:bg-destructive/10 focus:text-destructive"
+                                onClick={() => setDeleteTarget(task)}
+                              >
+                                <Trash2 className="mr-2 h-4 w-4" />
+                                <span>删除任务</span>
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
                         </div>
                       </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
               </Table>
-            )}
-
-            <div className="mt-4 flex flex-wrap items-center justify-between gap-2 text-sm text-slate-500">
-              <span>共 {total} 条</span>
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => loadTasks(Math.max(1, page - 1), statusFilter, keyword, taskTypeFilter, projectIdFilter)}
-                  disabled={page <= 1}
-                >
-                  上一页
-                </Button>
-                <span>
-                  {page} / {pages || 1}
-                </span>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => loadTasks(Math.min(pages || 1, page + 1), statusFilter, keyword, taskTypeFilter, projectIdFilter)}
-                  disabled={page >= pages}
-                >
-                  下一页
-                </Button>
-              </div>
             </div>
-          </CardContent>
-        </Card>
+          )}
 
-        <RdTaskEditDialog
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-2 text-sm text-slate-500">
+            <span>共 {total} 条</span>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => loadTasks(Math.max(1, page - 1), statusFilter, keyword, taskTypeFilter, projectIdFilter)}
+                disabled={page <= 1}
+              >
+                上一页
+              </Button>
+              <span>
+                {page} / {pages || 1}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => loadTasks(Math.min(pages || 1, page + 1), statusFilter, keyword, taskTypeFilter, projectIdFilter)}
+                disabled={page >= pages}
+              >
+                下一页
+              </Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <RdTaskEditDialog
           open={createOpen}
           mode="create"
           onOpenChange={setCreateOpen}

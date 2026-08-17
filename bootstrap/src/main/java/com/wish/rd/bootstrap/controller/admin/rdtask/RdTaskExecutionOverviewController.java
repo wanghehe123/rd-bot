@@ -21,6 +21,8 @@ import com.wish.rd.exec.repair.alert.BudgetCurrencyConverter;
 import com.wish.rd.exec.repair.runtime.model.AgentExecutionEvent;
 import com.wish.rd.exec.repair.runtime.AgentExecutionEventParser;
 import com.wish.rd.exec.repair.runtime.usage.AgentEventTokenUsageParser;
+import com.wish.rd.exec.repair.runtime.usage.AgentRuntimeMeasurementParser;
+import com.wish.rd.exec.repair.runtime.usage.model.AgentRuntimeMeasurementSummary;
 import com.wish.rd.exec.repair.runtime.AgentExecutionEventStore;
 import com.wish.rd.exec.repair.runtime.model.AgentExecutionTraceSnapshot;
 import com.wish.rd.rag.context.RoleContextPackageStore;
@@ -77,6 +79,7 @@ public class RdTaskExecutionOverviewController {
     private final BudgetCurrencyConverter budgetCurrencyConverter;
     private final AgentStageProgressCalculator stageProgressCalculator;
     private final AgentEventTokenUsageParser agentEventTokenUsageParser = new AgentEventTokenUsageParser();
+    private final AgentRuntimeMeasurementParser agentRuntimeMeasurementParser = new AgentRuntimeMeasurementParser();
     private final ClaudeExecutionTraceParser executionTraceParser = new ClaudeExecutionTraceParser();
     private RdProjectTokenBudgetService projectTokenBudgetService;
 
@@ -698,6 +701,10 @@ public class RdTaskExecutionOverviewController {
         if (attemptMeasured) {
             return attemptTokens;
         }
+        long measurementTokens = measuredTokensFromRuntimeMeasurement(stageRun);
+        if (measurementTokens > 0L) {
+            return measurementTokens;
+        }
         if (shouldMeasureAgentEventsArtifact(stageRun)) {
             return measuredTokensFromAgentEvents(stageRun);
         }
@@ -771,6 +778,29 @@ public class RdTaskExecutionOverviewController {
                         )
                 )
         );
+    }
+
+    private long measuredTokensFromRuntimeMeasurement(AgentStageRun stageRun) {
+        return artifactStore.listByTask(stageRun.taskId()).stream()
+                .filter(artifact -> stageRun.stageRunId().equals(artifact.stageRunId()))
+                .filter(artifact -> "RUNTIME_MEASUREMENT".equals(artifact.artifactType()))
+                .max(RdTaskExecutionOverviewController::compareArtifact)
+                .map(artifact -> parseRuntimeMeasurementTokens(artifact.contentPreview()))
+                .orElse(0L);
+    }
+
+    private long parseRuntimeMeasurementTokens(String preview) {
+        if (preview == null || preview.isBlank()) {
+            return 0L;
+        }
+        try {
+            AgentRuntimeMeasurementSummary summary = OBJECT_MAPPER.readValue(
+                    preview, AgentRuntimeMeasurementSummary.class);
+            return summary != null && summary.usageAvailable() ? summary.totalTokens() : 0L;
+        } catch (Exception ignored) {
+            AgentRuntimeMeasurementSummary parsed = agentRuntimeMeasurementParser.parse(preview);
+            return parsed.usageAvailable() ? parsed.totalTokens() : 0L;
+        }
     }
 
     private long measuredTokensFromAgentEvents(AgentStageRun stageRun) {

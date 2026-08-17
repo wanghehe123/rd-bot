@@ -69,3 +69,31 @@ straightforward CRUD work or obvious test fixes.
   the running backend keeps serving stale in-container rules otherwise.
 - See `docs/superpowers/specs/2026-07-28-qa-evidence-reference-and-production-mode-spec.md`
   for the verified chain, acceptance criteria, and failure handling.
+
+## OpenSpec spec maintenance
+
+- Before changing behavior, read `RULE.md`, the relevant file under
+  `openspec/specs/`, and the corresponding frozen `docs/superpowers/specs/`.
+- Before using historical material, consult
+  `docs/openspec/historical-spec-provenance-audit.md`. Classify every source as
+  current verified behavior, an implementation claim needing revalidation, a
+  plan/decision, historical evidence/superseded material, or unresolved work.
+  Only current code-and-test evidence may become a main-spec requirement; plans
+  and historical evidence belong in a new change's context or non-goals.
+- Every spec-maintenance change must record the historical document paths,
+  current code/test anchors, and commands actually run. Do not treat a document
+  date, a past acceptance record, or an existing class name as current proof.
+- Behavior changes must use a new `openspec/changes/<name>/` delta; do not edit
+  `openspec/specs/` directly. Archive only after implementation and tests match,
+  then run `openspec validate --all --strict`.
+- For OpenViking changes, trace
+  `KnowledgeProjectionAdminController → KnowledgeProjectionAdminEngine → stores/ports`
+  and the frontend `App → page → service → Vite proxy` chain before editing.
+- Keep OpenViking as a rebuildable projection: PostgreSQL is the desired/observed
+  truth, owned-root checks and safe error translation remain mandatory, and only
+  environment-variable names may appear in docs or config.
+- Verification baseline: `./mvnw -q -pl rag -am -Dtest=OpenVikingProjectionUrisTest,OpenVikingLocalRetrievalBaselineTest -Dsurefire.failIfNoSpecifiedTests=false test`,
+  the focused Bootstrap OpenViking tests, and
+  `cd frontend && node --experimental-strip-types --test test/*.test.ts && npm run typecheck && npm run build`.
+- After changing the OpenSpec CLI profile or upgrading the CLI, run
+  `OPENSPEC_NO_UPDATE_CHECK=1 openspec update --force` in the repository.

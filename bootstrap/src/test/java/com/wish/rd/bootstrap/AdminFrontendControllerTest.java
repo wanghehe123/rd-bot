@@ -1,25 +1,36 @@
 package com.wish.rd.bootstrap;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
-import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.http.MediaType;
+import org.springframework.http.converter.StringHttpMessageConverter;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+
+import java.nio.charset.StandardCharsets;
 
 import static org.hamcrest.Matchers.containsString;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@SpringBootTest
-@AutoConfigureMockMvc
+import com.wish.rd.bootstrap.controller.admin.AdminFrontendController;
+
 class AdminFrontendControllerTest {
 
     private static final String ADMIN_TITLE = "RD-Bot 管理后台";
 
-    @Autowired
     private MockMvc mockMvc;
+
+    @BeforeEach
+    void setUp() {
+        mockMvc = MockMvcBuilders.standaloneSetup(new AdminFrontendController())
+                .setMessageConverters(new StringHttpMessageConverter(StandardCharsets.UTF_8))
+                .defaultResponseCharacterEncoding(StandardCharsets.UTF_8)
+                .build();
+    }
 
     @Test
     void servesKnowledgeAdminFrontendRoutesFromSingleSpringBootService() throws Exception {
@@ -58,6 +69,7 @@ class AdminFrontendControllerTest {
                 "/admin/dashboard",
                 "/admin/traces",
                 "/admin/traces/trace-ticket-prompt-flow",
+                "/admin/observability",
                 "/admin/settings"
         }) {
             mockMvc.perform(get(route))
@@ -80,13 +92,13 @@ class AdminFrontendControllerTest {
         mockMvc.perform(get("/admin/mappings"))
                 .andExpect(status().isNotFound());
 
-        mockMvc.perform(get("/admin/admin-knowledge.css"))
-                .andExpect(status().isOk())
-                .andExpect(content().string(containsString(".admin-layout")));
-
-        mockMvc.perform(get("/admin/admin-knowledge.js"))
-                .andExpect(status().isOk())
-                .andExpect(content().string(containsString("createRoot")));
+        String css = new ClassPathResource("static/admin/admin-knowledge.css")
+                .getContentAsString(StandardCharsets.UTF_8);
+        String js = new ClassPathResource("static/admin/admin-knowledge.js")
+                .getContentAsString(StandardCharsets.UTF_8);
+        assertTrue(css.contains(".admin-layout"));
+        assertTrue(js.contains("createRoot"));
+        assertTrue(css.contains("observability-page"));
     }
 
     @Test

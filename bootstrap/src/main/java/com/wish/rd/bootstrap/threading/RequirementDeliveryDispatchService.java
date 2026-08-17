@@ -418,7 +418,7 @@ public class RequirementDeliveryDispatchService {
             jobStore.enqueue(RequirementDeliveryJob.pending(
                     idGenerator.nextIdString(), taskId, maxAttempts, now));
         }
-        metrics.recordEnqueued(stageCommand, now);
+        observe(() -> metrics.recordEnqueued(stageCommand, now));
         CompletableFuture<RequirementDeliveryResult> future = pendingFutures.computeIfAbsent(
                 stageCommand.commandId(), ignored -> new CompletableFuture<>());
         claimAndSchedule(now, stageCommand.commandId(), future);
@@ -535,7 +535,7 @@ public class RequirementDeliveryDispatchService {
         try {
             executor.execute(() -> runClaimedCommand(stageCommand, future));
         } catch (TaskRejectedException exception) {
-            metrics.recordQueueRejected();
+            observe(metrics::recordQueueRejected);
             requeueRejectedStageCommand(stageCommand, exception);
             future.completeExceptionally(exception);
             log.warn("requirement delivery queue rejected a leased stage command; command was requeued, taskId={}",
@@ -594,7 +594,7 @@ public class RequirementDeliveryDispatchService {
                 inFlightByResource.merge(resource, 1, Integer::sum);
             }
         }
-        metrics.recordInFlight(inFlightByResource, schedulingPolicy.limits());
+        observe(() -> metrics.recordInFlight(inFlightByResource, schedulingPolicy.limits()));
         List<RequirementStageCommand> planned = claimPlanner.planStageCommands(
                 candidates, inFlight, schedulingPolicy.limits(), nowEpochMillis, schedulingPolicy.projectWeights());
         List<RequirementStageCommand> claimed = stageCommandStore.claimFairBatch(
@@ -604,7 +604,7 @@ public class RequirementDeliveryDispatchService {
                 leaseMillis,
                 schedulingPolicy);
         for (RequirementStageCommand claimedCommand : claimed) {
-            metrics.recordClaimed(claimedCommand, nowEpochMillis);
+            observe(() -> metrics.recordClaimed(claimedCommand, nowEpochMillis));
             // Remove the association only after the durable claim succeeds. If the planner
             // deferred this command, the map entry must survive until a later recovery tick.
             CompletableFuture<RequirementDeliveryResult> future = pendingFutures.remove(
@@ -749,7 +749,7 @@ public class RequirementDeliveryDispatchService {
             bridgedLegacyResults.remove();
             cancelHeartbeat(heartbeat);
             if (leaseLost.get()) {
-                metrics.recordLeaseLost();
+                observe(metrics::recordLeaseLost);
             }
             boolean recordedOutcomeMustRemainRecoverable = marker != null && marker.isOutcomeRecorded();
             if (!recordedOutcomeMustRemainRecoverable) {
@@ -839,13 +839,13 @@ public class RequirementDeliveryDispatchService {
                         + stageCommand.commandId());
             }
             long now = System.currentTimeMillis();
-            metrics.recordCompleted(stageCommand, now);
-            metrics.recordEnqueued(recorded.policyApplyCommand(), now);
+            observe(() -> metrics.recordCompleted(stageCommand, now));
+            observe(() -> metrics.recordEnqueued(recorded.policyApplyCommand(), now));
             scheduleStageCommand(recorded.policyApplyCommand(), future, now);
         } catch (RuntimeException | LinkageError exception) {
             cancelHeartbeat(heartbeat);
             if (leaseLost.get()) {
-                metrics.recordLeaseLost();
+                observe(metrics::recordLeaseLost);
             }
             failPolicyControlCommand(stageCommand, safeError(exception));
             log.error("policy-evaluate control command failed, commandId={}, taskId={}",
@@ -889,9 +889,9 @@ public class RequirementDeliveryDispatchService {
                         + stageCommand.commandId());
             }
             long now = System.currentTimeMillis();
-            metrics.recordCompleted(stageCommand, now);
+            observe(() -> metrics.recordCompleted(stageCommand, now));
             if (applied.disposition() == RequirementPolicyApplyDisposition.ALLOWED) {
-                metrics.recordEnqueued(applied.nextCommand(), now);
+                observe(() -> metrics.recordEnqueued(applied.nextCommand(), now));
                 scheduleStageCommand(applied.nextCommand(), future, now);
                 return;
             }
@@ -904,7 +904,7 @@ public class RequirementDeliveryDispatchService {
         } catch (RuntimeException | LinkageError exception) {
             cancelHeartbeat(heartbeat);
             if (leaseLost.get()) {
-                metrics.recordLeaseLost();
+                observe(metrics::recordLeaseLost);
             }
             failPolicyControlCommand(stageCommand, safeError(exception));
             log.error("policy-apply control command failed, commandId={}, taskId={}",
@@ -1038,15 +1038,15 @@ public class RequirementDeliveryDispatchService {
                         + stageCommand.commandId());
             }
             long now = System.currentTimeMillis();
-            metrics.recordCompleted(stageCommand, now);
-            metrics.recordEnqueued(resumed.nextCommand(), now);
+            observe(() -> metrics.recordCompleted(stageCommand, now));
+            observe(() -> metrics.recordEnqueued(resumed.nextCommand(), now));
             // The consumer already inserted this continuation in its transaction. Scheduling it
             // must claim the exact durable identity, never enqueue a generic policy/role command.
             scheduleStageCommand(resumed.nextCommand(), future, now);
         } catch (RuntimeException | LinkageError exception) {
             cancelHeartbeat(heartbeat);
             if (leaseLost.get()) {
-                metrics.recordLeaseLost();
+                observe(metrics::recordLeaseLost);
             }
             failApprovalResumeCommand(stageCommand, safeError(exception));
             log.error("approval-resume control command failed, commandId={}, taskId={}",
@@ -1109,11 +1109,16 @@ public class RequirementDeliveryDispatchService {
                         mutationDisposition,
                         System.currentTimeMillis()));
         RequirementStageCommand next = finalized.nextCommand();
+        CommandDisposition disposition = plan.commandDisposition();
+        if (disposition == CommandDisposition.SUCCEEDED) {
+            observe(() -> metrics.recordCompleted(stageCommand, System.currentTimeMillis()));
+        } else if (disposition == CommandDisposition.RETRYABLE_TECHNICAL_FAILURE) {
+            observe(metrics::recordRetry);
+        }
         if (next == null || next.commandId().equals(stageCommand.commandId())) {
             return false;
         }
-        metrics.recordCompleted(stageCommand, System.currentTimeMillis());
-        metrics.recordEnqueued(next, System.currentTimeMillis());
+        observe(() -> metrics.recordEnqueued(next, System.currentTimeMillis()));
         scheduleStageCommand(next, future, System.currentTimeMillis());
         return true;
     }
@@ -1413,12 +1418,12 @@ public class RequirementDeliveryDispatchService {
         }
         try {
             if (result == null || result.status() == RdTaskStatus.FAILED_RETRYABLE) {
-                metrics.recordRetry();
+                observe(metrics::recordRetry);
                 stageCommandStore.fail(stageCommand, workerId,
                         result == null ? "stage executor returned null" : result.errorMessage(),
                         System.currentTimeMillis());
             } else {
-                metrics.recordCompleted(stageCommand, System.currentTimeMillis());
+                observe(() -> metrics.recordCompleted(stageCommand, System.currentTimeMillis()));
                 stageCommandStore.complete(stageCommand, workerId, System.currentTimeMillis());
             }
         } catch (RuntimeException exception) {
@@ -1443,7 +1448,7 @@ public class RequirementDeliveryDispatchService {
         if (next.commandId().equals(completed.commandId())) {
             return false;
         }
-        metrics.recordEnqueued(next, nowEpochMillis);
+        observe(() -> metrics.recordEnqueued(next, nowEpochMillis));
         scheduleStageCommand(next, future, nowEpochMillis);
         return true;
     }
@@ -1588,7 +1593,7 @@ public class RequirementDeliveryDispatchService {
             return null;
         }
         try {
-            metrics.recordRetry();
+            observe(metrics::recordRetry);
             RequirementStageCommand failed = stageCommandStore.fail(stageCommand, workerId,
                     reason == null ? "" : reason, ownedNow(stageCommand));
             return failed;
@@ -1631,7 +1636,7 @@ public class RequirementDeliveryDispatchService {
             return;
         }
         try {
-            metrics.recordRetry();
+            observe(metrics::recordRetry);
             stageCommandStore.fail(stageCommand, workerId,
                     reason == null ? "" : reason, ownedNow(stageCommand));
         } catch (RuntimeException exception) {
@@ -1649,7 +1654,7 @@ public class RequirementDeliveryDispatchService {
             return;
         }
         try {
-            metrics.recordRetry();
+            observe(metrics::recordRetry);
             if (isTechnicalAttemptExhausted(stageCommand)
                     && ("POLICY_EVALUATE".equals(stageCommand.stage())
                     || "POLICY_APPLY".equals(stageCommand.stage())
@@ -1695,6 +1700,7 @@ public class RequirementDeliveryDispatchService {
                 : result.errorMessage();
         long now = System.currentTimeMillis();
         if (status == RdTaskStatus.FAILED_RETRYABLE) {
+            observe(metrics::recordRetry);
             RequirementDeliveryJob failed = jobStore.fail(job.jobId(), workerId, reason, now);
             if (failed.status() == RequirementDeliveryJobStatus.DEAD_LETTERED) {
                 markTaskDeadLettered(job.taskId(), failed.errorMessage());
@@ -2222,9 +2228,21 @@ public class RequirementDeliveryDispatchService {
         }
     }
 
-    /** Returns the live scheduler counters for the Prometheus/controller adapter. */
+    /**
+     * Returns the live scheduler counters for the Prometheus/controller adapter.
+     *
+     * @return process-window snapshot
+     */
     public RequirementDeliveryMetrics.Snapshot metricsSnapshot() {
         return metrics.snapshot();
+    }
+
+    private void observe(Runnable action) {
+        try {
+            action.run();
+        } catch (RuntimeException exception) {
+            log.warn("delivery observability recording failed: {}", safeError(exception));
+        }
     }
 
     private String safeError(Throwable exception) {

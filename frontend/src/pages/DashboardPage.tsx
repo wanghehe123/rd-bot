@@ -8,12 +8,12 @@ import {
   ClipboardList,
   Clock3,
   Database,
+  LayoutDashboard,
   PlayCircle,
   RefreshCw,
   ShieldCheck
 } from "lucide-react";
 
-import { Empty, PageHeader } from "@/components/Ui";
 import { ProjectScopeSelector } from "@/components/ProjectScopeSelector";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -181,41 +181,46 @@ export function DashboardPage() {
   ];
 
   return (
-    <div className="admin-page dashboard-page">
-      <PageHeader
-        title="Dashboard"
-        description={`${selectedScopeName}的研发交付状态、执行进度与风险概览`}
-        action={
-          <div className="dashboard-header-actions">
-            <ProjectScopeSelector
-              projects={projects}
-              projectId={projectScope.projectId}
-              onProjectChange={projectScope.setProjectId}
-              allowAll
-              loading={projectsState.loading}
-              unavailable={Boolean(projectsState.error)}
-              className="dashboard-project-selector"
-            />
-            <Badge
-              variant="outline"
-              className={dataUnavailable ? "border-amber-200 bg-amber-50 text-amber-700" : "border-emerald-200 bg-emerald-50 text-emerald-700"}
-            >
-              {dataStatusText}
-            </Badge>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={refresh}
-              disabled={loading}
-              aria-label="刷新项目交付数据"
-              title="刷新项目交付数据"
-            >
-              <RefreshCw className={loading ? "spin" : undefined} aria-hidden="true" />
-              刷新
-            </Button>
-          </div>
-        }
-      />
+    <div className="admin-page dashboard-page space-y-4">
+      <div className="admin-page-header">
+        <div>
+          <h1 className="admin-page-title flex items-center gap-2.5">
+            <LayoutDashboard className="h-6 w-6 text-primary" />
+            <span>Dashboard</span>
+          </h1>
+          <p className="admin-page-subtitle">
+            {selectedScopeName}的研发交付状态、执行进度与风险概览
+          </p>
+        </div>
+        <div className="dashboard-header-actions flex flex-wrap items-center gap-2">
+          <ProjectScopeSelector
+            projects={projects}
+            projectId={projectScope.projectId}
+            onProjectChange={projectScope.setProjectId}
+            allowAll
+            loading={projectsState.loading}
+            unavailable={Boolean(projectsState.error)}
+            className="dashboard-project-selector"
+          />
+          <Badge
+            variant="outline"
+            className={dataUnavailable ? "border-amber-200 bg-amber-50 text-amber-700" : "border-emerald-200 bg-emerald-50 text-emerald-700"}
+          >
+            {dataStatusText}
+          </Badge>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={refresh}
+            disabled={loading}
+            aria-label="刷新项目交付数据"
+            title="刷新项目交付数据"
+          >
+            <RefreshCw className={loading ? "spin" : undefined} aria-hidden="true" />
+            刷新
+          </Button>
+        </div>
+      </div>
 
       {projectsState.error || dashboardState.error ? (
         <div className="dashboard-data-notice" role="status">
@@ -481,7 +486,12 @@ function HealthMetric({ label, value, href }: { label: string; value: string; hr
 }
 
 function DashboardEmpty({ loading, message }: { loading: boolean; message: string }) {
-  return <div className="dashboard-empty">{loading ? <Activity className="spin" aria-hidden="true" /> : null}<Empty>{loading ? "正在读取项目交付数据" : message}</Empty></div>;
+  return (
+    <div className="dashboard-empty py-8 text-center text-xs text-muted-foreground">
+      {loading ? <Activity className="spin mx-auto mb-2 h-5 w-5 text-primary" aria-hidden="true" /> : null}
+      <span>{loading ? "正在读取项目交付数据" : message}</span>
+    </div>
+  );
 }
 
 function statusTone(status: string): string {

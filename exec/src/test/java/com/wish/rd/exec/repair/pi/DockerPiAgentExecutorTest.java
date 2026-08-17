@@ -168,8 +168,37 @@ class DockerPiAgentExecutorTest {
         assertEquals(1, attempts.size());
         assertTrue(attempts.get(0).path("tokenUsageAvailable").asBoolean());
         assertEquals(46L, attempts.get(0).path("totalTokens").asLong());
+        assertEquals("rd-runtime-measurement/v1", attempts.get(0).path("measurementSchemaVersion").asText());
+        assertFalse(attempts.get(0).path("firstTokenAvailable").asBoolean());
+        assertTrue(result.artifacts().stream()
+                .anyMatch(artifact -> artifact.type() == RepairArtifactType.RUNTIME_MEASUREMENT));
         assertTrue(result.artifacts().stream()
                 .anyMatch(artifact -> "runtime-context-manifest.json".equals(artifact.name())));
+    }
+
+    @Test
+    void malformedAgentEventsDoNotFailTheRoleExecution() throws Exception {
+        CapturingRunner runner = new CapturingRunner() {
+            @Override
+            public ContainerRunResult run(ContainerRunRequest request, ContainerOutputListener listener) throws IOException {
+                ContainerRunResult result = super.run(request, listener);
+                Path events = request.outputDirectory().resolve("agent-events.jsonl");
+                Files.writeString(events, "{not-json}\n" + Files.readString(events, StandardCharsets.UTF_8), StandardCharsets.UTF_8);
+                return result;
+            }
+        };
+        DockerPiAgentExecutor executor = executor(runner, AgentExecutionEventSink.noop(), ignored -> "secret");
+
+        RepairExecutionResult result = executor.execute(new AgentRuntimeExecutionRequest(
+                snapshot("snapshot-usage-bad", "stage-1", "task-1", AgentRuntimeType.PI, ""),
+                command("task-1", "CODING_AGENT")
+        ));
+
+        assertEquals(RepairExecutionStatus.SUCCESS, result.status());
+        JsonNode attempts = OBJECT_MAPPER.readTree(result.dockerMetadataJson().get("providerAttemptsJson"));
+        assertFalse(attempts.get(0).path("firstTokenAvailable").asBoolean());
+        assertTrue(result.artifacts().stream()
+                .anyMatch(artifact -> artifact.type() == RepairArtifactType.RUNTIME_MEASUREMENT));
     }
 
     @Test

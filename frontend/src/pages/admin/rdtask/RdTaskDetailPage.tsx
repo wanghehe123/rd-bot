@@ -10,6 +10,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { RelativeTime } from "@/components/RelativeTime";
 import { TaskFailureRecoveryWorkbench } from "@/components/admin/rdtask/TaskFailureRecoveryWorkbench";
 import { TaskRoleWorkbench, type RoleWorkbenchTab } from "@/components/admin/rdtask/TaskRoleWorkbench";
+import { HostVerificationCard } from "@/components/admin/rdtask/HostVerificationCard";
 import { getErrorMessage } from "@/utils/error";
 import { cn } from "@/lib/utils";
 import { createTaskRequestGuard, loadTaskDetailShell } from "@/pages/admin/rdtask/rdTaskDetailLoader";
@@ -25,6 +26,7 @@ import {
   getRdTaskRolePrompts,
   getRdTaskMaterials,
   getRdTaskQaEvidence,
+  getRdTaskHostVerifications,
   getRdTaskTimeline,
   approveRdTask,
   pauseRdTask,
@@ -38,6 +40,7 @@ import {
   type RdTaskRolePromptStage,
   type TaskMaterial,
   type RdTaskQaEvidence,
+  type HostVerificationList,
   type RdTaskStatusEvent
 } from "@/services/rdTaskService";
 import {
@@ -191,6 +194,9 @@ export function RdTaskDetailPage() {
   const [failureRecovery, setFailureRecovery] = useState<TaskFailureRecoverySnapshot | null>(null);
   const [failureRecoveryError, setFailureRecoveryError] = useState("");
   const [loadingFailureRecovery, setLoadingFailureRecovery] = useState(false);
+  const [hostVerifications, setHostVerifications] = useState<HostVerificationList | null>(null);
+  const [hostVerificationsError, setHostVerificationsError] = useState("");
+  const [loadingHostVerifications, setLoadingHostVerifications] = useState(false);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [approving, setApproving] = useState(false);
@@ -203,6 +209,7 @@ export function RdTaskDetailPage() {
   const materialLoadSeqRef = useRef(0);
   const recoveryLoadSeqRef = useRef(0);
   const aiReviewLoadSeqRef = useRef(0);
+  const hostVerificationLoadSeqRef = useRef(0);
   const coreLoadSeqRef = useRef(0);
   const retrievalDetailLoadSeqRef = useRef(0);
   const aiReviewDetailLoadSeqRef = useRef(0);
@@ -373,6 +380,26 @@ export function RdTaskDetailPage() {
     }
   }, [taskId]);
 
+  const loadHostVerificationsData = useCallback(async () => {
+    const requestToken = requestGuardRef.current.capture(taskId);
+    const requestSeq = ++hostVerificationLoadSeqRef.current;
+    setLoadingHostVerifications(true);
+    try {
+      const result = await getRdTaskHostVerifications(taskId);
+      if (requestSeq !== hostVerificationLoadSeqRef.current || !requestGuardRef.current.isCurrent(requestToken)) return;
+      setHostVerifications(result || { taskId, runs: [] });
+      setHostVerificationsError("");
+    } catch (error) {
+      if (requestSeq !== hostVerificationLoadSeqRef.current || !requestGuardRef.current.isCurrent(requestToken)) return;
+      setHostVerifications(null);
+      setHostVerificationsError(getErrorMessage(error, "加载宿主验证记录失败"));
+    } finally {
+      if (requestSeq === hostVerificationLoadSeqRef.current && requestGuardRef.current.isCurrent(requestToken)) {
+        setLoadingHostVerifications(false);
+      }
+    }
+  }, [taskId]);
+
   const loadRoleEvidenceData = useCallback(async (signature: string) => {
     const requestToken = requestGuardRef.current.capture(taskId);
     const requestSeq = ++roleEvidenceLoadSeqRef.current;
@@ -471,22 +498,25 @@ export function RdTaskDetailPage() {
     const materialRequestSeq = ++materialLoadSeqRef.current;
     const recoveryRequestSeq = ++recoveryLoadSeqRef.current;
     const aiReviewRequestSeq = ++aiReviewLoadSeqRef.current;
+    const hostVerificationSeq = ++hostVerificationLoadSeqRef.current;
     const failureRequest = taskSnapshot.taskType === "REQUIREMENT" && canRetryRequirement(taskSnapshot)
       ? getTaskFailureRecovery(taskId)
       : Promise.resolve(null);
-    const [timeline, materialList, evidenceList, recovery, runs, reviews] = await Promise.allSettled([
+    const [timeline, materialList, evidenceList, recovery, runs, reviews, verifications] = await Promise.allSettled([
       getRdTaskTimeline(taskId),
       getRdTaskMaterials(taskId),
       getRdTaskQaEvidence(taskId),
       failureRequest,
       getRetrievalRuns(taskId),
-      getAiReviews(taskId)
+      getAiReviews(taskId),
+      getRdTaskHostVerifications(taskId)
     ]);
     if (
       requestSeq !== roleEvidenceLoadSeqRef.current
       || materialRequestSeq !== materialLoadSeqRef.current
       || recoveryRequestSeq !== recoveryLoadSeqRef.current
       || aiReviewRequestSeq !== aiReviewLoadSeqRef.current
+      || hostVerificationSeq !== hostVerificationLoadSeqRef.current
       || !requestGuardRef.current.isCurrent(requestToken)
     ) return;
     const nextErrors: Record<string, string> = {};
@@ -500,6 +530,13 @@ export function RdTaskDetailPage() {
     } else {
       nextErrors.qaEvidence = getErrorMessage(evidenceList.reason, "加载 QA 证据失败");
       setQaEvidenceError(nextErrors.qaEvidence);
+    }
+    if (verifications.status === "fulfilled") {
+      setHostVerifications(verifications.value || { taskId, runs: [] });
+      setHostVerificationsError("");
+    } else {
+      setHostVerifications(null);
+      setHostVerificationsError(getErrorMessage(verifications.reason, "加载宿主验证记录失败"));
     }
     if (recovery.status === "fulfilled") {
       setFailureRecovery(recovery.value);
@@ -539,8 +576,8 @@ export function RdTaskDetailPage() {
         : selectedRoleTab === "evidence"
           ? loadRoleEvidenceData(rolePromptSignature)
           : loadFailureRecoveryData(taskSnapshot);
-    await Promise.all([refreshCore(true), panelRefresh]);
-  }, [loadFailureRecoveryData, loadMaterialsData, loadRoleEvidenceData, refreshCore, refreshSupportingData, rolePromptSignature, selectedRoleTab, view]);
+    await Promise.all([refreshCore(true), loadHostVerificationsData(), panelRefresh]);
+  }, [loadFailureRecoveryData, loadHostVerificationsData, loadMaterialsData, loadRoleEvidenceData, refreshCore, refreshSupportingData, rolePromptSignature, selectedRoleTab, view]);
 
   useEffect(() => {
     requestGuardRef.current.beginTask(taskId);
@@ -550,6 +587,7 @@ export function RdTaskDetailPage() {
     materialLoadSeqRef.current += 1;
     recoveryLoadSeqRef.current += 1;
     aiReviewLoadSeqRef.current += 1;
+    hostVerificationLoadSeqRef.current += 1;
     coreLoadSeqRef.current += 1;
     retrievalDetailLoadSeqRef.current += 1;
     aiReviewDetailLoadSeqRef.current += 1;
@@ -563,6 +601,9 @@ export function RdTaskDetailPage() {
     setMaterials([]);
     setQaEvidence([]);
     setQaEvidenceError("");
+    setHostVerifications(null);
+    setHostVerificationsError("");
+    setLoadingHostVerifications(false);
     setRetrievalRuns([]);
     setAiReviews([]);
     setSelectedRetrievalRun(null);
@@ -587,6 +628,7 @@ export function RdTaskDetailPage() {
     setBudgetApprovalOpen(false);
     setApprovalMessage("");
     void loadInitial();
+    void loadHostVerificationsData();
     return () => {
       requestGuardRef.current.beginTask("");
       loadSeqRef.current += 1;
@@ -595,13 +637,14 @@ export function RdTaskDetailPage() {
       materialLoadSeqRef.current += 1;
       recoveryLoadSeqRef.current += 1;
       aiReviewLoadSeqRef.current += 1;
+      hostVerificationLoadSeqRef.current += 1;
       coreLoadSeqRef.current += 1;
       coreLoadInFlightRef.current = "";
       rolePromptInFlightRef.current = "";
       retrievalDetailLoadSeqRef.current += 1;
       aiReviewDetailLoadSeqRef.current += 1;
     };
-  }, [loadInitial, taskId]);
+  }, [loadHostVerificationsData, loadInitial, taskId]);
 
   useEffect(() => {
     if (view !== "roles" || selectedRoleTab !== "evidence") return;
@@ -1033,272 +1076,325 @@ export function RdTaskDetailPage() {
   }
 
   return (
-    <div className="admin-page">
-      <div className="admin-page-header">
-          <div>
-            <h1 className="admin-page-title">任务详情</h1>
-            <p className="admin-page-subtitle">{task.title || task.taskId}</p>
+    <div className="space-y-6 pb-12">
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div className="space-y-1">
+          <div className="flex flex-wrap items-center gap-3">
+            <h1 className="text-2xl font-bold tracking-tight text-slate-900">{task?.title || "任务详情"}</h1>
+            {task ? <Badge className={STATUS_BADGE_CLASS[task.status]}>{task.status}</Badge> : null}
+            {task?.taskType ? <Badge variant="outline">{task.taskType}</Badge> : null}
           </div>
-          <div className="admin-page-actions">
-            <Button variant="outline" onClick={() => navigate("/admin/rd-tasks")}>
-              <ChevronLeft className="mr-2 h-4 w-4" />
-              返回列表
-            </Button>
-            <Button variant="outline" onClick={handleTogglePause}>
-              {task.paused ? (
-                <>
-                  <Play className="mr-2 h-4 w-4" />
-                  重启
-                </>
-              ) : (
-                <>
-                  <Pause className="mr-2 h-4 w-4" />
-                  暂停
-                </>
-              )}
-            </Button>
-            {task.taskType === "REQUIREMENT" && canRetryRequirement(task) ? (
-              <Button
-                variant="outline"
-                onClick={() => void handleOpenFailureRecovery()}
-                disabled={loadingFailureRecovery}
-              >
-                <RotateCcw className="mr-2 h-4 w-4" />
-                从失败阶段重试
-              </Button>
-            ) : null}
-            {task.taskType === "REQUIREMENT" && canSubmitRequirementTask(task) ? (
-              <Button onClick={handleSubmitTask} disabled={submitting}>
-                <Play className="mr-2 h-4 w-4" />
-                {submitting ? "执行中..." : "执行需求"}
-              </Button>
-            ) : null}
-            {task.taskType === "REQUIREMENT" && canApproveRequirement(task) ? (
-              <Button onClick={() => setBudgetApprovalOpen(true)} disabled={approving || submitting}>
-                <CheckCircle2 className="mr-2 h-4 w-4" />
-                {approving ? "审批中..." : "审批通过并继续"}
-              </Button>
-            ) : null}
-            {task.taskType === "BUG_FIX" && canSubmitBugFix(task) ? (
-              <Button onClick={handleSubmitTask} disabled={submitting}>
-                <Play className="mr-2 h-4 w-4" />
-                {submitting ? "执行中..." : "执行修复"}
-              </Button>
-            ) : null}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500">
+            <span>任务 ID: <code className="font-mono">{task?.taskId || taskId}</code></span>
+            <span>创建时间: {task?.createTimeEpochMillis ? <RelativeTime value={new Date(task.createTimeEpochMillis).toISOString()} /> : "-"}</span>
+            <span>更新时间: {task?.updateTimeEpochMillis ? <RelativeTime value={new Date(task.updateTimeEpochMillis).toISOString()} /> : "-"}</span>
           </div>
         </div>
 
-        <TaskSummaryBand task={task} overview={executionOverview} />
-        <TaskViewNavigation view={view} onChange={(nextView) => updateWorkspaceQuery({ view: nextView })} />
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="outline" size="sm" onClick={() => navigate(-1)}>
+            <ChevronLeft className="mr-1.5 h-4 w-4" />
+            返回列表
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => task && void refreshAll(task)}
+            disabled={loading}
+          >
+            <RotateCcw className="mr-1.5 h-4 w-4" />
+            刷新
+          </Button>
+          <Button variant="outline" size="sm" onClick={handleTogglePause}>
+            {task?.paused ? (
+              <>
+                <Play className="mr-1.5 h-4 w-4 text-emerald-600" />
+                恢复任务
+              </>
+            ) : (
+              <>
+                <Pause className="mr-1.5 h-4 w-4 text-amber-600" />
+                暂停任务
+              </>
+            )}
+          </Button>
+          {task && task.taskType === "REQUIREMENT" && canRetryRequirement(task) ? (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void handleOpenFailureRecovery()}
+              disabled={loadingFailureRecovery}
+            >
+              <RotateCcw className="mr-1.5 h-4 w-4" />
+              从失败阶段重试
+            </Button>
+          ) : null}
+        </div>
+      </div>
 
-        {view === "roles" ? (
-          <TaskRoleWorkbench
-            task={task}
-            overview={executionOverview}
-            overviewError={executionOverviewError}
-            promptStages={rolePromptStages}
-            promptLoading={loadingRolePrompts}
-            promptError={rolePromptError}
-            evidenceLoading={loadingRoleEvidence}
-            qaEvidence={qaEvidence}
-            qaEvidenceError={qaEvidenceError}
-            retrievalRuns={retrievalRuns}
-            retrievalError={retrievalError}
-            materials={materials}
-            failureRecovery={failureRecovery}
-            failureRecoveryLoading={loadingFailureRecovery}
-            failureRecoveryError={failureRecoveryError}
-            selectedRole={selectedRole}
-            selectedAttemptNo={selectedAttemptNo}
-            selectedTab={selectedRoleTab}
-            onSelectionChange={(role, attemptNo) => updateWorkspaceQuery({ role, attempt: attemptNo })}
-            onTabChange={(tab) => updateWorkspaceQuery({ tab })}
-            onInspectRetrievalRun={inspectRetrievalRun}
-            onRefresh={() => refreshAll(task)}
-            captureTaskActionGuard={captureTaskActionGuard}
+      {taskLoadError ? (
+        <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
+          {taskLoadError}
+        </div>
+      ) : null}
+
+      {task ? (
+        <div className="space-y-6">
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50/50 p-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs font-medium text-slate-600">快速操作：</span>
+              {task.taskType === "REQUIREMENT" && canSubmitRequirementTask(task) ? (
+                <Button size="sm" onClick={handleSubmitTask} disabled={submitting}>
+                  <Play className="mr-1.5 h-4 w-4 text-emerald-600" />
+                  {submitting ? "提交中..." : "开始推进"}
+                </Button>
+              ) : null}
+              {task.status === "AWAITING_BUDGET_APPROVAL" ? (
+                <Button size="sm" onClick={() => setBudgetApprovalOpen(true)} disabled={approving}>
+                  <CheckCircle2 className="mr-1.5 h-4 w-4 text-emerald-600" />
+                  审批预算
+                </Button>
+              ) : null}
+              {task.taskType === "BUG_FIX" && canSubmitBugFix(task) ? (
+                <Button size="sm" onClick={handleSubmitTask} disabled={submitting}>
+                  <Play className="mr-1.5 h-4 w-4 text-emerald-600" />
+                  {submitting ? "执行中..." : "执行修复"}
+                </Button>
+              ) : null}
+            </div>
+          </div>
+
+          <TaskSummaryBand task={task} overview={executionOverview} />
+          <TaskViewNavigation view={view} onChange={(nextView) => updateWorkspaceQuery({ view: nextView })} />
+
+          {view === "roles" ? (
+            <div className="space-y-6">
+              <TaskRoleWorkbench
+                task={task}
+                overview={executionOverview}
+                overviewError={executionOverviewError}
+                promptStages={rolePromptStages}
+                promptLoading={loadingRolePrompts}
+                promptError={rolePromptError}
+                evidenceLoading={loadingRoleEvidence}
+                qaEvidence={qaEvidence}
+                qaEvidenceError={qaEvidenceError}
+                retrievalRuns={retrievalRuns}
+                retrievalError={retrievalError}
+                materials={materials}
+                failureRecovery={failureRecovery}
+                failureRecoveryLoading={loadingFailureRecovery}
+                failureRecoveryError={failureRecoveryError}
+                hostVerifications={hostVerifications}
+                selectedRole={selectedRole}
+                selectedAttemptNo={selectedAttemptNo}
+                selectedTab={selectedRoleTab}
+                onSelectionChange={(role, attemptNo) => updateWorkspaceQuery({ role, attempt: attemptNo })}
+                onTabChange={(tab) => updateWorkspaceQuery({ tab })}
+                onInspectRetrievalRun={inspectRetrievalRun}
+                onRefresh={() => refreshAll(task)}
+                captureTaskActionGuard={captureTaskActionGuard}
+              />
+              <HostVerificationCard
+                taskId={task.taskId}
+                verificationList={hostVerifications}
+                loading={loadingHostVerifications}
+                error={hostVerificationsError}
+                onSelectCodingAttempt={(attemptNo) => updateWorkspaceQuery({ role: "CODING_AGENT", attempt: attemptNo })}
+              />
+            </div>
+          ) : null}
+
+          {view === "delivery" ? <PanelErrorsNotice errors={pickPanelErrors(panelErrors, ["materials"])} /> : null}
+          {view === "audit" ? <PanelErrorsNotice errors={pickPanelErrors(panelErrors, ["timeline", "qaEvidence", "retrievalRuns", "aiReviews", "failureRecovery"])} /> : null}
+
+          {view === "audit" ? (
+            <HostVerificationCard
+              taskId={task.taskId}
+              verificationList={hostVerifications}
+              loading={loadingHostVerifications}
+              error={hostVerificationsError}
+              onSelectCodingAttempt={(attemptNo) => updateWorkspaceQuery({ view: "roles", role: "CODING_AGENT", attempt: attemptNo })}
+            />
+          ) : null}
+
+          {view === "audit" && failureRecovery && isTaskLevelRecovery(failureRecovery) ? (
+            <TaskFailureRecoveryWorkbench
+              key={task.taskId}
+              task={task}
+              materials={materials}
+              snapshot={failureRecovery}
+              loading={loadingFailureRecovery}
+              error={failureRecoveryError}
+              onRefresh={() => refreshAll(task)}
+              captureTaskActionGuard={captureTaskActionGuard}
+            />
+          ) : null}
+
+          {view === "audit" ? <RetrievalRunsCard
+            runs={retrievalRuns}
+            error={retrievalError}
+            onRetry={handleRetryRetrieval}
+            onCancel={handleCancelRetrieval}
+            onInspect={inspectRetrievalRun}
+          /> : null}
+
+          {view === "audit" && qaEvidence.length > 0 ? <QaEvidenceCard evidence={qaEvidence} /> : null}
+
+          <RetrievalRunDetailDialog
+            run={selectedRetrievalRun}
+            timeline={retrievalRunTimeline}
+            artifacts={retrievalRunArtifacts}
+            loading={loadingRetrievalDetail}
+            onOpenChange={(open) => {
+              if (!open) {
+                retrievalDetailLoadSeqRef.current += 1;
+                setSelectedRetrievalRun(null);
+                setRetrievalRunTimeline([]);
+                setRetrievalRunArtifacts([]);
+                setLoadingRetrievalDetail(false);
+              }
+            }}
           />
-        ) : null}
 
-        {view === "delivery" ? <PanelErrorsNotice errors={pickPanelErrors(panelErrors, ["materials"])} /> : null}
-        {view === "audit" ? <PanelErrorsNotice errors={pickPanelErrors(panelErrors, ["timeline", "qaEvidence", "retrievalRuns", "aiReviews", "failureRecovery"])} /> : null}
+          {view === "audit" && task.taskType === "REQUIREMENT" ? (
+            <AiReviewRunsCard
+              runs={aiReviews}
+              starting={startingAiReview}
+              onStart={handleStartAiReview}
+              onInspect={inspectAiReview}
+              onRetry={handleRetryAiReview}
+              onCancel={handleCancelAiReview}
+            />
+          ) : null}
 
-        {view === "audit" && failureRecovery && isTaskLevelRecovery(failureRecovery) ? (
-          <TaskFailureRecoveryWorkbench
-            key={task.taskId}
-            task={task}
-            materials={materials}
-            snapshot={failureRecovery}
-            loading={loadingFailureRecovery}
-            error={failureRecoveryError}
-            onRefresh={() => refreshAll(task)}
-            captureTaskActionGuard={captureTaskActionGuard}
+          <AiReviewDetailDialog
+            run={selectedAiReview}
+            timeline={aiReviewTimeline}
+            artifacts={aiReviewArtifacts}
+            loading={loadingAiReviewDetail}
+            onOpenChange={(open) => {
+              if (!open) {
+                aiReviewDetailLoadSeqRef.current += 1;
+                setSelectedAiReview(null);
+                setAiReviewTimeline([]);
+                setAiReviewArtifacts([]);
+                setLoadingAiReviewDetail(false);
+              }
+            }}
           />
-        ) : null}
 
-        {view === "audit" ? <RetrievalRunsCard
-          runs={retrievalRuns}
-          error={retrievalError}
-          onRetry={handleRetryRetrieval}
-          onCancel={handleCancelRetrieval}
-          onInspect={inspectRetrievalRun}
-        /> : null}
-
-        {view === "audit" && qaEvidence.length > 0 ? <QaEvidenceCard evidence={qaEvidence} /> : null}
-
-        <RetrievalRunDetailDialog
-          run={selectedRetrievalRun}
-          timeline={retrievalRunTimeline}
-          artifacts={retrievalRunArtifacts}
-          loading={loadingRetrievalDetail}
-          onOpenChange={(open) => {
-            if (!open) {
-              retrievalDetailLoadSeqRef.current += 1;
-              setSelectedRetrievalRun(null);
-              setRetrievalRunTimeline([]);
-              setRetrievalRunArtifacts([]);
-              setLoadingRetrievalDetail(false);
-            }
-          }}
-        />
-
-        {view === "audit" && task.taskType === "REQUIREMENT" ? (
-          <AiReviewRunsCard
-            runs={aiReviews}
-            starting={startingAiReview}
-            onStart={handleStartAiReview}
-            onInspect={inspectAiReview}
-            onRetry={handleRetryAiReview}
-            onCancel={handleCancelAiReview}
-          />
-        ) : null}
-
-        <AiReviewDetailDialog
-          run={selectedAiReview}
-          timeline={aiReviewTimeline}
-          artifacts={aiReviewArtifacts}
-          loading={loadingAiReviewDetail}
-          onOpenChange={(open) => {
-            if (!open) {
-              aiReviewDetailLoadSeqRef.current += 1;
-              setSelectedAiReview(null);
-              setAiReviewTimeline([]);
-              setAiReviewArtifacts([]);
-              setLoadingAiReviewDetail(false);
-            }
-          }}
-        />
-
-        {view === "delivery" && task.taskType === "REQUIREMENT" ? (
-          <Card>
-            <CardHeader>
-              <CardTitle>需求交付信息</CardTitle>
-              <CardDescription>需求任务的仓库、分支与验收输入</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="grid grid-cols-1 gap-4 text-sm md:grid-cols-2">
-                <InfoField
-                  label="仓库"
-                  value={
-                    task.repositoryUrl ? (
-                      <a
-                        href={task.repositoryUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="break-all text-primary underline"
-                      >
-                        {task.repositoryUrl}
-                      </a>
+          {view === "delivery" && task.taskType === "REQUIREMENT" ? (
+            <Card>
+              <CardHeader>
+                <CardTitle>需求交付信息</CardTitle>
+                <CardDescription>需求任务的仓库、分支与验收输入</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid grid-cols-1 gap-4 text-sm md:grid-cols-2">
+                  <InfoField
+                    label="仓库"
+                    value={
+                      task.repositoryUrl ? (
+                        <a
+                          href={task.repositoryUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="break-all text-primary underline"
+                        >
+                          {task.repositoryUrl}
+                        </a>
+                      ) : (
+                        "-"
+                      )
+                    }
+                  />
+                  <InfoField label="基准分支" value={task.baseBranch || "-"} mono />
+                  <InfoField label="工作分支" value={task.workBranch || "-"} mono />
+                  <InfoField label="来源" value={task.sourceType || "ADMIN"} />
+                </div>
+                <div>
+                  <div className="mb-1 text-xs text-muted-foreground">预期结果</div>
+                  <div className="whitespace-pre-wrap rounded-lg bg-slate-50 p-3 text-sm text-slate-700">
+                    {task.expectedResult || "-"}
+                  </div>
+                </div>
+                <div>
+                  <div className="mb-1 text-xs text-muted-foreground">验收标准</div>
+                  <div className="space-y-2 rounded-lg bg-slate-50 p-3 text-sm text-slate-700">
+                    {parseCriteria(task.acceptanceCriteriaJson).length > 0 ? (
+                      parseCriteria(task.acceptanceCriteriaJson).map((item, index) => (
+                        <div key={`${item}-${index}`}>{index + 1}. {item}</div>
+                      ))
                     ) : (
                       "-"
-                    )
-                  }
-                />
-                <InfoField label="基准分支" value={task.baseBranch || "-"} mono />
-                <InfoField label="工作分支" value={task.workBranch || "-"} mono />
-                <InfoField label="来源" value={task.sourceType || "ADMIN"} />
-              </div>
-              <div>
-                <div className="mb-1 text-xs text-muted-foreground">预期结果</div>
-                <div className="whitespace-pre-wrap rounded-lg bg-slate-50 p-3 text-sm text-slate-700">
-                  {task.expectedResult || "-"}
-                </div>
-              </div>
-              <div>
-                <div className="mb-1 text-xs text-muted-foreground">验收标准</div>
-                <div className="space-y-2 rounded-lg bg-slate-50 p-3 text-sm text-slate-700">
-                  {parseCriteria(task.acceptanceCriteriaJson).length > 0 ? (
-                    parseCriteria(task.acceptanceCriteriaJson).map((item, index) => (
-                      <div key={`${item}-${index}`}>{index + 1}. {item}</div>
-                    ))
-                  ) : (
-                    "-"
-                  )}
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        ) : null}
-
-        {view === "delivery" && hasExecutionEvidence(task) ? (
-          <Card>
-            <CardHeader>
-              <CardTitle>执行结果与 PR</CardTitle>
-              <CardDescription>自动编码、验证和代码评审请求的输出摘要</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="grid grid-cols-1 gap-4 text-sm md:grid-cols-3">
-                <InfoField label="执行摘要" value={task.executionEvidence?.summary || "-"} />
-                <InfoField label="测试状态" value={task.executionEvidence?.testStatus || "-"} />
-                <InfoField label="风险等级" value={task.executionEvidence?.riskLevel || "-"} />
-              </div>
-              {task.pullRequestUrl || task.executionEvidence?.pullRequestUrl ? (
-                <a
-                  href={task.pullRequestUrl || task.executionEvidence?.pullRequestUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center gap-2 text-sm font-medium text-primary underline"
-                >
-                  <GitPullRequest className="h-4 w-4" />
-                  打开 PR
-                </a>
-              ) : null}
-              {task.executionEvidence?.prBody ? (
-                <div>
-                  <div className="mb-1 text-xs text-muted-foreground">改动介绍</div>
-                  <pre className="max-h-[260px] overflow-auto whitespace-pre-wrap rounded-lg bg-slate-50 p-3 text-xs leading-relaxed text-slate-700">
-                    {task.executionEvidence.prBody}
-                  </pre>
-                </div>
-              ) : null}
-              {task.executionEvidence?.changedFiles?.length ? (
-                <div>
-                  <div className="mb-1 text-xs text-muted-foreground">变更文件</div>
-                  <div className="flex flex-wrap gap-2">
-                    {task.executionEvidence.changedFiles.map((file) => (
-                      <code key={file} className="rounded-md bg-slate-100 px-2 py-1 text-xs text-slate-700">
-                        {file}
-                      </code>
-                    ))}
+                    )}
                   </div>
                 </div>
-              ) : null}
-              {task.executionEvidence?.testCommands?.length ? (
-                <div>
-                  <div className="mb-1 text-xs text-muted-foreground">测试命令</div>
-                  <div className="space-y-2">
-                    {task.executionEvidence.testCommands.map((command) => (
-                      <code key={command} className="block rounded-md bg-slate-950 px-3 py-2 text-xs text-slate-100">
-                        {command}
-                      </code>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-            </CardContent>
-          </Card>
-        ) : null}
+              </CardContent>
+            </Card>
+          ) : null}
 
-        {view === "delivery" ? <Card>
+          {view === "delivery" && hasExecutionEvidence(task) ? (
+            <Card>
+              <CardHeader>
+                <CardTitle>执行结果与 PR</CardTitle>
+                <CardDescription>自动编码、验证和代码评审请求的输出摘要</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid grid-cols-1 gap-4 text-sm md:grid-cols-3">
+                  <InfoField label="执行摘要" value={task.executionEvidence?.summary || "-"} />
+                  <InfoField label="测试状态" value={task.executionEvidence?.testStatus || "-"} />
+                  <InfoField label="风险等级" value={task.executionEvidence?.riskLevel || "-"} />
+                </div>
+                {task.pullRequestUrl || task.executionEvidence?.pullRequestUrl ? (
+                  <a
+                    href={task.pullRequestUrl || task.executionEvidence?.pullRequestUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-2 text-sm font-medium text-primary underline"
+                  >
+                    <GitPullRequest className="h-4 w-4" />
+                    打开 PR
+                  </a>
+                ) : null}
+                {task.executionEvidence?.prBody ? (
+                  <div>
+                    <div className="mb-1 text-xs text-muted-foreground">改动介绍</div>
+                    <pre className="max-h-[260px] overflow-auto whitespace-pre-wrap rounded-lg bg-slate-50 p-3 text-xs leading-relaxed text-slate-700">
+                      {task.executionEvidence.prBody}
+                    </pre>
+                  </div>
+                ) : null}
+                {task.executionEvidence?.changedFiles?.length ? (
+                  <div>
+                    <div className="mb-1 text-xs text-muted-foreground">变更文件</div>
+                    <div className="flex flex-wrap gap-2">
+                      {task.executionEvidence.changedFiles.map((file) => (
+                        <code key={file} className="rounded-md bg-slate-100 px-2 py-1 text-xs text-slate-700">
+                          {file}
+                        </code>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+                {task.executionEvidence?.testCommands?.length ? (
+                  <div>
+                    <div className="mb-1 text-xs text-muted-foreground">测试命令</div>
+                    <div className="space-y-2">
+                      {task.executionEvidence.testCommands.map((command) => (
+                        <code key={command} className="block rounded-md bg-slate-950 px-3 py-2 text-xs text-slate-100">
+                          {command}
+                        </code>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+              </CardContent>
+            </Card>
+          ) : null}
+
+          {view === "delivery" ? <Card>
           <CardHeader className="flex flex-row items-start justify-between gap-3">
             <div>
               <CardTitle>任务材料</CardTitle>
@@ -1450,28 +1546,41 @@ export function RdTaskDetailPage() {
           </DialogContent>
         </Dialog>
       </div>
+    ) : null}
+  </div>
   );
 }
 
 function TaskSummaryBand({ task, overview }: { task: RdTask; overview: RdTaskExecutionOverview | null }) {
   return (
-    <section className="border border-slate-200 bg-white px-4 py-4 sm:px-5" aria-label="任务摘要">
+    <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm sm:p-5" aria-label="任务摘要">
       <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="outline" className={STATUS_BADGE_CLASS[task.status] || ""}>{task.status}</Badge>
-            {task.paused ? <Badge variant="outline" className="border-amber-200 bg-amber-50 text-amber-700">已暂停</Badge> : null}
-            <span className="text-xs text-slate-500">{task.taskType === "REQUIREMENT" ? "需求交付" : "Bug 修复"}</span>
-            <span className="text-xs text-slate-400">·</span>
-            <span className="text-xs text-slate-500">{task.priority || "未设置优先级"}</span>
+            <Badge variant="outline" className={cn("font-medium", STATUS_BADGE_CLASS[task.status] || "")}>{task.status}</Badge>
+            {task.paused ? <Badge variant="outline" className="border-amber-300 bg-amber-50 font-medium text-amber-700">已暂停</Badge> : null}
+            <Badge variant="outline" className="border-slate-200 bg-slate-50 font-normal text-slate-600">
+              {task.taskType === "REQUIREMENT" ? "需求交付" : "Bug 修复"}
+            </Badge>
+            <span className="text-xs text-slate-300">·</span>
+            <span className="font-mono text-xs font-semibold text-slate-600">{task.priority || "未设置优先级"}</span>
           </div>
-          <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-xs text-slate-600">
-            <span>项目 <strong className="font-medium text-slate-900">{task.projectName || task.projectKey || "-"}</strong></span>
-            <span className="min-w-0">任务 ID <code className="break-all text-slate-800">{task.taskId}</code></span>
-            <span>更新 <RelativeTime value={new Date(task.updateTimeEpochMillis).toISOString()} /></span>
+          <div className="mt-2.5 flex flex-wrap items-center gap-x-5 gap-y-1 text-xs text-slate-600">
+            <span className="flex items-center gap-1.5">
+              <span className="text-slate-400">项目</span>
+              <strong className="font-semibold text-slate-900">{task.projectName || task.projectKey || "-"}</strong>
+            </span>
+            <span className="flex items-center gap-1.5 min-w-0">
+              <span className="text-slate-400">任务 ID</span>
+              <code className="break-all font-mono text-slate-800">{task.taskId}</code>
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="text-slate-400">更新于</span>
+              <RelativeTime value={new Date(task.updateTimeEpochMillis).toISOString()} />
+            </span>
           </div>
         </div>
-        <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-xs sm:grid-cols-4 xl:shrink-0">
+        <dl className="grid grid-cols-2 gap-3 rounded-lg border border-slate-100 bg-slate-50/70 p-3 text-xs sm:grid-cols-4 xl:shrink-0">
           <SummaryMetric label="当前角色" value={ROLE_LABEL[overview?.currentRole || ""] || overview?.currentRole || "-"} />
           <SummaryMetric label="阶段状态" value={STAGE_STATUS_LABEL[overview?.currentStageStatus || ""] || overview?.currentStageStatus || "-"} />
           <SummaryMetric label="累计 Token" value={formatTokens(overview?.tokenBudget.actualAccumulatedTokens)} />
@@ -1479,8 +1588,9 @@ function TaskSummaryBand({ task, overview }: { task: RdTask; overview: RdTaskExe
         </dl>
       </div>
       {task.errorMessage ? (
-        <div className="mt-4 border-l-2 border-rose-500 bg-rose-50 px-3 py-2 text-sm text-rose-900">
-          <span className="font-medium">当前阻断：</span>{task.errorMessage}
+        <div className="mt-4 flex items-start gap-2.5 rounded-lg border border-rose-200 bg-rose-50/90 p-3 text-sm text-rose-900">
+          <span className="font-semibold shrink-0">当前阻断：</span>
+          <span className="break-words">{task.errorMessage}</span>
         </div>
       ) : null}
     </section>
@@ -1490,8 +1600,8 @@ function TaskSummaryBand({ task, overview }: { task: RdTask; overview: RdTaskExe
 function SummaryMetric({ label, value }: { label: string; value: string }) {
   return (
     <div className="min-w-0">
-      <dt className="text-slate-500">{label}</dt>
-      <dd className="mt-1 truncate font-medium text-slate-900" title={value}>{value}</dd>
+      <dt className="text-[11px] font-medium text-slate-500">{label}</dt>
+      <dd className="mt-0.5 truncate font-semibold text-slate-900" title={value}>{value}</dd>
     </div>
   );
 }
@@ -1503,7 +1613,7 @@ function TaskViewNavigation({ view, onChange }: { view: TaskDetailView; onChange
     { value: "audit", label: "任务审计", icon: History }
   ];
   return (
-    <nav className="grid grid-cols-3 border border-slate-200 bg-white p-1" aria-label="任务详情视图" role="tablist">
+    <nav className="grid grid-cols-3 rounded-lg border border-slate-200 bg-slate-100/80 p-1 shadow-inner" aria-label="任务详情视图" role="tablist">
       {items.map((item) => {
         const Icon = item.icon;
         const active = item.value === view;
@@ -1515,11 +1625,11 @@ function TaskViewNavigation({ view, onChange }: { view: TaskDetailView; onChange
             aria-selected={active}
             onClick={() => onChange(item.value)}
             className={cn(
-              "flex min-h-10 min-w-0 items-center justify-center gap-2 px-2 py-2 text-xs font-medium transition-colors sm:text-sm",
-              active ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50 hover:text-slate-950"
+              "flex min-h-10 min-w-0 items-center justify-center gap-2 rounded-md px-2 py-2 text-xs font-medium transition-all sm:text-sm",
+              active ? "bg-white text-slate-900 shadow-sm font-semibold" : "text-slate-600 hover:bg-white/50 hover:text-slate-900"
             )}
           >
-            <Icon className="h-4 w-4 shrink-0" aria-hidden="true" />
+            <Icon className={cn("h-4 w-4 shrink-0", active ? "text-primary" : "text-slate-400")} aria-hidden="true" />
             <span className="min-w-0 truncate">{item.label}</span>
           </button>
         );

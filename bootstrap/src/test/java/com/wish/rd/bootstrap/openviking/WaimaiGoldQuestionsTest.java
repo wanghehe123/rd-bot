@@ -16,6 +16,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class WaimaiGoldQuestionsTest {
 
+    private static final int MIN_QUOTE_LENGTH = 25;
+
     private static final Set<String> FORBIDDEN = Set.of(
             "RD_WP0_",
             "PENDING_PAYMENT",
@@ -25,14 +27,14 @@ class WaimaiGoldQuestionsTest {
     );
 
     @Test
-    void goldSetHasTwentyGroundedQuestionsWithADeliberateMix() {
+    void goldSetHasGroundedQuestionsWithADeliberateMix() {
         WaimaiGoldQuestionSet set = WaimaiGoldQuestionSet.load();
         assertEquals("7475766492030701568", set.corpusKnowledgeBaseId());
         assertEquals("waimai", set.corpusKnowledgeBaseName());
-        assertEquals(45, set.corpusDocumentCount());
+        assertEquals(69, set.corpusDocumentCount());
         assertEquals(8, set.k());
-        assertEquals(20, set.questions().size());
-        assertTrue(set.corpusChoice().contains("45"));
+        assertEquals(38, set.questions().size());
+        assertTrue(set.corpusChoice().contains("69"));
 
         int single = 0;
         int multi = 0;
@@ -68,7 +70,41 @@ class WaimaiGoldQuestionsTest {
         }
         assertTrue(single >= 8, "need a majority of single-document lookups, was " + single);
         assertTrue(multi >= 4, "need several multi-document questions, was " + multi);
-        assertTrue(unanswerable >= 2 && unanswerable <= 4,
-                "need 2-3 unanswerable probes, was " + unanswerable);
+        assertTrue(unanswerable >= 2 && unanswerable <= 6,
+                "need a handful of unanswerable probes, was " + unanswerable);
+    }
+
+    /**
+     * 后续新增的题必须带原文引用，否则标注无法复核，召回数会静默失真。
+     * 字节级子串比对要连真实库，放在 tmp/verify_gold_questions.py；这里只守结构。
+     */
+    @Test
+    void everyQuestionAddedWithQuotesCoversEachAnswerDocument() {
+        WaimaiGoldQuestionSet set = WaimaiGoldQuestionSet.load();
+        int quoted = 0;
+        for (WaimaiGoldQuestion question : set.questions()) {
+            List<WaimaiGoldQuestion.SupportingQuote> quotes = question.supportingQuotes() == null
+                    ? List.of() : question.supportingQuotes();
+            if ("UNANSWERABLE".equals(question.type())) {
+                assertTrue(quotes.isEmpty(),
+                        question.id() + " unanswerable must not carry supporting quotes");
+                continue;
+            }
+            if (quotes.isEmpty()) {
+                continue;
+            }
+            quoted++;
+            Set<String> quotedDocuments = new HashSet<>();
+            for (WaimaiGoldQuestion.SupportingQuote quote : quotes) {
+                assertTrue(question.expectedDocumentIds().contains(quote.documentId()),
+                        question.id() + " quotes unlabelled document " + quote.documentId());
+                assertTrue(quote.quote().length() >= MIN_QUOTE_LENGTH,
+                        question.id() + " quote for " + quote.documentId() + " is too short to verify");
+                quotedDocuments.add(quote.documentId());
+            }
+            assertEquals(new HashSet<>(question.expectedDocumentIds()), quotedDocuments,
+                    question.id() + " must quote every answer document exactly once");
+        }
+        assertTrue(quoted >= 16, "expected the audited question batch to carry quotes, was " + quoted);
     }
 }

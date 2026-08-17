@@ -746,6 +746,11 @@ class DockerClaudeCodeExecutorTest {
         assertTrue(codingRunner.request().securityPolicy().readOnlyRootfs());
         assertTrue(codingRunner.request().securityPolicy().capDropAll());
         assertEquals("rdbot", codingRunner.request().securityPolicy().runAsUser());
+        String sessionEnvTmpfs = codingRunner.request().securityPolicy()
+                .tmpfsMounts().get("/home/rdbot/.claude/session-env");
+        assertNotNull(sessionEnvTmpfs, "the agent harness needs a writable session-env tmpfs");
+        assertTrue(sessionEnvTmpfs.contains("uid=999") && sessionEnvTmpfs.contains("gid=999"),
+                "session-env tmpfs must be owned by the container user, was " + sessionEnvTmpfs);
         assertFalse(codingRunner.request().allowPrivileged());
         assertEquals("bridge", codingRunner.request().networkMode());
         assertTrue(codingRunner.request().mounts().values().stream().anyMatch("/work/repo"::equals));
