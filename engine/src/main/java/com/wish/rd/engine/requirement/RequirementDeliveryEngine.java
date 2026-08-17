@@ -1694,6 +1694,8 @@ public class RequirementDeliveryEngine {
                 production.retrievalEnabled(),
                 false,
                 AgentWorkflowPlan.DEFAULT_QA_REMEDIATION_PASSES,
+                false,
+                AgentWorkflowPlan.DEFAULT_HOST_VERIFY_REMEDIATION_PASSES,
                 ledger,
                 "BOUNDED_STAGE_" + targetRole.name());
     }

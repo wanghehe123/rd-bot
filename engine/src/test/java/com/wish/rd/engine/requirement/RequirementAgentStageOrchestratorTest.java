@@ -421,6 +421,8 @@ class RequirementAgentStageOrchestratorTest {
                 false,
                 false,
                 1,
+                false,
+                2,
                 Map.of(AgentRole.SOLUTION_ARCHITECT, 1.0d),
                 "TEST_ARCHITECT_ONLY"
         );
@@ -432,6 +434,8 @@ class RequirementAgentStageOrchestratorTest {
                 false,
                 false,
                 1,
+                false,
+                2,
                 Map.of(AgentRole.REQUIREMENT_REVIEWER, 1.0d),
                 "TEST_REVIEWER_ONLY"
         );
@@ -465,6 +469,8 @@ class RequirementAgentStageOrchestratorTest {
                         false,
                         false,
                         1,
+                        false,
+                        2,
                         new LinkedHashMap<>() {{
                             put(AgentRole.CODING_AGENT, 0.6d);
                             put(AgentRole.QA_AGENT, 0.6d);
@@ -483,6 +489,8 @@ class RequirementAgentStageOrchestratorTest {
                         false,
                         false,
                         1,
+                        false,
+                        2,
                         Map.of(AgentRole.CODING_AGENT, 1.5d),
                         "TEST_OUT_OF_RANGE"
                 ));
@@ -496,6 +504,8 @@ class RequirementAgentStageOrchestratorTest {
                         false,
                         false,
                         1,
+                        false,
+                        2,
                         Map.of(),
                         "TEST_EMPTY_ROLES"
                 ));
@@ -512,6 +522,8 @@ class RequirementAgentStageOrchestratorTest {
                 true,
                 false,
                 1,
+                false,
+                2,
                 Map.of(
                         AgentRole.REQUIREMENT_REVIEWER, 0.08d,
                         AgentRole.SOLUTION_ARCHITECT, 0.16d,
@@ -537,7 +549,7 @@ class RequirementAgentStageOrchestratorTest {
     @Test
     void buildAgentPrompt_includes_role_specific_section_for_reviewer() {
         AgentWorkflowPlan reviewerOnly = new AgentWorkflowPlan(
-                List.of(AgentRole.REQUIREMENT_REVIEWER), true, false, 1,
+                List.of(AgentRole.REQUIREMENT_REVIEWER), true, false, 1, false, 2,
                 Map.of(AgentRole.REQUIREMENT_REVIEWER, 1.0d),
                 "TEST_REVIEWER_ONLY");
         OrchestratorTestHarness harness = new OrchestratorTestHarness()
