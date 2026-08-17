@@ -5,7 +5,9 @@ import com.wish.rd.engine.requirement.verify.model.HostVerificationStatus;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Constructor and terminal-state contract for {@link HostVerificationRun}. */
 class HostVerificationRunTest {
@@ -96,6 +98,30 @@ class HostVerificationRunTest {
         assertEquals("parent-1", run.parentRunId());
         assertEquals("PRODUCT_DEFECT", run.failureCategory());
         assertEquals("boom", run.errorMessage());
+    }
+
+    @Test
+    void leavingCreatedSetsStartedAtAndEnteringTerminalSetsFinishedAt() {
+        HostVerificationRun created = sample("run-1", "task-1", "coding-1", "", 1, 0);
+        HostVerificationRun preparing = created.withStatus(HostVerificationStatus.PREPARING, "", "", 10L);
+        assertEquals(HostVerificationStatus.PREPARING, preparing.status());
+        assertEquals(10L, preparing.startedAtEpochMillis());
+        assertEquals(0L, preparing.finishedAtEpochMillis());
+        HostVerificationRun cancelled = created.withStatus(HostVerificationStatus.CANCELLED, "ENVIRONMENT", "stop", 11L);
+        assertEquals(11L, cancelled.startedAtEpochMillis());
+        assertEquals(11L, cancelled.finishedAtEpochMillis());
+        assertEquals("ENVIRONMENT", cancelled.failureCategory());
+        assertEquals("stop", cancelled.errorMessage());
+    }
+
+    @Test
+    void allowedGraphMatchesStoreContract() {
+        assertTrue(HostVerificationStatus.CREATED.canTransitionTo(HostVerificationStatus.PREPARING));
+        assertTrue(HostVerificationStatus.CREATED.canTransitionTo(HostVerificationStatus.CANCELLED));
+        assertTrue(HostVerificationStatus.PREPARING.canTransitionTo(HostVerificationStatus.SKIPPED_DOCS_ONLY));
+        assertTrue(HostVerificationStatus.STATIC_CHECKING.canTransitionTo(HostVerificationStatus.SUCCEEDED));
+        assertFalse(HostVerificationStatus.CREATED.canTransitionTo(HostVerificationStatus.SUCCEEDED));
+        assertFalse(HostVerificationStatus.SUCCEEDED.canTransitionTo(HostVerificationStatus.CANCELLED));
     }
 
     @Test

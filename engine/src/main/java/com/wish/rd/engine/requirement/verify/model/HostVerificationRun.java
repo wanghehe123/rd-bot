@@ -57,6 +57,50 @@ public record HostVerificationRun(
         }
     }
 
+    /**
+     * Returns the snapshot after a status change, stamping start/finish times.
+     *
+     * <p>The first leave from {@link HostVerificationStatus#CREATED} sets
+     * {@code startedAt}. Entering a terminal status sets {@code finishedAt}.
+     * Callers must have already validated the transition graph.
+     *
+     * @param target             next status
+     * @param newFailureCategory machine-readable failure class, or blank
+     * @param newErrorMessage    operator-facing error, or blank
+     * @param nowEpochMillis     transition time
+     * @return updated immutable snapshot
+     */
+    public HostVerificationRun withStatus(
+            HostVerificationStatus target,
+            String newFailureCategory,
+            String newErrorMessage,
+            long nowEpochMillis
+    ) {
+        if (target == null) {
+            throw new IllegalArgumentException("target must not be null");
+        }
+        long started = startedAtEpochMillis;
+        if (status == HostVerificationStatus.CREATED && started <= 0L) {
+            started = nowEpochMillis;
+        }
+        long finished = target.isTerminal() ? nowEpochMillis : finishedAtEpochMillis;
+        return new HostVerificationRun(
+                runId,
+                taskId,
+                codingStageRunId,
+                parentRunId,
+                attemptNo,
+                target,
+                docsOnly,
+                newFailureCategory,
+                newErrorMessage,
+                remediationCount,
+                createdAtEpochMillis,
+                started,
+                finished
+        );
+    }
+
     private static String requireText(String value, String field) {
         String normalized = normalize(value);
         if (normalized.isBlank()) {

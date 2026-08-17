@@ -1,6 +1,8 @@
 package com.wish.rd.engine.requirement.verify.model;
 
+import java.util.EnumMap;
 import java.util.EnumSet;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -29,6 +31,8 @@ public enum HostVerificationStatus {
             CANCELLED
     );
 
+    private static final Map<HostVerificationStatus, Set<HostVerificationStatus>> ALLOWED = allowedTransitions();
+
     /**
      * Whether this status is a terminal verification outcome.
      *
@@ -36,5 +40,26 @@ public enum HostVerificationStatus {
      */
     public boolean isTerminal() {
         return TERMINAL.contains(this);
+    }
+
+    /**
+     * Whether a store may move from this status to {@code target}.
+     *
+     * @param target candidate next status
+     * @return {@code true} when the edge is in the allowed graph
+     */
+    public boolean canTransitionTo(HostVerificationStatus target) {
+        return target != null && ALLOWED.getOrDefault(this, Set.of()).contains(target);
+    }
+
+    private static Map<HostVerificationStatus, Set<HostVerificationStatus>> allowedTransitions() {
+        EnumMap<HostVerificationStatus, Set<HostVerificationStatus>> allowed =
+                new EnumMap<>(HostVerificationStatus.class);
+        allowed.put(CREATED, EnumSet.of(PREPARING, CANCELLED));
+        allowed.put(PREPARING, EnumSet.of(
+                BUILDING, FAILED_RETRYABLE, FAILED_NEEDS_HUMAN, SKIPPED_DOCS_ONLY, CANCELLED));
+        allowed.put(BUILDING, EnumSet.of(STATIC_CHECKING, FAILED_RETRYABLE, FAILED_NEEDS_HUMAN, CANCELLED));
+        allowed.put(STATIC_CHECKING, EnumSet.of(SUCCEEDED, FAILED_RETRYABLE, FAILED_NEEDS_HUMAN, CANCELLED));
+        return Map.copyOf(allowed);
     }
 }
