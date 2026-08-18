@@ -1565,6 +1565,104 @@ class RequirementDeliveryDispatchServiceTest {
     }
 
     @Test
+    void checkpointBoundCodingSuccessContinuesAsThePreBoundQaRetryCommand() {
+        long now = System.currentTimeMillis();
+        String taskId = "task-checkpoint-continue";
+        String checkpointId = "101";
+        String codingBindingId = "201";
+        String qaBindingId = "202";
+        InMemoryRequirementStageCommandStore commands = new InMemoryRequirementStageCommandStore();
+        InMemoryTaskRetryCheckpointStore checkpoints = new InMemoryTaskRetryCheckpointStore();
+        InMemoryTaskRetryAttemptBindingStore bindings = new InMemoryTaskRetryAttemptBindingStore();
+        TaskRetryCheckpoint checkpoint = new TaskRetryCheckpoint(
+                checkpointId, taskId, TaskFailurePhase.AGENT_ROLE, AgentRole.CODING_AGENT,
+                "coding-1", "", "", 1, taskId + ":11:AGENT_ROLE:CODING_AGENT",
+                RdTaskStatus.FAILED_NEEDS_HUMAN, 11L, 12L,
+                "command-old", "ROLE_EXECUTION:CODING_AGENT", "policy-1", "",
+                "sha256:" + "a".repeat(64), "", "", 0L, 0L, "", Long.parseLong(checkpointId),
+                "", List.of(), TaskRetryCheckpointStatus.CREATED, "qa failed", "", now, now);
+        checkpoints.createOrGet(checkpoint);
+        checkpoints.dispatch(checkpointId, 18L, 19L, "coding-command", now);
+        bindings.save(new TaskRetryAttemptBinding(
+                codingBindingId, checkpointId, TaskRetryAttemptKind.AGENT_STAGE,
+                AgentRole.CODING_AGENT, "coding-2", "", 2, 0));
+        bindings.save(new TaskRetryAttemptBinding(
+                qaBindingId, checkpointId, TaskRetryAttemptKind.AGENT_STAGE,
+                AgentRole.QA_AGENT, "qa-4", "", 4, 0));
+        RequirementStageCommand pending = RequirementStageCommand.pending(
+                "coding-command", taskId, 18L, 19L,
+                AgentRole.CODING_AGENT.name(), "ROLE_EXECUTION:CODING_AGENT",
+                0, 3, now + 3_600_000L, ScheduleResourceClass.DOCKER,
+                Set.of(ScheduleResourceClass.DOCKER), "project-1", "provider", "P1",
+                "policy-1", checkpointId, Long.parseLong(checkpointId), codingBindingId, now);
+        commands.enqueue(pending);
+        RequirementStageCommand claimed = commands.claim(
+                pending.commandId(), "test-worker", now, 60_000L).orElseThrow();
+        RequirementStageExecutionPlan plan = new RequirementStageExecutionPlan(
+                RequirementStageExecutionPlan.CURRENT_SCHEMA_VERSION,
+                claimed.taskId(), claimed.taskVersion(), claimed.fencingToken(), RdTaskStatus.EXECUTING,
+                List.of(RequirementTaskMutation.snapshotUpdate(
+                        RdTaskStatus.EXECUTING, "", "{\"ok\":true}", "", "", "")),
+                com.wish.rd.engine.requirement.job.model.CommandDisposition.SUCCEEDED,
+                new com.wish.rd.engine.requirement.job.model.ContinuationSpec(
+                        AgentRole.QA_AGENT.name(), "ROLE_EXECUTION:" + AgentRole.QA_AGENT.name()),
+                com.wish.rd.engine.requirement.job.model.ExternalEffectReceipt.none());
+        RequirementStageFinalization marker = RequirementStageFinalization.prepared(
+                claimed, RdTaskStatus.EXECUTING, now);
+        RagStreamTaskRegistry registry = mock(RagStreamTaskRegistry.class);
+        when(registry.getTask(taskId)).thenReturn(
+                requirementTask(taskId, RdTaskStatus.EXECUTING).withConcurrency(18L, 19L));
+        RequirementStageExecutor stageExecutor = mock(RequirementStageExecutor.class);
+        when(stageExecutor.plan(claimed)).thenReturn(plan);
+        RequirementStageFinalizationPort finalizer = mock(RequirementStageFinalizationPort.class);
+        when(finalizer.findLatestPrepared(claimed.commandId())).thenReturn(Optional.empty());
+        when(finalizer.prepare(any(), any(), any(), anyLong())).thenReturn(marker);
+        when(finalizer.recordOutcome(any(), any(), any(), any(), anyLong())).thenReturn(marker);
+        ArgumentCaptor<RequirementStageFinalizationPort.FinalizationCommand> finalization =
+                ArgumentCaptor.forClass(RequirementStageFinalizationPort.FinalizationCommand.class);
+        when(finalizer.finalize(finalization.capture())).thenAnswer(invocation -> {
+            RequirementStageFinalizationPort.FinalizationCommand command = invocation.getArgument(0);
+            RequirementDeliveryResult outcome = new RequirementDeliveryResult(
+                    taskId, RdTaskStatus.EXECUTING, "", "{\"ok\":true}", "");
+            return new RequirementStageFinalizationPort.FinalizationResult(
+                    marker.finalized(outcome, command.nextCommand() == null ? "" : command.nextCommand().commandId(),
+                            now + 1L),
+                    claimed.succeeded(now + 1L),
+                    command.nextCommand());
+        });
+        RequirementDeliveryDispatchService dispatcher = new RequirementDeliveryDispatchService(
+                mock(RequirementDeliveryEngine.class),
+                new TaskExecutorAdapter(runnable -> {
+                }),
+                new InMemoryRequirementDeliveryJobStore(),
+                SnowflakeIdGenerator.defaultGenerator(),
+                registry,
+                "test-worker",
+                3,
+                60_000L,
+                null,
+                checkpoints,
+                commands,
+                stageExecutor,
+                finalizer,
+                RequirementDeliverySchedulingPolicy.defaults(),
+                null,
+                bindings);
+
+        invokeRunClaimedCommand(dispatcher, claimed, new CompletableFuture<>());
+
+        RequirementStageCommand next = finalization.getValue().nextCommand();
+        assertEquals(AgentRole.QA_AGENT.name(), next.role());
+        assertEquals("ROLE_EXECUTION:" + AgentRole.QA_AGENT.name(), next.stage());
+        assertEquals(checkpointId, next.retryCheckpointId());
+        assertEquals(Long.parseLong(checkpointId), next.businessGeneration());
+        assertEquals(qaBindingId, next.targetRetryBindingId());
+        assertEquals("policy-1", next.policyRunId());
+        assertEquals(TaskRetryCheckpointStatus.DISPATCHED,
+                checkpoints.find(checkpointId).orElseThrow().status());
+    }
+
+    @Test
     void recoveryReplaysTheOriginalRetryableFailurePlanAtTheFinalAttempt() {
         long now = System.currentTimeMillis();
         RequirementStageCommand initial = RequirementStageCommand.pending(

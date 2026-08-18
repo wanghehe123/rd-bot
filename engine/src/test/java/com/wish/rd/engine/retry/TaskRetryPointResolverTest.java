@@ -146,6 +146,30 @@ class TaskRetryPointResolverTest {
     }
 
     @Test
+    void remapsTechnicalExhaustionOfASucceededRoleOntoTheCancelledDownstreamAttempt() {
+        TaskRetryFailureProvenance provenance = new TaskRetryFailureProvenance(
+                "provenance-exhausted", "task-1", "command-coding", 3,
+                "ROLE_EXECUTION:CODING_AGENT", TaskFailurePhase.AGENT_ROLE,
+                RdTaskStatus.DEAD_LETTERED, 19L, 20L,
+                "coding-succeeded", "", "", "policy-1", "sha256:" + "a".repeat(64), "",
+                "TECHNICAL_EXHAUSTED", 400L);
+        AgentStageRun coding = stage("coding-succeeded", AgentRole.CODING_AGENT, 2,
+                AgentStageStatus.SUCCEEDED, 200L);
+        AgentStageRun qa = stage("qa-cancelled", AgentRole.QA_AGENT, 4,
+                AgentStageStatus.CANCELLED, 300L);
+
+        var point = resolver.resolve(
+                task(RdTaskStatus.DEAD_LETTERED, "{}", 19L, 20L), provenance,
+                List.of(coding, qa), List.of(), List.of());
+
+        assertEquals(TaskFailurePhase.AGENT_ROLE, point.failurePhase());
+        assertEquals(AgentRole.QA_AGENT, point.retryFromRole());
+        assertEquals("qa-cancelled", point.failedStageRunId());
+        assertEquals("ROLE_EXECUTION:QA_AGENT", point.failedStage());
+        assertEquals("command-coding", point.failedStageCommandId());
+    }
+
+    @Test
     void rejectsAgentRoleProvenanceWhoseCommandStageNamesAnotherRole() {
         TaskRetryFailureProvenance provenance = provenance(
                 "provenance-1", TaskFailurePhase.AGENT_ROLE, "command-17",

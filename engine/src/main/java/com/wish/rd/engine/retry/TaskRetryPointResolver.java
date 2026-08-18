@@ -70,6 +70,19 @@ public final class TaskRetryPointResolver {
             case HOST_VERIFY -> AgentRole.CODING_AGENT;
             default -> null;
         };
+        String pointFailedStage = provenance.failedStage();
+        String pointFailedStageRunId = provenance.failedStageRunId();
+        if (provenance.failurePhase() == TaskFailurePhase.AGENT_ROLE
+                && failedStage != null
+                && failedStage.status() == AgentStageStatus.SUCCEEDED
+                && "TECHNICAL_EXHAUSTED".equals(provenance.failureKind())) {
+            AgentStageRun unused = laterUnusedAttempt(safeStages, failedStage.role());
+            if (unused != null) {
+                retryFromRole = unused.role();
+                pointFailedStage = "ROLE_EXECUTION:" + unused.role().name();
+                pointFailedStageRunId = unused.stageRunId();
+            }
+        }
         String reason = firstNonBlank(
                 failedStage == null ? "" : firstNonBlank(failedStage.errorMessage(), failedStage.errorCategory()),
                 firstNonBlank(
@@ -79,9 +92,9 @@ public final class TaskRetryPointResolver {
                                 task.errorMessage())));
         return new TaskRetryPoint(
                 task.taskId(), provenance.failurePhase(), retryFromRole,
-                provenance.failedStageRunId(), provenance.failedRetrievalRunId(),
+                pointFailedStageRunId, provenance.failedRetrievalRunId(),
                 provenance.failedAiReviewRunId(), reason, task.version(), task.fencingToken(),
-                provenance.failedStageCommandId(), provenance.failedStage(), provenance.sourcePolicyRunId(),
+                provenance.failedStageCommandId(), pointFailedStage, provenance.sourcePolicyRunId(),
                 provenance.sourcePlanDigest(), provenance.publicationOperationId());
     }
 
@@ -169,6 +182,36 @@ public final class TaskRetryPointResolver {
     private static boolean isFailedStage(AgentStageRun stage) {
         return stage.status() == AgentStageStatus.FAILED_RETRYABLE
                 || stage.status() == AgentStageStatus.FAILED_NEEDS_HUMAN;
+    }
+
+    private static boolean isTechnicalExhaustionOfSucceededRole(
+            TaskRetryFailureProvenance provenance,
+            AgentStageRun stage
+    ) {
+        return "TECHNICAL_EXHAUSTED".equals(provenance.failureKind())
+                && stage.status() == AgentStageStatus.SUCCEEDED;
+    }
+
+    private static AgentStageRun laterUnusedAttempt(List<AgentStageRun> stages, AgentRole fromRole) {
+        List<AgentRole> roles = AgentRole.requirementDeliveryOrder();
+        int start = roles.indexOf(fromRole);
+        if (start < 0) {
+            return null;
+        }
+        for (int index = start + 1; index < roles.size(); index++) {
+            AgentRole role = roles.get(index);
+            AgentStageRun latest = stages.stream()
+                    .filter(stage -> stage != null && stage.role() == role)
+                    .max(Comparator.comparingInt(AgentStageRun::attemptNo)
+                            .thenComparingLong(AgentStageRun::createTimeEpochMillis)
+                            .thenComparing(AgentStageRun::stageRunId))
+                    .orElse(null);
+            if (latest != null
+                    && (latest.status() == AgentStageStatus.CANCELLED || isFailedStage(latest))) {
+                return latest;
+            }
+        }
+        return null;
     }
 
     private static boolean isRetryableFailureOrInterruptedAttempt(AgentStageRun stage) {
@@ -305,7 +348,8 @@ public final class TaskRetryPointResolver {
                     && stage != null
                     && stageRole != null
                     && stageRole == stage.role()
-                    && isRetryableFailureOrInterruptedAttempt(stage);
+                    && (isRetryableFailureOrInterruptedAttempt(stage)
+                    || isTechnicalExhaustionOfSucceededRole(provenance, stage));
             case RAG -> !provenance.failedRetrievalRunId().isBlank()
                     && retrieval != null
                     && parseRole(retrieval.role()) != null

@@ -35,6 +35,7 @@ import com.wish.rd.engine.requirement.job.RequirementDeliveryJobStore;
 import com.wish.rd.engine.requirement.model.RequirementDeliveryResult;
 import com.wish.rd.engine.retry.TaskRetryAttemptBindingStore;
 import com.wish.rd.engine.retry.TaskRetryCheckpointStore;
+import com.wish.rd.engine.retry.model.TaskRetryAttemptKind;
 import com.wish.rd.engine.retry.TaskRetryExhaustionProvenanceFactory;
 import com.wish.rd.engine.requirement.publication.RequirementOperationId;
 import com.wish.rd.engine.requirement.publication.RequirementPublicationIntentFactory;
@@ -741,8 +742,8 @@ public class RequirementDeliveryDispatchService {
             }
             boolean continued = finalizeStageOutcome(stageCommand, job, marker, plan, result,
                     mutationDisposition, future);
-            completeRetryCheckpoint(taskId, checkpointStatus(plan, result), result.errorMessage());
             if (!continued) {
+                completeRetryCheckpoint(taskId, checkpointStatus(plan, result), result.errorMessage());
                 future.complete(result);
             }
         } catch (RuntimeException | LinkageError exception) {
@@ -1133,17 +1134,57 @@ public class RequirementDeliveryDispatchService {
                 || plan.continuation().isTerminal()) {
             return null;
         }
-        return stageCommandFactory.createPendingCommand(
+        String role = plan.continuation().role();
+        String stage = plan.continuation().stage();
+        if (previous.retryCheckpointId().isBlank()) {
+            return stageCommandFactory.createPendingCommand(
+                    previous.taskId(),
+                    plan.postVersion(),
+                    plan.postFencingToken(),
+                    role,
+                    stage,
+                    previous.projectId(),
+                    priorityName(previous.priorityRank()),
+                    previous.providerId(),
+                    previous.policyRunId(),
+                    nowEpochMillis);
+        }
+        return stageCommandFactory.createRetryPendingCommand(
                 previous.taskId(),
                 plan.postVersion(),
                 plan.postFencingToken(),
-                plan.continuation().role(),
-                plan.continuation().stage(),
+                role,
+                stage,
                 previous.projectId(),
                 priorityName(previous.priorityRank()),
                 previous.providerId(),
                 previous.policyRunId(),
+                previous.retryCheckpointId(),
+                previous.businessGeneration(),
+                continuationTargetBindingId(previous.retryCheckpointId(), role, stage),
                 nowEpochMillis);
+    }
+
+    private String continuationTargetBindingId(String checkpointId, String role, String stage) {
+        boolean attemptTarget = "AI_REVIEW".equals(stage) || (stage != null && stage.startsWith("ROLE_EXECUTION:"));
+        if (!attemptTarget) {
+            return "";
+        }
+        if (attemptBindingStore == null) {
+            throw new IllegalStateException(
+                    "checkpoint-bound role continuation requires attempt bindings: " + checkpointId);
+        }
+        AgentRole nextRole;
+        try {
+            nextRole = AgentRole.valueOf(role == null ? "" : role.strip());
+        } catch (IllegalArgumentException exception) {
+            throw new IllegalStateException("checkpoint-bound continuation role is invalid: " + role, exception);
+        }
+        return attemptBindingStore.findPrimary(checkpointId, TaskRetryAttemptKind.AGENT_STAGE, nextRole)
+                .map(binding -> binding.bindingId())
+                .orElseThrow(() -> new IllegalStateException(
+                        "checkpoint-bound continuation is missing a pre-bound attempt: "
+                                + checkpointId + ":" + nextRole));
     }
 
     private RequirementStageFinalizationPort.JobDisposition jobDisposition(

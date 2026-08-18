@@ -58,6 +58,10 @@
   ```
 - 【推荐】可切换实现的基础设施 Bean（如 `ObjectStorageService` 的 memory/S3）用配置开关选择实现，业务代码只依赖端口接口。
 
+- 【强制】检查点绑定命令成功后续跑时，continuation 必须沿用同一 `retryCheckpointId` / `businessGeneration`，角色命令还要带上该检查点预绑定的下一角色 `targetRetryBindingId`，不得再 `createPendingCommand` 成 `retry_checkpoint_id IS NULL`。否则会撞上首次流水线的 `(task_id, role, stage)` 唯一索引，`ON CONFLICT DO NOTHING` 后 `requireExactContinuationIdentity` 失败，coding 已 SUCCEEDED 也无法入 QA。有真实续跑时检查点必须保持 `DISPATCHED`，禁止把中间角色成功当成 checkpoint SUCCEEDED。`TECHNICAL_EXHAUSTED` 若钉在已 SUCCEEDED 的绑定 stage 上，重试点必须落到被取消/失败的下游 attempt，否则 `/failure-recovery` 会 `RETRY_POINT_AMBIGUOUS`。
+  - 代码：`RequirementDeliveryDispatchService.continuationCommand`、`TaskRetryPointResolver.resolve`
+  - 验证：`./mvnw -pl engine -Dtest=TaskRetryPointResolverTest#remapsTechnicalExhaustionOfASucceededRoleOntoTheCancelledDownstreamAttempt -Dsurefire.failIfNoSpecifiedTests=false test`；`./mvnw -pl bootstrap -am -Dtest=RequirementDeliveryDispatchServiceTest#checkpointBoundCodingSuccessContinuesAsThePreBoundQaRetryCommand -Dsurefire.failIfNoSpecifiedTests=false test`
+
 ---
 
 ## 二、命名规范（对齐阿里巴巴手册）
