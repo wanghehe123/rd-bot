@@ -198,7 +198,7 @@ VALUES (
     'legacy-host-bound',
     1,
     '{"hostAllow":["bash","edit","rd_record_fact","rd_submit_result","rd_todo_rewrite","rd_todo_update_status","read","write"],"allow":["bash","edit","rd_record_fact","rd_submit_result","rd_todo_rewrite","rd_todo_update_status","read","write"],"deny":[]}',
-    'legacy-host-bound-v1',
+    '99dd24ef00db28ffc2629f60952c600f1ad7a69df7c666de92dc728864369c1b',
     TRUE
 )
 ON CONFLICT (policy_id, version) DO NOTHING;
@@ -209,7 +209,7 @@ VALUES (
     'default-qa',
     1,
     '{"hostAllow":["bash","rd_submit_result","read"],"allow":["bash","rd_submit_result","read"],"deny":["edit","write"]}',
-    'default-qa-v1',
+    '9236e40eaf19be79cd7da2650e423e3f596f576d853da4afd30e85576b5efd37',
     TRUE
 )
 ON CONFLICT (policy_id, version) DO NOTHING;
@@ -220,7 +220,7 @@ VALUES (
     'default-qa',
     2,
     '{"hostAllow":["bash","rd_submit_result","read"],"allow":["bash","rd_submit_result","read"],"deny":["edit","write"]}',
-    'default-qa-v2',
+    '9236e40eaf19be79cd7da2650e423e3f596f576d853da4afd30e85576b5efd37',
     TRUE
 )
 ON CONFLICT (policy_id, version) DO NOTHING;

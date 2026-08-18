@@ -260,6 +260,10 @@ public class ProcessContainerRunner implements ContainerRunnerPort, com.wish.rd.
             argv.add(request.workingDirectory());
         }
         appendEnvironment(argv, request.env());
+        if (!request.entrypoint().isBlank()) {
+            argv.add("--entrypoint");
+            argv.add(request.entrypoint());
+        }
         argv.add(request.image());
         argv.addAll(request.command());
         return List.copyOf(argv);

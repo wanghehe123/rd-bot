@@ -1,6 +1,7 @@
 package com.wish.rd.exec.repair.security.model;
 
 import com.wish.rd.exec.repair.execution.model.RepairJobCommand;
+import com.wish.rd.exec.repair.security.RegisteredRepositoryCatalog;
 
 import java.util.Arrays;
 import java.util.List;
@@ -14,25 +15,51 @@ import java.util.regex.Pattern;
  * patterns, so a single environment variable can allowlist several
  * repositories or branches at once.</p>
  *
- * @param enabled        whether enforcement is enabled
- * @param repositoryUrls allowed repository URL patterns
- * @param repositories   allowed {@code owner/name} patterns
- * @param baseBranches   allowed base branch patterns
- * @param workBranches   allowed work branch patterns
+ * @param enabled                 whether enforcement is enabled
+ * @param repositoryUrls          allowed repository URL patterns
+ * @param repositories            allowed {@code owner/name} patterns
+ * @param baseBranches            allowed base branch patterns
+ * @param workBranches            allowed work branch patterns
+ * @param registeredRepositories  repositories already saved as RD-Bot projects
  */
 public record ExecutionAllowlistPolicy(
         boolean enabled,
         List<String> repositoryUrls,
         List<String> repositories,
         List<String> baseBranches,
-        List<String> workBranches
+        List<String> workBranches,
+        RegisteredRepositoryCatalog registeredRepositories
 ) {
+
+    public ExecutionAllowlistPolicy(
+            boolean enabled,
+            List<String> repositoryUrls,
+            List<String> repositories,
+            List<String> baseBranches,
+            List<String> workBranches
+    ) {
+        this(enabled, repositoryUrls, repositories, baseBranches, workBranches, RegisteredRepositoryCatalog.none());
+    }
 
     public ExecutionAllowlistPolicy {
         repositoryUrls = normalizePatterns(repositoryUrls);
         repositories = normalizePatterns(repositories);
         baseBranches = normalizePatterns(baseBranches);
         workBranches = normalizePatterns(workBranches);
+        registeredRepositories = registeredRepositories == null
+                ? RegisteredRepositoryCatalog.none()
+                : registeredRepositories;
+    }
+
+    public ExecutionAllowlistPolicy withRegisteredRepositories(RegisteredRepositoryCatalog catalog) {
+        return new ExecutionAllowlistPolicy(
+                enabled,
+                repositoryUrls,
+                repositories,
+                baseBranches,
+                workBranches,
+                catalog
+        );
     }
 
     /**
@@ -64,11 +91,16 @@ public record ExecutionAllowlistPolicy(
         if (!hasAnyRule) {
             return Decision.reject("execution allowlist has no rules");
         }
-        if (!repositoryUrls.isEmpty() && !matchesAnyRepositoryUrl(repositoryUrls, command.repositoryUrl())) {
-            return Decision.reject("repositoryUrl is not allowlisted");
+        boolean registeredProject = isRegisteredProject(command);
+        if (!repositoryUrls.isEmpty()
+                && !registeredProject
+                && !matchesAnyRepositoryUrl(repositoryUrls, command.repositoryUrl())) {
+            return Decision.reject("repositoryUrl is not allowlisted: " + normalize(command.repositoryUrl()));
         }
-        if (!repositories.isEmpty() && !matchesAny(repositories, repositoryName(command), true)) {
-            return Decision.reject("repository is not allowlisted");
+        if (!repositories.isEmpty()
+                && !registeredProject
+                && !matchesAny(repositories, repositoryName(command), true)) {
+            return Decision.reject("repository is not allowlisted: " + repositoryName(command));
         }
         if (!baseBranches.isEmpty() && !matchesAny(baseBranches, command.baseBranch(), false)) {
             return Decision.reject("baseBranch is not allowlisted");
@@ -77,6 +109,10 @@ public record ExecutionAllowlistPolicy(
             return Decision.reject("workBranch is not allowlisted");
         }
         return Decision.allow();
+    }
+
+    private boolean isRegisteredProject(RepairJobCommand command) {
+        return registeredRepositories.contains(command.repositoryUrl(), repositoryName(command));
     }
 
     private static String repositoryName(RepairJobCommand command) {

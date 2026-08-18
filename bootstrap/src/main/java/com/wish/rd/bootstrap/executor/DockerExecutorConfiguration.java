@@ -20,6 +20,7 @@ import com.wish.rd.exec.repair.health.ModelHealthStateStore;
 import com.wish.rd.exec.repair.health.impl.InMemoryModelHealthStateStore;
 import com.wish.rd.exec.repair.provider.ProviderFallbackPreflightPort;
 import com.wish.rd.exec.repair.result.StructuredResultValidator;
+import com.wish.rd.exec.repair.security.RegisteredRepositoryCatalog;
 import com.wish.rd.exec.repair.security.model.ExecutionAllowlistPolicy;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
@@ -110,8 +111,13 @@ public class DockerExecutorConfiguration {
      */
     @Bean
     @ConditionalOnMissingBean
-    public ExecutionAllowlistPolicy executionAllowlistPolicy(DockerExecutorProperties properties) {
-        return properties.toExecutionAllowlistPolicy();
+    public ExecutionAllowlistPolicy executionAllowlistPolicy(
+            DockerExecutorProperties properties,
+            ObjectProvider<RegisteredRepositoryCatalog> registeredRepositories
+    ) {
+        return properties.toExecutionAllowlistPolicy().withRegisteredRepositories(
+                registeredRepositories.getIfAvailable(RegisteredRepositoryCatalog::none)
+        );
     }
 
     /**

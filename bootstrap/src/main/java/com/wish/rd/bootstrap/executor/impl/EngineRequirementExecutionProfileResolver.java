@@ -328,9 +328,6 @@ public final class EngineRequirementExecutionProfileResolver
     }
 
     private AgentRuntimeType compatibilityRuntime(AgentRole role) {
-        if (role == AgentRole.REQUIREMENT_REVIEWER || role == AgentRole.SOLUTION_ARCHITECT) {
-            return openAiChatEnabled ? AgentRuntimeType.MODEL_ONLY : AgentRuntimeType.CLAUDE_CODE;
-        }
         return AgentRuntimeType.CLAUDE_CODE;
     }
 

@@ -6,6 +6,7 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Cpu,
   Database,
   FlaskConical,
   Github,
@@ -66,6 +67,7 @@ const menuGroups: Array<{ title: string; items: MenuItem[] }> = [
     title: "设置",
     items: [
       { path: "/admin/users", label: "用户管理", icon: Users },
+      { path: "/admin/model-providers", label: "供应商配置", icon: Cpu },
       { path: "/admin/settings", label: "系统设置", icon: Settings }
     ]
   }
@@ -82,6 +84,7 @@ const breadcrumbMap: Record<string, string> = {
   evaluations: "评测",
   "coding-benchmarks": "编码消融评测",
   users: "用户管理",
+  "model-providers": "供应商配置",
   settings: "系统设置"
 };
 

@@ -1655,10 +1655,15 @@ public class RequirementDeliveryEngine {
                     + command.policyRunId());
         }
         AgentRole firstRole = AgentRole.requirementDeliveryOrder().getFirst();
-        if (role == firstRole && (command.taskVersion() != authorization.boundTaskVersion()
-                || command.fencingToken() != authorization.boundFencingToken())) {
-            throw new IllegalStateException("first role command is not bound to the applied policy generation: "
-                    + command.commandId());
+        if (role == firstRole) {
+            // Normal apply mints the first role at the APPLIED bound pair. Checkpoint-bound
+            // retries inherit that frozen generation onto the recovering snapshot instead.
+            boolean checkpointBoundRetry = !command.retryCheckpointId().isBlank();
+            if (!checkpointBoundRetry && (command.taskVersion() != authorization.boundTaskVersion()
+                    || command.fencingToken() != authorization.boundFencingToken())) {
+                throw new IllegalStateException("first role command is not bound to the applied policy generation: "
+                        + command.commandId());
+            }
         }
         return authorization;
     }
@@ -4234,7 +4239,7 @@ public class RequirementDeliveryEngine {
     private String roleOutputContract(AgentRole role) {
         return switch (role) {
             case REQUIREMENT_REVIEWER -> """
-                    只输出一个 JSON 对象，不要 markdown：
+                    必须调用 rd_submit_result 恰好一次，提交下面这个完整 JSON 对象（字段都在根上）。不要只在对话里打印 JSON，也不要自己写 result.json：
                     {
                       "decision": "APPROVED|NEED_INFO|REJECTED",
                       "feasibility": "CAN_DO|NEED_INFO|UNSAFE",
@@ -4258,7 +4263,7 @@ public class RequirementDeliveryEngine {
                     }
                     """.strip();
             case SOLUTION_ARCHITECT -> """
-                    只输出一个 JSON 对象，不要 markdown：
+                    必须调用 rd_submit_result 恰好一次，提交下面这个完整 JSON 对象（字段都在根上）。不要只在对话里打印 JSON，也不要自己写 result.json：
                     {
                       "summary": "开发方案摘要",
                       "affectedFiles": ["预计影响文件"],
@@ -4274,7 +4279,7 @@ public class RequirementDeliveryEngine {
                     }
                     """.strip();
             case CODING_AGENT -> """
-                    只输出一个 JSON 对象，不要 markdown：
+                    必须调用 rd_submit_result 恰好一次，提交下面这个完整 JSON 对象（字段都在根上）。不要只在对话里打印 JSON，也不要自己写 result.json：
                     {
                       "status": "SUCCESS|FAILED|NEED_INFO|UNSAFE",
                       "summary": "实现摘要",
@@ -4293,7 +4298,7 @@ public class RequirementDeliveryEngine {
                     }
                     """.strip();
             case QA_AGENT -> """
-                    只输出一个 JSON 对象，不要 markdown：
+                    必须调用 rd_submit_result 恰好一次，提交下面这个完整 JSON 对象（字段都在根上）。不要只在对话里打印 JSON，也不要自己写 result.json：
                     {
                       "status": "PASSED|FAILED|SKIPPED",
                       "summary": "QA 当前需求与回归验证摘要",

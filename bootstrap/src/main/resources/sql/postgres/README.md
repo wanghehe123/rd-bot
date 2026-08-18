@@ -30,6 +30,7 @@ Scripts are applied in **numeric** `pN_` order (then filename). `p10` runs after
 | 13 | `p13_openviking_identity_backfill.sql` |
 | 14 | `p14_agent_strategy_profiles.sql` |
 | 15 | `p15_host_verification.sql` |
+| 17 | `p17_fix_tool_policy_seed_hashes.sql` |
 
 Skip `README.md` and any non-`.sql` files.
 

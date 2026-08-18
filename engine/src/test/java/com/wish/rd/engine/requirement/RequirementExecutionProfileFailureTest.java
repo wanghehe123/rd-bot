@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class RequirementExecutionProfileFailureTest {
 
@@ -71,6 +72,7 @@ class RequirementExecutionProfileFailureTest {
         RequirementDeliveryResult result = engine.submit(task.taskId());
 
         assertEquals(com.wish.rd.rag.runtime.model.RdTaskStatus.FAILED_NEEDS_HUMAN, result.status());
+        assertTrue(result.errorMessage().contains("AGENT_RUNTIME_PROFILE_INVALID: disabled profile"));
         assertEquals(0, executorCalls.get());
         AgentStageRun reviewer = stageRuns.listByTask(task.taskId()).stream()
                 .filter(stage -> stage.role() == AgentRole.REQUIREMENT_REVIEWER)

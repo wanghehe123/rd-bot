@@ -3,7 +3,6 @@ package com.wish.rd.bootstrap.verify;
 import com.wish.rd.bootstrap.executor.impl.RoleHandoffAttachmentResolver;
 import com.wish.rd.bootstrap.oracle.impl.CleanHostVerifierWorkspaceFactory;
 import com.wish.rd.engine.agent.AgentStageArtifactStore;
-import com.wish.rd.engine.requirement.RequirementDeliveryEngine;
 import com.wish.rd.engine.requirement.verify.HostVerificationChangeSetResolver;
 import com.wish.rd.engine.requirement.verify.HostVerificationPort;
 import com.wish.rd.engine.requirement.verify.HostVerificationStore;
@@ -16,7 +15,6 @@ import com.wish.rd.exec.repair.verify.HostVerificationCommandRunner;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
 import com.wish.rd.rag.qa.QaValidationProfileService;
 import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -30,29 +28,13 @@ import java.nio.file.Path;
  *
  * <p>{@link HostVerificationWorkspaceFactory} and
  * {@link HostVerificationChangeSetResolver} are registered here so the port
- * is created whenever a {@link HostVerificationStore} exists. The adapter is
- * forwarded to {@link RequirementDeliveryEngine} when both beans exist.
+ * is created whenever a {@link HostVerificationStore} exists.
+ * {@code RequirementDeliveryEngine#setHostVerificationPort} receives the
+ * adapter; do not attach it from this configuration class — a factory method
+ * on the same instance plus {@code getIfAvailable()} is a circular reference.
  */
 @Configuration(proxyBeanMethods = false)
 public class HostVerificationExecutorConfiguration {
-
-    /**
-     * Injects the optional adapter into the delivery orchestrator.
-     *
-     * @param engines delivery engine when the control plane is present
-     * @param ports   store-backed adapter when the verification store exists
-     */
-    @Autowired
-    void attachHostVerificationPort(
-            ObjectProvider<RequirementDeliveryEngine> engines,
-            ObjectProvider<HostVerificationPort> ports
-    ) {
-        HostVerificationPort port = ports.getIfAvailable();
-        RequirementDeliveryEngine engine = engines.getIfAvailable();
-        if (port != null && engine != null) {
-            engine.setHostVerificationPort(port);
-        }
-    }
 
     /**
      * Production source for the coding stage's verified candidate patch.

@@ -324,6 +324,43 @@ export function isRetryableRequirementTaskStatus(status: string): boolean {
   return RETRYABLE_REQUIREMENT_TASK_STATUSES.has(status);
 }
 
+const CHECKPOINT_RETRY_PREFIX = "checkpoint-bound retry:";
+const RETRY_STAGE_LABEL: Record<string, string> = {
+  REQUIREMENT_REVIEWER: "需求评审",
+  SOLUTION_ARCHITECT: "方案架构",
+  CODING_AGENT: "编码",
+  QA_AGENT: "质量验收"
+};
+
+export type TaskStatusNotice =
+  | { kind: "none"; message: "" }
+  | { kind: "blocker"; message: string }
+  | { kind: "recovery"; message: string };
+
+/** Classifies task.errorMessage so RECOVERING retry progress is not shown as a blocker. */
+export function taskStatusNotice(task: { status: string; errorMessage?: string | null }): TaskStatusNotice {
+  const message = (task.errorMessage || "").trim();
+  if (!message) {
+    return { kind: "none", message: "" };
+  }
+  if (task.status === "RECOVERING" && message.toLowerCase().startsWith(CHECKPOINT_RETRY_PREFIX)) {
+    const stage = message.slice(CHECKPOINT_RETRY_PREFIX.length).trim();
+    return { kind: "recovery", message: `正在从失败阶段恢复：${humanizeRetryStage(stage)}` };
+  }
+  if (RETRYABLE_REQUIREMENT_TASK_STATUSES.has(task.status) || task.status === "DEAD_LETTERED") {
+    return { kind: "blocker", message };
+  }
+  if (task.status === "RECOVERING" || task.status === "EXECUTING") {
+    return { kind: "none", message: "" };
+  }
+  return { kind: "blocker", message };
+}
+
+function humanizeRetryStage(stage: string): string {
+  const role = stage.includes(":") ? stage.slice(stage.lastIndexOf(":") + 1) : stage;
+  return RETRY_STAGE_LABEL[role] || role || stage;
+}
+
 export function canSubmitRequirementTask(task: { status: string; paused: boolean }): boolean {
   return !task.paused && !NON_SUBMITTABLE_REQUIREMENT_TASK_STATUSES.has(task.status);
 }

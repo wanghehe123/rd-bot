@@ -92,7 +92,15 @@ import {
   mergeImageAttachments,
   removeImageAttachment
 } from "./imageAttachments";
+import {
+  clearTaskCreateDraft,
+  formatDraftTime,
+  isTaskDraftDirty,
+  loadTaskCreateDraft,
+  saveTaskCreateDraft
+} from "./rdTaskDraft";
 import { taskListFiltersFromSearchParams } from "./taskListFilters";
+import { taskStatusNotice } from "./roleWorkbenchModel";
 
 const PAGE_SIZE = 10;
 
@@ -591,12 +599,26 @@ export function RdTaskListPage() {
                               <span className="max-w-[110px] truncate">{task.taskType === "REQUIREMENT" ? (task.baseBranch || "-") : (task.ticketId || "-")}</span>
                             </span>
                           </div>
-                          {task.errorMessage ? (
-                            <div className="mt-1.5 flex items-center gap-1.5 rounded border border-rose-200 bg-rose-50/80 px-2 py-0.5 text-xs text-rose-800" title={task.errorMessage}>
-                              <AlertTriangle className="h-3 w-3 shrink-0 text-rose-600" />
-                              <span className="truncate">{truncate(task.errorMessage, 45)}</span>
-                            </div>
-                          ) : null}
+                          {(() => {
+                            const notice = taskStatusNotice(task);
+                            if (notice.kind === "recovery") {
+                              return (
+                                <div className="mt-1.5 flex items-center gap-1.5 rounded border border-sky-200 bg-sky-50/80 px-2 py-0.5 text-xs text-sky-900" title={notice.message}>
+                                  <RefreshCw className="h-3 w-3 shrink-0 text-sky-600" />
+                                  <span className="truncate">{truncate(notice.message, 45)}</span>
+                                </div>
+                              );
+                            }
+                            if (notice.kind === "blocker") {
+                              return (
+                                <div className="mt-1.5 flex items-center gap-1.5 rounded border border-rose-200 bg-rose-50/80 px-2 py-0.5 text-xs text-rose-800" title={notice.message}>
+                                  <AlertTriangle className="h-3 w-3 shrink-0 text-rose-600" />
+                                  <span className="truncate">{truncate(notice.message, 45)}</span>
+                                </div>
+                              );
+                            }
+                            return null;
+                          })()}
                         </div>
                       </TableCell>
                       <TableCell>
@@ -788,6 +810,7 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
   const [drafting, setDrafting] = useState(false);
   const [applyingTemplate, setApplyingTemplate] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [restoredDraftTime, setRestoredDraftTime] = useState<number | null>(null);
   const formContextKey = `${open}:${taskKind}:${selectedProjectId}`;
   const formContextRef = useRef({ key: formContextKey, version: 0, open, taskKind, selectedProjectId });
   if (formContextRef.current.key !== formContextKey) {
@@ -826,32 +849,162 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
       setPriority(task.priority || "P2");
       setPromptSnapshot("");
       setTaskKind("BUG_FIX");
+      setRestoredDraftTime(null);
     } else {
-      setTaskKind("BUG_FIX");
-      setTitle("");
-      setTicketId("");
-      setAutoTicketId(createAutoTicketId());
-      setTicketTitle("");
-      setPriority("P2");
-      setPromptSnapshot("");
-      setSelectedProjectId("");
-      setBaseBranch("main");
-      setExpectedResult("");
-      setAcceptanceCriteriaText("");
-      setTokenBudgetOverride("0");
-      setMaterialSourceType("MANUAL_TEXT");
-      setManualRequirementText("");
-      setFeishuDocumentUrl("");
-      setLocalRequirementFile(null);
-      setAutoExecute(true);
-      setBugActualBehavior("");
-      setBugExpectedBehavior("");
-      setBugReproductionSteps("");
-      setBugErrorLog("");
-      setBugAffectedScope("");
-      setAttachmentFiles([]);
+      const savedDraft = loadTaskCreateDraft();
+      if (savedDraft) {
+        setTaskKind(savedDraft.taskKind || "BUG_FIX");
+        setTitle(savedDraft.title || "");
+        setTicketId("");
+        setAutoTicketId(createAutoTicketId());
+        setTicketTitle(savedDraft.ticketTitle || "");
+        setPriority(savedDraft.priority || "P2");
+        setPromptSnapshot(savedDraft.promptSnapshot || "");
+        setSelectedProjectId(savedDraft.selectedProjectId || "");
+        setBaseBranch(savedDraft.baseBranch || "main");
+        setExpectedResult(savedDraft.expectedResult || "");
+        setAcceptanceCriteriaText(savedDraft.acceptanceCriteriaText || "");
+        setTokenBudgetOverride(savedDraft.tokenBudgetOverride || "0");
+        setMaterialSourceType(savedDraft.materialSourceType || "MANUAL_TEXT");
+        setManualRequirementText(savedDraft.manualRequirementText || "");
+        setFeishuDocumentUrl(savedDraft.feishuDocumentUrl || "");
+        setLocalRequirementFile(null);
+        setAutoExecute(savedDraft.autoExecute ?? true);
+        setBugActualBehavior(savedDraft.bugActualBehavior || "");
+        setBugExpectedBehavior(savedDraft.bugExpectedBehavior || "");
+        setBugReproductionSteps(savedDraft.bugReproductionSteps || "");
+        setBugErrorLog(savedDraft.bugErrorLog || "");
+        setBugAffectedScope(savedDraft.bugAffectedScope || "");
+        setAttachmentFiles([]);
+        setRestoredDraftTime(savedDraft.savedAt || null);
+      } else {
+        setTaskKind("BUG_FIX");
+        setTitle("");
+        setTicketId("");
+        setAutoTicketId(createAutoTicketId());
+        setTicketTitle("");
+        setPriority("P2");
+        setPromptSnapshot("");
+        setSelectedProjectId("");
+        setBaseBranch("main");
+        setExpectedResult("");
+        setAcceptanceCriteriaText("");
+        setTokenBudgetOverride("0");
+        setMaterialSourceType("MANUAL_TEXT");
+        setManualRequirementText("");
+        setFeishuDocumentUrl("");
+        setLocalRequirementFile(null);
+        setAutoExecute(true);
+        setBugActualBehavior("");
+        setBugExpectedBehavior("");
+        setBugReproductionSteps("");
+        setBugErrorLog("");
+        setBugAffectedScope("");
+        setAttachmentFiles([]);
+        setRestoredDraftTime(null);
+      }
     }
   }, [open, mode, task]);
+
+  useEffect(() => {
+    if (!open || mode !== "create") return;
+    const currentValues = {
+      taskKind,
+      title,
+      ticketTitle,
+      selectedProjectId,
+      priority,
+      baseBranch,
+      bugActualBehavior,
+      bugExpectedBehavior,
+      bugReproductionSteps,
+      bugErrorLog,
+      bugAffectedScope,
+      promptSnapshot,
+      materialSourceType,
+      manualRequirementText,
+      feishuDocumentUrl,
+      expectedResult,
+      acceptanceCriteriaText,
+      tokenBudgetOverride,
+      autoExecute
+    };
+    saveTaskCreateDraft(currentValues);
+  }, [
+    open,
+    mode,
+    taskKind,
+    title,
+    ticketTitle,
+    selectedProjectId,
+    priority,
+    baseBranch,
+    bugActualBehavior,
+    bugExpectedBehavior,
+    bugReproductionSteps,
+    bugErrorLog,
+    bugAffectedScope,
+    promptSnapshot,
+    materialSourceType,
+    manualRequirementText,
+    feishuDocumentUrl,
+    expectedResult,
+    acceptanceCriteriaText,
+    tokenBudgetOverride,
+    autoExecute
+  ]);
+
+  const handleDiscardDraft = () => {
+    clearTaskCreateDraft();
+    setTaskKind("BUG_FIX");
+    setTitle("");
+    setTicketId("");
+    setAutoTicketId(createAutoTicketId());
+    setTicketTitle("");
+    setPriority("P2");
+    setPromptSnapshot("");
+    setSelectedProjectId("");
+    setBaseBranch("main");
+    setExpectedResult("");
+    setAcceptanceCriteriaText("");
+    setTokenBudgetOverride("0");
+    setMaterialSourceType("MANUAL_TEXT");
+    setManualRequirementText("");
+    setFeishuDocumentUrl("");
+    setLocalRequirementFile(null);
+    setAutoExecute(true);
+    setBugActualBehavior("");
+    setBugExpectedBehavior("");
+    setBugReproductionSteps("");
+    setBugErrorLog("");
+    setBugAffectedScope("");
+    setAttachmentFiles([]);
+    setRestoredDraftTime(null);
+    toast.info("已清空草稿并重置表单");
+  };
+
+  const handleClose = () => {
+    if (
+      mode === "create" &&
+      isTaskDraftDirty({
+        title,
+        ticketTitle,
+        bugActualBehavior,
+        bugExpectedBehavior,
+        bugReproductionSteps,
+        bugErrorLog,
+        bugAffectedScope,
+        manualRequirementText,
+        feishuDocumentUrl,
+        expectedResult,
+        acceptanceCriteriaText,
+        promptSnapshot
+      })
+    ) {
+      toast.info("草稿已自动保存，再次打开即可继续编辑", { duration: 3000 });
+    }
+    onOpenChange(false);
+  };
 
   useEffect(() => {
     if (!open || mode !== "create") return;
@@ -1050,6 +1203,8 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
           await uploadTaskMaterial(created.taskId, file, { materialType: "REFERENCE_IMAGE" });
         }
         if (autoExecute && attachmentFiles.length > 0) await submitRdTask(created.taskId);
+        clearTaskCreateDraft();
+        setRestoredDraftTime(null);
         toast.success("需求任务创建成功");
       } else if (mode === "create") {
         if (!selectedProjectId) {
@@ -1115,6 +1270,8 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
           await uploadTaskMaterial(created.taskId, file, { materialType: "SCREENSHOT" });
         }
         if (autoExecute && attachmentFiles.length > 0) await submitRdTask(created.taskId);
+        clearTaskCreateDraft();
+        setRestoredDraftTime(null);
         toast.success(autoExecute ? "创建成功，已提交修复执行" : "创建成功");
       } else if (task) {
         await updateRdTask(task.taskId, {
@@ -1134,7 +1291,7 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleClose}>
       <DialogContent className="flex max-h-[calc(100vh-2rem)] flex-col overflow-hidden sm:max-w-[860px]" onOpenAutoFocus={(event) => event.preventDefault()}>
         <DialogHeader>
           <DialogTitle>{mode === "create" ? "新建任务" : "编辑任务"}</DialogTitle>
@@ -1143,6 +1300,24 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
           </DialogDescription>
         </DialogHeader>
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
+          {mode === "create" && restoredDraftTime ? (
+            <div className="flex items-center justify-between rounded-lg border border-blue-200 bg-blue-50/80 px-3.5 py-2 text-xs text-blue-900 shadow-sm">
+              <div className="flex items-center gap-2 min-w-0">
+                <Sparkles className="h-4 w-4 text-blue-600 shrink-0" />
+                <span className="truncate">已自动恢复上次未提交的草稿（保存于 {formatDraftTime(restoredDraftTime)}）</span>
+              </div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-6 px-2 text-xs text-blue-700 hover:bg-blue-100 hover:text-blue-900 shrink-0 ml-2"
+                onClick={handleDiscardDraft}
+              >
+                <Trash2 className="mr-1 h-3.5 w-3.5" />
+                清空草稿
+              </Button>
+            </div>
+          ) : null}
           {mode === "create" ? (
             <div>
               <label className="mb-2 block text-sm font-medium">任务类型</label>
@@ -1552,7 +1727,7 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
           )}
         </div>
         <DialogFooter className="shrink-0 border-t border-slate-200 pt-4">
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
+          <Button variant="outline" onClick={handleClose} disabled={saving}>
             取消
           </Button>
           <Button onClick={handleSubmit} disabled={saving}>

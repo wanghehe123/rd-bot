@@ -7,7 +7,8 @@ import {
   isRetryableRequirementTaskStatus,
   projectRoleResult,
   roleStageSignature,
-  selectRoleAttempt
+  selectRoleAttempt,
+  taskStatusNotice
 } from "../src/pages/admin/rdtask/roleWorkbenchModel.ts";
 
 test("keeps failed requirements on the checkpointed recovery path", () => {
@@ -18,6 +19,30 @@ test("keeps failed requirements on the checkpointed recovery path", () => {
   assert.equal(canSubmitRequirementTask({ status: "CREATED", paused: false }), true);
   assert.equal(canSubmitRequirementTask({ status: "CREATED", paused: true }), false);
   assert.equal(canSubmitRequirementTask({ status: "RECOVERING", paused: false }), false);
+});
+
+test("does not treat checkpoint-bound retry progress as a blocker", () => {
+  assert.deepEqual(
+    taskStatusNotice({
+      status: "RECOVERING",
+      errorMessage: "checkpoint-bound retry: ROLE_EXECUTION:REQUIREMENT_REVIEWER"
+    }),
+    { kind: "recovery", message: "正在从失败阶段恢复：需求评审" }
+  );
+  assert.equal(
+    taskStatusNotice({
+      status: "FAILED_RETRYABLE",
+      errorMessage: "first role command is not bound to the applied policy generation: 1"
+    }).kind,
+    "blocker"
+  );
+  assert.equal(
+    taskStatusNotice({
+      status: "EXECUTING",
+      errorMessage: "checkpoint-bound retry: ROLE_EXECUTION:REQUIREMENT_REVIEWER"
+    }).kind,
+    "none"
+  );
 });
 
 const stage = (

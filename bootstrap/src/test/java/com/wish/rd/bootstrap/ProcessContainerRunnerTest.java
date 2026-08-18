@@ -127,6 +127,40 @@ class ProcessContainerRunnerTest {
     }
 
     @Test
+    void shouldOverrideImageEntrypointBeforeTheImageName() {
+        DockerExecutorProperties properties = new DockerExecutorProperties();
+        ProcessContainerRunner runner = runner(properties,
+                (argv, environment) -> new ProcessContainerRunner.CommandResult(0, 1, "", ""));
+        ContainerRunRequest request = new ContainerRunRequest(
+                "rd-pi-qa-deps",
+                "rd-bot/pi-agent-qa:local",
+                List.of("-c", "npm install --include=dev"),
+                Map.of("NODE_ENV", "development"),
+                Map.of(temporaryDirectory.resolve("workspace").toString(), "/work/repo"),
+                "/work/repo",
+                "bridge",
+                true,
+                false,
+                temporaryDirectory.resolve("output"),
+                false,
+                "",
+                60_000L,
+                ContainerSecurityPolicy.disabled(),
+                null,
+                "sh"
+        );
+
+        List<String> argv = runner.buildCommand(request);
+
+        int entrypoint = argv.indexOf("--entrypoint");
+        int image = argv.indexOf("rd-bot/pi-agent-qa:local");
+        assertTrue(entrypoint >= 0, argv.toString());
+        assertEquals("sh", argv.get(entrypoint + 1));
+        assertTrue(entrypoint < image, argv.toString());
+        assertFalse(argv.subList(0, image).contains("node"));
+    }
+
+    @Test
     void shouldRenderHardenedContainerSecurityPolicyInStableOrder() {
         DockerExecutorProperties properties = new DockerExecutorProperties();
         ProcessContainerRunner runner = runner(properties,

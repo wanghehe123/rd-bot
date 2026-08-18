@@ -17,7 +17,8 @@ import { createTaskRequestGuard, loadTaskDetailShell } from "@/pages/admin/rdtas
 import {
   canSubmitRequirementTask,
   isRetryableRequirementTaskStatus,
-  roleStageSignature
+  roleStageSignature,
+  taskStatusNotice
 } from "@/pages/admin/rdtask/roleWorkbenchModel";
 
 import {
@@ -1587,12 +1588,26 @@ function TaskSummaryBand({ task, overview }: { task: RdTask; overview: RdTaskExe
           <SummaryMetric label="任务耗时" value={formatDuration(overview?.elapsedMillis)} />
         </dl>
       </div>
-      {task.errorMessage ? (
-        <div className="mt-4 flex items-start gap-2.5 rounded-lg border border-rose-200 bg-rose-50/90 p-3 text-sm text-rose-900">
-          <span className="font-semibold shrink-0">当前阻断：</span>
-          <span className="break-words">{task.errorMessage}</span>
-        </div>
-      ) : null}
+      {(() => {
+        const notice = taskStatusNotice(task);
+        if (notice.kind === "recovery") {
+          return (
+            <div className="mt-4 flex items-start gap-2.5 rounded-lg border border-sky-200 bg-sky-50/90 p-3 text-sm text-sky-950">
+              <span className="font-semibold shrink-0">恢复中：</span>
+              <span className="break-words">{notice.message}</span>
+            </div>
+          );
+        }
+        if (notice.kind === "blocker") {
+          return (
+            <div className="mt-4 flex items-start gap-2.5 rounded-lg border border-rose-200 bg-rose-50/90 p-3 text-sm text-rose-900">
+              <span className="font-semibold shrink-0">当前阻断：</span>
+              <span className="break-words">{notice.message}</span>
+            </div>
+          );
+        }
+        return null;
+      })()}
     </section>
   );
 }

@@ -375,7 +375,7 @@ rd:
       api-key-env: ${MINIMAX_API_KEY_ENV:MINIMAX_API_KEY}
       model: ${MINIMAX_MODEL:MiniMax-M3}
       protocol: ${RD_EXECUTOR_OPENAI_CHAT_PROTOCOL:openai-chat-completions}
-      timeout: ${RD_EXECUTOR_OPENAI_CHAT_TIMEOUT:60s}
+      timeout: ${RD_EXECUTOR_OPENAI_CHAT_TIMEOUT:0s}
   github:
     merge-sync:
       enabled: ${RD_GITHUB_MERGE_SYNC_ENABLED:true}

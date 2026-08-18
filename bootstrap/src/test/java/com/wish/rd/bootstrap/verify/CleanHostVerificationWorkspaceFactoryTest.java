@@ -18,6 +18,7 @@ import com.wish.rd.rag.runtime.model.CreateRequirementTaskCommand;
 import com.wish.rd.rag.runtime.model.RdRequirementTask;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 
 import java.nio.charset.StandardCharsets;
@@ -32,6 +33,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -153,6 +155,19 @@ class CleanHostVerificationWorkspaceFactoryTest {
                 });
     }
 
+    @Test
+    void configurationInjectsPortThroughConsumerSetterWithoutCircularReference() {
+        new ApplicationContextRunner()
+                .withUserConfiguration(HostVerificationExecutorConfiguration.class)
+                .withBean(HostVerificationStore.class, InMemoryHostVerificationStore::new)
+                .withBean(PortConsumer.class, PortConsumer::new)
+                .run(context -> {
+                    assertNull(context.getStartupFailure(), () -> String.valueOf(context.getStartupFailure()));
+                    assertNotNull(context.getBean(HostVerificationPort.class));
+                    assertNotNull(context.getBean(PortConsumer.class).port);
+                });
+    }
+
     private static RdRequirementTask task() {
         return RdRequirementTask.created(
                 "9001",
@@ -206,6 +221,15 @@ class CleanHostVerificationWorkspaceFactoryTest {
             this.command = command;
             this.request = request;
             return new HostVerifierWorkspace(repo, "", Map.of());
+        }
+    }
+
+    static final class PortConsumer {
+        private HostVerificationPort port;
+
+        @Autowired(required = false)
+        void setHostVerificationPort(HostVerificationPort port) {
+            this.port = port;
         }
     }
 }

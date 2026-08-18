@@ -24,30 +24,78 @@ const DialogOverlay = React.forwardRef<
 ));
 DialogOverlay.displayName = DialogPrimitive.Overlay.displayName;
 
+export interface DialogContentProps
+  extends React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content> {
+  hideClose?: boolean;
+  /**
+   * When true (default), clicking the backdrop/mask or interacting outside will NOT close the dialog.
+   * Prevents accidental loss of user input when clicking near or outside modal boundaries.
+   */
+  preventBackdropClose?: boolean;
+  /**
+   * When true, pressing the Escape key will not close the dialog. Default is false.
+   */
+  preventEscapeClose?: boolean;
+}
+
 const DialogContent = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Content>,
-  React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content> & { hideClose?: boolean }
->(({ className, children, onOpenAutoFocus, hideClose, ...props }, ref) => (
-  <DialogPortal>
-    <DialogOverlay />
-    <DialogPrimitive.Content
-      ref={ref}
-      className={cn(
-        "ui-dialog-content fixed left-[50%] top-[50%] z-50 grid w-full max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 rounded-lg border border-border/80 bg-card p-6 shadow-soft duration-200 focus-visible:outline-none",
-        className
-      )}
-      onOpenAutoFocus={onOpenAutoFocus}
-      {...props}
-    >
-      {children}
-      {!hideClose ? (
-        <DialogPrimitive.Close className="absolute right-4 top-4 rounded-full p-2 opacity-70 transition-opacity hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-          <X className="h-4 w-4" />
-        </DialogPrimitive.Close>
-      ) : null}
-    </DialogPrimitive.Content>
-  </DialogPortal>
-));
+  DialogContentProps
+>(
+  (
+    {
+      className,
+      children,
+      onOpenAutoFocus,
+      onPointerDownOutside,
+      onInteractOutside,
+      onEscapeKeyDown,
+      hideClose,
+      preventBackdropClose = true,
+      preventEscapeClose = false,
+      ...props
+    },
+    ref
+  ) => (
+    <DialogPortal>
+      <DialogOverlay />
+      <DialogPrimitive.Content
+        ref={ref}
+        className={cn(
+          "ui-dialog-content fixed left-[50%] top-[50%] z-50 grid w-full max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 rounded-lg border border-border/80 bg-card p-6 shadow-soft duration-200 focus-visible:outline-none",
+          className
+        )}
+        onOpenAutoFocus={onOpenAutoFocus}
+        onPointerDownOutside={(event) => {
+          if (preventBackdropClose) {
+            event.preventDefault();
+          }
+          onPointerDownOutside?.(event);
+        }}
+        onInteractOutside={(event) => {
+          if (preventBackdropClose) {
+            event.preventDefault();
+          }
+          onInteractOutside?.(event);
+        }}
+        onEscapeKeyDown={(event) => {
+          if (preventEscapeClose) {
+            event.preventDefault();
+          }
+          onEscapeKeyDown?.(event);
+        }}
+        {...props}
+      >
+        {children}
+        {!hideClose ? (
+          <DialogPrimitive.Close className="absolute right-4 top-4 rounded-full p-2 opacity-70 transition-opacity hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+            <X className="h-4 w-4" />
+          </DialogPrimitive.Close>
+        ) : null}
+      </DialogPrimitive.Content>
+    </DialogPortal>
+  )
+);
 DialogContent.displayName = DialogPrimitive.Content.displayName;
 
 const DialogHeader = ({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (

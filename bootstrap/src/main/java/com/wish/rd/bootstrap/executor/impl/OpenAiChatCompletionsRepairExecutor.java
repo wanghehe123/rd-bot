@@ -123,10 +123,12 @@ public final class OpenAiChatCompletionsRepairExecutor implements RepairExecutor
                 ? anthropicRequestBody(command)
                 : openAiRequestBody(command);
         HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(configuration.endpoint()))
-                .timeout(configuration.timeout())
                 .header("Authorization", "Bearer " + apiKey)
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(OBJECT_MAPPER.writeValueAsString(body)));
+        if (!configuration.timeout().isZero()) {
+            builder.timeout(configuration.timeout());
+        }
         if (configuration.anthropicCompatible()) {
             builder.header("anthropic-version", "2023-06-01");
         }
@@ -374,8 +376,8 @@ public final class OpenAiChatCompletionsRepairExecutor implements RepairExecutor
             model = requireText(model, "model");
             baseUrl = requireText(baseUrl, "baseUrl");
             apiKeyEnv = requireText(apiKeyEnv, "apiKeyEnv");
-            timeout = timeout == null || timeout.isNegative() || timeout.isZero()
-                    ? Duration.ofSeconds(30)
+            timeout = timeout == null || timeout.isNegative()
+                    ? Duration.ZERO
                     : timeout;
             protocol = normalizeProtocol(protocol);
         }

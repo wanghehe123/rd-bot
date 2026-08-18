@@ -132,6 +132,74 @@ class RequirementDeliveryStageExecutionTest {
     }
 
     @Test
+    void checkpointBoundFirstRoleRetryInheritsTheAppliedPolicyOnTheRecoveringSnapshot() {
+        InMemoryRdTaskStatusEventStore events = new InMemoryRdTaskStatusEventStore();
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(), events, SnowflakeIdGenerator.defaultGenerator());
+        RdRequirementTask executing = executingTask(registry, "checkpoint first role retry");
+        RequirementPolicyRun authorization = appliedRun(
+                "retry-reviewer-policy", executing.taskId(), executing.version(), executing.fencingToken());
+        registry.markRequirementFailedNeedsHuman(
+                executing.taskId(), "Pi session settled without rd_submit_result", executing.executionResultJson());
+        RdRequirementTask recovering = (RdRequirementTask) registry.markRecovering(
+                executing.taskId(), "checkpoint-bound retry: ROLE_EXECUTION:REQUIREMENT_REVIEWER");
+        RequirementPolicyRunStore policies = mock(RequirementPolicyRunStore.class);
+        when(policies.findById(authorization.id())).thenReturn(Optional.of(authorization));
+        RequirementAgentStageOrchestrator orchestrator = mock(RequirementAgentStageOrchestrator.class);
+        when(orchestrator.run(any(), any(), anyList(), any(), any(), any(), isNull()))
+                .thenReturn(RequirementExecutionResult.success(
+                        recovering.taskId(), "reviewer complete", "", "{\"decision\":\"APPROVED\"}"));
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry, new InMemoryTaskMaterialStore(), request -> null);
+        engine.setRequirementPolicyRunStore(policies);
+        engine.setStageOrchestrator(orchestrator);
+        RequirementStageCommand command = RequirementStageCommand.pending(
+                "7495153128925433856", recovering.taskId(), recovering.version(), recovering.fencingToken(),
+                AgentRole.REQUIREMENT_REVIEWER.name(), "ROLE_EXECUTION:REQUIREMENT_REVIEWER", 0, 3,
+                System.currentTimeMillis() + 60_000L,
+                com.wish.rd.engine.scheduling.model.ScheduleResourceClass.PROVIDER,
+                Set.of(com.wish.rd.engine.scheduling.model.ScheduleResourceClass.PROVIDER),
+                "_default", "provider", "P1", authorization.id(), "101", 101L,
+                "retry-reviewer-binding", System.currentTimeMillis());
+
+        RequirementStageExecutionPlan proposal = engine.planStage(command);
+
+        assertTrue(recovering.version() > executing.version());
+        assertTrue(recovering.fencingToken() > executing.fencingToken());
+        assertEquals(List.of(RdTaskStatus.RECOVERING, RdTaskStatus.EXECUTING), proposal.mutations().stream()
+                .map(com.wish.rd.engine.requirement.job.model.RequirementTaskMutation::fromStatus).toList());
+        assertEquals(List.of(RdTaskStatus.EXECUTING, RdTaskStatus.EXECUTING), proposal.mutations().stream()
+                .map(com.wish.rd.engine.requirement.job.model.RequirementTaskMutation::toStatus).toList());
+        assertEquals("SOLUTION_ARCHITECT", proposal.continuation().role());
+        assertEquals(recovering, registry.getRequirementTask(recovering.taskId()));
+    }
+
+    @Test
+    void firstRoleCommandWithoutARetryCheckpointMustMatchTheAppliedPolicyGeneration() {
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(), new InMemoryRdTaskStatusEventStore(),
+                SnowflakeIdGenerator.defaultGenerator());
+        RdRequirementTask executing = executingTask(registry, "stale first role generation");
+        RequirementPolicyRun authorization = appliedRun(
+                "original-apply-policy", executing.taskId(),
+                Math.subtractExact(executing.version(), 2L), Math.subtractExact(executing.fencingToken(), 2L));
+        RequirementPolicyRunStore policies = mock(RequirementPolicyRunStore.class);
+        when(policies.findById(authorization.id())).thenReturn(Optional.of(authorization));
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry, new InMemoryTaskMaterialStore(), request -> {
+                    throw new AssertionError("unbound first role command must not execute");
+                });
+        engine.setRequirementPolicyRunStore(policies);
+        RequirementStageCommand command = roleCommand(
+                executing, authorization.id(), AgentRole.REQUIREMENT_REVIEWER, "unbound-first-role");
+
+        IllegalStateException failure = assertThrows(IllegalStateException.class, () -> engine.planStage(command));
+
+        assertTrue(failure.getMessage().contains("first role command is not bound to the applied policy generation"));
+        assertEquals(executing, registry.getRequirementTask(executing.taskId()));
+    }
+
+    @Test
     void lastRoleExecutionProposalContinuesToDeterministicReview() {
         InMemoryRdTaskStatusEventStore events = new InMemoryRdTaskStatusEventStore();
         RagStreamTaskRegistry registry = new RagStreamTaskRegistry(

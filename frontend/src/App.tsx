@@ -23,6 +23,7 @@ const CodingBenchmarkPage = lazy(() => import("@/pages/admin/evaluation/CodingBe
 const CodingBenchmarkTrialDetailPage = lazy(() => import("@/pages/admin/evaluation/CodingBenchmarkTrialDetailPage").then((module) => ({ default: module.CodingBenchmarkTrialDetailPage })));
 const SettingsPage = lazy(() => import("./pages/AdminPages").then((module) => ({ default: module.SettingsPage })));
 const DeliveryObservabilityPage = lazy(() => import("@/pages/admin/observability/DeliveryObservabilityPage").then((module) => ({ default: module.DeliveryObservabilityPage })));
+const ModelProviderPage = lazy(() => import("@/pages/admin/provider/ModelProviderPage").then((module) => ({ default: module.ModelProviderPage })));
 
 function AdminRouteFallback() {
   return (
@@ -58,6 +59,7 @@ export function App() {
             <Route path="evaluations/coding-benchmarks" element={<CodingBenchmarkPage />} />
             <Route path="evaluations/coding-benchmarks/campaigns/:runId/trials/:trialId" element={<CodingBenchmarkTrialDetailPage />} />
             <Route path="observability" element={<DeliveryObservabilityPage />} />
+            <Route path="model-providers" element={<ModelProviderPage />} />
             <Route path="settings" element={<SettingsPage />} />
           </Route>
           <Route path="*" element={<Navigate to="/admin/dashboard" replace />} />

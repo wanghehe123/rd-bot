@@ -142,8 +142,11 @@ export interface ModelProviderProfile {
   baseUrl: string;
   modelId: string;
   credentialEnvironmentVariable: string;
+  authHeader?: boolean;
   enabled: boolean;
   version: number;
+  credentialConfigured?: boolean;
+  credentialUpdatedAt?: number | null;
 }
 
 export interface AgentExecutionProfile {

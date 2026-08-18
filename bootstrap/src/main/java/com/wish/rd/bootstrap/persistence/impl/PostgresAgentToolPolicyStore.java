@@ -53,8 +53,14 @@ public final class PostgresAgentToolPolicyStore implements AgentToolPolicyStore 
     }
 
     private AgentToolPolicy toPolicy(AgentToolPolicyRow row) {
-        if (!PostgresPersistenceSupport.checksum(row.policyJson).equalsIgnoreCase(row.policyHash)) {
-            throw new IllegalStateException("agent tool policy hash mismatch: " + row.policyId + "@" + row.version);
+        String expectedHash = PostgresPersistenceSupport.checksum(row.policyJson);
+        String storedHash = row.policyHash == null ? "" : row.policyHash.strip();
+        if (!expectedHash.equalsIgnoreCase(storedHash)) {
+            if (isSha256Hex(storedHash)) {
+                throw new IllegalStateException("agent tool policy hash mismatch: " + row.policyId + "@" + row.version);
+            }
+            row.policyHash = expectedHash;
+            mapper.upsert(row);
         }
         try {
             Map<String, Object> json = objectMapper.readValue(
@@ -86,6 +92,10 @@ public final class PostgresAgentToolPolicyStore implements AgentToolPolicyStore 
         } catch (JsonProcessingException exception) {
             throw new IllegalStateException("failed to serialize agent tool policy", exception);
         }
+    }
+
+    private static boolean isSha256Hex(String value) {
+        return value != null && value.matches("(?i)[0-9a-f]{64}");
     }
 
     private static Set<String> stringSet(Object value) {

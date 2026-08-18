@@ -40,6 +40,8 @@ import {
   DEFAULT_SKILL_MANIFEST_PATH,
 } from "./resource-loader.mjs";
 import {
+  normalizeSubmittedResult,
+  usesAgentRoleProtocol,
   validateQaEvidenceManifest,
   validateResult,
   validateRoleResult,
@@ -323,7 +325,7 @@ export async function run(options = {}) {
       settled = false;
       if (budgetControls) budgetControls.ignoreBudget = true;
       await session.prompt(
-        `Your session ended without submitting the structured result. Call ${RESULT_TOOL_NAME} now, exactly once, with the COMPLETE role protocol JSON object required by your instructions (all required fields, not just status and summary). Do not run any other tool, do not repeat prior work, and do not print file contents.`,
+        `Your session ended without submitting the structured result. Call ${RESULT_TOOL_NAME} now, exactly once. For SOLUTION_ARCHITECT the JSON must include non-empty summary, affectedFiles, implementationSteps, acceptanceMapping, and testPlan at the top level. For REQUIREMENT_REVIEWER include decision, feasibility, acceptanceCoverage, and budgetEstimate. Do not run any other tool, do not repeat prior work, and do not only print JSON.`,
       );
       await session.waitForIdle();
       await sink.flush();
@@ -332,7 +334,10 @@ export async function run(options = {}) {
       if (!settled) throw new Error("Pi session became idle without agent_settled");
       throw new Error("Pi session settled without rd_submit_result");
     }
-    const result = validateResult(JSON.parse(await readFile(paths.result, "utf8")));
+    const parsedResult = JSON.parse(await readFile(paths.result, "utf8"));
+    const result = usesAgentRoleProtocol(request.role)
+      ? parsedResult
+      : validateResult(parsedResult);
     await ensureDeliveryArtifacts(request, paths, result, sink);
     sessionFile = session.sessionManager.getSessionFile();
     await sink.lifecycle("ARTIFACT_WRITTEN", {
@@ -929,13 +934,16 @@ export function createResultTool({ resultPath, outputRoot, sink, context, onAcce
   return defineTool({
     name: RESULT_TOOL_NAME,
     label: "Submit RD result",
-    description: "Submit the final structured RD-Bot execution result. Call once after the work is complete.",
-    promptSnippet: "Submit the required structured execution result.",
+    description: "Submit the final structured RD-Bot execution result. The result argument must be a JSON object, not a string. Call once after the work is complete.",
+    promptSnippet: "Submit the required structured execution result as an object in the result field.",
     parameters: Type.Object({ result: Type.Any() }),
     executionMode: "sequential",
     async execute(_toolCallId, params) {
       try {
-        const result = validateResult(params?.result);
+        const result = normalizeSubmittedResult(params?.result);
+        if (!usesAgentRoleProtocol(context.role)) {
+          validateResult(result);
+        }
         // Reject protocol violations while the agent can still fix them in-session;
         // the host-side validator runs after the container exits and offers no retry.
         const roleErrors = validateRoleResult(
@@ -955,19 +963,23 @@ export function createResultTool({ resultPath, outputRoot, sink, context, onAcce
         }
         await writeResultAtomically(resultPath, result);
         onAccepted();
+        const submittedStatus = result.status ?? result.decision ?? "";
+        const submittedSummary = typeof result.summary === "string"
+          ? result.summary
+          : String(result.next_prompt?.summary ?? "");
         if (stateProjector) {
           await stateProjector.projectTerminalResult({
-            status: result.status,
-            reason: boundedText(result.summary, 512),
+            status: submittedStatus,
+            reason: boundedText(submittedSummary, 512),
           });
         }
         await sink.lifecycle("RESULT_SUBMITTED", {
-          status: result.status,
-          summary: boundedText(result.summary, 4096),
+          status: submittedStatus,
+          summary: boundedText(submittedSummary, 4096),
         });
         return {
           content: [{ type: "text", text: "Structured result accepted. Stop and do not submit another result." }],
-          details: { status: result.status },
+          details: { status: submittedStatus },
           terminate: true,
         };
       } catch (error) {

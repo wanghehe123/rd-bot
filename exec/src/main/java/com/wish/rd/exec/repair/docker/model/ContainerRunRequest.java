@@ -23,6 +23,7 @@ import java.util.Map;
  * @param executionTimeoutMillis 容器执行硬超时；{@code 0} 表示不设硬超时
  * @param securityPolicy   Docker 安全与资源边界；禁用时保持既有行为
  * @param networkPlan      可选的任务内网与受信任 relay sidecar 计划
+ * @param entrypoint       覆盖镜像 ENTRYPOINT；空白表示沿用镜像默认
  */
 public record ContainerRunRequest(
         String containerName,
@@ -39,7 +40,8 @@ public record ContainerRunRequest(
         String sharedMemorySize,
         long executionTimeoutMillis,
         ContainerSecurityPolicy securityPolicy,
-        ContainerNetworkPlan networkPlan
+        ContainerNetworkPlan networkPlan,
+        String entrypoint
 ) {
 
     public ContainerRunRequest {
@@ -53,6 +55,7 @@ public record ContainerRunRequest(
         sharedMemorySize = normalizeText(sharedMemorySize);
         executionTimeoutMillis = Math.max(0L, executionTimeoutMillis);
         securityPolicy = securityPolicy == null ? ContainerSecurityPolicy.disabled() : securityPolicy;
+        entrypoint = normalizeText(entrypoint);
         if (securityPolicy.enabled() && allowPrivileged) {
             throw new IllegalArgumentException(
                     "allowPrivileged is incompatible with an enabled container security policy");
@@ -101,7 +104,48 @@ public record ContainerRunRequest(
                 sharedMemorySize,
                 executionTimeoutMillis,
                 securityPolicy,
-                null
+                null,
+                ""
+        );
+    }
+
+    /**
+     * Backward-compatible request constructor with a sidecar plan and the image entrypoint.
+     */
+    public ContainerRunRequest(
+            String containerName,
+            String image,
+            List<String> command,
+            Map<String, String> env,
+            Map<String, String> mounts,
+            String workingDirectory,
+            String networkMode,
+            boolean removeAfterExit,
+            boolean allowPrivileged,
+            Path outputDirectory,
+            boolean initEnabled,
+            String sharedMemorySize,
+            long executionTimeoutMillis,
+            ContainerSecurityPolicy securityPolicy,
+            ContainerNetworkPlan networkPlan
+    ) {
+        this(
+                containerName,
+                image,
+                command,
+                env,
+                mounts,
+                workingDirectory,
+                networkMode,
+                removeAfterExit,
+                allowPrivileged,
+                outputDirectory,
+                initEnabled,
+                sharedMemorySize,
+                executionTimeoutMillis,
+                securityPolicy,
+                networkPlan,
+                ""
         );
     }
 

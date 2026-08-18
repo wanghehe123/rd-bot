@@ -334,7 +334,8 @@ public class RequirementAgentStageOrchestrator {
                 );
                 return RequirementExecutionResult.failure(
                         task.taskId(),
-                        "agent execution profile resolution failed: " + role,
+                        "agent execution profile resolution failed: " + role
+                                + (reason.isBlank() ? "" : ": " + reason),
                         aggregateAgentResultsJson(
                                 retryable ? "FAILED" : "NEEDS_HUMAN",
                                 pullRequestUrl,
@@ -3225,7 +3226,7 @@ public class RequirementAgentStageOrchestrator {
     private String roleOutputContractLegacy(AgentRole role) {
         return switch (role) {
             case REQUIREMENT_REVIEWER -> """
-                    只输出一个 JSON 对象，不要 markdown：
+                    必须调用 rd_submit_result 恰好一次，提交下面这个完整 JSON 对象（字段都在根上）。不要只在对话里打印 JSON，也不要自己写 result.json：
                     {
                       "decision": "APPROVED|NEED_INFO|REJECTED",
                       "feasibility": "CAN_DO|NEED_INFO|UNSAFE",
@@ -3249,7 +3250,7 @@ public class RequirementAgentStageOrchestrator {
                     }
                     """.strip();
             case SOLUTION_ARCHITECT -> """
-                    只输出一个 JSON 对象，不要 markdown：
+                    必须调用 rd_submit_result 恰好一次，提交下面这个完整 JSON 对象（字段都在根上）。不要只在对话里打印 JSON，也不要自己写 result.json：
                     {
                       "summary": "开发方案摘要",
                       "affectedFiles": ["预计影响文件"],
@@ -3265,7 +3266,7 @@ public class RequirementAgentStageOrchestrator {
                     }
                     """.strip();
             case CODING_AGENT -> """
-                    只输出一个 JSON 对象，不要 markdown：
+                    必须调用 rd_submit_result 恰好一次，提交下面这个完整 JSON 对象（字段都在根上）。不要只在对话里打印 JSON，也不要自己写 result.json：
                     {
                       "status": "SUCCESS|FAILED|NEED_INFO|UNSAFE",
                       "summary": "实现摘要",
@@ -3284,7 +3285,7 @@ public class RequirementAgentStageOrchestrator {
                     }
                     """.strip();
             case QA_AGENT -> """
-                    只输出一个 JSON 对象，不要 markdown：
+                    必须调用 rd_submit_result 恰好一次，提交下面这个完整 JSON 对象（字段都在根上）。不要只在对话里打印 JSON，也不要自己写 result.json：
                     {
                       "status": "PASSED|FAILED|SKIPPED",
                       "summary": "QA 当前需求与回归验证摘要",
@@ -3338,7 +3339,7 @@ public class RequirementAgentStageOrchestrator {
                 }""".strip();
         return switch (role) {
             case REQUIREMENT_REVIEWER -> """
-                    只输出一个 JSON 对象，不要 markdown：
+                    必须调用 rd_submit_result 恰好一次，提交下面这个完整 JSON 对象（字段都在根上）。不要只在对话里打印 JSON，也不要自己写 result.json：
                     {
                       "decision": "APPROVED|NEED_INFO|REJECTED",
                       "feasibility": "CAN_DO|NEED_INFO|UNSAFE",
@@ -3363,7 +3364,7 @@ public class RequirementAgentStageOrchestrator {
                     不要包含 environmentNotes；Harness 会从 fresh OBSERVED facts 派生。
                     """.formatted(observedFactExample).strip();
             case SOLUTION_ARCHITECT -> """
-                    只输出一个 JSON 对象，不要 markdown：
+                    必须调用 rd_submit_result 恰好一次，提交下面这个完整 JSON 对象（字段都在根上）。不要只在对话里打印 JSON，也不要自己写 result.json：
                     {
                       "summary": "开发方案摘要",
                       "affectedFiles": ["预计影响文件"],
@@ -3380,7 +3381,7 @@ public class RequirementAgentStageOrchestrator {
                     不要包含 environmentNotes；无新发现时 facts 可为空数组。
                     """.formatted(observedFactExample).strip();
             case CODING_AGENT -> """
-                    只输出一个 JSON 对象，不要 markdown：
+                    必须调用 rd_submit_result 恰好一次，提交下面这个完整 JSON 对象（字段都在根上）。不要只在对话里打印 JSON，也不要自己写 result.json：
                     {
                       "status": "SUCCESS|FAILED|NEED_INFO|UNSAFE",
                       "summary": "实现摘要",

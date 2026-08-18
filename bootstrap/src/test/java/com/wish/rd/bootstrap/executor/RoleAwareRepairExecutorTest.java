@@ -17,20 +17,25 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 class RoleAwareRepairExecutorTest {
 
     @Test
-    void shouldRoutePlanningRolesToModelOnlyAndExecutableRolesToDockerExecutor() {
+    void shouldExecuteReviewerAndArchitectOnTheAgentContainerNotModelOnlyHttp() {
         RecordingRepairExecutor docker = new RecordingRepairExecutor("docker");
         RecordingRepairExecutor openAi = new RecordingRepairExecutor("openai-chat-completions");
         RoleAwareRepairExecutor executor = new RoleAwareRepairExecutor(docker, openAi);
 
         RepairExecutionResult review = executor.execute(command("REQUIREMENT_REVIEWER"));
+        RepairExecutionResult architect = executor.execute(command("SOLUTION_ARCHITECT"));
         RepairExecutionResult coding = executor.execute(command("CODING_AGENT"));
         RepairExecutionResult qa = executor.execute(command("QA_AGENT"));
 
-        assertEquals("openai-chat-completions", review.summary());
+        assertEquals("docker", review.summary());
+        assertEquals("docker", architect.summary());
         assertEquals("docker", coding.summary());
         assertEquals("docker", qa.summary());
-        assertEquals(List.of("CODING_AGENT", "QA_AGENT"), docker.roles());
-        assertEquals(List.of("REQUIREMENT_REVIEWER"), openAi.roles());
+        assertEquals(
+                List.of("REQUIREMENT_REVIEWER", "SOLUTION_ARCHITECT", "CODING_AGENT", "QA_AGENT"),
+                docker.roles()
+        );
+        assertEquals(List.of(), openAi.roles());
     }
 
     private RepairJobCommand command(String role) {

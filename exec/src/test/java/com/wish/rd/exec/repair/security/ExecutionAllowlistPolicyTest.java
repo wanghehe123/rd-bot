@@ -56,6 +56,71 @@ class ExecutionAllowlistPolicyTest {
     }
 
     @Test
+    void shouldAllowRegisteredProjectRepositoryWhenStaticAllowlistDoesNotMatch() {
+        ExecutionAllowlistPolicy policy = new ExecutionAllowlistPolicy(
+                true,
+                List.of("https://github.com/example-owner/example-repo.git"),
+                List.of("example-owner/example-repo"),
+                List.of("main"),
+                List.of("requirement/*"),
+                (url, ownerAndName) -> ownerAndName.equalsIgnoreCase(
+                        "wanghehe123/rd-bot-waimai-acceptance-20260624-141045"
+                )
+        );
+
+        assertTrue(policy.evaluate(command(
+                "wanghehe123",
+                "rd-bot-waimai-acceptance-20260624-141045",
+                "https://github.com/wanghehe123/rd-bot-waimai-acceptance-20260624-141045",
+                "main",
+                "requirement/7495092282882920448"
+        )).allowed());
+    }
+
+    @Test
+    void shouldRejectUnknownRepositoryAndIncludeTheUrlInTheReason() {
+        ExecutionAllowlistPolicy policy = new ExecutionAllowlistPolicy(
+                true,
+                List.of("https://github.com/example-owner/example-repo.git"),
+                List.of("example-owner/example-repo"),
+                List.of("main"),
+                List.of("requirement/*")
+        );
+
+        var decision = policy.evaluate(command(
+                "wanghehe123",
+                "rd-bot-waimai-acceptance-20260624-141045",
+                "https://github.com/wanghehe123/rd-bot-waimai-acceptance-20260624-141045",
+                "main",
+                "requirement/7495092282882920448"
+        ));
+
+        assertFalse(decision.allowed());
+        assertTrue(decision.reason().contains("repositoryUrl is not allowlisted"));
+        assertTrue(decision.reason().contains("wanghehe123/rd-bot-waimai-acceptance-20260624-141045"));
+    }
+
+    @Test
+    void shouldStillEnforceWorkBranchRulesForARegisteredProject() {
+        ExecutionAllowlistPolicy policy = new ExecutionAllowlistPolicy(
+                true,
+                List.of("https://github.com/example-owner/example-repo.git"),
+                List.of("example-owner/example-repo"),
+                List.of("main"),
+                List.of("requirement/*"),
+                (url, ownerAndName) -> true
+        );
+
+        assertFalse(policy.evaluate(command(
+                "wanghehe123",
+                "rd-bot-waimai-acceptance-20260624-141045",
+                "https://github.com/wanghehe123/rd-bot-waimai-acceptance-20260624-141045",
+                "main",
+                "feature/unbound"
+        )).allowed());
+    }
+
+    @Test
     void shouldRejectEnabledPolicyWithoutRules() {
         ExecutionAllowlistPolicy policy = new ExecutionAllowlistPolicy(true, List.of(), List.of(), List.of(), List.of());
 

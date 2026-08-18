@@ -181,6 +181,47 @@ function redactStatement(statement) {
   );
 }
 
+const MAX_SUBMITTED_JSON_DECODE_DEPTH = 3;
+const AGENT_ROLE_PROTOCOL_ROLES = new Set([
+  "REQUIREMENT_REVIEWER",
+  "SOLUTION_ARCHITECT",
+  "QA_AGENT",
+]);
+
+/**
+ * OpenAI-compatible providers (including opencode-go) often deliver nested
+ * tool arguments as a JSON string, sometimes double-encoded. The role
+ * protocol requires a JSON object.
+ */
+export function normalizeSubmittedResult(raw) {
+  let current = raw;
+  for (let depth = 0; depth < MAX_SUBMITTED_JSON_DECODE_DEPTH; depth += 1) {
+    if (current && typeof current === "object" && !Array.isArray(current)) {
+      return current;
+    }
+    if (typeof current !== "string") {
+      throw new Error("result must be a JSON object");
+    }
+    const trimmed = current.trim();
+    if (!trimmed) {
+      throw new Error("result must be a JSON object");
+    }
+    try {
+      current = JSON.parse(trimmed);
+    } catch {
+      throw new Error("result must be a JSON object");
+    }
+  }
+  if (current && typeof current === "object" && !Array.isArray(current)) {
+    return current;
+  }
+  throw new Error("result must be a JSON object");
+}
+
+export function usesAgentRoleProtocol(role) {
+  return AGENT_ROLE_PROTOCOL_ROLES.has(role);
+}
+
 export function validateResult(result) {
   if (!result || typeof result !== "object" || Array.isArray(result)) {
     throw new Error("result must be a JSON object");
@@ -744,7 +785,9 @@ function checkArray(node, field, requireNonEmpty, errors, label = field) {
 }
 
 export async function writeResultAtomically(path, result) {
-  validateResult(result);
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    throw new Error("result must be a JSON object");
+  }
   await mkdir(dirname(path), { recursive: true });
   const temporary = `${path}.tmp-${process.pid}`;
   await writeFile(temporary, `${JSON.stringify(result)}\n`, { encoding: "utf8", mode: 0o600 });

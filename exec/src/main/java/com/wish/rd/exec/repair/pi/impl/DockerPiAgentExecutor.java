@@ -1,6 +1,7 @@
 package com.wish.rd.exec.repair.pi.impl;
 
 import com.wish.rd.exec.repair.pi.AgentPrivateArtifactPublisher;
+import com.wish.rd.exec.repair.pi.PiBridgeResultPayloads;
 import com.wish.rd.exec.repair.pi.PiCredentialLeaseIssuer;
 import com.wish.rd.exec.repair.pi.PiRequestV2Materializer;
 import com.wish.rd.exec.repair.pi.PiResourceManifestMaterializerPort;
@@ -25,6 +26,7 @@ import com.wish.rd.exec.repair.execution.model.RepairExecutionResult;
 import com.wish.rd.exec.repair.execution.model.RepairExecutionStatus;
 import com.wish.rd.exec.repair.execution.model.RepairJobCommand;
 import com.wish.rd.exec.repair.qa.QaExecutionMetadataKeys;
+import com.wish.rd.exec.repair.qa.QaNpmInstallPlan;
 import com.wish.rd.exec.repair.qa.QaRepositoryProfileDetector;
 import com.wish.rd.exec.repair.qa.model.QaExecutionProfile;
 import com.wish.rd.exec.repair.result.AgentRoleResultValidator;
@@ -92,8 +94,9 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
     private static final String CONTAINER_CACHE = "/work/cache";
     private static final String RESULT_TOOL = "rd_submit_result";
     private static final Set<String> READ_ONLY_REPO_ROLES = Set.of(
-            "REQUIREMENT_REVIEWER", "SOLUTION_ARCHITECT", "QA_AGENT"
+            "REQUIREMENT_REVIEWER", "SOLUTION_ARCHITECT"
     );
+    private static final long QA_NPM_PROVISION_TIMEOUT_MILLIS = 600_000L;
     private static final long DEFAULT_EXECUTION_TIMEOUT_MILLIS = 60L * 60L * 1000L;
     private static final long DEFAULT_BASH_COMMAND_TIMEOUT_MILLIS = 15L * 60L * 1000L;
     private static final String DEFAULT_CREDENTIAL_RELAY_URL =
@@ -107,7 +110,6 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
             "/opt/rd-pi-bridge/src/rd-pi-relay-sidecar.mjs";
     private static final int PI_RELAY_MAX_REQUEST_BYTES = 8 * 1024 * 1024;
     private static final int PI_RELAY_MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
-    private static final long PI_RELAY_TIMEOUT_MILLIS = 60_000L;
     private static final long PI_RELAY_STARTUP_TIMEOUT_MILLIS = 10_000L;
     private static final Map<String, String> PI_TMPFS_MOUNTS = Map.of(
             "/work/pi-agent", "rw,exec,size=256m,uid=1000,gid=1000",
@@ -406,6 +408,16 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                 );
 
                 Map<String, String> environment = runtimeEnvironment(snapshot, provider, qaProvision);
+                RepairExecutionResult provisionFailure = provisionQaNpmDependencies(
+                        command,
+                        snapshot,
+                        workspace,
+                        qaProvision,
+                        streamingRunner
+                );
+                if (provisionFailure != null) {
+                    return withRepositoryMetadata(provisionFailure, repositoryMetadata);
+                }
                 ContainerRunRequest containerRequest = containerRequest(
                         command,
                         snapshot,
@@ -1142,6 +1154,9 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
             environment.put("RD_QA_PROFILE_AMBIGUOUS", Boolean.toString(qaProfile.ambiguous()));
             environment.put("RD_QA_STARTUP_TIMEOUT_SECONDS", QA_STARTUP_TIMEOUT_SECONDS);
             environment.put("RD_QA_COMMAND_TIMEOUT_MILLIS", String.valueOf(QA_COMMAND_TIMEOUT_MILLIS));
+            // Isolated QA has no registry egress; start.sh's npm install must reuse the
+            // Linux tree the host provisioned into this workspace.
+            environment.put("npm_config_offline", "true");
             environment.put("PLAYWRIGHT_MCP_OUTPUT_DIR", "/work/output/qa-work/playwright");
             if (qaProvision.hubSkillPresent()) {
                 environment.put("RD_QA_SKILL_FILE", "/work/input/skills/qa-playwright-cli/SKILL.md");
@@ -1200,6 +1215,80 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         );
     }
 
+    private RepairExecutionResult provisionQaNpmDependencies(
+            RepairJobCommand command,
+            AgentExecutionProfileSnapshot snapshot,
+            RepairWorkspace workspace,
+            QaProvision qaProvision,
+            StreamingContainerRunnerPort streamingRunner
+    ) {
+        if (!"QA_AGENT".equals(snapshot.role())
+                || !QaNpmInstallPlan.required(workspace.repoDirectory(), qaProvision.profile())) {
+            return null;
+        }
+        ContainerRunRequest request = npmProvisionRequest(command, snapshot, workspace);
+        ContainerRunResult result;
+        try {
+            result = streamingRunner.run(request, ContainerOutputListener.noop());
+        } catch (IOException exception) {
+            return failed(
+                    RepairExecutionStatus.FAILED,
+                    "QA dependency provision failed.",
+                    "ENVIRONMENT",
+                    "QA npm provision could not start: " + safeError(exception),
+                    baseMetadata(snapshot, null, workspace)
+            );
+        }
+        if (result == null || result.exitCode() != 0) {
+            String detail = result == null
+                    ? "container runner returned null result"
+                    : containerFailureMessage(result, result.stderr());
+            return failed(
+                    RepairExecutionStatus.FAILED,
+                    "QA dependency provision failed.",
+                    "ENVIRONMENT",
+                    "QA npm provision exited before the isolated agent started: " + detail,
+                    baseMetadata(snapshot, null, workspace)
+            );
+        }
+        return null;
+    }
+
+    private ContainerRunRequest npmProvisionRequest(
+            RepairJobCommand command,
+            AgentExecutionProfileSnapshot snapshot,
+            RepairWorkspace workspace
+    ) {
+        Map<String, String> mounts = new LinkedHashMap<>();
+        mounts.put(workspace.repoDirectory().toString(), CONTAINER_REPO);
+        mounts.put(workspace.inputDirectory().toString(), CONTAINER_INPUT);
+        mounts.put(workspace.outputDirectory().toString(), CONTAINER_OUTPUT);
+        mounts.put(workspace.cacheDirectory().toString(), CONTAINER_CACHE);
+        Map<String, String> environment = new LinkedHashMap<>();
+        environment.put("npm_config_cache", CONTAINER_CACHE + "/npm");
+        environment.put("NODE_ENV", "development");
+        String image = configuration.qaImage().isBlank() ? configuration.image() : configuration.qaImage();
+        String networkMode = configuration.networkMode().isBlank() ? "bridge" : configuration.networkMode();
+        return new ContainerRunRequest(
+                safeContainerName(command.taskId()) + "-deps",
+                image,
+                List.of("-c", QaNpmInstallPlan.shellScript(workspace.repoDirectory())),
+                environment,
+                mounts,
+                CONTAINER_REPO,
+                networkMode,
+                configuration.removeAfterExit(),
+                false,
+                workspace.outputDirectory(),
+                false,
+                "",
+                QA_NPM_PROVISION_TIMEOUT_MILLIS,
+                PI_QA_SECURITY_POLICY,
+                null,
+                "sh"
+        );
+    }
+
     private ContainerNetworkPlan relayNetworkPlan(
             AgentExecutionProfileSnapshot snapshot,
             ProviderSpec provider
@@ -1214,7 +1303,7 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         sidecarEnvironment.put("RD_PI_RELAY_PROVIDER_ID", provider.providerId());
         sidecarEnvironment.put("RD_PI_RELAY_MAX_REQUEST_BYTES", String.valueOf(PI_RELAY_MAX_REQUEST_BYTES));
         sidecarEnvironment.put("RD_PI_RELAY_MAX_RESPONSE_BYTES", String.valueOf(PI_RELAY_MAX_RESPONSE_BYTES));
-        sidecarEnvironment.put("RD_PI_RELAY_TIMEOUT_MILLIS", String.valueOf(PI_RELAY_TIMEOUT_MILLIS));
+        sidecarEnvironment.put("RD_PI_RELAY_TIMEOUT_MILLIS", String.valueOf(configuration.executionTimeoutMillis()));
         return new ContainerNetworkPlan(
                 internalNetwork,
                 new ContainerNetworkPlan.Sidecar(
@@ -1294,7 +1383,7 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         return readable + "-" + fingerprint;
     }
 
-    private static PiCredentialLeaseIssuer.RelayPolicy relayPolicy(ProviderSpec provider) {
+    private PiCredentialLeaseIssuer.RelayPolicy relayPolicy(ProviderSpec provider) {
         ModelProviderProtocol protocol;
         try {
             protocol = ModelProviderProtocol.parse(provider.protocol());
@@ -1308,7 +1397,7 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                 provider.authHeader(),
                 PI_RELAY_MAX_REQUEST_BYTES,
                 PI_RELAY_MAX_RESPONSE_BYTES,
-                Duration.ofMillis(PI_RELAY_TIMEOUT_MILLIS)
+                Duration.ofMillis(configuration.executionTimeoutMillis())
         );
     }
 
@@ -1454,6 +1543,17 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
             String contextProtocolVersion,
             FactFreshnessEvaluator.FreshnessContext freshnessContext
     ) {
+        String bridgeFailure = PiBridgeResultPayloads.failureMessage(rawJson);
+        if (!bridgeFailure.isBlank()) {
+            return failed(
+                    RepairExecutionStatus.FAILED_VALIDATION,
+                    "Pi did not submit a structured role result.",
+                    "PI_BRIDGE_PROTOCOL",
+                    bridgeFailure,
+                    dockerMetadata,
+                    artifacts
+            );
+        }
         AgentRoleResultValidation roleValidation = ContextProtocolVersion.FACTS_V1.name().equals(contextProtocolVersion)
                 ? ROLE_RESULT_VALIDATOR.validate(role, rawJson, contextProtocolVersion, freshnessContext)
                 : ROLE_RESULT_VALIDATOR.validate(role, rawJson);

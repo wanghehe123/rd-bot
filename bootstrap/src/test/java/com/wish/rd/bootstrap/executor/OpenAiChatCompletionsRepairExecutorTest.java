@@ -148,6 +148,48 @@ class OpenAiChatCompletionsRepairExecutorTest {
     }
 
     @Test
+    void shouldTreatZeroTimeoutAsUnlimitedInsteadOfDefaultingToThirtySeconds() {
+        OpenAiChatCompletionsRepairExecutor.Configuration configuration =
+                new OpenAiChatCompletionsRepairExecutor.Configuration(
+                        "minimax",
+                        "MiniMax-M3",
+                        "http://127.0.0.1:1/v1",
+                        "MINIMAX_API_KEY",
+                        Duration.ZERO
+                );
+        OpenAiChatCompletionsProperties properties = new OpenAiChatCompletionsProperties();
+        properties.setTimeout(Duration.ZERO);
+
+        assertEquals(Duration.ZERO, configuration.timeout());
+        assertEquals(Duration.ZERO, properties.getTimeout());
+        assertEquals(Duration.ZERO, properties.toExecutorConfiguration().timeout());
+    }
+
+    @Test
+    void shouldFailWhenPositiveTimeoutElapsesBeforeChatResponse() throws Exception {
+        startServer(exchange -> {
+            Thread.sleep(250);
+            writeJson(exchange, 200, "{\"choices\":[{\"message\":{\"content\":\"{\\\"decision\\\":\\\"APPROVED\\\"}\"}}]}");
+        });
+        OpenAiChatCompletionsRepairExecutor executor = new OpenAiChatCompletionsRepairExecutor(
+                new OpenAiChatCompletionsRepairExecutor.Configuration(
+                        "minimax",
+                        "MiniMax-M3",
+                        "http://127.0.0.1:" + server.getAddress().getPort() + "/v1",
+                        "MINIMAX_API_KEY",
+                        Duration.ofMillis(80)
+                ),
+                HttpClient.newHttpClient(),
+                () -> "test-token"
+        );
+
+        RepairExecutionResult result = executor.execute(command("REQUIREMENT_REVIEWER"));
+
+        assertEquals(RepairExecutionStatus.FAILED, result.status());
+        assertTrue(result.errorMessage().contains("request timed out"), result.errorMessage());
+    }
+
+    @Test
     void shouldRejectCodingAgentWithoutCallingChatEndpoint() throws Exception {
         AtomicInteger callCount = new AtomicInteger();
         startServer(exchange -> {

@@ -58,6 +58,7 @@ test("proxies model provider profile APIs to Spring Boot", () => {
   const item = proxy?.["/admin/model-provider-profiles"];
   const target = typeof item === "string" ? item : item?.target;
   assert.equal(target, "http://127.0.0.1:18080");
+  assert.equal(proxy?.["/admin/model-providers"], undefined, "/admin/model-providers SPA must not be proxied as an API prefix");
 });
 
 test("proxies execution trace APIs to Spring Boot", () => {

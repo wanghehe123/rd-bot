@@ -65,7 +65,7 @@ class EngineRequirementExecutionProfileResolverTest {
                 : null;
 
         assertEquals(AgentRuntimeType.CLAUDE_CODE, codingRuntime);
-        assertEquals(AgentRuntimeType.MODEL_ONLY, reviewerRuntime);
+        assertEquals(AgentRuntimeType.CLAUDE_CODE, reviewerRuntime);
     }
 
     @Test

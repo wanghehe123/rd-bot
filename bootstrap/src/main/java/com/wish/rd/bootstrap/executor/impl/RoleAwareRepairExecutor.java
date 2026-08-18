@@ -4,11 +4,11 @@ import com.wish.rd.exec.repair.execution.model.RepairExecutionResult;
 import com.wish.rd.exec.repair.execution.RepairExecutorPort;
 import com.wish.rd.exec.repair.execution.model.RepairJobCommand;
 
-import java.util.Locale;
 import java.util.Objects;
 
 /**
- * Routes planning-only Agent stages to a model-only executor while keeping executable stages in Docker.
+ * Keeps every delivery role on the container Agent executor.
+ * Reviewer and architect must not take the model-only HTTP shortcut.
  */
 public final class RoleAwareRepairExecutor implements RepairExecutorPort {
 
@@ -25,12 +25,6 @@ public final class RoleAwareRepairExecutor implements RepairExecutorPort {
 
     @Override
     public RepairExecutionResult execute(RepairJobCommand command) {
-        String role = command.contextJson().getOrDefault("agentRole", "")
-                .strip()
-                .toUpperCase(Locale.ROOT);
-        if ("REQUIREMENT_REVIEWER".equals(role) || "SOLUTION_ARCHITECT".equals(role)) {
-            return modelOnlyExecutor.execute(command);
-        }
         return codingExecutor.execute(command);
     }
 }

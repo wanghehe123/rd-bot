@@ -19,7 +19,7 @@ public class OpenAiChatCompletionsProperties {
     private String model = "MiniMax-M3";
     private String baseUrl = "https://api.minimaxi.com/v1";
     private String apiKeyEnv = "MINIMAX_API_KEY";
-    private Duration timeout = Duration.ofSeconds(60);
+    private Duration timeout = Duration.ZERO;
     private String protocol = "openai-chat-completions";
 
     public boolean isEnabled() {
@@ -67,8 +67,8 @@ public class OpenAiChatCompletionsProperties {
     }
 
     public void setTimeout(Duration timeout) {
-        this.timeout = timeout == null || timeout.isNegative() || timeout.isZero()
-                ? Duration.ofSeconds(60)
+        this.timeout = timeout == null || timeout.isNegative()
+                ? Duration.ZERO
                 : timeout;
     }
 

@@ -18,6 +18,7 @@ import com.wish.rd.engine.retry.model.TaskRetryCheckpointStatus;
 import com.wish.rd.engine.retry.model.TaskRetryFailureProvenance;
 import com.wish.rd.engine.retry.model.TaskRetryPoint;
 import com.wish.rd.engine.retry.model.TaskRetryRoute;
+import com.wish.rd.engine.scheduling.model.RequirementDeliverySchedulingPolicy;
 import com.wish.rd.rag.retrieval.run.impl.InMemoryRetrievalRunStore;
 import com.wish.rd.rag.runtime.impl.InMemoryTaskMaterialStore;
 import com.wish.rd.rag.runtime.model.RdRequirementTask;
@@ -59,6 +60,66 @@ class TaskRetryEngineCheckpointInitializationTest {
         assertEquals("102", checkpoint.dispatchCommandId());
         assertEquals("101", dispatcher.dispatchedCheckpointId);
         assertEquals("", dispatcher.legacyTaskId);
+    }
+
+    @Test
+    void checkpointBoundRetryCommandUsesSchedulingCommandDeadlineNotLeaseWindow() {
+        FakeTaskPort tasks = new FakeTaskPort(task());
+        InMemoryAgentStageRunStore stages = new InMemoryAgentStageRunStore();
+        InMemoryRetrievalRunStore retrievals = new InMemoryRetrievalRunStore();
+        InMemoryAiReviewRunStore reviews = new InMemoryAiReviewRunStore();
+        InMemoryTaskRetryCheckpointStore checkpoints = new InMemoryTaskRetryCheckpointStore();
+        InMemoryTaskRetryFailureProvenanceStore provenance = new InMemoryTaskRetryFailureProvenanceStore();
+        provenance.save(new TaskRetryFailureProvenance(
+                "provenance-1", "task-1", "17", 1, "MATERIAL_COLLECTING", TaskFailurePhase.MATERIAL,
+                RdTaskStatus.FAILED_NEEDS_HUMAN, 12L, 400L, "", "", "", "", "", "", "TECHNICAL", 1L));
+        TaskFailureRecoveryService recovery = new TaskFailureRecoveryService(
+                tasks, stages, new InMemoryAgentStageArtifactStore(), retrievals, reviews, checkpoints,
+                provenance, new TaskRetryPointResolver(), new TaskFailureDiagnosticParser());
+        InMemoryRequirementStageCommandStore commands = new InMemoryRequirementStageCommandStore();
+        AtomicInteger ids = new AtomicInteger(100);
+        TaskRetryEngine engine = new TaskRetryEngine(
+                tasks, stages, retrievals, reviews, checkpoints, new InMemoryTaskMaterialStore(), recovery,
+                new TaskRetryPointResolver(), new RecordingDispatcher(),
+                () -> Integer.toString(ids.incrementAndGet()), () -> 1_000L);
+        engine.setRequirementRetryDispatchTransactionPort(new InMemoryRequirementRetryDispatchTransactionAdapter(
+                tasks, checkpoints, commands, new InMemoryTaskRetryAttemptBindingStore()));
+
+        var checkpoint = engine.retry("task-1", "USER");
+
+        long expectedDeadline = 1_000L + RequirementDeliverySchedulingPolicy.defaults().commandDeadlineMillis();
+        assertEquals(expectedDeadline, commands.findById(checkpoint.dispatchCommandId()).orElseThrow()
+                .deadlineEpochMillis());
+    }
+
+    @Test
+    void checkpointBoundRetryCommandHonorsConfiguredCommandDeadlineMillis() {
+        FakeTaskPort tasks = new FakeTaskPort(task());
+        InMemoryAgentStageRunStore stages = new InMemoryAgentStageRunStore();
+        InMemoryRetrievalRunStore retrievals = new InMemoryRetrievalRunStore();
+        InMemoryAiReviewRunStore reviews = new InMemoryAiReviewRunStore();
+        InMemoryTaskRetryCheckpointStore checkpoints = new InMemoryTaskRetryCheckpointStore();
+        InMemoryTaskRetryFailureProvenanceStore provenance = new InMemoryTaskRetryFailureProvenanceStore();
+        provenance.save(new TaskRetryFailureProvenance(
+                "provenance-1", "task-1", "17", 1, "MATERIAL_COLLECTING", TaskFailurePhase.MATERIAL,
+                RdTaskStatus.FAILED_NEEDS_HUMAN, 12L, 400L, "", "", "", "", "", "", "TECHNICAL", 1L));
+        TaskFailureRecoveryService recovery = new TaskFailureRecoveryService(
+                tasks, stages, new InMemoryAgentStageArtifactStore(), retrievals, reviews, checkpoints,
+                provenance, new TaskRetryPointResolver(), new TaskFailureDiagnosticParser());
+        InMemoryRequirementStageCommandStore commands = new InMemoryRequirementStageCommandStore();
+        AtomicInteger ids = new AtomicInteger(100);
+        TaskRetryEngine engine = new TaskRetryEngine(
+                tasks, stages, retrievals, reviews, checkpoints, new InMemoryTaskMaterialStore(), recovery,
+                new TaskRetryPointResolver(), new RecordingDispatcher(),
+                () -> Integer.toString(ids.incrementAndGet()), () -> 1_000L);
+        engine.setCommandDeadlineMillis(120_000L);
+        engine.setRequirementRetryDispatchTransactionPort(new InMemoryRequirementRetryDispatchTransactionAdapter(
+                tasks, checkpoints, commands, new InMemoryTaskRetryAttemptBindingStore()));
+
+        var checkpoint = engine.retry("task-1", "USER");
+
+        assertEquals(121_000L, commands.findById(checkpoint.dispatchCommandId()).orElseThrow()
+                .deadlineEpochMillis());
     }
 
     @Test

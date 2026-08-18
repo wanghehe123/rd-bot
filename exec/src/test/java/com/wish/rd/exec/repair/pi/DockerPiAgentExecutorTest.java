@@ -36,6 +36,7 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
@@ -549,9 +550,69 @@ class DockerPiAgentExecutorTest {
         assertEquals(1024, runner.request.securityPolicy().pidsLimit());
         assertTrue(runner.request.initEnabled());
         assertEquals("1g", runner.request.sharedMemorySize());
-        assertEquals("/work/repo:ro", runner.request.mounts().get(
+        assertEquals("/work/repo", runner.request.mounts().get(
                 temporaryDirectory.resolve("workspaces/task-qa2/repo").toString()
         ));
+        assertEquals("true", runner.request.env().get("npm_config_offline"));
+    }
+
+    @Test
+    void shouldProvisionNpmDependenciesOnBridgeBeforeIsolatedQaAgent() throws Exception {
+        RecordingRunner runner = new RecordingRunner();
+        DockerPiAgentExecutor executor = executor(
+                new RepairWorkspaceFactory(temporaryDirectory.resolve("workspaces"), RESULT_SCHEMA),
+                runner,
+                AgentExecutionEventSink.noop(),
+                ignored -> "secret",
+                defaultConfiguration(),
+                npmMonorepo()
+        );
+
+        executor.execute(new AgentRuntimeExecutionRequest(
+                snapshot("snapshot-qa-deps", "stage-qa-deps", "task-qa-deps", AgentRuntimeType.PI, "", "QA_AGENT"),
+                command("task-qa-deps", "QA_AGENT")
+        ));
+
+        assertEquals(2, runner.requests.size(), runner.requests.toString());
+        ContainerRunRequest provision = runner.requests.get(0);
+        ContainerRunRequest agent = runner.requests.get(1);
+        assertEquals("sh", provision.entrypoint());
+        assertEquals("bridge", provision.networkMode());
+        assertNull(provision.networkPlan());
+        assertTrue(provision.command().stream().anyMatch(part -> part.contains("npm")), provision.command().toString());
+        assertEquals("/work/repo", provision.mounts().get(
+                temporaryDirectory.resolve("workspaces/task-qa-deps/repo").toString()
+        ));
+        assertEquals("development", provision.env().get("NODE_ENV"));
+        assertNotNull(agent.networkPlan());
+        assertEquals("true", agent.env().get("npm_config_offline"));
+        assertTrue(agent.entrypoint() == null || agent.entrypoint().isBlank());
+    }
+
+    @Test
+    void shouldFailQaAsEnvironmentWhenNpmProvisionExitsNonZero() throws Exception {
+        RecordingRunner runner = new RecordingRunner();
+        runner.provisionExitCode = 1;
+        DockerPiAgentExecutor executor = executor(
+                new RepairWorkspaceFactory(temporaryDirectory.resolve("workspaces"), RESULT_SCHEMA),
+                runner,
+                AgentExecutionEventSink.noop(),
+                ignored -> "secret",
+                defaultConfiguration(),
+                npmMonorepo()
+        );
+
+        RepairExecutionResult result = executor.execute(new AgentRuntimeExecutionRequest(
+                snapshot("snapshot-qa-deps-fail", "stage-qa-deps-fail", "task-qa-deps-fail",
+                        AgentRuntimeType.PI, "", "QA_AGENT"),
+                command("task-qa-deps-fail", "QA_AGENT")
+        ));
+
+        assertEquals(1, runner.requests.size());
+        assertEquals(RepairExecutionStatus.FAILED, result.status());
+        assertEquals("ENVIRONMENT", result.rawResultJson().get("failureCategory"));
+        assertTrue(result.errorMessage().toLowerCase(java.util.Locale.ROOT).contains("npm")
+                || result.summary().toLowerCase(java.util.Locale.ROOT).contains("depend"), result.summary() + result.errorMessage());
     }
 
     @Test
@@ -1129,6 +1190,58 @@ class DockerPiAgentExecutorTest {
     }
 
     @Test
+    void shouldAlignCredentialRelayTimeoutWithPiExecutionTimeout() throws Exception {
+        CapturingRunner runner = new CapturingRunner();
+        InMemoryPiCredentialLeaseIssuer issuer = new InMemoryPiCredentialLeaseIssuer();
+        long executionTimeoutMillis = 3_600_000L;
+        DockerPiAgentExecutor.Configuration relayOn = new DockerPiAgentExecutor.Configuration(
+                "rd-bot/pi-agent:test",
+                "rd-bot/pi-agent-qa:local",
+                List.of("node", "/opt/rd-pi-bridge/src/rd-pi-bridge.mjs"),
+                "bridge",
+                true,
+                false,
+                executionTimeoutMillis,
+                900_000L,
+                16L * 1024L * 1024L,
+                "v1",
+                true
+        );
+        DockerPiAgentExecutor executor = new DockerPiAgentExecutor(
+                new RepairWorkspaceFactory(temporaryDirectory.resolve("workspaces"), RESULT_SCHEMA),
+                runner,
+                new StructuredResultValidator(),
+                relayOn,
+                RepairWorkspaceRepositoryPort.noop(),
+                ExecutionAllowlistPolicy.disabled(),
+                PiResourceManifestMaterializerPort.emptyOnly(),
+                PiSkillMaterializerPort.emptyOnly(),
+                AgentExecutionEventSink.noop(),
+                AgentPrivateArtifactPublisher.noop(),
+                ignored -> "super-secret-key",
+                issuer
+        );
+
+        executor.execute(new AgentRuntimeExecutionRequest(
+                snapshot("snapshot-relay-timeout", "stage-relay-timeout", "task-relay-timeout", AgentRuntimeType.PI, ""),
+                command("task-relay-timeout", "CODING_AGENT")
+        ));
+
+        Map<String, String> relayEnv = runner.request.networkPlan().sidecar().env();
+        assertEquals(String.valueOf(executionTimeoutMillis), relayEnv.get("RD_PI_RELAY_TIMEOUT_MILLIS"));
+        PiCredentialLeaseIssuer.RelayGrant grant = issuer.authorize(
+                runner.request.env().get("RD_PI_CREDENTIAL_LEASE"),
+                "task-relay-timeout",
+                "stage-relay-timeout",
+                "provider-1",
+                "POST",
+                "/chat/completions",
+                2
+        ).orElseThrow();
+        assertEquals(Duration.ofMillis(executionTimeoutMillis), grant.relayPolicy().requestTimeout());
+    }
+
+    @Test
     void shouldFailClosedWhenSelectedExtensionSetCannotBeMaterialized() throws Exception {
         CapturingRunner runner = new CapturingRunner();
         DockerPiAgentExecutor executor = executor(runner, AgentExecutionEventSink.noop(), ignored -> "secret");
@@ -1585,6 +1698,62 @@ class DockerPiAgentExecutorTest {
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value));
         } catch (NoSuchAlgorithmException exception) {
             throw new IllegalStateException(exception);
+        }
+    }
+
+    private static RepairWorkspaceRepositoryPort npmMonorepo() {
+        return new RepairWorkspaceRepositoryPort() {
+            @Override
+            public RepositoryOperationResult prepare(RepairJobCommand command, RepairWorkspace workspace)
+                    throws IOException {
+                Path repo = workspace.repoDirectory();
+                Files.writeString(repo.resolve("package.json"), """
+                        {"name":"root","scripts":{"install:all":"true"}}
+                        """, StandardCharsets.UTF_8);
+                Files.createDirectories(repo.resolve("server"));
+                Files.writeString(repo.resolve("server").resolve("package.json"), """
+                        {"name":"server","dependencies":{"express":"4.0.0"}}
+                        """, StandardCharsets.UTF_8);
+                Files.createDirectories(repo.resolve("client"));
+                Files.writeString(repo.resolve("client").resolve("package.json"), """
+                        {"name":"client","devDependencies":{"vite":"5.0.0"}}
+                        """, StandardCharsets.UTF_8);
+                Files.writeString(repo.resolve("start.sh"), "#!/bin/sh\nnpm install\n", StandardCharsets.UTF_8);
+                return RepositoryOperationResult.empty();
+            }
+
+            @Override
+            public RepositoryOperationResult publish(RepairJobCommand command, RepairWorkspace workspace) {
+                return RepositoryOperationResult.empty();
+            }
+        };
+    }
+
+    private static final class RecordingRunner extends CapturingRunner {
+        private final List<ContainerRunRequest> requests = new ArrayList<>();
+        private int provisionExitCode;
+
+        @Override
+        public ContainerRunResult run(ContainerRunRequest request, ContainerOutputListener listener) throws IOException {
+            requests.add(request);
+            if (request.entrypoint() != null && !request.entrypoint().isBlank()) {
+                this.request = request;
+                if (provisionExitCode != 0) {
+                    return new ContainerRunResult(
+                            provisionExitCode,
+                            5L,
+                            "",
+                            "npm install failed: ENOTCACHED",
+                            request.outputDirectory().resolve("result.json"),
+                            null,
+                            null,
+                            null,
+                            null,
+                            Map.of("containerName", request.containerName())
+                    );
+                }
+            }
+            return super.run(request, listener);
         }
     }
 

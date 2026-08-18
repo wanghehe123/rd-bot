@@ -24,8 +24,10 @@ import com.wish.rd.rag.runtime.impl.InMemoryTaskMaterialStore;
 import com.wish.rd.rag.runtime.model.RdRequirementTask;
 import com.wish.rd.rag.runtime.model.RdTaskStatus;
 import com.wish.rd.engine.retry.model.TaskFailureRecoverySnapshot;
+import com.wish.rd.engine.scheduling.model.RequirementDeliverySchedulingPolicy;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -63,6 +65,7 @@ public final class TaskRetryEngine {
     private TaskRetryAttemptBindingStore retryAttemptBindingStore;
     private final Supplier<String> idSupplier;
     private final LongSupplier clock;
+    private long commandDeadlineMillis = RequirementDeliverySchedulingPolicy.defaults().commandDeadlineMillis();
 
     /**
      * Creates the Spring-managed retry orchestrator.
@@ -236,6 +239,17 @@ public final class TaskRetryEngine {
         this.retryAttemptBindingStore = retryAttemptBindingStore;
     }
 
+    /**
+     * Binds the same stage-command lifetime used by {@code RequirementStageCommandFactory}.
+     * Lease renewal ({@code rd.requirement-delivery.lease-millis}) is not this deadline.
+     *
+     * @param commandDeadlineMillis maximum lifetime of the checkpoint's first durable command
+     */
+    @Value("${rd.requirement-delivery.scheduling.command-deadline-millis:3600000}")
+    public void setCommandDeadlineMillis(long commandDeadlineMillis) {
+        this.commandDeadlineMillis = Math.max(1L, commandDeadlineMillis);
+    }
+
     private InterruptedStageRecoveryService rebuildInterruptedStageRecoveryService() {
         return new InterruptedStageRecoveryService(
                 workspaceRecoveryPort,
@@ -320,7 +334,8 @@ public final class TaskRetryEngine {
         List<AgentStageRun> preparedStageRuns = new ArrayList<>();
         try {
             long now = now();
-            long deadline = now > Long.MAX_VALUE - 600_000L ? Long.MAX_VALUE : now + 600_000L;
+            long duration = commandDeadlineMillis;
+            long deadline = now > Long.MAX_VALUE - duration ? Long.MAX_VALUE : now + duration;
             RequirementRetryDispatchResult initialized = retryDispatchTransactionPort.initialize(proposed, checkpoint -> {
                 List<TaskRetryAttemptBinding> bindings = preparePrimaryBindings(
                         checkpoint, point, route, preparedStageRuns);

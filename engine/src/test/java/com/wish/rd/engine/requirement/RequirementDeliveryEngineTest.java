@@ -218,6 +218,7 @@ class RequirementDeliveryEngineTest {
         assertTrue(captured.get(3).prompt().contains("不得修改 /work/repo 中的跟踪文件"));
         assertTrue(captured.getFirst().prompt().contains("\"decision\""));
         assertTrue(captured.get(1).prompt().contains("\"implementationSteps\""));
+        assertTrue(captured.get(1).prompt().contains("rd_submit_result"));
         assertEquals(List.of(
                 AgentRole.REQUIREMENT_REVIEWER,
                 AgentRole.SOLUTION_ARCHITECT,

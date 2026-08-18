@@ -746,6 +746,74 @@ test("requires LOW budget confidence without historical samples for the reviewer
   assert.deepEqual(validateRoleResult("REQUIREMENT_REVIEWER", review), []);
 });
 
+function completeReviewerResult() {
+  return {
+    decision: "APPROVED",
+    feasibility: "CAN_DO",
+    missingInformation: [],
+    risks: ["env risk"],
+    acceptanceCoverage: ["merchant home shows live store data"],
+    environmentNotes: [],
+    budgetEstimate: {
+      initialTokens: 1000,
+      retryReserveTokens: 500,
+      estimatedTotalTokens: 1500,
+      confidence: "LOW",
+      basis: "no historical samples",
+      historicalSamples: [],
+    },
+    next_prompt: {
+      targetRole: "SOLUTION_ARCHITECT",
+      summary: "implement merchant admin pages",
+      handoffArtifact: "handoff/next.md",
+    },
+  };
+}
+
+async function reviewerSubmitTool(root) {
+  let accepted = false;
+  const lifecycleEvents = [];
+  const tool = bridge.createResultTool({
+    resultPath: join(root, "result.json"),
+    outputRoot: root,
+    sink: {
+      async lifecycle(eventType, payload) {
+        lifecycleEvents.push({ eventType, payload });
+      },
+    },
+    context: { role: "REQUIREMENT_REVIEWER" },
+    onAccepted() {
+      accepted = true;
+    },
+  });
+  return { tool, accepted: () => accepted, lifecycleEvents };
+}
+
+test("accepts a reviewer rd_submit_result when OpenAI-compatible providers stringify result", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rd-pi-reviewer-submit-"));
+  const { tool, accepted, lifecycleEvents } = await reviewerSubmitTool(root);
+  const payload = completeReviewerResult();
+  const outcome = await tool.execute("call-1", { result: JSON.stringify(payload) });
+  assert.equal(accepted(), true);
+  assert.equal(outcome.terminate, true);
+  assert.equal(lifecycleEvents.at(-1).eventType, "RESULT_SUBMITTED");
+  assert.deepEqual(JSON.parse(await readFile(join(root, "result.json"), "utf8")).decision, "APPROVED");
+});
+
+test("accepts a double-encoded reviewer result string from the same provider path", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rd-pi-reviewer-double-"));
+  const { tool, accepted } = await reviewerSubmitTool(root);
+  await tool.execute("call-1", { result: JSON.stringify(JSON.stringify(completeReviewerResult())) });
+  assert.equal(accepted(), true);
+});
+
+test("accepts a reviewer role object that has decision but no coding status/summary", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rd-pi-reviewer-object-"));
+  const { tool, accepted } = await reviewerSubmitTool(root);
+  await tool.execute("call-1", { result: completeReviewerResult() });
+  assert.equal(accepted(), true);
+});
+
 test("mirrors the coding structured-result contract at submission time", () => {
   const errors = validateRoleResult("CODING_AGENT", { status: "SUCCESS", summary: "done" });
   assert.ok(errors.some((error) => error.includes("changedFiles")));

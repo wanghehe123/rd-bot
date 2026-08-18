@@ -1274,7 +1274,7 @@ function LegacyExecutionTracePanel({ taskId, stage }: { taskId: string; stage: R
         </div>
       ) : null}
       {!loading && !error && (!trace || !trace.available || trace.entries.length === 0) ? (
-        <EmptyLine label={stage.running ? "等待容器产生可见事件。" : "该 Attempt 尚无可展示的执行轨迹。"} />
+        <EmptyLine label={stage.running ? "等待容器产生可见事件。" : "该 Attempt 没有容器执行轨迹。评审/方案角色走一次性模型 HTTP 调用，事件只在 Coding/QA 的 Pi 容器里产生。可在「运行记录」查看 Provider 尝试。"} />
       ) : null}
       {!loading && !error && trace && trace.entries.length > 0 ? (
         <ol className="divide-y divide-slate-200 border-y border-slate-200">
