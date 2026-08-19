@@ -85,7 +85,6 @@ class RuntimeComponentRegistrationPolicyTest {
                 Map.entry("rag/src/main/java/com/wish/rd/rag/feedback/MessageFeedbackRegistry.java", "@Component"),
                 Map.entry("bootstrap/src/main/java/com/wish/rd/bootstrap/persistence/QueryTermMappingConfiguration.java", "@Configuration"),
                 Map.entry("rag/src/main/java/com/wish/rd/rag/intent/IntentTreeRegistry.java", "@Component"),
-                Map.entry("rag/src/main/java/com/wish/rd/rag/sample/SampleQuestionRegistry.java", "@Component"),
                 Map.entry("rag/src/main/java/com/wish/rd/rag/runtime/RagStreamTaskRegistry.java", "@Component"),
                 Map.entry("rag/src/main/java/com/wish/rd/rag/runtime/impl/InMemoryRdTaskStore.java", "@Component"),
                 Map.entry("bootstrap/src/main/java/com/wish/rd/bootstrap/persistence/impl/PostgresRdTaskStore.java", "@Component"),
@@ -95,7 +94,6 @@ class RuntimeComponentRegistrationPolicyTest {
                 Map.entry("engine/src/main/java/com/wish/rd/engine/admin/feedback/MessageFeedbackAdminEngine.java", "@Service"),
                 Map.entry("engine/src/main/java/com/wish/rd/engine/admin/rewrite/QueryTermMappingAdminEngine.java", "@Service"),
                 Map.entry("engine/src/main/java/com/wish/rd/engine/admin/intent/IntentTreeAdminEngine.java", "@Service"),
-                Map.entry("engine/src/main/java/com/wish/rd/engine/admin/sample/SampleQuestionAdminEngine.java", "@Service"),
                 Map.entry("engine/src/main/java/com/wish/rd/engine/rag/RagBugFixEngine.java", "@Service"),
                 Map.entry("engine/src/main/java/com/wish/rd/engine/bugfix/RdBotFixEngine.java", "@Service"),
                 Map.entry("engine/src/main/java/com/wish/rd/engine/bugfix/BugFixPromptBuilder.java", "@Component")
