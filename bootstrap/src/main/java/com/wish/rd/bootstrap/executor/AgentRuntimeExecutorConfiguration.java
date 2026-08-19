@@ -72,23 +72,34 @@ public class AgentRuntimeExecutorConfiguration {
         );
     }
 
+    /**
+     * Registers one executor per runtime type that is actually present.
+     *
+     * <p>Every slot is optional. A runtime type with no executor fails at dispatch with
+     * {@code UnsupportedAgentRuntimeException}, naming the type that was requested, rather
+     * than preventing this bean from being created. Requiring an executor here instead would
+     * couple the Pi path to the legacy one: {@code RepairExecutorPort} has no implementation
+     * unless {@code rd.executor.docker.enabled} or {@code rd.executor.mock.enabled} is true,
+     * so demanding it aborted context startup for every deployment that runs Pi alone.
+     *
+     * @param legacyExecutorProvider legacy container executor, absent when not configured
+     * @param piExecutorProvider     Pi agent executor, absent when the container gate is closed
+     * @return router over the runtime types that have an executor
+     */
     @Bean
     @ConditionalOnMissingBean(AgentRuntimeRouter.class)
     public AgentRuntimeRouter agentRuntimeRouter(
             ObjectProvider<RepairExecutorPort> legacyExecutorProvider,
             ObjectProvider<DockerPiAgentExecutor> piExecutorProvider
     ) {
-        RepairExecutorPort legacyExecutor = legacyExecutorProvider.getIfAvailable();
-        if (legacyExecutor == null) {
-            throw new IllegalStateException(
-                    "agent runtime router requires the existing requirement executor for Claude compatibility"
-            );
-        }
         Map<com.wish.rd.rag.project.agent.model.AgentRuntimeType, AgentRuntimeExecutorPort> executors =
                 new EnumMap<>(com.wish.rd.rag.project.agent.model.AgentRuntimeType.class);
-        AgentRuntimeExecutorPort legacyAdapter = request -> legacyExecutor.execute(request.command());
-        executors.put(com.wish.rd.rag.project.agent.model.AgentRuntimeType.CLAUDE_CODE, legacyAdapter);
-        executors.put(com.wish.rd.rag.project.agent.model.AgentRuntimeType.MODEL_ONLY, legacyAdapter);
+        RepairExecutorPort legacyExecutor = legacyExecutorProvider.getIfAvailable();
+        if (legacyExecutor != null) {
+            AgentRuntimeExecutorPort legacyAdapter = request -> legacyExecutor.execute(request.command());
+            executors.put(com.wish.rd.rag.project.agent.model.AgentRuntimeType.CLAUDE_CODE, legacyAdapter);
+            executors.put(com.wish.rd.rag.project.agent.model.AgentRuntimeType.MODEL_ONLY, legacyAdapter);
+        }
         DockerPiAgentExecutor piExecutor = piExecutorProvider.getIfAvailable();
         if (piExecutor != null) {
             executors.put(com.wish.rd.rag.project.agent.model.AgentRuntimeType.PI, piExecutor);
