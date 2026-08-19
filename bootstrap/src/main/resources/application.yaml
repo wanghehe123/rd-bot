@@ -279,9 +279,6 @@ rd:
         # Uploading a Dockerfile builds untrusted operator input. Keep mutations disabled until an operator supplies
         # this capability token through the environment; the UI keeps it only in memory for the current dialog.
         upload-token: ${RD_RUNTIME_PROFILE_UPLOAD_TOKEN:}
-      command: claude
-      yolo-flag: --dangerously-skip-permissions
-      output-format: stream-json
       network-mode: bridge
       remove-after-exit: true
       timeout-alert-millis: 1800000
@@ -307,29 +304,6 @@ rd:
         user-name: ${RD_EXECUTOR_DOCKER_GIT_USER_NAME:RD-Bot}
         user-email: ${RD_EXECUTOR_DOCKER_GIT_USER_EMAIL:rd-bot@example.local}
         timeout-seconds: ${RD_EXECUTOR_DOCKER_GIT_TIMEOUT_SECONDS:120}
-      providers:
-        - name: long-cat
-          protocol: ${LONGCAT_PROTOCOL:anthropic-compatible}
-          base-url: ${LONGCAT_ANTHROPIC_BASE_URL:https://api.longcat.chat/anthropic}
-          auth-token-env: ${RD_CLAUDE_AUTH_TOKEN_ENV:LONGCAT_API_KEY}
-          model: ${LONGCAT_CLAUDE_MODEL:LongCat-2.0}
-          default-opus-model: ${LONGCAT_CLAUDE_OPUS_MODEL:LongCat-2.0}
-          default-sonnet-model: ${LONGCAT_CLAUDE_SONNET_MODEL:LongCat-2.0}
-          default-haiku-model: ${LONGCAT_CLAUDE_HAIKU_MODEL:LongCat-2.0}
-          subagent-model: ${LONGCAT_CLAUDE_SUBAGENT_MODEL:LongCat-2.0}
-          effort-level: ${LONGCAT_CLAUDE_EFFORT_LEVEL:max}
-          extra-env:
-            RD_CLAUDE_LOCAL_FALLBACK_ENABLED: ${RD_CLAUDE_LOCAL_FALLBACK_ENABLED:true}
-        - name: minimax
-          protocol: ${MINIMAX_PROTOCOL:openai-chat-completions}
-          base-url: ${MINIMAX_BASE_URL:https://api.minimaxi.com/v1}
-          api-key-env: ${MINIMAX_API_KEY_ENV:MINIMAX_API_KEY}
-          model: ${MINIMAX_MODEL:MiniMax-M3}
-          default-opus-model: ${MINIMAX_OPUS_MODEL:MiniMax-M3}
-          default-sonnet-model: ${MINIMAX_SONNET_MODEL:MiniMax-M3}
-          default-haiku-model: ${MINIMAX_HAIKU_MODEL:MiniMax-M3}
-          subagent-model: ${MINIMAX_SUBAGENT_MODEL:MiniMax-M3}
-          effort-level: ${MINIMAX_EFFORT_LEVEL:max}
   github:
     merge-sync:
       enabled: ${RD_GITHUB_MERGE_SYNC_ENABLED:true}

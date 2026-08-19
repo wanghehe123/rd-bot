@@ -7,7 +7,6 @@ import com.wish.rd.exec.repair.docker.model.ContainerRunRequest;
 import com.wish.rd.exec.repair.docker.model.ContainerRunResult;
 import com.wish.rd.exec.repair.docker.model.ContainerNetworkPlan;
 import com.wish.rd.exec.repair.docker.model.ContainerSecurityPolicy;
-import com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
@@ -32,6 +31,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ProcessContainerRunnerTest {
 
+    /** Stand-in for whatever argv a runtime asks for; the runner must pass it through verbatim. */
+    private static final List<String> AGENT_COMMAND = List.of("agent", "--output-format", "jsonl", "--verbose");
+
     @TempDir
     Path temporaryDirectory;
 
@@ -43,41 +45,23 @@ class ProcessContainerRunnerTest {
         assertEquals("rd-bot/claude-code:local", properties.getImage());
         assertEquals("rd-bot/claude-code-qa:local", properties.getQaImage());
         assertEquals(Path.of("/tmp/rd-bot/repair-workspaces"), properties.getWorkspaceRoot());
-        assertEquals("claude", properties.getCommand());
-        assertEquals("--dangerously-skip-permissions", properties.getYoloFlag());
-        assertEquals("stream-json", properties.getOutputFormat());
         assertEquals("bridge", properties.getNetworkMode());
         assertTrue(properties.isRemoveAfterExit());
         assertEquals(1_800_000L, properties.getTimeoutAlertMillis());
         assertEquals(0, new BigDecimal("36.00").compareTo(properties.getBudgetAlertCny()));
-        assertEquals(
-                List.of("claude", "-p", "--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose"),
-                properties.claudeCommand()
-        );
-
-        DockerClaudeCodeExecutor.Configuration configuration = properties.toExecutorConfiguration();
-
-        assertEquals("rd-bot/claude-code:local", configuration.image());
-        assertEquals("rd-bot/claude-code-qa:local", configuration.qaImage());
-        assertEquals(properties.claudeCommand(), configuration.command());
-        assertEquals("bridge", configuration.networkMode());
-        assertTrue(configuration.removeAfterExit());
-        assertFalse(configuration.allowPrivileged());
     }
 
     @Test
     void shouldBuildDockerRunArgvWithoutShellAndWithConfigurableValues() {
         DockerExecutorProperties properties = new DockerExecutorProperties();
-        properties.setImage("registry.example.local/rd/claude:test");
+        properties.setImage("registry.example.local/rd/agent:test");
         properties.setNetworkMode("host");
-        properties.setYoloFlag("--yolo-test");
-        properties.setOutputFormat("jsonl");
         ProcessContainerRunner runner = runner(properties,
                 (argv, environment) -> new ProcessContainerRunner.CommandResult(0, 1, "", ""));
         Path workspace = temporaryDirectory.resolve("workspace");
         ContainerRunRequest request = request(
                 properties,
-                Map.of("ANTHROPIC_MODEL", "claude-sonnet", "ANTHROPIC_API_KEY", "sk-test-secret"),
+                Map.of("RD_AGENT_MODEL", "test-model", "RD_AGENT_API_KEY", "sk-test-secret"),
                 Map.of(workspace.toString(), "/work")
         );
 
@@ -87,16 +71,13 @@ class ProcessContainerRunnerTest {
         assertEquals("run", argv.get(1));
         assertFalse(argv.contains("sh"));
         assertFalse(argv.contains("-c"));
-        assertTrue(argv.contains("registry.example.local/rd/claude:test"));
+        assertTrue(argv.contains("registry.example.local/rd/agent:test"));
         assertTrue(argv.contains("host"));
         assertTrue(argv.contains(workspace + ":/work"));
-        assertTrue(argv.contains("--yolo-test"));
-        assertTrue(argv.contains("--output-format"));
-        assertTrue(argv.contains("jsonl"));
-        assertTrue(argv.contains("--verbose"));
-        assertTrue(argv.contains("ANTHROPIC_API_KEY"));
+        assertTrue(argv.containsAll(AGENT_COMMAND), "the requested command must pass through unchanged");
+        assertTrue(argv.contains("RD_AGENT_API_KEY"));
         assertFalse(argv.toString().contains("sk-test-secret"));
-        assertTrue(argv.contains("ANTHROPIC_MODEL=claude-sonnet"));
+        assertTrue(argv.contains("RD_AGENT_MODEL=test-model"));
     }
 
     @Test
@@ -107,7 +88,7 @@ class ProcessContainerRunnerTest {
         ContainerRunRequest request = new ContainerRunRequest(
                 "repair-task-qa",
                 "rd-bot/claude-code-qa:local",
-                properties.claudeCommand(),
+                AGENT_COMMAND,
                 Map.of(),
                 Map.of(temporaryDirectory.resolve("workspace").toString(), "/work"),
                 "/work/repo",
@@ -606,17 +587,16 @@ class ProcessContainerRunnerTest {
             Map<String, String> env,
             Map<String, String> mounts
     ) {
-        DockerClaudeCodeExecutor.Configuration configuration = properties.toExecutorConfiguration();
         return new ContainerRunRequest(
                 "repair-task-1001",
-                configuration.image(),
-                configuration.command(),
+                properties.getImage(),
+                AGENT_COMMAND,
                 env,
                 mounts,
                 "/work/repo",
-                configuration.networkMode(),
-                configuration.removeAfterExit(),
-                configuration.allowPrivileged(),
+                properties.getNetworkMode(),
+                properties.isRemoveAfterExit(),
+                false,
                 temporaryDirectory.resolve("output")
         );
     }

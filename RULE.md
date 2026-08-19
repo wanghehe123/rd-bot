@@ -58,12 +58,13 @@
   ```
 - 【推荐】可切换实现的基础设施 Bean（如 `ObjectStorageService` 的 memory/S3）用配置开关选择实现，业务代码只依赖端口接口。
 - 【强制】仅模型 HTTP 执行路径（`rd.executor.openai-chat.*` / `RD_EXECUTOR_OPENAI_CHAT_*`、`OpenAiChatCompletionsRepairExecutor`、`OpenAiChatCompletionsProperties`、`RoleAwareRepairExecutor`）已移除，不得重新引入。所有角色一律走 Agent 容器；模型访问只经 Pi credential-relay，不再有绕过容器的宿主直连 HTTP 分支。需要新增模型供应商时，扩展 relay 上游而不是新开仅模型执行器。
-  - 注意：供应商协议标识符 `openai-chat-completions`（`rd.executor.docker.providers[].protocol`，MiniMax 等 OpenAI 兼容端点用）是**另一回事**，仍在使用，不得按本条清理。
+  - 注意：供应商协议标识符 `openai-chat-completions`（MiniMax 等 OpenAI 兼容端点用）是**另一回事**，仍在使用，不得按本条清理。它现在只活在数据库支撑的 `ModelProviderProfile.protocol`（管理端「模型供应商」控制台）里；静态 YAML 树 `rd.executor.docker.providers[]` 曾是 Claude 执行器专属的模型链配置，已随 Claude 一同删除，不得重新引入。
   - 代码：`AgentRuntimeExecutorConfiguration`、`EngineRequirementExecutionProfileResolver`、`PiCredentialRelayService`
   - 验证：`rg -n 'OpenAiChatCompletions(RepairExecutor|Properties|ExecutorConfiguration)|RoleAwareRepairExecutor|rd\.executor\.openai-chat|RD_EXECUTOR_OPENAI_CHAT' --glob '!**/target/**' --glob '!openspec/changes/**' --glob '!docs/superpowers/**' --glob '!RULE.md'` 必须无命中
-- 【强制】`REQUIREMENT_REVIEWER` 与 `SOLUTION_ARCHITECT` 必须走 Agent 容器。项目已保存 Pi 策略时，必须打开 `rd.executor.agent-runtime.enabled=true`，否则 `AgentRuntimeRouter` 不会生效，任务仍走兼容默认路径。
-  - 代码：`EngineRequirementExecutionProfileResolver.compatibilityRuntime`、`application-local.yaml` 的 `rd.executor.agent-runtime.enabled`
-  - 验证：`./mvnw -pl bootstrap -Dtest=EngineRequirementExecutionProfileResolverTest -Dsurefire.failIfNoSpecifiedTests=false test`
+  - 验证：`rg -n 'ModelProviderProperties|rd\.executor\.docker\.providers' --glob '!**/target/**' --glob '!openspec/changes/**' --glob '!docs/superpowers/**' --glob '!RULE.md'` 必须无命中
+- 【强制】`REQUIREMENT_REVIEWER` 与 `SOLUTION_ARCHITECT` 必须走 Agent 容器。`rd.executor.agent-runtime.enabled` 默认 `true`，`compatibilityRuntime()` 默认返回 `PI`：项目未保存策略时也必须落到 Pi，不得回退到 `CLAUDE_CODE`（该运行时已删除，只剩枚举值）。`AgentRuntimeRouter` 必须能在没有 `RepairExecutorPort` 的情况下装配成功——缺少某运行时的执行器只允许在真正被请求时抛 `UnsupportedAgentRuntimeException`，不得让上下文启动失败。
+  - 代码：`EngineRequirementExecutionProfileResolver.compatibilityRuntime`、`AgentRuntimeProperties.enabled`、`AgentRuntimeExecutorConfiguration.agentRuntimeRouter`、`EngineRequirementExecutorConfiguration.requirementExecutor`
+  - 验证：`./mvnw -pl bootstrap -am -Dtest=EngineRequirementExecutionProfileResolverTest,AgentRuntimeExecutorConfigurationTest -Dsurefire.failIfNoSpecifiedTests=false test`
 - 【强制】`rd_agent_tool_policies.policy_hash` 必须是 `SHA-256(policy_json)` 的 64 位 hex，不能用 `legacy-host-bound-v1` 这类占位标签。读到非 hex 种子哈希时，store 可回写真实 checksum；hex 不匹配必须失败关闭。Profile 解析失败写入任务 `errorMessage` 时必须带上底层原因，不能只写角色名。
   - 代码：`PostgresAgentToolPolicyStore.toPolicy`、`p8_pi_agent_runtime.sql`、`p17_fix_tool_policy_seed_hashes.sql`、`RequirementAgentStageOrchestrator`
   - 验证：`./mvnw -pl bootstrap -Dtest=PostgresAgentToolPolicyStoreTest -Dsurefire.failIfNoSpecifiedTests=false test` 与 `./mvnw -pl engine -Dtest=RequirementExecutionProfileFailureTest -Dsurefire.failIfNoSpecifiedTests=false test`
@@ -596,18 +597,17 @@ public RepairContextPackage prepareContext(RepairRagRequest request) {
   运行用户的数字 id。Docker 只对 `/tmp` 默认给 1777，其他路径一律落成 root 拥有的 0755，
   容器内非 root 进程连 `mkdir` 都做不了。`DockerPiAgentExecutor.PI_TMPFS_MOUNTS` 三条挂载
   都带 `uid=1000,gid=1000`，是正确样板。
-- 【强制】`DockerClaudeCodeExecutor.CLAUDE_TMPFS_MOUNTS` 的 `/home/rdbot/.claude/session-env`
-  必须带 `uid=999,gid=999`（镜像 `rd-bot/claude-code:local` 里 `rdbot` 的 uid/gid）。缺失时
-  Agent harness 在跑第一条命令之前就以
-  `EACCES: mkdir /home/rdbot/.claude/session-env/<session-id>` 死掉，而模型仍会把代码改完并
-  提交一份 `status=FAILED` 的结果——症状看着像"模型不听话"，实为容器权限。
-- 【强制】改这两个常量必须同时更新对应断言，不得只改主代码：
-  `DockerClaudeCodeExecutorTest#shouldApplyContainerSecurityPolicyAndRoleNetworkIsolation`
-  断言 session-env 的 uid/gid，`DockerPiAgentExecutorTest` 断言 Pi 侧挂载存在。
-- 【强制】验证：`./mvnw -q -pl exec -am -Dtest=DockerClaudeCodeExecutorTest -Dsurefire.failIfNoSpecifiedTests=false test`；
+- 【强制】新增 tmpfs 常量必须同时更新对应断言，不得只改主代码：`DockerPiAgentExecutorTest`
+  断言 Pi 侧挂载存在且带 uid/gid。
+- 【强制】验证：`./mvnw -q -pl exec -am -Dtest=DockerPiAgentExecutorTest -Dsurefire.failIfNoSpecifiedTests=false test`；
   快速复现可用
-  `docker run --rm --user 999:999 --tmpfs '/home/rdbot/.claude/session-env:rw,noexec,nosuid,size=64m' --entrypoint sh rd-bot/claude-code:local -c 'mkdir -p /home/rdbot/.claude/session-env/probe'`
-  （修复前必然 `Permission denied`）。
+  `docker run --rm --user 1000:1000 --tmpfs '/home/rdbot/.cache:rw,noexec,nosuid,size=64m' --entrypoint sh rd-bot/pi-agent:local -c 'mkdir -p /home/rdbot/.cache/probe'`
+  （缺 uid/gid 时必然 `Permission denied`）。
+- 本条的来源案例是已删除的 Claude 运行时：它的 `/home/rdbot/.claude/session-env` 漏了
+  `uid=999,gid=999`，Agent harness 在跑第一条命令之前就以
+  `EACCES: mkdir /home/rdbot/.claude/session-env/<session-id>` 死掉，而模型仍会把代码改完并
+  提交一份 `status=FAILED` 的结果——症状看着像"模型不听话"，实为容器权限。运行时已随
+  Claude 栈移除，但这条挂载纪律对 Pi 及任何后续运行时同等有效。
 - 实测记录：`docs/superpowers/specs/2026-08-13-waimai-corpus-rag-comparison-report.md` §6.6。
 
 ### 3.6 聚合根（Aggregate Root）【强制用于"强一致实体群"】

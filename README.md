@@ -69,8 +69,7 @@ RD-Bot 把飞书工单 / 管理台需求转化为**可治理的多角色自动�
       │  （需求执行桥）                              │
       └────────────────────┬───────────────────────┘
                            ▼
-              DockerPiAgentExecutor（主路径）
-              DockerClaudeCodeExecutor（兼容/弃用中）
+              DockerPiAgentExecutor（唯一容器执行路径）
                            ▲
  ┌─────────────────────────┴─────────────────────────┐
  │ skill：目录 · 角色绑定 · Manifest 校验 · 物化到     │
@@ -85,7 +84,9 @@ RD-Bot 把飞书工单 / 管理台需求转化为**可治理的多角色自动�
 `RequirementDeliveryEngine` / `RequirementAgentStageOrchestrator`
 → `RequirementExecutorPort`（bootstrap 适配）
 → `AgentRuntimeRouter`
-→ `DockerPiAgentExecutor`（主） / `DockerClaudeCodeExecutor`（兼容）
+→ `DockerPiAgentExecutor`
+
+`AgentRuntimeType` 仍保留 `CLAUDE_CODE` / `MODEL_ONLY` 枚举值以便读取历史快照，但已无对应执行器：真被请求时 router 抛 `UnsupportedAgentRuntimeException`。
 
 每次 attempt：物化 resource / skill manifest → 写 `request.json` → Pi bridge 加载原生 Skill → 宿主 Validator 验收。
 
