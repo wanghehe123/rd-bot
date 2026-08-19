@@ -64,8 +64,8 @@ class EngineRequirementExecutionProfileResolverTest {
                 ? snapshots.findByStageRunId("stage-reviewer").orElseThrow().runtimeType()
                 : null;
 
-        assertEquals(AgentRuntimeType.CLAUDE_CODE, codingRuntime);
-        assertEquals(AgentRuntimeType.CLAUDE_CODE, reviewerRuntime);
+        assertEquals(AgentRuntimeType.PI, codingRuntime);
+        assertEquals(AgentRuntimeType.PI, reviewerRuntime);
     }
 
     @Test

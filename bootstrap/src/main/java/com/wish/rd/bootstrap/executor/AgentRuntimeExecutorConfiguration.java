@@ -33,7 +33,12 @@ import java.util.Map;
 
 /** Requirement-delivery-only runtime routing and snapshot resolution wiring. */
 @Configuration(proxyBeanMethods = false)
-@ConditionalOnProperty(prefix = "rd.executor.agent-runtime", name = "enabled", havingValue = "true")
+@ConditionalOnProperty(
+        prefix = "rd.executor.agent-runtime",
+        name = "enabled",
+        havingValue = "true",
+        matchIfMissing = true
+)
 public class AgentRuntimeExecutorConfiguration {
 
     @Bean

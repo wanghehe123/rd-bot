@@ -50,6 +50,11 @@ public class EngineRequirementExecutorConfiguration {
             ObjectProvider<CodePlatformPort> codePlatformProvider,
             AsyncTaskExecutor executorIoTaskExecutor
     ) {
+        // This overload supplies neither a router nor a snapshot store, so direct dispatch is
+        // the only thing it can describe. State that, rather than inheriting the now-enabled
+        // default and failing the router precondition below.
+        AgentRuntimeProperties directDispatch = new AgentRuntimeProperties();
+        directDispatch.setEnabled(false);
         return requirementExecutor(
                 repairExecutorProvider,
                 codePlatformProvider,
@@ -71,7 +76,7 @@ public class EngineRequirementExecutorConfiguration {
                         .getBeanProvider(AgentExecutionProfileSnapshotStore.class),
                 new org.springframework.beans.factory.support.StaticListableBeanFactory()
                         .getBeanProvider(com.wish.rd.bootstrap.oracle.HostOwnedAssertionGate.class),
-                new AgentRuntimeProperties(),
+                directDispatch,
                 executorIoTaskExecutor
         );
     }

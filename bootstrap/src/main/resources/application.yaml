@@ -225,7 +225,9 @@ rd:
         - sit
   executor:
     agent-runtime:
-      enabled: ${RD_EXECUTOR_AGENT_RUNTIME_ENABLED:false}
+      # Snapshot-driven routing is the only supported execution path. Setting this to
+      # false restores direct legacy dispatch, which ignores the frozen profile snapshot.
+      enabled: ${RD_EXECUTOR_AGENT_RUNTIME_ENABLED:true}
       mutation-token: ${RD_AGENT_RUNTIME_MUTATION_TOKEN:}
     pi:
       image: ${RD_EXECUTOR_PI_IMAGE:rd-bot/pi-agent:local}

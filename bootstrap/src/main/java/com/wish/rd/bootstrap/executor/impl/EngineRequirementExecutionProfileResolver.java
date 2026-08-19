@@ -145,7 +145,7 @@ public final class EngineRequirementExecutionProfileResolver
         AgentExecutionProfile profile = profileService.resolve(task.projectId(), task.taskId(), role.name())
                 .orElse(null);
         AgentRuntimeType runtimeType = profile == null
-                ? compatibilityRuntime(role)
+                ? compatibilityRuntime()
                 : profile.runtimeType();
         String snapshotJson = snapshotJson(task, role, safeStageRunId, attemptNo, runtimeType, profile);
         AgentExecutionProfileSnapshot requested = new AgentExecutionProfileSnapshot(
@@ -318,8 +318,15 @@ public final class EngineRequirementExecutionProfileResolver
         return value;
     }
 
-    private AgentRuntimeType compatibilityRuntime(AgentRole role) {
-        return AgentRuntimeType.CLAUDE_CODE;
+    /**
+     * Runtime for a task whose project has no registered profile. Pi is the only
+     * runtime the platform still builds images for and executes, so an unconfigured
+     * project must land there rather than on the retired Claude path.
+     *
+     * @return the compatibility default runtime
+     */
+    private static AgentRuntimeType compatibilityRuntime() {
+        return AgentRuntimeType.PI;
     }
 
     private static String snapshotId(String stageRunId) {
