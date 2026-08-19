@@ -39,6 +39,8 @@ public class AgentRuntimeExecutorConfiguration {
     @Bean
     // Property-based gate: @ConditionalOnBean across plain @Configuration classes has
     // non-deterministic evaluation order and silently skipped this bean at startup.
+    // rd.executor.docker.enabled is the shared container-infrastructure gate (it also
+    // registers ProcessContainerRunner, which Pi requires), not a Claude-specific flag.
     @ConditionalOnProperty(prefix = "rd.executor.docker", name = "enabled", havingValue = "true")
     @ConditionalOnMissingBean(DockerPiAgentExecutor.class)
     public DockerPiAgentExecutor dockerPiAgentExecutor(

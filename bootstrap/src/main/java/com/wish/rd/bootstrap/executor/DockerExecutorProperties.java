@@ -15,10 +15,16 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Docker Claude Code 执行器配置属性。
+ * 容器执行基础设施配置属性。
  *
  * <p>键前缀为 {@code rd.executor.docker.*}。默认关闭真实 Docker 执行，只有显式
  * {@code enabled=true} 时才装配进程级 Docker runner。
+ *
+ * <p>该前缀是**所有容器执行运行时共享**的基础设施门，不专属于任何一个执行器：
+ * {@code enabled} 同时控制 {@code ProcessContainerRunner}、
+ * {@code DockerRuntimeProfileImageBuilder}、{@code PiInterruptedStageWorkspaceRecovery}
+ * 与 Pi agent 执行器 bean。移除某个具体执行器实现时不得连带删除该命名空间，
+ * 否则容器运行器不再注册，Pi 路径会静默失去执行能力。
  */
 @Component
 @ConfigurationProperties(prefix = "rd.executor.docker")
