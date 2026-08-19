@@ -1,10 +1,10 @@
 package com.wish.rd.engine.requirement.model;
 
 import com.wish.rd.engine.agent.model.AgentRole;
-import com.wish.rd.engine.evaluation.model.CodingBenchmarkArm;
 import org.junit.jupiter.api.Test;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -37,15 +37,16 @@ class AgentWorkflowPlanTest {
     }
 
     @Test
-    void ablationArmsDisableHostVerifyButKeepDefaultPassCap() {
-        for (CodingBenchmarkArm arm : new CodingBenchmarkArm[] {
-                CodingBenchmarkArm.A, CodingBenchmarkArm.B, CodingBenchmarkArm.C
-        }) {
-            AgentWorkflowPlan plan = AgentWorkflowPlan.codingBenchmark(arm);
-            assertFalse(plan.hostVerifyRemediationEnabled(), arm.name());
-            assertFalse(plan.hostVerifyRemediationAllowed(), arm.name());
+    void reducedPlansDisableHostVerifyButKeepDefaultPassCap() {
+        List<AgentWorkflowPlan> reducedPlans = List.of(
+                AgentWorkflowPlanFixtures.codingOnly(),
+                AgentWorkflowPlanFixtures.reviewArchitectCoding(),
+                AgentWorkflowPlanFixtures.reviewArchitectCodingWithRetrieval());
+        for (AgentWorkflowPlan plan : reducedPlans) {
+            assertFalse(plan.hostVerifyRemediationEnabled(), plan.source());
+            assertFalse(plan.hostVerifyRemediationAllowed(), plan.source());
             assertEquals(AgentWorkflowPlan.DEFAULT_HOST_VERIFY_REMEDIATION_PASSES,
-                    plan.hostVerifyMaxRemediationPasses(), arm.name());
+                    plan.hostVerifyMaxRemediationPasses(), plan.source());
         }
     }
 

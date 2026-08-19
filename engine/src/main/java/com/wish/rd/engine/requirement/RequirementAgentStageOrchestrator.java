@@ -87,8 +87,7 @@ import com.wish.rd.engine.provider.model.ProviderWorkRisk;
  * </ul>
  *
  * <p>编排器不持有 {@link RequirementDeliveryEngine} 任何实例字段或私有方法；engine 仅
- * 通过 {@code stageOrchestrator.run(...)} 委托阶段循环。这是 RD-Bot V2 头等公民——
- * 后续可被 CodingBenchmark 等新场景直接复用，不需 engine 工厂。
+ * 通过 {@code stageOrchestrator.run(...)} 委托阶段循环。
  */
 public class RequirementAgentStageOrchestrator {
 

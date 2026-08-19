@@ -3,7 +3,7 @@ package com.wish.rd.engine.requirement;
 import com.wish.rd.engine.agent.model.AgentRole;
 import com.wish.rd.engine.agent.model.AgentStageRun;
 import com.wish.rd.engine.agent.model.AgentStageStatus;
-import com.wish.rd.engine.evaluation.model.CodingBenchmarkArm;
+import com.wish.rd.engine.requirement.model.AgentWorkflowPlanFixtures;
 import com.wish.rd.engine.requirement.model.AgentWorkflowPlan;
 import com.wish.rd.engine.requirement.model.RequirementContextPackage;
 import com.wish.rd.engine.requirement.model.RequirementExecutionResult;
@@ -75,7 +75,7 @@ class RequirementAgentStageOrchestratorTest {
     @Test
     void production_plan_equals_coding_benchmark_D_plan() {
         AgentWorkflowPlan production = AgentWorkflowPlan.production();
-        AgentWorkflowPlan armD = AgentWorkflowPlan.codingBenchmark(CodingBenchmarkArm.D);
+        AgentWorkflowPlan armD = AgentWorkflowPlan.production();
 
         assertEquals(armD, production);
         assertEquals(armD.roles(), production.roles());
@@ -88,7 +88,7 @@ class RequirementAgentStageOrchestratorTest {
     // ---------- (b) arm_A_plan_has_only_coding_agent_and_disables_qa ----------
     @Test
     void arm_A_plan_has_only_coding_agent_and_disables_qa() {
-        AgentWorkflowPlan plan = AgentWorkflowPlan.codingBenchmark(CodingBenchmarkArm.A);
+        AgentWorkflowPlan plan = AgentWorkflowPlanFixtures.codingOnly();
 
         assertEquals(List.of(AgentRole.CODING_AGENT), plan.roles());
         assertFalse(plan.retrievalEnabled());
@@ -97,13 +97,13 @@ class RequirementAgentStageOrchestratorTest {
         assertEquals(1, plan.qaMaxRemediationPasses());
         assertEquals(0.56d, plan.budgetLedger().get(AgentRole.CODING_AGENT), 1.0e-9d);
         assertEquals(1, plan.budgetLedger().size());
-        assertEquals("CODING_BENCHMARK_ARM_A", plan.source());
+        assertEquals("CODING_ONLY", plan.source());
     }
 
     // ---------- (c) arm_B_plan_disables_retrieval_and_qa ----------
     @Test
     void arm_B_plan_disables_retrieval_and_qa() {
-        AgentWorkflowPlan plan = AgentWorkflowPlan.codingBenchmark(CodingBenchmarkArm.B);
+        AgentWorkflowPlan plan = AgentWorkflowPlanFixtures.reviewArchitectCoding();
 
         assertEquals(
                 List.of(AgentRole.REQUIREMENT_REVIEWER, AgentRole.SOLUTION_ARCHITECT, AgentRole.CODING_AGENT),
@@ -116,13 +116,13 @@ class RequirementAgentStageOrchestratorTest {
         assertEquals(0.16d, plan.budgetLedger().get(AgentRole.SOLUTION_ARCHITECT), 1.0e-9d);
         assertEquals(0.56d, plan.budgetLedger().get(AgentRole.CODING_AGENT), 1.0e-9d);
         assertEquals(3, plan.budgetLedger().size());
-        assertEquals("CODING_BENCHMARK_ARM_B", plan.source());
+        assertEquals("REVIEW_ARCHITECT_CODING", plan.source());
     }
 
     // ---------- (d) arm_C_plan_enables_retrieval_but_disables_qa ----------
     @Test
     void arm_C_plan_enables_retrieval_but_disables_qa() {
-        AgentWorkflowPlan plan = AgentWorkflowPlan.codingBenchmark(CodingBenchmarkArm.C);
+        AgentWorkflowPlan plan = AgentWorkflowPlanFixtures.reviewArchitectCodingWithRetrieval();
 
         assertEquals(
                 List.of(AgentRole.REQUIREMENT_REVIEWER, AgentRole.SOLUTION_ARCHITECT, AgentRole.CODING_AGENT),
@@ -139,7 +139,7 @@ class RequirementAgentStageOrchestratorTest {
     // ---------- (e) arm_D_plan_enables_retrieval_and_qa_with_one_remediation_pass ----------
     @Test
     void arm_D_plan_enables_retrieval_and_qa_with_one_remediation_pass() {
-        AgentWorkflowPlan plan = AgentWorkflowPlan.codingBenchmark(CodingBenchmarkArm.D);
+        AgentWorkflowPlan plan = AgentWorkflowPlan.production();
 
         assertEquals(
                 List.of(
@@ -159,16 +159,16 @@ class RequirementAgentStageOrchestratorTest {
         assertEquals(0.56d, plan.budgetLedger().get(AgentRole.CODING_AGENT), 1.0e-9d);
         assertEquals(0.08d, plan.budgetLedger().get(AgentRole.QA_AGENT), 1.0e-9d);
         assertEquals(4, plan.budgetLedger().size());
-        assertEquals("CODING_BENCHMARK_ARM_D", plan.source());
+        assertEquals("PRODUCTION", plan.source());
     }
 
     // ---------- (f) budget_ledger_per_arm_enforces_named_role_equal_share ----------
     @Test
     void budget_ledger_per_arm_enforces_named_role_equal_share() {
-        Map<AgentRole, Double> ratiosA = AgentWorkflowPlan.codingBenchmark(CodingBenchmarkArm.A).budgetLedger();
-        Map<AgentRole, Double> ratiosB = AgentWorkflowPlan.codingBenchmark(CodingBenchmarkArm.B).budgetLedger();
-        Map<AgentRole, Double> ratiosC = AgentWorkflowPlan.codingBenchmark(CodingBenchmarkArm.C).budgetLedger();
-        Map<AgentRole, Double> ratiosD = AgentWorkflowPlan.codingBenchmark(CodingBenchmarkArm.D).budgetLedger();
+        Map<AgentRole, Double> ratiosA = AgentWorkflowPlanFixtures.codingOnly().budgetLedger();
+        Map<AgentRole, Double> ratiosB = AgentWorkflowPlanFixtures.reviewArchitectCoding().budgetLedger();
+        Map<AgentRole, Double> ratiosC = AgentWorkflowPlanFixtures.reviewArchitectCodingWithRetrieval().budgetLedger();
+        Map<AgentRole, Double> ratiosD = AgentWorkflowPlan.production().budgetLedger();
 
         for (AgentRole role : List.of(AgentRole.CODING_AGENT)) {
             assertEquals(0.56d, ratiosA.get(role), 1.0e-9d);
@@ -188,7 +188,7 @@ class RequirementAgentStageOrchestratorTest {
 
     @Test
     void host_rejects_coding_fallback_onto_generation_only_provider() {
-        AgentWorkflowPlan plan = AgentWorkflowPlan.codingBenchmark(CodingBenchmarkArm.A);
+        AgentWorkflowPlan plan = AgentWorkflowPlanFixtures.codingOnly();
         OrchestratorTestHarness harness = new OrchestratorTestHarness()
                 .prestageRoles(plan.roles())
                 .prestageRoleContexts(plan.roles());
@@ -218,7 +218,7 @@ class RequirementAgentStageOrchestratorTest {
 
     @Test
     void host_blocks_coding_fallback_when_side_effect_state_is_unknown() {
-        AgentWorkflowPlan plan = AgentWorkflowPlan.codingBenchmark(CodingBenchmarkArm.A);
+        AgentWorkflowPlan plan = AgentWorkflowPlanFixtures.codingOnly();
         OrchestratorTestHarness harness = new OrchestratorTestHarness()
                 .prestageRoles(plan.roles())
                 .prestageRoleContexts(plan.roles());
@@ -255,7 +255,7 @@ class RequirementAgentStageOrchestratorTest {
 
     @Test
     void host_blocks_capable_coding_fallback_without_host_clean_attempt_evidence() {
-        AgentWorkflowPlan plan = AgentWorkflowPlan.codingBenchmark(CodingBenchmarkArm.A);
+        AgentWorkflowPlan plan = AgentWorkflowPlanFixtures.codingOnly();
         OrchestratorTestHarness harness = new OrchestratorTestHarness()
                 .prestageRoles(plan.roles())
                 .prestageRoleContexts(plan.roles());
@@ -283,7 +283,7 @@ class RequirementAgentStageOrchestratorTest {
     // ---------- (g) orchestrator_invokes_executor_for_each_role_in_plan_order ----------
     @Test
     void orchestrator_invokes_executor_for_each_role_in_plan_order() {
-        AgentWorkflowPlan plan = AgentWorkflowPlan.codingBenchmark(CodingBenchmarkArm.B);
+        AgentWorkflowPlan plan = AgentWorkflowPlanFixtures.reviewArchitectCoding();
         OrchestratorTestHarness harness = new OrchestratorTestHarness()
                 .prestageRoles(plan.roles())
                 .prestageRoleContexts(plan.roles());
@@ -301,7 +301,7 @@ class RequirementAgentStageOrchestratorTest {
 
     @Test
     void orchestrator_saves_role_execution_input_manifest_before_dispatch() {
-        AgentWorkflowPlan plan = AgentWorkflowPlan.codingBenchmark(CodingBenchmarkArm.A);
+        AgentWorkflowPlan plan = AgentWorkflowPlanFixtures.codingOnly();
         OrchestratorTestHarness harness = new OrchestratorTestHarness()
                 .prestageRoles(plan.roles())
                 .prestageRoleContexts(plan.roles());
@@ -447,7 +447,7 @@ class RequirementAgentStageOrchestratorTest {
     // ---------- (h) orchestrator_enforces_one_qa_remediation_pass_for_D_plan ----------
     @Test
     void orchestrator_enforces_one_qa_remediation_pass_for_D_plan() {
-        AgentWorkflowPlan plan = AgentWorkflowPlan.codingBenchmark(CodingBenchmarkArm.D);
+        AgentWorkflowPlan plan = AgentWorkflowPlan.production();
         OrchestratorTestHarness harness = new OrchestratorTestHarness()
                 .prestageRoles(plan.roles())
                 .prestageRoleContexts(plan.roles());
@@ -625,7 +625,7 @@ class RequirementAgentStageOrchestratorTest {
 
     @Test
     void recordRetrieval_returns_empty_succeed_outcome_when_recorder_missing() {
-        AgentWorkflowPlan plan = AgentWorkflowPlan.codingBenchmark(CodingBenchmarkArm.C);
+        AgentWorkflowPlan plan = AgentWorkflowPlanFixtures.reviewArchitectCodingWithRetrieval();
         OrchestratorTestHarness harness = new OrchestratorTestHarness()
                 .prestageRoles(plan.roles())
                 .prestageRoleContexts(plan.roles());
@@ -639,7 +639,7 @@ class RequirementAgentStageOrchestratorTest {
 
     @Test
     void executeRole_classifies_retryable_profile_resolution_failure() {
-        AgentWorkflowPlan plan = AgentWorkflowPlan.codingBenchmark(CodingBenchmarkArm.B);
+        AgentWorkflowPlan plan = AgentWorkflowPlanFixtures.reviewArchitectCoding();
         OrchestratorTestHarness harness = new OrchestratorTestHarness()
                 .prestageRoles(plan.roles())
                 .prestageRoleContexts(plan.roles());
@@ -652,7 +652,7 @@ class RequirementAgentStageOrchestratorTest {
 
     @Test
     void recoveryPromptSection_emits_operator_note_when_retry_checkpoint_set() {
-        AgentWorkflowPlan plan = AgentWorkflowPlan.codingBenchmark(CodingBenchmarkArm.D);
+        AgentWorkflowPlan plan = AgentWorkflowPlan.production();
         OrchestratorTestHarness harness = new OrchestratorTestHarness()
                 .prestageRoles(plan.roles())
                 .prestageRoleContexts(plan.roles());
@@ -807,7 +807,7 @@ class RequirementAgentStageOrchestratorTest {
 
     @Test
     void host_verify_is_skipped_when_plan_disables_it() {
-        AgentWorkflowPlan plan = AgentWorkflowPlan.codingBenchmark(CodingBenchmarkArm.A);
+        AgentWorkflowPlan plan = AgentWorkflowPlanFixtures.codingOnly();
         OrchestratorTestHarness harness = new OrchestratorTestHarness()
                 .prestageRoles(plan.roles())
                 .prestageRoleContexts(plan.roles());

@@ -99,7 +99,6 @@ public class AgentRuntimeExecutorConfiguration {
             AgentExecutionProfileService profileService,
             AgentExecutionProfileSnapshotService snapshotService,
             AgentExecutionProfileSnapshotStore snapshotStore,
-            com.wish.rd.bootstrap.executor.OpenAiChatCompletionsProperties openAiProperties,
             ModelProviderProfileService providerProfileService,
             AgentToolPolicyService toolPolicyService,
             PiAgentExecutorProperties piProperties
@@ -108,7 +107,6 @@ public class AgentRuntimeExecutorConfiguration {
                 profileService,
                 snapshotService,
                 snapshotStore,
-                openAiProperties.isEnabled(),
                 providerProfileService,
                 toolPolicyService,
                 piProperties.getContextProtocolVersion(),

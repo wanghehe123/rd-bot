@@ -1,14 +1,12 @@
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 import {
-  Activity,
   BarChart3,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   Cpu,
   Database,
-  FlaskConical,
   Github,
   LayoutDashboard,
   ListChecks,
@@ -50,17 +48,7 @@ const menuGroups: Array<{ title: string; items: MenuItem[] }> = [
       { path: "/admin/rd-tasks", label: "任务管理", icon: ListChecks },
       { path: "/admin/skills", label: "Skill Hub", icon: Sparkles },
       { path: "/admin/traces", label: "执行追踪", icon: Workflow },
-      { path: "/admin/observability", label: "交付观测", icon: BarChart3 },
-      {
-        id: "evaluations",
-        path: "/admin/evaluations",
-        label: "评测",
-        icon: FlaskConical,
-        children: [
-          { path: "/admin/evaluations", label: "本地评测", icon: FlaskConical },
-          { path: "/admin/evaluations/coding-benchmarks", label: "编码消融评测", icon: Activity }
-        ]
-      }
+      { path: "/admin/observability", label: "交付观测", icon: BarChart3 }
     ]
   },
   {
@@ -81,8 +69,6 @@ const breadcrumbMap: Record<string, string> = {
   skills: "Skill Hub",
   traces: "执行追踪",
   observability: "交付观测",
-  evaluations: "评测",
-  "coding-benchmarks": "编码消融评测",
   users: "用户管理",
   "model-providers": "供应商配置",
   settings: "系统设置"
@@ -105,7 +91,7 @@ export function AdminLayout() {
   const [isMobileViewport, setIsMobileViewport] = useState(() => (
     typeof window !== "undefined" && window.matchMedia("(max-width: 860px)").matches
   ));
-  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({ evaluations: true });
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
   const [passwordOpen, setPasswordOpen] = useState(false);
   const [passwordForm, setPasswordForm] = useState({ currentPassword: "", newPassword: "", confirmPassword: "" });
   const sidebarRef = useRef<HTMLElement>(null);
@@ -122,12 +108,7 @@ export function AdminLayout() {
     if (parts[0] !== "admin") return items;
     const section = parts[1];
     if (section) {
-      if (section === "evaluations" && parts.length > 2) {
-        items.push({ label: "评测", to: "/admin/evaluations" });
-        items.push({ label: breadcrumbMap[parts[2]] || parts[2] });
-      } else {
-        items.push({ label: breadcrumbMap[section] || section, to: `/admin/${section}` });
-      }
+      items.push({ label: breadcrumbMap[section] || section, to: `/admin/${section}` });
     }
     if (section === "knowledge" && parts.length > 2) items.push({ label: "文档管理" });
     if (section === "knowledge" && parts.includes("docs")) items.push({ label: "分块管理" });

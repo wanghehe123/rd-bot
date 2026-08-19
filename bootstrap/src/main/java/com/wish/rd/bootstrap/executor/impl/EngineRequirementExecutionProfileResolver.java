@@ -32,7 +32,6 @@ public final class EngineRequirementExecutionProfileResolver
     private final AgentExecutionProfileService profileService;
     private final AgentExecutionProfileSnapshotService snapshotService;
     private final AgentExecutionProfileSnapshotStore snapshotStore;
-    private final boolean openAiChatEnabled;
     private final ModelProviderProfileService providerProfileService;
     private final AgentToolPolicyService toolPolicyService;
     private final String contextProtocolVersion;
@@ -43,14 +42,12 @@ public final class EngineRequirementExecutionProfileResolver
     public EngineRequirementExecutionProfileResolver(
             AgentExecutionProfileService profileService,
             AgentExecutionProfileSnapshotService snapshotService,
-            AgentExecutionProfileSnapshotStore snapshotStore,
-            boolean openAiChatEnabled
+            AgentExecutionProfileSnapshotStore snapshotStore
     ) {
         this(
                 profileService,
                 snapshotService,
                 snapshotStore,
-                openAiChatEnabled,
                 null,
                 null,
                 "LEGACY_ENVIRONMENT_NOTES",
@@ -63,7 +60,6 @@ public final class EngineRequirementExecutionProfileResolver
             AgentExecutionProfileService profileService,
             AgentExecutionProfileSnapshotService snapshotService,
             AgentExecutionProfileSnapshotStore snapshotStore,
-            boolean openAiChatEnabled,
             ModelProviderProfileService providerProfileService,
             AgentToolPolicyService toolPolicyService
     ) {
@@ -71,7 +67,6 @@ public final class EngineRequirementExecutionProfileResolver
                 profileService,
                 snapshotService,
                 snapshotStore,
-                openAiChatEnabled,
                 providerProfileService,
                 toolPolicyService,
                 "LEGACY_ENVIRONMENT_NOTES",
@@ -85,7 +80,6 @@ public final class EngineRequirementExecutionProfileResolver
             AgentExecutionProfileService profileService,
             AgentExecutionProfileSnapshotService snapshotService,
             AgentExecutionProfileSnapshotStore snapshotStore,
-            boolean openAiChatEnabled,
             ModelProviderProfileService providerProfileService,
             AgentToolPolicyService toolPolicyService,
             String contextProtocolVersion,
@@ -96,7 +90,6 @@ public final class EngineRequirementExecutionProfileResolver
                 profileService,
                 snapshotService,
                 snapshotStore,
-                openAiChatEnabled,
                 providerProfileService,
                 toolPolicyService,
                 contextProtocolVersion,
@@ -110,7 +103,6 @@ public final class EngineRequirementExecutionProfileResolver
             AgentExecutionProfileService profileService,
             AgentExecutionProfileSnapshotService snapshotService,
             AgentExecutionProfileSnapshotStore snapshotStore,
-            boolean openAiChatEnabled,
             ModelProviderProfileService providerProfileService,
             AgentToolPolicyService toolPolicyService,
             String contextProtocolVersion,
@@ -121,7 +113,6 @@ public final class EngineRequirementExecutionProfileResolver
         this.profileService = Objects.requireNonNull(profileService, "profileService must not be null");
         this.snapshotService = Objects.requireNonNull(snapshotService, "snapshotService must not be null");
         this.snapshotStore = Objects.requireNonNull(snapshotStore, "snapshotStore must not be null");
-        this.openAiChatEnabled = openAiChatEnabled;
         this.providerProfileService = providerProfileService;
         this.toolPolicyService = toolPolicyService;
         this.contextProtocolVersion = normalizeProtocolVersion(contextProtocolVersion);

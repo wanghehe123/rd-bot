@@ -35,7 +35,7 @@ class EngineRequirementExecutionProfileResolverTest {
         profileService.bindProjectDefault("project-1", "CODING_AGENT", claude.profileId());
         profileService.setTaskOverride("task-1", "project-1", "CODING_AGENT", pi.profileId());
         InMemoryAgentExecutionProfileSnapshotStore snapshots = new InMemoryAgentExecutionProfileSnapshotStore();
-        EngineRequirementExecutionProfileResolver resolver = resolver(profileService, snapshots, false);
+        EngineRequirementExecutionProfileResolver resolver = resolver(profileService, snapshots);
 
         RequirementExecutionProfileResolution first = resolver.resolve(
                 task(), AgentRole.CODING_AGENT, "stage-1", 1
@@ -54,12 +54,12 @@ class EngineRequirementExecutionProfileResolverTest {
     void shouldProduceCompatibilitySnapshotsWhenNoRegisteredProfileExists() {
         InMemoryAgentExecutionProfileSnapshotStore snapshots = new InMemoryAgentExecutionProfileSnapshotStore();
         AgentRuntimeType codingRuntime = resolver(
-                new AgentExecutionProfileService(new InMemoryAgentExecutionProfileStore()), snapshots, false
+                new AgentExecutionProfileService(new InMemoryAgentExecutionProfileStore()), snapshots
         ).resolve(task(), AgentRole.CODING_AGENT, "stage-coding", 1).resolved()
                 ? snapshots.findByStageRunId("stage-coding").orElseThrow().runtimeType()
                 : null;
         AgentRuntimeType reviewerRuntime = resolver(
-                new AgentExecutionProfileService(new InMemoryAgentExecutionProfileStore()), snapshots, true
+                new AgentExecutionProfileService(new InMemoryAgentExecutionProfileStore()), snapshots
         ).resolve(task(), AgentRole.REQUIREMENT_REVIEWER, "stage-reviewer", 1).resolved()
                 ? snapshots.findByStageRunId("stage-reviewer").orElseThrow().runtimeType()
                 : null;
@@ -74,8 +74,7 @@ class EngineRequirementExecutionProfileResolverTest {
         EngineRequirementExecutionProfileResolver resolver = new EngineRequirementExecutionProfileResolver(
                 new AgentExecutionProfileService(new InMemoryAgentExecutionProfileStore()),
                 new AgentExecutionProfileSnapshotService(snapshots),
-                snapshots,
-                false
+                snapshots
         );
         resolver.resolve(task(), AgentRole.QA_AGENT, "stage-qa", 1);
         String snapshotJson = snapshots.findByStageRunId("stage-qa").orElseThrow().snapshotJson();
@@ -119,7 +118,6 @@ class EngineRequirementExecutionProfileResolverTest {
                 profileService,
                 new AgentExecutionProfileSnapshotService(snapshots),
                 snapshots,
-                false,
                 null,
                 toolPolicyService
         );
@@ -140,7 +138,6 @@ class EngineRequirementExecutionProfileResolverTest {
                 new AgentExecutionProfileService(new InMemoryAgentExecutionProfileStore()),
                 new AgentExecutionProfileSnapshotService(snapshots),
                 snapshots,
-                false,
                 null,
                 null,
                 "FACTS_V1",
@@ -167,14 +164,12 @@ class EngineRequirementExecutionProfileResolverTest {
 
     private EngineRequirementExecutionProfileResolver resolver(
             AgentExecutionProfileService profileService,
-            InMemoryAgentExecutionProfileSnapshotStore snapshotStore,
-            boolean openAiChatEnabled
+            InMemoryAgentExecutionProfileSnapshotStore snapshotStore
     ) {
         return new EngineRequirementExecutionProfileResolver(
                 profileService,
                 new AgentExecutionProfileSnapshotService(snapshotStore),
-                snapshotStore,
-                openAiChatEnabled
+                snapshotStore
         );
     }
 

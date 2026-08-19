@@ -54,40 +54,6 @@ rustfs:
   secret-access-key: ${RUSTFS_SECRET_ACCESS_KEY:rustfsadmin}
 
 rd:
-  evaluation:
-    enabled: ${RD_EVAL_ENABLED:true}
-    repository-root: ${RD_EVAL_REPOSITORY_ROOT:${user.dir}}
-    output-root: ${RD_EVAL_OUTPUT_ROOT:qa-runs/evaluation}
-    dataset-root: ${RD_EVAL_DATASET_ROOT:scripts/evaluation/datasets}
-    rag-log-root: ${RD_EVAL_RAG_LOG_ROOT:logs}
-    python-executable: ${RD_EVAL_PYTHON_EXECUTABLE:python3}
-    ragas-python-executable: ${RD_EVAL_RAGAS_PYTHON_EXECUTABLE:}
-    default-base-url: ${RD_EVAL_DEFAULT_BASE_URL:http://127.0.0.1:18080}
-    parallelism: ${RD_EVAL_PARALLELISM:2}
-    max-log-chars: ${RD_EVAL_MAX_LOG_CHARS:200000}
-    coding-benchmark-root: ${CODING_BENCHMARK_ROOT:/Volumes/WishDisk/codes/swe/public-prep/snapshots}
-    coding-benchmark-prep-root: ${CODING_BENCHMARK_PREP_ROOT:/Volumes/WishDisk/codes/swe/public-prep}
-    coding-benchmark:
-      # docker runs the isolated Agent/Oracle containers; fake runs a container-free control-plane rehearsal
-      executor: ${CODING_BENCHMARK_EXECUTOR:docker}
-      oracle-image: ${CODING_BENCHMARK_ORACLE_IMAGE:rd-bot/coding-eval-oracle@sha256:904063462a3f3eb74902fdf38283f18d66f2ce908fffe00381b68ad8ee90b27d}
-      model-provider:
-        name: ${CODING_BENCHMARK_MODEL_PROVIDER:opencode-go}
-        base-url: ${CODING_BENCHMARK_MODEL_BASE_URL:https://opencode.ai/zen/go/v1}
-        model: ${CODING_BENCHMARK_MODEL:deepseek-v4-flash}
-        api-key-env: ${CODING_BENCHMARK_MODEL_API_KEY_ENV:OPENCODE_API_KEY}
-        protocol: ${CODING_BENCHMARK_MODEL_PROTOCOL:openai-chat-completions}
-        relay-image: ${CODING_BENCHMARK_RELAY_IMAGE:rd-bot/coding-eval-relay:local}
-        allowed-paths:
-          - /chat/completions
-          - /v1/chat/completions
-          - /models
-          - /v1/models
-        fallback:
-          name: ${CODING_BENCHMARK_FALLBACK_PROVIDER:deepseek}
-          base-url: ${CODING_BENCHMARK_FALLBACK_BASE_URL:https://api.deepseek.com}
-          model: ${CODING_BENCHMARK_FALLBACK_MODEL:deepseek-v4-flash}
-          api-key-env: ${CODING_BENCHMARK_FALLBACK_API_KEY_ENV:DEEPSEEK_API_KEY}
   ai-review:
     enabled: ${RD_AI_REVIEW_ENABLED:false}
     base-url: ${RD_AI_REVIEW_BASE_URL:https://api.longcat.chat/anthropic}
@@ -368,14 +334,6 @@ rd:
           default-haiku-model: ${MINIMAX_HAIKU_MODEL:MiniMax-M3}
           subagent-model: ${MINIMAX_SUBAGENT_MODEL:MiniMax-M3}
           effort-level: ${MINIMAX_EFFORT_LEVEL:max}
-    openai-chat:
-      enabled: ${RD_EXECUTOR_OPENAI_CHAT_ENABLED:false}
-      provider-name: ${MINIMAX_PROVIDER_NAME:minimax}
-      base-url: ${MINIMAX_BASE_URL:https://api.minimaxi.com/v1}
-      api-key-env: ${MINIMAX_API_KEY_ENV:MINIMAX_API_KEY}
-      model: ${MINIMAX_MODEL:MiniMax-M3}
-      protocol: ${RD_EXECUTOR_OPENAI_CHAT_PROTOCOL:openai-chat-completions}
-      timeout: ${RD_EXECUTOR_OPENAI_CHAT_TIMEOUT:0s}
   github:
     merge-sync:
       enabled: ${RD_GITHUB_MERGE_SYNC_ENABLED:true}

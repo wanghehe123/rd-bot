@@ -22,7 +22,7 @@ import com.wish.rd.rag.runtime.model.RdRequirementTask;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
 import com.wish.rd.rag.vector.VectorStore;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import java.nio.charset.StandardCharsets;
@@ -36,9 +36,17 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
-/** Uses the project binding as a hard boundary for requirement knowledge retrieval. */
+/**
+ * Uses the project binding as a hard boundary for requirement knowledge retrieval.
+ *
+ * <p>依赖 {@link RdProjectService}，而后者只在 {@code rd.knowledge.store=postgres} 下注册，
+ * 因此这里必须用同一个属性条件。类扫描组件上的 {@code @ConditionalOnBean} 会先登记 bean
+ * definition 再求值，使得
+ * {@code RetrievalRunConfiguration#knowledgeRetrievalModeRouter} 的
+ * {@code @ConditionalOnBean} 误判为满足，直到实例化才发现依赖缺失。
+ */
 @Component
-@ConditionalOnBean({VectorStore.class, RdProjectService.class})
+@ConditionalOnProperty(name = "rd.knowledge.store", havingValue = "postgres")
 public class ProjectScopedRequirementKnowledgeSearchAdapter implements RequirementKnowledgeSearchPort {
 
     private final VectorStore vectorStore;
