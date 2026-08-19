@@ -40,7 +40,7 @@ class DockerAssetPolicyTest {
         assertTrue(Files.isRegularFile(asset("playwright-cli.config.json")));
         assertTrue(Files.isRegularFile(asset("rd-claude-entrypoint.sh")));
         assertTrue(Files.isRegularFile(asset("rd-local-repair-worker.mjs")));
-        assertTrue(Files.isRegularFile(asset("result.schema.json")));
+        assertTrue(Files.isRegularFile(sharedAsset("result.schema.json")));
     }
 
     @Test
@@ -201,7 +201,9 @@ class DockerAssetPolicyTest {
 
     @Test
     void resultSchemaShouldMatchRepairExecutionProtocol() throws IOException {
-        JsonNode schema = OBJECT_MAPPER.readTree(readAsset("result.schema.json"));
+        JsonNode schema = OBJECT_MAPPER.readTree(
+                Files.readString(sharedAsset("result.schema.json"), StandardCharsets.UTF_8)
+        );
 
         assertEquals("object", schema.path("type").asText());
         Set<String> required = OBJECT_MAPPER.convertValue(
@@ -244,6 +246,11 @@ class DockerAssetPolicyTest {
 
     private static Path asset(String fileName) {
         return moduleRoot().resolve("src/main/resources/executor/claude").resolve(fileName);
+    }
+
+    /** Assets shared by every execution runtime rather than owned by one of them. */
+    private static Path sharedAsset(String fileName) {
+        return moduleRoot().resolve("src/main/resources/executor").resolve(fileName);
     }
 
     private static Path moduleRoot() {

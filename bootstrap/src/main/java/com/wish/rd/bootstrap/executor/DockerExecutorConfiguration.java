@@ -40,7 +40,9 @@ import java.nio.charset.StandardCharsets;
 @Configuration(proxyBeanMethods = false)
 public class DockerExecutorConfiguration {
 
-    private static final String RESULT_SCHEMA_RESOURCE = "executor/claude/result.schema.json";
+    // Runtime-neutral: every workspace writes this contract to input/result.schema.json, and
+    // the in-container QA skill reads it regardless of which runtime produced the workspace.
+    private static final String RESULT_SCHEMA_RESOURCE = "executor/result.schema.json";
 
     /**
      * Provides the pure structured-result validator used by the Docker executor.
