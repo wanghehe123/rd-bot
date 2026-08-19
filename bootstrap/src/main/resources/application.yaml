@@ -32,12 +32,6 @@ rag:
     metric-type: COSINE
   query-rewrite:
     enabled: true
-  memory:
-    history-keep-turns: 8
-    summary-enabled: false
-    summary-start-turns: 9
-    summary-max-chars: 200
-    title-max-length: 30
   rate-limit:
     global:
       enabled: false

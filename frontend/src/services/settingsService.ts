@@ -23,13 +23,6 @@ export interface SystemSettings {
         pollIntervalMs: number;
       };
     };
-    memory: {
-      historyKeepTurns: number;
-      summaryStartTurns: number;
-      summaryEnabled: boolean;
-      summaryMaxChars: number;
-      titleMaxLength: number;
-    };
   };
   ai: {
     providers: Record<
@@ -37,7 +30,6 @@ export interface SystemSettings {
       {
         url: string;
         apiKey?: string | null;
-        endpoints: Record<string, string>;
       }
     >;
     selection: {

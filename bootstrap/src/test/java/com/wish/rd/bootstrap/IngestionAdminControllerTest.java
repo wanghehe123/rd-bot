@@ -199,12 +199,5 @@ class IngestionAdminControllerTest {
         mockMvc.perform(get("/knowledge-base/docs/" + documentId + "/preview"))
                 .andExpect(status().isOk())
                 .andExpect(content().string(containsString("RustFS 上传后的文档")));
-
-        mockMvc.perform(get("/rag/v3/chat")
-                        .param("question", "RustFS 上传后的文档 Parser Chunker Indexer")
-                        .param("conversationId", "conversation-upload-rag-test"))
-                .andExpect(status().isOk())
-                .andExpect(content().string(containsString("event: meta")))
-                .andExpect(content().string(containsString("知识库证据")));
     }
 }

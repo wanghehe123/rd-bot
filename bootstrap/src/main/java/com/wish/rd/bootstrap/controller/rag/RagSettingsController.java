@@ -29,11 +29,6 @@ public class RagSettingsController {
     private final int rateLimitMaxWaitSeconds;
     private final int rateLimitLeaseSeconds;
     private final int rateLimitPollIntervalMs;
-    private final int historyKeepTurns;
-    private final boolean summaryEnabled;
-    private final int summaryStartTurns;
-    private final int summaryMaxChars;
-    private final int titleMaxLength;
     private final String aiProviderName;
     private final String aiProviderBaseUrl;
     private final String aiProviderApiKey;
@@ -55,11 +50,6 @@ public class RagSettingsController {
             @Value("${rag.rate-limit.global.max-wait-seconds:20}") int rateLimitMaxWaitSeconds,
             @Value("${rag.rate-limit.global.lease-seconds:600}") int rateLimitLeaseSeconds,
             @Value("${rag.rate-limit.global.poll-interval-ms:200}") int rateLimitPollIntervalMs,
-            @Value("${rag.memory.history-keep-turns:8}") int historyKeepTurns,
-            @Value("${rag.memory.summary-enabled:false}") boolean summaryEnabled,
-            @Value("${rag.memory.summary-start-turns:9}") int summaryStartTurns,
-            @Value("${rag.memory.summary-max-chars:200}") int summaryMaxChars,
-            @Value("${rag.memory.title-max-length:30}") int titleMaxLength,
             @Value("${rd.ai.provider.name:long-cat}") String aiProviderName,
             @Value("${rd.ai.provider.base-url:https://api.longcat.chat/anthropic}") String aiProviderBaseUrl,
             @Value("${rd.ai.provider.api-key:}") String aiProviderApiKey,
@@ -80,11 +70,6 @@ public class RagSettingsController {
         this.rateLimitMaxWaitSeconds = rateLimitMaxWaitSeconds;
         this.rateLimitLeaseSeconds = rateLimitLeaseSeconds;
         this.rateLimitPollIntervalMs = rateLimitPollIntervalMs;
-        this.historyKeepTurns = historyKeepTurns;
-        this.summaryEnabled = summaryEnabled;
-        this.summaryStartTurns = summaryStartTurns;
-        this.summaryMaxChars = summaryMaxChars;
-        this.titleMaxLength = titleMaxLength;
         this.aiProviderName = normalize(aiProviderName, "long-cat");
         this.aiProviderBaseUrl = normalize(aiProviderBaseUrl, "https://api.longcat.chat/anthropic");
         this.aiProviderApiKey = aiProviderApiKey == null ? "" : aiProviderApiKey.strip();
@@ -122,13 +107,6 @@ public class RagSettingsController {
                 "leaseSeconds", rateLimitLeaseSeconds,
                 "pollIntervalMs", rateLimitPollIntervalMs
         )));
-        rag.put("memory", Map.of(
-                "historyKeepTurns", historyKeepTurns,
-                "summaryEnabled", summaryEnabled,
-                "summaryStartTurns", summaryStartTurns,
-                "summaryMaxChars", summaryMaxChars,
-                "titleMaxLength", titleMaxLength
-        ));
         return rag;
     }
 
@@ -138,7 +116,6 @@ public class RagSettingsController {
         if (!aiProviderName.isBlank()) {
             Map<String, Object> provider = new LinkedHashMap<>();
             provider.put("url", aiProviderBaseUrl);
-            provider.put("endpoints", Map.of("chat", "/rag/v3/chat"));
             String maskedApiKey = maskApiKey(aiProviderApiKey);
             if (maskedApiKey != null) {
                 provider.put("apiKey", maskedApiKey);

@@ -13,7 +13,7 @@ import com.wish.rd.rag.rewrite.model.RewriteResult;
  * 基于规则的查询改写服务：把用户口语化的术语按映射表替换为标准术语，并可拆分子问题。
  *
  * <p>这是 RAG 流程"检索前"的关键一步，用于把"下单→POST /api/orders"、"金额→orders.amount"
- * 这类业务术语标准化，提升检索召回率。/rag/v3/chat 的 meta.rewrittenQuestion 即由此产生。
+ * 这类业务术语标准化，提升检索召回率。
  *
  * <p>映射应用顺序：先按 priority 降序、再按 sourceTerm 长度降序排列，保证高优先级、
  * 更长的术语优先匹配，避免短词误伤（例如"金额"先于"额"）。
