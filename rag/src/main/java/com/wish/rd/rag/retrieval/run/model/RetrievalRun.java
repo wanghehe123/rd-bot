@@ -38,7 +38,11 @@ public record RetrievalRun(
     public RetrievalRun {
         runId = safe(runId);
         taskId = safe(taskId);
-        consumerType = consumerType == null ? RetrievalConsumerType.BUG_FIX : consumerType;
+        // Every caller knows its consumer, and guessing one silently mislabels the run for the
+        // lifetime of the row. Persistence translates a NULL column before reaching this point.
+        if (consumerType == null) {
+            throw new IllegalArgumentException("consumerType is required for retrieval run " + runId);
+        }
         role = safe(role).toUpperCase();
         stageRunId = safe(stageRunId);
         attemptNo = Math.max(1, attemptNo);

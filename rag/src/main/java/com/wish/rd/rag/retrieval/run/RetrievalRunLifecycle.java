@@ -40,6 +40,9 @@ public final class RetrievalRunLifecycle {
             String query,
             List<String> knowledgeBaseIds
     ) {
+        if (consumerType == null) {
+            throw new IllegalArgumentException("consumerType is required to start a retrieval run for " + taskId);
+        }
         Optional<RetrievalRun> latest = findLatest(taskId, consumerType, role, stageRunId);
         if (latest.isPresent()) {
             RetrievalRun existing = latest.get();
@@ -234,9 +237,8 @@ public final class RetrievalRunLifecycle {
     ) {
         String safeRole = safe(role).toUpperCase();
         String safeStageRunId = safe(stageRunId);
-        RetrievalConsumerType safeConsumer = consumerType == null ? RetrievalConsumerType.BUG_FIX : consumerType;
         return store.listByTask(taskId).stream()
-                .filter(run -> run.consumerType() == safeConsumer)
+                .filter(run -> run.consumerType() == consumerType)
                 .filter(run -> safeRole.equals(run.role()))
                 .filter(run -> safeStageRunId.equals(run.stageRunId()))
                 .max(Comparator.comparingInt(RetrievalRun::attemptNo)
@@ -255,7 +257,7 @@ public final class RetrievalRunLifecycle {
             String stageRunId,
             int attemptNo
     ) {
-        return safe(taskId) + ":" + (consumerType == null ? "BUG_FIX" : consumerType.name()) + ":"
+        return safe(taskId) + ":" + consumerType.name() + ":"
                 + safe(role) + ":" + safe(stageRunId) + ":" + attemptNo;
     }
 

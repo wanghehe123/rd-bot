@@ -7,10 +7,6 @@ import com.wish.rd.engine.requirement.RequirementDeliveryEngine;
 import com.wish.rd.engine.requirement.model.RequirementExecutionResult;
 import com.wish.rd.engine.requirement.model.RequirementPullRequestPublication;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
-import com.wish.rd.engine.ticket.model.RepairQueuePublishResult;
-import com.wish.rd.engine.ticket.RepairQueuePublisher;
-import com.wish.rd.engine.ticket.model.RepairTicketMessage;
-import com.wish.rd.engine.ticket.TicketEventIngestionEngine;
 import com.wish.rd.rag.runtime.impl.InMemoryRdTaskStatusEventStore;
 import com.wish.rd.rag.runtime.impl.InMemoryRdTaskStore;
 import com.wish.rd.rag.runtime.impl.InMemoryTaskMaterialStore;
@@ -22,7 +18,6 @@ import org.junit.jupiter.api.Test;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.CompletableFuture;
@@ -37,12 +32,12 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * 验证飞书 IM 事件入口对 URL 校验、@ 过滤、文本建单和队列发布的处理。
+ * 验证飞书 IM 事件入口对 URL 校验、@ 过滤和需求建单的处理。
+ *
+ * <p>工单链已下线，非需求格式的消息只被忽略，不再有第二个消费者。
  */
 class FeishuImMessageControllerTest {
 
-    private FeishuImTicketStore store;
-    private CapturingPublisher publisher;
     private MockMvc mockMvc;
 
     @BeforeEach
@@ -50,19 +45,14 @@ class FeishuImMessageControllerTest {
         FeishuImProperties properties = new FeishuImProperties();
         properties.setEnabled(true);
         properties.setRequireAtMention(true);
-        store = new FeishuImTicketStore();
-        publisher = new CapturingPublisher();
-        TicketEventIngestionEngine ingestionEngine = TicketEventIngestionEngine.forTesting(
-                publisher,
-                new TicketEventIngestionEngine.InMemoryDeduplicationStore(),
-                "feishu-im"
-        );
         FeishuImMessageController controller = new FeishuImMessageController(
                 new ObjectMapper(),
                 properties,
-                new FeishuImTicketParser(),
-                store,
-                ingestionEngine
+                null,
+                null,
+                null,
+                null,
+                generator()
         );
         mockMvc = MockMvcBuilders.standaloneSetup(controller).build();
     }
@@ -83,33 +73,24 @@ class FeishuImMessageControllerTest {
                         .content(eventJson("evt-no-mention", "om-no-mention", "", List.of())))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.accepted").value(true))
-                .andExpect(jsonPath("$.ignored").value(true));
-
-        assertTrue(publisher.published.isEmpty());
+                .andExpect(jsonPath("$.ignored").value(true))
+                .andExpect(jsonPath("$.reason").value("bot not mentioned"));
     }
 
     @Test
-    void shouldCreateLocalTicketAndPublishQueueMessageForMentionedText() throws Exception {
+    void shouldIgnoreMentionedTextThatIsNotARequirement() throws Exception {
         mockMvc.perform(post("/feishu/im/events")
                         .contentType("application/json")
                         .content(eventJson("evt-1", "om_123", "@_user_1 ", List.of("@_user_1"))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.accepted").value(true))
-                .andExpect(jsonPath("$.success").value(true))
-                .andExpect(jsonPath("$.ticketId").value("FI-om-123"));
-
-        assertEquals(1, publisher.published.size());
-        RepairTicketMessage message = publisher.published.get(0);
-        assertEquals("FI-om-123", message.ticketId());
-        assertEquals("feishu.im.message.created_v1", message.eventType());
-        assertEquals("feishu-im", message.source());
-        assertEquals("P1", message.priority());
-        assertTrue(store.findTicket("FI-om-123").isPresent());
-        assertEquals("oc-chat", store.findTicket("FI-om-123").orElseThrow().chatId());
+                .andExpect(jsonPath("$.ignored").value(true))
+                .andExpect(jsonPath("$.reason").value("not a requirement message"))
+                .andExpect(jsonPath("$.messageId").value("om_123"));
     }
 
     @Test
-    void shouldCreateRequirementTaskFromMentionedTextWithoutBugFixQueue() throws Exception {
+    void shouldCreateRequirementTaskFromMentionedText() throws Exception {
         FeishuImProperties properties = new FeishuImProperties();
         properties.setEnabled(true);
         properties.setRequireAtMention(true);
@@ -219,13 +200,6 @@ class FeishuImMessageControllerTest {
         FeishuImMessageController controller = new FeishuImMessageController(
                 new ObjectMapper(),
                 properties,
-                new FeishuImTicketParser(),
-                store,
-                TicketEventIngestionEngine.forTesting(
-                        publisher,
-                        new TicketEventIngestionEngine.InMemoryDeduplicationStore(),
-                        "feishu-im"
-                ),
                 registry,
                 materialStore,
                 deliveryEngine,
@@ -256,7 +230,6 @@ class FeishuImMessageControllerTest {
                 .andReturn().getResponse().getContentAsString();
         String taskId = com.jayway.jsonpath.JsonPath.read(response, "$.taskId");
 
-        assertTrue(publisher.published.isEmpty());
         assertEquals(RdTaskStatus.COMPLETED, registry.getTask(taskId).status());
         assertEquals(List.of(
                 RdTaskStatus.CREATED.name(),
@@ -294,13 +267,6 @@ class FeishuImMessageControllerTest {
         FeishuImMessageController controller = new FeishuImMessageController(
                 new ObjectMapper(),
                 properties,
-                new FeishuImTicketParser(),
-                store,
-                TicketEventIngestionEngine.forTesting(
-                        publisher,
-                        new TicketEventIngestionEngine.InMemoryDeduplicationStore(),
-                        "feishu-im"
-                ),
                 registry,
                 materialStore,
                 deliveryEngine,
@@ -350,13 +316,6 @@ class FeishuImMessageControllerTest {
         FeishuImMessageController controller = new FeishuImMessageController(
                 new ObjectMapper(),
                 properties,
-                new FeishuImTicketParser(),
-                store,
-                TicketEventIngestionEngine.forTesting(
-                        publisher,
-                        new TicketEventIngestionEngine.InMemoryDeduplicationStore(),
-                        "feishu-im"
-                ),
                 registry,
                 materialStore,
                 deliveryEngine,
@@ -382,7 +341,6 @@ class FeishuImMessageControllerTest {
                 .andExpect(jsonPath("$.missingFields[0]").value("repositoryUrl"))
                 .andExpect(jsonPath("$.missingFields[1]").value("expectedResult"));
 
-        assertTrue(publisher.published.isEmpty());
         assertEquals(0, registry.queryTasks(new com.wish.rd.rag.runtime.model.RdTaskQuery(
                 "REQUIREMENT",
                 "",
@@ -459,15 +417,5 @@ class FeishuImMessageControllerTest {
     private static SnowflakeIdGenerator generator() {
         AtomicLong now = new AtomicLong(1_784_000_000_000L);
         return new SnowflakeIdGenerator(1, 1, now::getAndIncrement);
-    }
-
-    private static final class CapturingPublisher implements RepairQueuePublisher {
-        private final List<RepairTicketMessage> published = new ArrayList<>();
-
-        @Override
-        public RepairQueuePublishResult publish(RepairTicketMessage message) {
-            published.add(message);
-            return RepairQueuePublishResult.success(message.ticketId(), "msg-" + published.size(), message.priority());
-        }
     }
 }
