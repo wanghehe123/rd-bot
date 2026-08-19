@@ -1,6 +1,7 @@
 package com.wish.rd.bootstrap.executor;
 
 import com.wish.rd.exec.repair.execution.RepairExecutorPort;
+import com.wish.rd.exec.repair.docker.AuthEnvironmentResolver;
 import com.wish.rd.exec.repair.docker.ContainerRunnerPort;
 import com.wish.rd.exec.repair.docker.RepairWorkspaceFactory;
 import com.wish.rd.exec.repair.docker.RepairWorkspaceRepositoryPort;
@@ -64,7 +65,7 @@ public class AgentRuntimeExecutorConfiguration {
                 skillMaterializerProvider.getIfAvailable(PiSkillMaterializerPort::emptyOnly),
                 eventSinkProvider.getIfAvailable(AgentExecutionEventSink::noop),
                 privateArtifactPublisherProvider.getIfAvailable(AgentPrivateArtifactPublisher::noop),
-                com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor.AuthEnvironmentResolver.system(),
+                AuthEnvironmentResolver.system(),
                 credentialLeaseIssuerProvider.getIfAvailable()
         );
     }

@@ -6,6 +6,7 @@ import com.wish.rd.exec.repair.runtime.model.AgentRuntimeExecutionRequest;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.wish.rd.exec.repair.docker.AuthEnvironmentResolver;
 import com.wish.rd.exec.repair.docker.ContainerOutputListener;
 import com.wish.rd.exec.repair.docker.RepairWorkspaceFactory;
 import com.wish.rd.exec.repair.docker.RepairWorkspaceRepositoryPort;
@@ -1279,7 +1280,7 @@ class DockerPiAgentExecutorTest {
     private DockerPiAgentExecutor executor(
             StreamingContainerRunnerPort runner,
             AgentExecutionEventSink eventSink,
-            com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor.AuthEnvironmentResolver authResolver
+            AuthEnvironmentResolver authResolver
     ) {
         return executor(
                 new RepairWorkspaceFactory(temporaryDirectory.resolve("workspaces"), RESULT_SCHEMA),
@@ -1294,7 +1295,7 @@ class DockerPiAgentExecutorTest {
     private DockerPiAgentExecutor executor(
             StreamingContainerRunnerPort runner,
             AgentExecutionEventSink eventSink,
-            com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor.AuthEnvironmentResolver authResolver,
+            AuthEnvironmentResolver authResolver,
             RepairWorkspaceRepositoryPort workspaceRepository
     ) {
         return executor(
@@ -1310,7 +1311,7 @@ class DockerPiAgentExecutorTest {
     private DockerPiAgentExecutor executor(
             StreamingContainerRunnerPort runner,
             AgentExecutionEventSink eventSink,
-            com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor.AuthEnvironmentResolver authResolver,
+            AuthEnvironmentResolver authResolver,
             DockerPiAgentExecutor.Configuration configuration
     ) {
         return executor(
@@ -1327,7 +1328,7 @@ class DockerPiAgentExecutorTest {
             RepairWorkspaceFactory workspaceFactory,
             StreamingContainerRunnerPort runner,
             AgentExecutionEventSink eventSink,
-            com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor.AuthEnvironmentResolver authResolver
+            AuthEnvironmentResolver authResolver
     ) {
         return executor(
                 workspaceFactory,
@@ -1343,7 +1344,7 @@ class DockerPiAgentExecutorTest {
             RepairWorkspaceFactory workspaceFactory,
             StreamingContainerRunnerPort runner,
             AgentExecutionEventSink eventSink,
-            com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor.AuthEnvironmentResolver authResolver,
+            AuthEnvironmentResolver authResolver,
             DockerPiAgentExecutor.Configuration configuration
     ) {
         return executor(
@@ -1360,7 +1361,7 @@ class DockerPiAgentExecutorTest {
             RepairWorkspaceFactory workspaceFactory,
             StreamingContainerRunnerPort runner,
             AgentExecutionEventSink eventSink,
-            com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor.AuthEnvironmentResolver authResolver,
+            AuthEnvironmentResolver authResolver,
             DockerPiAgentExecutor.Configuration configuration,
             RepairWorkspaceRepositoryPort workspaceRepository
     ) {
@@ -1383,7 +1384,7 @@ class DockerPiAgentExecutorTest {
     private DockerPiAgentExecutor executorWithoutLeaseIssuer(
             StreamingContainerRunnerPort runner,
             AgentExecutionEventSink eventSink,
-            com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor.AuthEnvironmentResolver authResolver,
+            AuthEnvironmentResolver authResolver,
             DockerPiAgentExecutor.Configuration configuration
     ) {
         return new DockerPiAgentExecutor(

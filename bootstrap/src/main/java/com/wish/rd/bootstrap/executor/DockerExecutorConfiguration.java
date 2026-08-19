@@ -7,6 +7,7 @@ import com.wish.rd.bootstrap.skill.impl.RoleHandoffDocumentSkillProvisioner;
 
 import com.wish.rd.exec.repair.alert.RepairAlertSinkPort;
 import com.wish.rd.exec.repair.alert.RepairExecutionWatchdog;
+import com.wish.rd.exec.repair.docker.AuthEnvironmentResolver;
 import com.wish.rd.exec.repair.docker.ContainerRunnerPort;
 import com.wish.rd.exec.repair.docker.ContainerControlPort;
 import com.wish.rd.exec.repair.docker.impl.DockerExecutionRegistry;
@@ -236,7 +237,7 @@ public class DockerExecutorConfiguration {
                 modelHealthStore,
                 executionRegistry,
                 executionAllowlistPolicy,
-                DockerClaudeCodeExecutor.AuthEnvironmentResolver.system(),
+                AuthEnvironmentResolver.system(),
                 financialPropertiesProvider.getIfAvailable(FinancialProperties::new).toBudgetCurrencyConverter(),
                 providerFallbackPreflightProvider.getIfAvailable(
                         ProviderFallbackPreflightPort::unavailable)

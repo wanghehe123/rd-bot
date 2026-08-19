@@ -57,12 +57,13 @@
   @Value("${rag.rate-limit.global.max-concurrent:4}") int maxConcurrent
   ```
 - 【推荐】可切换实现的基础设施 Bean（如 `ObjectStorageService` 的 memory/S3）用配置开关选择实现，业务代码只依赖端口接口。
-- 【强制】`rd.executor.openai-chat.timeout` / `RD_EXECUTOR_OPENAI_CHAT_TIMEOUT` 是 **OpenAI 兼容 HTTP 单次请求** 的等待上限，不是 Pi 容器执行时限。`0s` 表示不设 HTTP 请求超时；缺省为 `0s`。正值仍按 `HttpRequest.timeout` 失败并写成 `openai chat completions request failed: request timed out`。Pi 容器时限仍是 `RD_EXECUTOR_PI_EXECUTION_TIMEOUT_MILLIS`（默认 1h）。
-  - 代码：`OpenAiChatCompletionsProperties`、`OpenAiChatCompletionsRepairExecutor.Configuration`、`OpenAiChatCompletionsRepairExecutor.request`
-  - 验证：`./mvnw -pl bootstrap -Dtest=OpenAiChatCompletionsRepairExecutorTest -Dsurefire.failIfNoSpecifiedTests=false test`
-- 【强制】`REQUIREMENT_REVIEWER` 与 `SOLUTION_ARCHITECT` 必须走 Agent 容器，不得因 `rd.executor.openai-chat.enabled=true` 被分流到仅模型 HTTP。项目已保存 Pi 策略时，必须打开 `rd.executor.agent-runtime.enabled=true`，否则 `AgentRuntimeRouter` 不会生效，任务仍走旧 Claude / 仅模型路径。无注册 Profile 时的兼容默认是 `CLAUDE_CODE`，不是 `MODEL_ONLY`。
-  - 代码：`RoleAwareRepairExecutor`、`EngineRequirementExecutionProfileResolver.compatibilityRuntime`、`application-local.yaml` 的 `rd.executor.agent-runtime.enabled`
-  - 验证：`./mvnw -pl bootstrap -Dtest=RoleAwareRepairExecutorTest,EngineRequirementExecutionProfileResolverTest -Dsurefire.failIfNoSpecifiedTests=false test`
+- 【强制】仅模型 HTTP 执行路径（`rd.executor.openai-chat.*` / `RD_EXECUTOR_OPENAI_CHAT_*`、`OpenAiChatCompletionsRepairExecutor`、`OpenAiChatCompletionsProperties`、`RoleAwareRepairExecutor`）已移除，不得重新引入。所有角色一律走 Agent 容器；模型访问只经 Pi credential-relay，不再有绕过容器的宿主直连 HTTP 分支。需要新增模型供应商时，扩展 relay 上游而不是新开仅模型执行器。
+  - 注意：供应商协议标识符 `openai-chat-completions`（`rd.executor.docker.providers[].protocol`，MiniMax 等 OpenAI 兼容端点用）是**另一回事**，仍在使用，不得按本条清理。
+  - 代码：`AgentRuntimeExecutorConfiguration`、`EngineRequirementExecutionProfileResolver`、`PiCredentialRelayService`
+  - 验证：`rg -n 'OpenAiChatCompletions(RepairExecutor|Properties|ExecutorConfiguration)|RoleAwareRepairExecutor|rd\.executor\.openai-chat|RD_EXECUTOR_OPENAI_CHAT' --glob '!**/target/**' --glob '!openspec/changes/**' --glob '!docs/superpowers/**' --glob '!RULE.md'` 必须无命中
+- 【强制】`REQUIREMENT_REVIEWER` 与 `SOLUTION_ARCHITECT` 必须走 Agent 容器。项目已保存 Pi 策略时，必须打开 `rd.executor.agent-runtime.enabled=true`，否则 `AgentRuntimeRouter` 不会生效，任务仍走兼容默认路径。
+  - 代码：`EngineRequirementExecutionProfileResolver.compatibilityRuntime`、`application-local.yaml` 的 `rd.executor.agent-runtime.enabled`
+  - 验证：`./mvnw -pl bootstrap -Dtest=EngineRequirementExecutionProfileResolverTest -Dsurefire.failIfNoSpecifiedTests=false test`
 - 【强制】`rd_agent_tool_policies.policy_hash` 必须是 `SHA-256(policy_json)` 的 64 位 hex，不能用 `legacy-host-bound-v1` 这类占位标签。读到非 hex 种子哈希时，store 可回写真实 checksum；hex 不匹配必须失败关闭。Profile 解析失败写入任务 `errorMessage` 时必须带上底层原因，不能只写角色名。
   - 代码：`PostgresAgentToolPolicyStore.toPolicy`、`p8_pi_agent_runtime.sql`、`p17_fix_tool_policy_seed_hashes.sql`、`RequirementAgentStageOrchestrator`
   - 验证：`./mvnw -pl bootstrap -Dtest=PostgresAgentToolPolicyStoreTest -Dsurefire.failIfNoSpecifiedTests=false test` 与 `./mvnw -pl engine -Dtest=RequirementExecutionProfileFailureTest -Dsurefire.failIfNoSpecifiedTests=false test`
@@ -84,7 +85,7 @@
 - 【强制】checkpoint-bound 重试首条 `rd_requirement_stage_commands` 的 `deadline_at` 必须使用 `rd.requirement-delivery.scheduling.command-deadline-millis`（默认 1h），与 `RequirementStageCommandFactory` 相同。禁止把 `lease-millis`（默认 10min）当成命令寿命；否则 QA 等长角色会在 agent 仍运行时被 `stage command deadline exceeded` 打成 `DEAD_LETTERED`。
   - 代码：`TaskRetryEngine.initializeCheckpointBoundRetry`、`RequirementStageCommandFactory.deadlineEpochMillis`
   - 验证：`./mvnw -pl engine -Dtest=TaskRetryEngineCheckpointInitializationTest#checkpointBoundRetryCommandUsesSchedulingCommandDeadlineNotLeaseWindow,TaskRetryEngineCheckpointInitializationTest#checkpointBoundRetryCommandHonorsConfiguredCommandDeadlineMillis -Dsurefire.failIfNoSpecifiedTests=false test`
-- 【强制】Pi credential-relay 单次上游等待必须与 `rd.executor.pi.execution-timeout-millis` / `RD_EXECUTOR_PI_EXECUTION_TIMEOUT_MILLIS`（默认 1h）对齐：sidecar `RD_PI_RELAY_TIMEOUT_MILLIS` 与 lease `RelayPolicy.requestTimeout` 都取该值。禁止再硬编码 60s；否则长上下文 QA 补全会被 sidecar/Host abort 成 502，Pi 会 `AGENT_SETTLED` 却没有 `rd_submit_result`。`RD_EXECUTOR_OPENAI_CHAT_TIMEOUT` 只管 MODEL_ONLY HTTP，不是这条路径。改 Java 注入即可，不必为改超时重建 Pi 镜像。
+- 【强制】Pi credential-relay 单次上游等待必须与 `rd.executor.pi.execution-timeout-millis` / `RD_EXECUTOR_PI_EXECUTION_TIMEOUT_MILLIS`（默认 1h）对齐：sidecar `RD_PI_RELAY_TIMEOUT_MILLIS` 与 lease `RelayPolicy.requestTimeout` 都取该值。禁止再硬编码 60s；否则长上下文 QA 补全会被 sidecar/Host abort 成 502，Pi 会 `AGENT_SETTLED` 却没有 `rd_submit_result`。改 Java 注入即可，不必为改超时重建 Pi 镜像。
   - 代码：`DockerPiAgentExecutor.relayNetworkPlan`、`DockerPiAgentExecutor.relayPolicy`、`PiCredentialRelayService.JdkUpstreamClient`
   - 验证：`./mvnw -pl exec -am -Dtest=DockerPiAgentExecutorTest#shouldAlignCredentialRelayTimeoutWithPiExecutionTimeout -Dsurefire.failIfNoSpecifiedTests=false test`
 

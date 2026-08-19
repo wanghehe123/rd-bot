@@ -1465,7 +1465,7 @@ class DockerClaudeCodeExecutorTest {
             List<String> command,
             List<ClaudeCodeModelProvider> providers,
             ModelHealthStore healthStore,
-            DockerClaudeCodeExecutor.AuthEnvironmentResolver authEnvironmentResolver
+            AuthEnvironmentResolver authEnvironmentResolver
     ) {
         return executor(
                 runner,
@@ -1482,7 +1482,7 @@ class DockerClaudeCodeExecutorTest {
             List<String> command,
             List<ClaudeCodeModelProvider> providers,
             ModelHealthStore healthStore,
-            DockerClaudeCodeExecutor.AuthEnvironmentResolver authEnvironmentResolver,
+            AuthEnvironmentResolver authEnvironmentResolver,
             ProviderFallbackPreflightPort providerFallbackPreflight
     ) {
         DockerClaudeCodeExecutor.Configuration configuration = new DockerClaudeCodeExecutor.Configuration(
@@ -1848,7 +1848,7 @@ class DockerClaudeCodeExecutorTest {
         private AuthEnvironmentResolverForTests() {
         }
 
-        private static DockerClaudeCodeExecutor.AuthEnvironmentResolver missing() {
+        private static AuthEnvironmentResolver missing() {
             return envName -> "";
         }
     }

@@ -10,6 +10,7 @@ import com.wish.rd.exec.repair.pi.RuntimeContextPreflightValidator;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.wish.rd.exec.repair.docker.AuthEnvironmentResolver;
 import com.wish.rd.exec.repair.docker.ContainerOutputListener;
 import com.wish.rd.exec.repair.docker.ContainerRunnerPort;
 import com.wish.rd.exec.repair.docker.RepairWorkspaceFactory;
@@ -163,7 +164,7 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
     private final PiSkillMaterializerPort skillMaterializer;
     private final AgentExecutionEventSink eventSink;
     private final AgentPrivateArtifactPublisher privateArtifactPublisher;
-    private final com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor.AuthEnvironmentResolver authEnvironmentResolver;
+    private final AuthEnvironmentResolver authEnvironmentResolver;
     private final PiCredentialLeaseIssuer credentialLeaseIssuer;
 
     public DockerPiAgentExecutor(
@@ -183,7 +184,7 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                 PiSkillMaterializerPort.emptyOnly(),
                 AgentExecutionEventSink.noop(),
                 AgentPrivateArtifactPublisher.noop(),
-                com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor.AuthEnvironmentResolver.system(),
+                AuthEnvironmentResolver.system(),
                 null
         );
     }
@@ -197,7 +198,7 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
             ExecutionAllowlistPolicy executionAllowlistPolicy,
             PiResourceManifestMaterializerPort resourceMaterializer,
             AgentExecutionEventSink eventSink,
-            com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor.AuthEnvironmentResolver authEnvironmentResolver
+            AuthEnvironmentResolver authEnvironmentResolver
     ) {
         this(
                 workspaceFactory,
@@ -225,7 +226,7 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
             PiResourceManifestMaterializerPort resourceMaterializer,
             AgentExecutionEventSink eventSink,
             AgentPrivateArtifactPublisher privateArtifactPublisher,
-            com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor.AuthEnvironmentResolver authEnvironmentResolver
+            AuthEnvironmentResolver authEnvironmentResolver
     ) {
         this(
                 workspaceFactory,
@@ -254,7 +255,7 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
             PiSkillMaterializerPort skillMaterializer,
             AgentExecutionEventSink eventSink,
             AgentPrivateArtifactPublisher privateArtifactPublisher,
-            com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor.AuthEnvironmentResolver authEnvironmentResolver
+            AuthEnvironmentResolver authEnvironmentResolver
     ) {
         this(
                 workspaceFactory,
@@ -283,7 +284,7 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
             PiSkillMaterializerPort skillMaterializer,
             AgentExecutionEventSink eventSink,
             AgentPrivateArtifactPublisher privateArtifactPublisher,
-            com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor.AuthEnvironmentResolver authEnvironmentResolver,
+            AuthEnvironmentResolver authEnvironmentResolver,
             PiCredentialLeaseIssuer credentialLeaseIssuer
     ) {
         this.workspaceFactory = require(workspaceFactory, "workspaceFactory");
@@ -307,7 +308,7 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                 ? AgentPrivateArtifactPublisher.noop()
                 : privateArtifactPublisher;
         this.authEnvironmentResolver = authEnvironmentResolver == null
-                ? com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor.AuthEnvironmentResolver.system()
+                ? AuthEnvironmentResolver.system()
                 : authEnvironmentResolver;
         this.credentialLeaseIssuer = credentialLeaseIssuer;
     }
@@ -1728,9 +1729,9 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         try (Stream<Path> paths = Files.walk(outputDirectory)) {
             return paths
                     .filter(path -> Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS))
-                    // Mirror DockerClaudeCodeExecutor: qa-work/ is ephemeral workspace
-                    // (install trees, Playwright temp). Ingesting it bloated QA resultJson
-                    // past Jackson's default 20MiB string limit and broke delivery review.
+                    // qa-work/ is ephemeral workspace (install trees, Playwright temp).
+                    // Ingesting it bloated QA resultJson past Jackson's default 20MiB
+                    // string limit and broke delivery review.
                     .filter(path -> {
                         String name = artifactName(outputDirectory, path);
                         return !name.startsWith("private/") && !name.startsWith("qa-work/");
@@ -1775,9 +1776,9 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         };
     }
 
-    // QA evidence artifact taxonomy mirrors DockerClaudeCodeExecutor so the QA
-    // evidence bundle validator can resolve evidenceManifestArtifactId and the
-    // per-criterion evidenceArtifactIds regardless of the runtime.
+    // QA evidence artifact taxonomy must stay aligned with QaEvidenceBundleValidator
+    // so it can resolve evidenceManifestArtifactId and the per-criterion
+    // evidenceArtifactIds.
     private static RepairArtifactType qaArtifactType(String name) {
         if (!name.startsWith("qa-evidence/")) {
             return RepairArtifactType.OTHER;

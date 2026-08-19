@@ -1,5 +1,6 @@
 package com.wish.rd.exec.repair.docker.impl;
 
+import com.wish.rd.exec.repair.docker.AuthEnvironmentResolver;
 import com.wish.rd.exec.repair.docker.ContainerRunnerPort;
 import com.wish.rd.exec.repair.docker.RepairWorkspaceFactory;
 import com.wish.rd.exec.repair.docker.RepairWorkspaceRepositoryPort;
@@ -76,7 +77,6 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
     private static final String AUTH_TOKEN_ENV_ROUTER = "RD_CLAUDE_AUTH_TOKEN_ENV";
     private static final String API_KEY_ENV_ROUTER = "RD_CLAUDE_API_KEY_ENV";
     private static final String AGENT_RESULT_JSON_FIELD = "__agentResultJson";
-    private static final String LAUNCHCTL_BINARY = "/bin/launchctl";
     private static final long QA_EXECUTION_TIMEOUT_MILLIS =
             parseQaExecutionTimeoutMillis(System.getenv("RD_QA_EXECUTION_TIMEOUT_MILLIS"));
     private static final long MAX_TEXT_PREVIEW_BYTES = 64_000L;
@@ -2542,52 +2542,4 @@ public class DockerClaudeCodeExecutor implements RepairExecutorPort {
     private record AttemptOutcome(RepairExecutionResult result) {
     }
 
-    /**
-     * 鉴权环境变量解析器。默认先读当前进程环境变量，再兼容 macOS GUI 进程通过
-     * {@code launchctl setenv} 写入的用户环境。
-     */
-    @FunctionalInterface
-    public interface AuthEnvironmentResolver {
-
-        /**
-         * 按变量名解析鉴权值。
-         *
-         * @param envName 环境变量名
-         * @return 鉴权值，未找到返回空字符串
-         */
-        String resolve(String envName);
-
-        /**
-         * 返回系统默认解析器。
-         *
-         * @return 默认解析器
-         */
-        static AuthEnvironmentResolver system() {
-            return envName -> firstNonBlank(System.getenv(envName), launchctlGetenv(envName));
-        }
-    }
-
-    private static String launchctlGetenv(String envName) {
-        String normalizedEnvName = normalizeEnvText(envName);
-        if (!normalizedEnvName.matches("[A-Za-z_][A-Za-z0-9_]*")) {
-            return "";
-        }
-        try {
-            Process process = new ProcessBuilder(LAUNCHCTL_BINARY, "getenv", normalizedEnvName).start();
-            boolean completed = process.waitFor(2, TimeUnit.SECONDS);
-            if (!completed) {
-                process.destroyForcibly();
-                return "";
-            }
-            if (process.exitValue() != 0) {
-                return "";
-            }
-            return new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8).strip();
-        } catch (IOException exception) {
-            return "";
-        } catch (InterruptedException exception) {
-            Thread.currentThread().interrupt();
-            return "";
-        }
-    }
 }
