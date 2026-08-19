@@ -816,4 +816,62 @@ public RepairContextPackage prepareContext(RepairRagRequest request) {
 
 ---
 
+## 十一、PI 状态与 QA 补救协议【强制】
+
+- 【强制】PI 状态栏只能由冻结的 execution profile capability
+  `PI_AGENT_STATE_V2` 启用。Java 端
+  `PiAgentContextStateManager` 是初始 `rd-agent-state/v2` 的权威创建者；
+  `rd-pi-bridge.mjs` 在启用后遇到缺失、非法或 hash 不一致的初始状态必须在
+  Agent 运行前失败，禁止回退为空状态。Claude Code、`MODEL_ONLY`、无 capability
+  PI 和旧 BugFix 链路不得被隐式升级。
+- 【强制】Host 验收 TODO 不得由 Agent 删除；完成状态必须绑定本次验收证据。
+  状态 candidate 必须在 sequence 增长前完成 identity、状态迁移、secret、大小和
+  injectability 校验。状态 sequence 与 injection sequence 独立；模型上下文末尾只能
+  保留一份最新状态块。
+- 【强制】运行中状态投影以
+  `rd_agent_stage_state_latest` 为跨实例最新值，并对 state/injection 分别做单调 CAS；
+  同 sequence 仅允许同 hash 幂等重放。管理 API 必须区分静态 Prompt、最后真实注入的
+  effective context 和 latest state，禁止用 latest state 伪造历史注入内容。
+- 【强制】PI-v2 QA 只有在 Host 已完成角色 schema 与真实 evidence manifest 校验，且
+  `remediationRequest.requested=true`、目标为 `CODING_AGENT`、所选 finding 与失败验收及
+  文件证据闭环时，才允许产品打回。产品修复最多 2 轮且 Coding/QA `attemptNo <= 3`；
+  打回内容只能通过 bounded、sanitized、hash-bound 的固定附件
+  `attachments/qa-remediation/request.json` 进入 Coding 上下文。Coding 必须
+  `QaRemediationPackageBuilder.fromFrozen` 消费已冻结 request；PostgreSQL `jsonb`
+  回读后按 hash recanonicalize，禁止依赖字节级原文相等或用 live QA JSON 重建。
+- 【强制】PI 协议失败只能依据 Host 验证的 canonical
+  `PiProtocolFailureReceipt/v1`，且仅允许 allowlist kind 触发一次 QA→QA；synthetic result、
+  矛盾 receipt、第二次协议失败或 identity/artifact/event 不一致必须转人工，永不创建
+  Coding Attempt。
+- 【强制】补救轮次、目标 stage/snapshot、首 command 与 request hash 必须在
+  `RequirementStageFinalizationPort.recordOutcome/finalize` 的 PostgreSQL 边界内持久化。
+  `OUTCOME_RECORDED` 前锁顺序为 marker → 任务级 `pg_advisory_xact_lock`（不得抢
+  `rd_tasks` 行锁，以免与 `finalize` 的 command→task 顺序死锁）分配唯一 `remediationNo`
+  → 去重 `profile_id ASC` 验证 profile claim。dispatcher 在 `recordOutcome` 之后必须
+  `decodeOutcomePlan`，使用可能被改写的冻结 plan。恢复后只读 immutable
+  intent/ledger/snapshot/command，不得重新解析 live profile 或用 JVM 计数。
+
+修改上述链路至少运行：
+
+```bash
+cd bootstrap/src/main/resources/executor/pi && npm test
+./mvnw -pl rag,engine,exec,bootstrap -am -Dtest=AgentExecutionProfileServiceTest,AgentStateV2CodecTest,AgentStageStateProjectionStoreTest,PiAgentContextStateManagerTest,QaRemediationPackageBuilderTest,PiQaRemediationPlannerTest,AgentRemediationCoordinatorTest,RequirementStageExecutionPlanCodecTest,RequirementStageCommandRemediationTest,RequirementAgentStageOrchestratorTest,AgentRoleResultValidatorTest,QaEvidenceBundleValidatorTest,PiProtocolFailureReceiptTest,DockerPiAgentExecutorTest,EngineRequirementExecutionProfileResolverTest,EngineRequirementExecutorAdapterTest,ProjectionAwareAgentExecutionEventStoreTest,PostgresAgentStageStateProjectionStoreTest,PostgresRequirementStageFinalizationRemediationTest,PiRemediationFinalizationWriterTest,RdTaskRolePromptControllerTest,RdTaskExecutionOverviewControllerTest,RdTaskRemediationControllerTest,PiAgentRemediationSqlPolicyTest,RequirementDeliveryDispatchServiceTest -Dsurefire.failIfNoSpecifiedTests=false test
+./mvnw -pl bootstrap -am -Drd.integration.stage-finalization.enabled=true -Dtest=PostgresRequirementStageFinalizationRealSmokeTest -Dsurefire.failIfNoSpecifiedTests=false test
+OPENSPEC_NO_UPDATE_CHECK=1 openspec validate --all --strict
+git diff --check
+```
+
+真实 PostgreSQL 竞态测试、两套 PI image 重建和全新 PI 任务验收是 canary 启用前置门槛；
+无 PostgreSQL 或 Docker 运行证据时只能记录未验证，禁止据单元测试宣称已上线。
+两套 PI image 允许在 linux/amd64 云 Docker 重建并记录 `docker image inspect` 的 Id；
+镜像重建本身不得勾选完整 task 8.4，也不得启用 canary——仍需已运行的 RD-Bot 与 PI
+capability 上的全新任务证据。
+`PostgresRequirementStageFinalizationRealSmokeTest` 使用 throwaway
+`pgvector/pgvector:pg16`（`127.0.0.1:55432/rdbot_acceptance`），由
+`PostgresClasspathSchemaInitializer` 在 Spring 刷新前整文件执行
+`p0`/`p1`/`p4`/`p8`/`p18`；`@Sql` 的 `;\n\n` 分隔会切断 `p18` 的 `DO $$` 块。
+禁止把该 smoke 自动套到 docker-compose 共享库 `rdbot:5432`。
+
+---
+
 *本规范随项目演进持续更新；规范的解释权归 RD-Bot 维护者。*

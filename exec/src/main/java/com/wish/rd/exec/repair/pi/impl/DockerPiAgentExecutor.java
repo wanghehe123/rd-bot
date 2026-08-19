@@ -4,6 +4,7 @@ import com.wish.rd.exec.repair.pi.AgentPrivateArtifactPublisher;
 import com.wish.rd.exec.repair.pi.PiBridgeResultPayloads;
 import com.wish.rd.exec.repair.pi.PiCredentialLeaseIssuer;
 import com.wish.rd.exec.repair.pi.PiRequestV2Materializer;
+import com.wish.rd.exec.repair.pi.model.PiProtocolFailureReceipt;
 import com.wish.rd.exec.repair.pi.PiResourceManifestMaterializerPort;
 import com.wish.rd.exec.repair.pi.PiSkillMaterializerPort;
 import com.wish.rd.exec.repair.pi.RuntimeContextPreflightValidator;
@@ -45,6 +46,8 @@ import com.wish.rd.exec.repair.runtime.usage.model.AgentRuntimeMeasurementSummar
 import com.wish.rd.exec.repair.security.SecretRedactor;
 import com.wish.rd.exec.repair.security.model.ExecutionAllowlistPolicy;
 import com.wish.rd.rag.project.agent.model.AgentExecutionProfileSnapshot;
+import com.wish.rd.rag.project.agent.model.AgentRuntimeCapability;
+import com.wish.rd.rag.project.agent.model.AgentStateV2Codec;
 import com.wish.rd.rag.project.agent.model.AgentRuntimeType;
 import com.wish.rd.rag.project.agent.model.ContextProtocolVersion;
 import com.wish.rd.rag.project.agent.model.FactFreshnessEvaluator;
@@ -443,6 +446,17 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                     snapshot,
                     provider
             );
+            RepairExecutionResult stateArtifactFailure = validateAgentStateV2Artifacts(
+                    command,
+                    snapshot,
+                    snapshotJson,
+                    workspace,
+                    provider,
+                    artifacts
+            );
+            if (stateArtifactFailure != null) {
+                return withRepositoryMetadata(stateArtifactFailure, repositoryMetadata);
+            }
             try {
                 List<RepairArtifact> privateArtifacts = privateArtifactPublisher.publish(
                         command,
@@ -722,7 +736,14 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         request.put("contextProtocolVersion", text(snapshotJson.path("contextProtocolVersion")));
         request.put("agentStateSchemaVersion", text(snapshotJson.path("agentStateSchemaVersion")));
         request.put("toolRetryPolicyVersion", text(snapshotJson.path("toolRetryPolicyVersion")));
+        request.put(
+                "qaRemediationV2Enabled",
+                snapshot.runtimeType() == AgentRuntimeType.PI
+                        && snapshot.hasCapability(AgentRuntimeCapability.PI_QA_REMEDIATION_V2)
+                        && "QA_AGENT".equals(snapshot.role())
+        );
         request.put("attemptNo", snapshot.attemptNo());
+        appendInitialAgentState(request, snapshot, command, snapshotJson);
         request.put("resourceManifestPath", "/work/input/resource-manifest.json");
         request.put("skillManifestPath", "/work/input/skill-manifest.json");
         String inputManifestHash = text(command.contextJson().get("inputManifestHash"));
@@ -773,6 +794,49 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                 "toolPolicyVersion", snapshotJson.path("toolPolicyVersion").asLong(0L)
         ));
         Files.writeString(requestPath, OBJECT_MAPPER.writeValueAsString(request) + "\n", StandardCharsets.UTF_8);
+    }
+
+    private static void appendInitialAgentState(
+            Map<String, Object> request,
+            AgentExecutionProfileSnapshot snapshot,
+            RepairJobCommand command,
+            JsonNode snapshotJson
+    ) {
+        boolean enabled = snapshot.runtimeType() == AgentRuntimeType.PI
+                && snapshot.hasCapability(AgentRuntimeCapability.PI_AGENT_STATE_V2)
+                && snapshotJson.path("dynamicStateEnabled").asBoolean(false);
+        if (!enabled) {
+            return;
+        }
+        String protocol = text(command.contextJson().get("initialAgentStateProtocol"));
+        String json = command.contextJson().getOrDefault("initialAgentStateJson", "");
+        String hash = text(command.contextJson().get("initialAgentStateHash"));
+        if (!AgentStateV2Codec.PROTOCOL.equals(protocol) || json.isBlank() || hash.isBlank()) {
+            throw new PiConfigurationException(
+                    "PI_AGENT_STATE_V2",
+                    "capability-gated Pi request requires Host initial agent state protocol/json/hash"
+            );
+        }
+        JsonNode state;
+        try {
+            state = AgentStateV2Codec.decodeAndVerify(json, hash);
+        } catch (IllegalArgumentException exception) {
+            throw new PiConfigurationException("PI_AGENT_STATE_V2", exception.getMessage(), exception);
+        }
+        if (!snapshot.taskId().equals(text(state.path("taskId")))
+                || !snapshot.stageRunId().equals(text(state.path("stageRunId")))
+                || !snapshot.role().equals(text(state.path("role")))
+                || snapshot.attemptNo() != state.path("attemptNo").asInt(-1)
+                || !snapshot.runtimeType().name().equals(text(state.path("runtimeType")))
+                || !snapshot.snapshotId().equals(text(state.path("profileSnapshotId")))) {
+            throw new PiConfigurationException(
+                    "PI_AGENT_STATE_V2",
+                    "Host initial agent state identity does not match frozen execution snapshot"
+            );
+        }
+        request.put("initialAgentStateProtocol", protocol);
+        request.put("initialAgentStateJson", json);
+        request.put("initialAgentStateHash", hash);
     }
 
     private static List<Map<String, Object>> hostAssertionContracts(
@@ -1441,12 +1505,39 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
             Path outputDirectory
     ) throws IOException {
         if (!events.resultSubmitted || !events.agentSettled) {
+            Map<String, String> lifecycleMetadata = dockerMetadata;
+            if (snapshot.runtimeType() == AgentRuntimeType.PI
+                    && "QA_AGENT".equals(snapshot.role())
+                    && snapshot.hasCapability(AgentRuntimeCapability.PI_QA_REMEDIATION_V2)) {
+                try {
+                    PiProtocolFailureReceipt receipt = validateProtocolFailureReceipt(
+                            snapshot, events, artifacts, outputDirectory
+                    );
+                    if (receipt != null) {
+                        Map<String, String> augmented = new LinkedHashMap<>(dockerMetadata);
+                        augmented.put("piProtocolFailureReceiptProtocol", receipt.protocol());
+                        augmented.put("piProtocolFailureReceiptKind", receipt.kind().name());
+                        augmented.put("piProtocolFailureReceiptJson", receipt.canonicalJson());
+                        augmented.put("piProtocolFailureReceiptHash", receipt.canonicalHash());
+                        lifecycleMetadata = Map.copyOf(augmented);
+                    }
+                } catch (IllegalArgumentException exception) {
+                    return failed(
+                            RepairExecutionStatus.FAILED_VALIDATION,
+                            "Pi protocol failure receipt failed Host validation.",
+                            "PI_PROTOCOL_FAILURE_RECEIPT_INVALID",
+                            exception.getMessage(),
+                            dockerMetadata,
+                            artifacts
+                    );
+                }
+            }
             return failed(
                     RepairExecutionStatus.FAILED_VALIDATION,
                     "Pi did not complete the required result lifecycle.",
                     "PI_RESULT_PROTOCOL",
                     "Pi result requires RESULT_SUBMITTED followed by AGENT_SETTLED",
-                    dockerMetadata,
+                    lifecycleMetadata,
                     artifacts
             );
         }
@@ -1486,7 +1577,10 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                     artifacts,
                     dockerMetadata,
                     contextProtocolVersion,
-                    freshnessContext
+                    freshnessContext,
+                    snapshot.runtimeType() == AgentRuntimeType.PI
+                            && snapshot.hasCapability(AgentRuntimeCapability.PI_QA_REMEDIATION_V2)
+                            && "QA_AGENT".equals(role)
             );
         }
         StructuredResultValidation validation = ContextProtocolVersion.FACTS_V1.name().equals(contextProtocolVersion)
@@ -1535,13 +1629,95 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         );
     }
 
+    private static PiProtocolFailureReceipt validateProtocolFailureReceipt(
+            AgentExecutionProfileSnapshot snapshot,
+            EventCapture events,
+            List<RepairArtifact> artifacts,
+            Path outputDirectory
+    ) throws IOException {
+        RepairArtifact artifact = artifacts.stream()
+                .filter(candidate -> candidate.type() == RepairArtifactType.PI_PROTOCOL_FAILURE_RECEIPT)
+                .findFirst()
+                .orElse(null);
+        if (artifact == null) {
+            return null;
+        }
+        Path path = outputDirectory.resolve("pi-protocol-failure-receipt.json").normalize();
+        if (!path.startsWith(outputDirectory.toAbsolutePath().normalize())
+                || !Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IllegalArgumentException("protocol failure receipt artifact is missing");
+        }
+        String json = Files.readString(path, StandardCharsets.UTF_8);
+        String artifactHash = artifact.metadataJson().getOrDefault("sha256", "");
+        if (!artifactHash.startsWith("sha256:")) {
+            artifactHash = "sha256:" + artifactHash;
+        }
+        PiProtocolFailureReceipt receipt = PiProtocolFailureReceipt.decodeAndVerify(json, artifactHash);
+        receipt.requireIdentity(
+                snapshot.taskId(), snapshot.stageRunId(), snapshot.role(), snapshot.attemptNo()
+        );
+        if (!receipt.eventStreamTrusted() || events.protocolFailure != null) {
+            throw new IllegalArgumentException("protocol failure receipt event stream is not trusted");
+        }
+        if (!receipt.containerTerminated()) {
+            throw new IllegalArgumentException("protocol failure receipt container termination is unproven");
+        }
+        if (receipt.agentSettled() != events.agentSettled) {
+            throw new IllegalArgumentException("protocol failure receipt AGENT_SETTLED fact mismatch");
+        }
+        boolean anySubmitted = events.agentResultSubmitted || events.syntheticResultSubmitted;
+        if (receipt.resultSubmitted() != anySubmitted) {
+            throw new IllegalArgumentException("protocol failure receipt RESULT_SUBMITTED fact mismatch");
+        }
+        switch (receipt.resultSubmissionSource()) {
+            case AGENT_RD_SUBMIT_RESULT -> {
+                if (!events.agentResultSubmitted || events.syntheticResultSubmitted
+                        || !receipt.roleSchemaAccepted() || !events.roleSchemaAccepted) {
+                    throw new IllegalArgumentException("protocol failure receipt Agent result source mismatch");
+                }
+                String persistedDigest = "sha256:" + sha256(outputDirectory.resolve("result.json"));
+                if (!receipt.acceptedResultDigest().equals(events.acceptedResultDigest)
+                        || !receipt.acceptedResultDigest().equals(persistedDigest)) {
+                    throw new IllegalArgumentException("protocol failure receipt accepted result digest mismatch");
+                }
+            }
+            case BRIDGE_SYNTHETIC -> {
+                if (!events.syntheticResultSubmitted || events.agentResultSubmitted
+                        || receipt.roleSchemaAccepted() || !receipt.acceptedResultDigest().isEmpty()) {
+                    throw new IllegalArgumentException("protocol failure receipt synthetic result source mismatch");
+                }
+            }
+            case NONE -> {
+                if (anySubmitted || receipt.roleSchemaAccepted() || !receipt.acceptedResultDigest().isEmpty()) {
+                    throw new IllegalArgumentException("protocol failure receipt empty result source mismatch");
+                }
+            }
+        }
+        boolean recoveryExhausted = events.recoveryIssued && !events.agentResultSubmitted;
+        if (receipt.recoveryApplicable() != events.recoveryIssued
+                || receipt.recoveryIssued() != events.recoveryIssued
+                || receipt.recoveryExhausted() != recoveryExhausted) {
+            throw new IllegalArgumentException("protocol failure receipt recovery flags mismatch");
+        }
+        if (!receipt.lastRejectionKind().name().equals(events.lastRejectionKind)
+                || !receipt.lastRejectionDigest().equals(events.lastRejectionDigest)) {
+            throw new IllegalArgumentException("protocol failure receipt rejection facts mismatch");
+        }
+        Set<String> artifactNames = artifacts.stream().map(RepairArtifact::name).collect(java.util.stream.Collectors.toSet());
+        if (!artifactNames.containsAll(receipt.diagnosticArtifactIds())) {
+            throw new IllegalArgumentException("protocol failure receipt diagnostic artifact mismatch");
+        }
+        return receipt;
+    }
+
     private RepairExecutionResult validateRoleProtocolResult(
             String role,
             String rawJson,
             List<RepairArtifact> artifacts,
             Map<String, String> dockerMetadata,
             String contextProtocolVersion,
-            FactFreshnessEvaluator.FreshnessContext freshnessContext
+            FactFreshnessEvaluator.FreshnessContext freshnessContext,
+            boolean qaRemediationV2Enabled
     ) {
         String bridgeFailure = PiBridgeResultPayloads.failureMessage(rawJson);
         if (!bridgeFailure.isBlank()) {
@@ -1555,8 +1731,10 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
             );
         }
         AgentRoleResultValidation roleValidation = ContextProtocolVersion.FACTS_V1.name().equals(contextProtocolVersion)
-                ? ROLE_RESULT_VALIDATOR.validate(role, rawJson, contextProtocolVersion, freshnessContext)
-                : ROLE_RESULT_VALIDATOR.validate(role, rawJson);
+                ? ROLE_RESULT_VALIDATOR.validate(
+                        role, rawJson, contextProtocolVersion, freshnessContext, qaRemediationV2Enabled
+                )
+                : ROLE_RESULT_VALIDATOR.validate(role, rawJson, qaRemediationV2Enabled);
         if (!roleValidation.valid()) {
             return failed(
                     RepairExecutionStatus.FAILED_VALIDATION,
@@ -1741,6 +1919,163 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         }
     }
 
+    private static RepairExecutionResult validateAgentStateV2Artifacts(
+            RepairJobCommand command,
+            AgentExecutionProfileSnapshot snapshot,
+            JsonNode snapshotJson,
+            RepairWorkspace workspace,
+            ProviderSpec provider,
+            List<RepairArtifact> artifacts
+    ) {
+        boolean enabled = snapshot.runtimeType() == AgentRuntimeType.PI
+                && snapshot.hasCapability(AgentRuntimeCapability.PI_AGENT_STATE_V2)
+                && snapshotJson.path("dynamicStateEnabled").asBoolean(false);
+        if (!enabled) {
+            return null;
+        }
+        try {
+            Path output = workspace.outputDirectory().toAbsolutePath().normalize();
+            Path latestStatePath = requireRegularStateArtifact(output, "agent-state-latest.json");
+            Path effectiveContextPath = requireRegularStateArtifact(
+                    output, "agent-effective-context-latest.json"
+            );
+            String latestStateJson = Files.readString(latestStatePath, StandardCharsets.UTF_8);
+            JsonNode latestStateNode = OBJECT_MAPPER.readTree(latestStateJson);
+            if (latestStateNode == null || !latestStateNode.isObject()) {
+                throw new IllegalArgumentException("agent state artifact must be a JSON object");
+            }
+            String latestStateHash = AgentStateV2Codec.hash(latestStateNode);
+            JsonNode latestState = AgentStateV2Codec.decodeAndVerify(latestStateJson, latestStateHash);
+            requireStateIdentity(latestState, snapshot, "agent state artifact");
+
+            JsonNode effective = OBJECT_MAPPER.readTree(Files.readString(
+                    effectiveContextPath, StandardCharsets.UTF_8
+            ));
+            if (effective == null || !effective.isObject()
+                    || !"rd-agent-effective-context/v1".equals(text(effective.path("protocol")))) {
+                throw new IllegalArgumentException("effective context artifact protocol is invalid");
+            }
+            requireArtifactIdentity(effective, snapshot, "effective context artifact");
+            long injectionSequence = effective.path("injectionSequence").asLong(-1L);
+            long stateSequence = effective.path("stateSequence").asLong(-1L);
+            if (injectionSequence < 1L || stateSequence < 0L) {
+                throw new IllegalArgumentException("effective context artifact sequences are invalid");
+            }
+            String stateHash = text(effective.path("stateHash"));
+            String promptHash = text(effective.path("promptHash"));
+            String blockHash = text(effective.path("blockHash"));
+            String injectedBlock = text(effective.path("injectedBlock"));
+            requireSha256(stateHash, "effective context state hash");
+            requireSha256(promptHash, "effective context prompt hash");
+            requireSha256(blockHash, "effective context block hash");
+            String expectedPromptHash = "sha256:" + AgentExecutionProfileSnapshot.sha256(command.prompt());
+            if (!expectedPromptHash.equals(promptHash)) {
+                throw new IllegalArgumentException("effective context prompt hash mismatch");
+            }
+            String expectedBlockHash = "sha256:" + AgentExecutionProfileSnapshot.sha256(injectedBlock);
+            if (!expectedBlockHash.equals(blockHash)) {
+                throw new IllegalArgumentException("effective context block hash mismatch");
+            }
+            if (effective.path("bytes").asLong(-1L)
+                    != injectedBlock.getBytes(StandardCharsets.UTF_8).length) {
+                throw new IllegalArgumentException("effective context block byte length mismatch");
+            }
+            String stateJson = stateJsonFromInjectedBlock(injectedBlock);
+            JsonNode injectedState = AgentStateV2Codec.decodeAndVerify(stateJson, stateHash);
+            requireStateIdentity(injectedState, snapshot, "injected state");
+            if (injectedState.path("sequence").asLong(-1L) != stateSequence) {
+                throw new IllegalArgumentException("effective context state sequence mismatch");
+            }
+            String expectedBlock = "<rd-agent-state protocol=\"rd-agent-state/v2\" state-sequence=\""
+                    + stateSequence + "\" injection-sequence=\"" + injectionSequence
+                    + "\" state-hash=\"" + stateHash + "\">\n" + stateJson + "\n</rd-agent-state>";
+            if (!expectedBlock.equals(injectedBlock)) {
+                throw new IllegalArgumentException("effective context injected block does not match provenance");
+            }
+            String expectedIdempotencyKey = "sha256:" + AgentExecutionProfileSnapshot.sha256(
+                    snapshot.stageRunId() + ":" + injectionSequence + ":" + blockHash
+            );
+            if (!expectedIdempotencyKey.equals(text(effective.path("idempotencyKey")))) {
+                throw new IllegalArgumentException("effective context idempotency key mismatch");
+            }
+            JsonNode order = effective.path("compositionOrder");
+            if (!order.isArray() || order.size() != 2
+                    || !"PROMPT_SNAPSHOT".equals(order.get(0).asText())
+                    || !"AGENT_STATE_BLOCK".equals(order.get(1).asText())) {
+                throw new IllegalArgumentException("effective context composition order is invalid");
+            }
+            boolean hasState = artifacts.stream().anyMatch(artifact ->
+                    artifact.type() == RepairArtifactType.AGENT_STATE_SNAPSHOT
+                            && "agent-state-latest.json".equals(artifact.name()));
+            boolean hasEffective = artifacts.stream().anyMatch(artifact ->
+                    artifact.type() == RepairArtifactType.AGENT_EFFECTIVE_CONTEXT
+                            && "agent-effective-context-latest.json".equals(artifact.name()));
+            if (!hasState || !hasEffective) {
+                throw new IllegalArgumentException("v2 state artifacts were not collected with authoritative types");
+            }
+            return null;
+        } catch (IOException | RuntimeException exception) {
+            return failed(
+                    RepairExecutionStatus.FAILED,
+                    "Pi v2 state artifact validation failed.",
+                    "PI_AGENT_STATE_V2_ARTIFACT",
+                    safeError(exception),
+                    baseMetadata(snapshot, provider, workspace),
+                    artifacts
+            );
+        }
+    }
+
+    private static Path requireRegularStateArtifact(Path output, String name) {
+        Path path = output.resolve(name).normalize();
+        if (!path.startsWith(output) || Files.isSymbolicLink(path)
+                || !Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IllegalArgumentException("required Pi v2 state artifact is missing: " + name);
+        }
+        return path;
+    }
+
+    private static void requireStateIdentity(
+            JsonNode state,
+            AgentExecutionProfileSnapshot snapshot,
+            String label
+    ) {
+        requireArtifactIdentity(state, snapshot, label);
+        if (!snapshot.runtimeType().name().equals(text(state.path("runtimeType")))
+                || !snapshot.snapshotId().equals(text(state.path("profileSnapshotId")))) {
+            throw new IllegalArgumentException(label + " identity does not match frozen runtime/profile");
+        }
+    }
+
+    private static void requireArtifactIdentity(
+            JsonNode value,
+            AgentExecutionProfileSnapshot snapshot,
+            String label
+    ) {
+        if (!snapshot.taskId().equals(text(value.path("taskId")))
+                || !snapshot.stageRunId().equals(text(value.path("stageRunId")))
+                || !snapshot.role().equals(text(value.path("role")))
+                || snapshot.attemptNo() != value.path("attemptNo").asInt(-1)) {
+            throw new IllegalArgumentException(label + " identity does not match frozen execution snapshot");
+        }
+    }
+
+    private static void requireSha256(String value, String label) {
+        if (value == null || !value.matches("sha256:[0-9a-f]{64}")) {
+            throw new IllegalArgumentException(label + " is invalid");
+        }
+    }
+
+    private static String stateJsonFromInjectedBlock(String block) {
+        String prefix = "<rd-agent-state ";
+        String suffix = "\n</rd-agent-state>";
+        int bodyStart = block == null ? -1 : block.indexOf("\n");
+        if (block == null || !block.startsWith(prefix) || bodyStart < 0 || !block.endsWith(suffix)) {
+            throw new IllegalArgumentException("effective context injected block format is invalid");
+        }
+        return block.substring(bodyStart + 1, block.length() - suffix.length());
+    }
+
     private static RepairArtifact toArtifact(Path outputDirectory, Path path) {
         String name = artifactName(outputDirectory, path);
         return new RepairArtifact(
@@ -1765,8 +2100,10 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
             case "agent-events.jsonl" -> RepairArtifactType.AGENT_EVENTS;
             case "agent-state-events.jsonl" -> RepairArtifactType.AGENT_STATE_EVENTS;
             case "agent-state-latest.json" -> RepairArtifactType.AGENT_STATE_SNAPSHOT;
+            case "agent-effective-context-latest.json" -> RepairArtifactType.AGENT_EFFECTIVE_CONTEXT;
             case "runtime-context-manifest.json" -> RepairArtifactType.RUNTIME_CONTEXT_MANIFEST;
             case "runtime-meta.json" -> RepairArtifactType.AGENT_RUNTIME_META;
+            case "pi-protocol-failure-receipt.json" -> RepairArtifactType.PI_PROTOCOL_FAILURE_RECEIPT;
             case "runtime-measurement.json" -> RepairArtifactType.RUNTIME_MEASUREMENT;
             case "docker-meta.json" -> RepairArtifactType.DOCKER_METADATA;
             case "handoff/next.md" -> RepairArtifactType.HANDOFF_MARKDOWN;
@@ -2380,6 +2717,13 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         private final StringBuilder stderr = new StringBuilder();
         private volatile boolean resultSubmitted;
         private volatile boolean agentSettled;
+        private volatile boolean agentResultSubmitted;
+        private volatile boolean syntheticResultSubmitted;
+        private volatile boolean roleSchemaAccepted;
+        private volatile String acceptedResultDigest = "";
+        private volatile boolean recoveryIssued;
+        private volatile String lastRejectionKind = "NONE";
+        private volatile String lastRejectionDigest = "";
 
         private volatile RuntimeException protocolFailure;
 
@@ -2395,8 +2739,28 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                     throw new IllegalArgumentException("Pi event identity does not match the frozen snapshot");
                 }
                 String type = text(event.get("eventType"));
-                if ("RESULT_SUBMITTED".equals(type)) resultSubmitted = true;
+                if ("RESULT_SUBMITTED".equals(type)) {
+                    String source = text(event.path("payload").get("source"));
+                    if (source.isBlank() || "AGENT_RD_SUBMIT_RESULT".equals(source)) {
+                        resultSubmitted = true;
+                        agentResultSubmitted = true;
+                        roleSchemaAccepted = event.path("payload").path("roleSchemaAccepted").asBoolean(source.isBlank());
+                        acceptedResultDigest = text(event.path("payload").get("resultDigest"));
+                    } else if ("BRIDGE_SYNTHETIC".equals(source)) {
+                        syntheticResultSubmitted = true;
+                    }
+                }
                 if ("AGENT_SETTLED".equals(type)) agentSettled = true;
+                if ("PROTOCOL_ERROR".equals(type)
+                        && "PI_RESULT_RECOVERY".equals(text(event.path("payload").get("category")))) {
+                    recoveryIssued = true;
+                }
+                if ("RESULT_REJECTED".equals(type)) {
+                    String kind = text(event.path("payload").get("rejectionKind"));
+                    String digest = text(event.path("payload").get("rejectionDigest"));
+                    if (!kind.isBlank()) lastRejectionKind = kind;
+                    if (!digest.isBlank()) lastRejectionDigest = digest;
+                }
                 try {
                     sink.onEvent(containerName, event);
                 } catch (RuntimeException exception) {

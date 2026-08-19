@@ -29,6 +29,14 @@ import com.wish.rd.rag.context.RoleContextPackageStore;
 import com.wish.rd.rag.context.impl.InMemoryRoleContextPackageStore;
 import com.wish.rd.rag.context.model.RoleContextPackage;
 import com.wish.rd.rag.project.budget.RdProjectTokenBudgetService;
+import com.wish.rd.rag.project.agent.AgentExecutionProfileSnapshotStore;
+import com.wish.rd.rag.project.agent.AgentStageStateProjectionStore;
+import com.wish.rd.rag.project.agent.impl.InMemoryAgentExecutionProfileSnapshotStore;
+import com.wish.rd.rag.project.agent.impl.InMemoryAgentStageStateProjectionStore;
+import com.wish.rd.rag.project.agent.model.AgentExecutionProfileSnapshot;
+import com.wish.rd.rag.project.agent.model.AgentRuntimeCapability;
+import com.wish.rd.rag.project.agent.model.AgentStageStateProjection;
+import com.wish.rd.rag.project.agent.model.AgentStateV2Codec;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
 import com.wish.rd.rag.runtime.model.RdTask;
 import com.wish.rd.rag.runtime.model.RdRequirementTask;
@@ -56,6 +64,7 @@ import java.util.NoSuchElementException;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
+import java.util.function.LongSupplier;
 import java.util.stream.Collectors;
 
 /**
@@ -77,6 +86,10 @@ public class RdTaskExecutionOverviewController {
     private final AgentExecutionEventStore eventStore;
     private final DockerExecutorProperties dockerExecutorProperties;
     private final BudgetCurrencyConverter budgetCurrencyConverter;
+    private final AgentExecutionProfileSnapshotStore profileSnapshotStore;
+    private final AgentStageStateProjectionStore stateProjectionStore;
+    private final LongSupplier nowMillis;
+    private static final long STATE_PROJECTION_STALE_AFTER_MILLIS = 30_000L;
     private final AgentStageProgressCalculator stageProgressCalculator;
     private final AgentEventTokenUsageParser agentEventTokenUsageParser = new AgentEventTokenUsageParser();
     private final AgentRuntimeMeasurementParser agentRuntimeMeasurementParser = new AgentRuntimeMeasurementParser();
@@ -97,7 +110,9 @@ public class RdTaskExecutionOverviewController {
             ObjectProvider<DockerExecutionRegistry> executionRegistryProvider,
             ObjectProvider<AgentExecutionEventStore> eventStoreProvider,
             ObjectProvider<DockerExecutorProperties> dockerExecutorPropertiesProvider,
-            ObjectProvider<FinancialProperties> financialPropertiesProvider
+            ObjectProvider<FinancialProperties> financialPropertiesProvider,
+            ObjectProvider<AgentExecutionProfileSnapshotStore> profileSnapshotStoreProvider,
+            ObjectProvider<AgentStageStateProjectionStore> stateProjectionStoreProvider
     ) {
         this(
                 registry,
@@ -107,7 +122,10 @@ public class RdTaskExecutionOverviewController {
                 executionRegistryProvider.getIfAvailable(DockerExecutionRegistry::noop),
                 eventStoreProvider.getIfAvailable(AgentExecutionEventStore::noop),
                 dockerExecutorPropertiesProvider.getIfAvailable(DockerExecutorProperties::new),
-                financialPropertiesProvider.getIfAvailable(FinancialProperties::new).toBudgetCurrencyConverter()
+                financialPropertiesProvider.getIfAvailable(FinancialProperties::new).toBudgetCurrencyConverter(),
+                profileSnapshotStoreProvider.getIfAvailable(InMemoryAgentExecutionProfileSnapshotStore::new),
+                stateProjectionStoreProvider.getIfAvailable(InMemoryAgentStageStateProjectionStore::new),
+                System::currentTimeMillis
         );
     }
 
@@ -160,6 +178,28 @@ public class RdTaskExecutionOverviewController {
             DockerExecutorProperties dockerExecutorProperties,
             BudgetCurrencyConverter budgetCurrencyConverter
     ) {
+        this(
+                registry, stageRunStore, artifactStore, contextPackageStore, executionRegistry, eventStore,
+                dockerExecutorProperties, budgetCurrencyConverter,
+                new InMemoryAgentExecutionProfileSnapshotStore(),
+                new InMemoryAgentStageStateProjectionStore(),
+                System::currentTimeMillis
+        );
+    }
+
+    RdTaskExecutionOverviewController(
+            RagStreamTaskRegistry registry,
+            AgentStageRunStore stageRunStore,
+            AgentStageArtifactStore artifactStore,
+            RoleContextPackageStore contextPackageStore,
+            DockerExecutionRegistry executionRegistry,
+            AgentExecutionEventStore eventStore,
+            DockerExecutorProperties dockerExecutorProperties,
+            BudgetCurrencyConverter budgetCurrencyConverter,
+            AgentExecutionProfileSnapshotStore profileSnapshotStore,
+            AgentStageStateProjectionStore stateProjectionStore,
+            LongSupplier nowMillis
+    ) {
         this.registry = registry;
         this.stageRunStore = stageRunStore == null ? new InMemoryAgentStageRunStore() : stageRunStore;
         this.artifactStore = artifactStore == null ? new InMemoryAgentStageArtifactStore() : artifactStore;
@@ -174,13 +214,20 @@ public class RdTaskExecutionOverviewController {
         this.budgetCurrencyConverter = budgetCurrencyConverter == null
                 ? new FinancialProperties().toBudgetCurrencyConverter()
                 : budgetCurrencyConverter;
+        this.profileSnapshotStore = profileSnapshotStore == null
+                ? new InMemoryAgentExecutionProfileSnapshotStore()
+                : profileSnapshotStore;
+        this.stateProjectionStore = stateProjectionStore == null
+                ? new InMemoryAgentStageStateProjectionStore()
+                : stateProjectionStore;
+        this.nowMillis = nowMillis == null ? System::currentTimeMillis : nowMillis;
         this.stageProgressCalculator = new AgentStageProgressCalculator();
     }
 
     @GetMapping("/admin/rd-tasks/{taskId}/execution-overview")
     public RdTaskExecutionOverviewView getExecutionOverview(@PathVariable("taskId") String taskId) {
         RdTask task = findTask(taskId);
-        long now = System.currentTimeMillis();
+        long now = nowMillis.getAsLong();
         List<AgentRole> stageOrder = stageOrder(task);
         List<AgentStageRun> stageRuns = sortedStageRuns(task.taskId(), stageOrder);
         Map<String, AgentStageArtifact> artifactById = artifactsById(task.taskId());
@@ -482,9 +529,20 @@ public class RdTaskExecutionOverviewController {
         AgentStageArtifact resultArtifact = artifactById.get(stageRun.resultArtifactId());
         String resultPreview = resultPreview(stageRun, resultArtifact);
         String resultSummary = resultArtifact == null ? "" : resultArtifact.summary();
-        AgentStateOverviewSummary agentState = agentStateOverview(
-                latestAgentStateByStage.get(stageRun.stageRunId())
-        );
+        AgentExecutionProfileSnapshot profile = matchingProfile(stageRun);
+        AgentStageStateProjection projection = matchingProjection(stageRun, profile);
+        AgentStateOverviewSummary agentState = projection != null && projection.stateSequence() >= 0L
+                ? agentStateOverview(projection.stateJson(), projection.stateHash(), false)
+                : agentStateOverview(latestAgentStateByStage.get(stageRun.stageRunId()));
+        String agentStateSource = projection != null && projection.stateSequence() >= 0L
+                ? "LIVE_PROJECTION" : (agentState.available() ? "ARCHIVED_ARTIFACT" : "");
+        boolean agentStateFinalized = projection != null
+                ? projection.finalized() : agentState.available() && stageRun.status().isTerminal();
+        long lastProjectionAt = projection != null
+                ? Math.max(projection.stateProjectedAtEpochMillis(), projection.injectedAtEpochMillis()) : 0L;
+        boolean agentStateStale = !agentStateFinalized && lastProjectionAt > 0L
+                && nowMillis.getAsLong() - lastProjectionAt > STATE_PROJECTION_STALE_AFTER_MILLIS;
+        String staleReason = agentStateStale ? "active projection 超过 stale threshold 30000ms" : "";
         return new StageRunView(
                 stageRun.stageRunId(),
                 stageRun.taskId(),
@@ -510,6 +568,7 @@ public class RdTaskExecutionOverviewController {
                 stageRun.finishedAtEpochMillis(),
                 elapsedMillis,
                 stageRun.startedAtEpochMillis() > 0L && stageRun.finishedAtEpochMillis() <= 0L,
+                profile == null ? "" : profile.runtimeType().name(),
                 agentState.available(),
                 agentState.sequence(),
                 agentState.schemaVersion(),
@@ -518,7 +577,18 @@ public class RdTaskExecutionOverviewController {
                 agentState.todoBlocked(),
                 agentState.todoDone(),
                 agentState.previewTruncated(),
-                agentState.contentHash()
+                agentState.contentHash(),
+                agentStateSource,
+                agentStateFinalized,
+                agentStateStale,
+                staleReason,
+                lastProjectionAt,
+                STATE_PROJECTION_STALE_AFTER_MILLIS,
+                projection == null ? 0L : projection.injectionSequence(),
+                projection == null ? -1L : projection.injectedStateSequence(),
+                projection == null ? "" : projection.injectedBlockHash(),
+                projection == null ? "" : projection.promptHash(),
+                projection != null && projection.stateSequence() > projection.injectedStateSequence()
         );
     }
 
@@ -526,8 +596,18 @@ public class RdTaskExecutionOverviewController {
         if (artifact == null || artifact.contentPreview().isBlank()) {
             return AgentStateOverviewSummary.empty();
         }
+        return agentStateOverview(
+                artifact.contentPreview(), artifact.contentHash(), agentStatePreviewTruncated(artifact)
+        );
+    }
+
+    private AgentStateOverviewSummary agentStateOverview(
+            String content,
+            String contentHash,
+            boolean previewTruncated
+    ) {
         try {
-            JsonNode root = OBJECT_MAPPER.readTree(artifact.contentPreview());
+            JsonNode root = OBJECT_MAPPER.readTree(content);
             long sequence = root.path("sequence").asLong(0L);
             String schemaVersion = root.path("protocol").asText("");
             int pending = 0;
@@ -556,12 +636,67 @@ public class RdTaskExecutionOverviewController {
                     inProgress,
                     blocked,
                     done,
-                    agentStatePreviewTruncated(artifact),
-                    artifact.contentHash()
+                    previewTruncated,
+                    contentHash
             );
         } catch (Exception ignored) {
             return AgentStateOverviewSummary.empty();
         }
+    }
+
+    private AgentExecutionProfileSnapshot matchingProfile(AgentStageRun stageRun) {
+        return profileSnapshotStore.findByStageRunId(stageRun.stageRunId())
+                .filter(AgentExecutionProfileSnapshot::hasValidIntegrityHash)
+                .filter(snapshot -> stageRun.taskId().equals(snapshot.taskId()))
+                .filter(snapshot -> stageRun.role().name().equals(snapshot.role()))
+                .filter(snapshot -> stageRun.attemptNo() == snapshot.attemptNo())
+                .orElse(null);
+    }
+
+    private AgentStageStateProjection matchingProjection(
+            AgentStageRun stageRun,
+            AgentExecutionProfileSnapshot profile
+    ) {
+        if (profile == null || !"PI".equals(profile.runtimeType().name())) return null;
+        try {
+            if (!profile.hasCapability(AgentRuntimeCapability.PI_AGENT_STATE_V2)) return null;
+        } catch (RuntimeException ignored) {
+            return null;
+        }
+        return stateProjectionStore.findByStageRunId(stageRun.stageRunId())
+                .filter(projection -> stageRun.taskId().equals(projection.identity().taskId()))
+                .filter(projection -> stageRun.stageRunId().equals(projection.identity().stageRunId()))
+                .filter(projection -> stageRun.role().name().equals(projection.identity().role()))
+                .filter(projection -> stageRun.attemptNo() == projection.identity().attemptNo())
+                .filter(projection -> validProjectionContent(stageRun, projection))
+                .orElse(null);
+    }
+
+    private static boolean validProjectionContent(
+            AgentStageRun stageRun,
+            AgentStageStateProjection projection
+    ) {
+        try {
+            if (projection.stateSequence() >= 0L) {
+                JsonNode state = AgentStateV2Codec.decodeAndVerify(projection.stateJson(), projection.stateHash());
+                if (!stageRun.taskId().equals(state.path("taskId").asText())
+                        || !stageRun.stageRunId().equals(state.path("stageRunId").asText())
+                        || !stageRun.role().name().equals(state.path("role").asText())
+                        || stageRun.attemptNo() != state.path("attemptNo").asInt()
+                        || projection.stateSequence() != state.path("sequence").asLong(-1L)) {
+                    return false;
+                }
+            }
+            return projection.injectionSequence() <= 0L
+                    || (projection.injectedBlockHash().equals(sha256(projection.injectedBlock()))
+                    && projection.injectedStateSequence() >= 0L);
+        } catch (RuntimeException ignored) {
+            return false;
+        }
+    }
+
+    private static String sha256(String value) {
+        return "sha256:" + AgentExecutionProfileSnapshot.sha256(value == null ? "" : value);
     }
 
     private static boolean agentStatePreviewTruncated(AgentStageArtifact artifact) {
@@ -1072,6 +1207,7 @@ public class RdTaskExecutionOverviewController {
             long finishedAtEpochMillis,
             long elapsedMillis,
             boolean running,
+            String runtimeType,
             boolean agentStateAvailable,
             long agentStateSequence,
             String agentStateSchemaVersion,
@@ -1080,7 +1216,18 @@ public class RdTaskExecutionOverviewController {
             int agentStateTodoBlocked,
             int agentStateTodoDone,
             boolean agentStatePreviewTruncated,
-            String agentStateContentHash
+            String agentStateContentHash,
+            String agentStateSource,
+            boolean agentStateFinalized,
+            boolean agentStateStale,
+            String agentStateStaleReason,
+            long agentStateLastProjectionAtEpochMillis,
+            long agentStateStaleAfterMillis,
+            long agentLastInjectionSequence,
+            long agentLastInjectedStateSequence,
+            String agentLastInjectedBlockHash,
+            String agentLastInjectedPromptHash,
+            boolean agentLatestStateNotInjected
     ) {
     }
 

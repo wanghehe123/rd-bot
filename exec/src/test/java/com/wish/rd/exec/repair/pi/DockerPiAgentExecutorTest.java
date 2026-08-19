@@ -26,6 +26,8 @@ import com.wish.rd.exec.repair.result.model.AgentRoleResultValidation;
 import com.wish.rd.exec.repair.runtime.AgentExecutionEventSink;
 import com.wish.rd.exec.repair.security.model.ExecutionAllowlistPolicy;
 import com.wish.rd.rag.project.agent.model.AgentExecutionProfileSnapshot;
+import com.wish.rd.rag.project.agent.model.AgentStateV2Codec;
+import com.wish.rd.rag.project.agent.model.AgentRuntimeCapability;
 import com.wish.rd.rag.project.agent.model.AgentRuntimeType;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
@@ -62,6 +64,166 @@ class DockerPiAgentExecutorTest {
 
     @TempDir
     Path temporaryDirectory;
+
+    @Test
+    void shouldHostValidateCanonicalProtocolFailureReceiptAndExposeItForRouting() throws Exception {
+        String taskId = "task-protocol-receipt";
+        String stageRunId = "stage-" + taskId;
+        ProtocolFailureReceiptRunner runner = new ProtocolFailureReceiptRunner(taskId, stageRunId, false);
+        DockerPiAgentExecutor executor = executor(runner, AgentExecutionEventSink.noop(), ignored -> "secret");
+
+        AgentExecutionProfileSnapshot receiptSnapshot = qaRemediationSnapshot(
+                "snapshot-protocol-receipt", stageRunId, taskId
+        );
+        assertTrue(receiptSnapshot.hasCapability(AgentRuntimeCapability.PI_QA_REMEDIATION_V2));
+        RepairExecutionResult result = executor.execute(new AgentRuntimeExecutionRequest(
+                receiptSnapshot,
+                command(taskId, "QA_AGENT")
+        ));
+
+        assertEquals(RepairExecutionStatus.FAILED_VALIDATION, result.status());
+        assertEquals(
+                "RESULT_MISSING_AFTER_RECOVERY",
+                result.dockerMetadataJson().get("piProtocolFailureReceiptKind"),
+                () -> "artifacts=" + result.artifacts().stream().map(artifact -> artifact.type() + ":" + artifact.name()).toList()
+        );
+        assertEquals(
+                "PiProtocolFailureReceipt/v1",
+                result.dockerMetadataJson().get("piProtocolFailureReceiptProtocol")
+        );
+        assertTrue(result.dockerMetadataJson().get("piProtocolFailureReceiptHash").startsWith("sha256:"));
+        assertTrue(result.artifacts().stream().anyMatch(artifact ->
+                artifact.type() == RepairArtifactType.PI_PROTOCOL_FAILURE_RECEIPT));
+    }
+
+    @Test
+    void shouldRejectReceiptWhoseIdentityDoesNotMatchTrustedEvents() throws Exception {
+        String taskId = "task-protocol-mismatch";
+        String stageRunId = "stage-" + taskId;
+        DockerPiAgentExecutor executor = executor(
+                new ProtocolFailureReceiptRunner(taskId, stageRunId, true),
+                AgentExecutionEventSink.noop(),
+                ignored -> "secret"
+        );
+
+        RepairExecutionResult result = executor.execute(new AgentRuntimeExecutionRequest(
+                qaRemediationSnapshot("snapshot-protocol-mismatch", stageRunId, taskId),
+                command(taskId, "QA_AGENT")
+        ));
+
+        assertEquals(RepairExecutionStatus.FAILED_VALIDATION, result.status());
+        assertTrue(result.errorMessage().contains("identity mismatch"), result.errorMessage());
+        assertFalse(result.dockerMetadataJson().containsKey("piProtocolFailureReceiptKind"));
+    }
+
+    @Test
+    void shouldWriteVerifiedInitialStateForCapabilityGatedPiOnly() throws Exception {
+        String stateJson = AgentStateV2Codec.canonicalize(OBJECT_MAPPER.readTree("""
+                {
+                  "protocol":"rd-agent-state/v2",
+                  "sequence":0,
+                  "taskId":"task-1",
+                  "stageRunId":"stage-1",
+                  "role":"CODING_AGENT",
+                  "attemptNo":1,
+                  "runtimeType":"PI",
+                  "profileSnapshotId":"snapshot-state",
+                  "budget":{"availability":"UNKNOWN"}
+                }
+                """));
+        String stateHash = AgentStateV2Codec.hash(OBJECT_MAPPER.readTree(stateJson));
+        RepairJobCommand stateCommand = commandWithInitialState(
+                "task-1", "CODING_AGENT", stateJson, stateHash
+        );
+        DockerPiAgentExecutor enabledExecutor = executor(
+                new StateV2ArtifactRunner(""), AgentExecutionEventSink.noop(), ignored -> "secret"
+        );
+
+        RepairExecutionResult enabled = enabledExecutor.execute(new AgentRuntimeExecutionRequest(
+                stateV2Snapshot("snapshot-state", "stage-1", "task-1"), stateCommand
+        ));
+
+        assertEquals(RepairExecutionStatus.SUCCESS, enabled.status(), enabled.errorMessage());
+        JsonNode enabledRequest = OBJECT_MAPPER.readTree(Files.readString(
+                temporaryDirectory.resolve("workspaces/task-1/input/request.json")
+        ));
+        assertEquals("rd-agent-state/v2", enabledRequest.path("initialAgentStateProtocol").asText());
+        assertEquals(stateJson, enabledRequest.path("initialAgentStateJson").asText());
+        assertEquals(stateHash, enabledRequest.path("initialAgentStateHash").asText());
+
+        DockerPiAgentExecutor legacyExecutor = executor(
+                new CapturingRunner(), AgentExecutionEventSink.noop(), ignored -> "secret"
+        );
+        RepairExecutionResult legacy = legacyExecutor.execute(new AgentRuntimeExecutionRequest(
+                snapshot("snapshot-legacy-state", "stage-1", "task-1", AgentRuntimeType.PI, ""),
+                commandWithInitialState("task-1", "CODING_AGENT", stateJson, stateHash)
+        ));
+        assertEquals(RepairExecutionStatus.SUCCESS, legacy.status(), legacy.errorMessage());
+        JsonNode legacyRequest = OBJECT_MAPPER.readTree(Files.readString(
+                temporaryDirectory.resolve("workspaces/task-1/input/request.json")
+        ));
+        assertTrue(legacyRequest.path("initialAgentStateProtocol").isMissingNode());
+        assertTrue(legacyRequest.path("initialAgentStateJson").isMissingNode());
+        assertTrue(legacyRequest.path("initialAgentStateHash").isMissingNode());
+        assertFalse(legacy.artifacts().stream()
+                .anyMatch(artifact -> artifact.type() == RepairArtifactType.AGENT_EFFECTIVE_CONTEXT));
+    }
+
+    @Test
+    void shouldCollectVerifiedV2StateAndEffectiveContextArtifacts() throws Exception {
+        String stateJson = canonicalInitialState("task-1", "stage-1", "snapshot-state-artifacts");
+        String stateHash = AgentStateV2Codec.hash(OBJECT_MAPPER.readTree(stateJson));
+        DockerPiAgentExecutor executor = executor(
+                new StateV2ArtifactRunner(""), AgentExecutionEventSink.noop(), ignored -> "secret"
+        );
+
+        RepairExecutionResult result = executor.execute(new AgentRuntimeExecutionRequest(
+                stateV2Snapshot("snapshot-state-artifacts", "stage-1", "task-1"),
+                commandWithInitialState("task-1", "CODING_AGENT", stateJson, stateHash)
+        ));
+
+        assertEquals(RepairExecutionStatus.SUCCESS, result.status(), result.errorMessage());
+        assertTrue(result.artifacts().stream().anyMatch(artifact ->
+                artifact.type() == RepairArtifactType.AGENT_STATE_SNAPSHOT
+                        && "agent-state-latest.json".equals(artifact.name())));
+        assertTrue(result.artifacts().stream().anyMatch(artifact ->
+                artifact.type() == RepairArtifactType.AGENT_EFFECTIVE_CONTEXT
+                        && "agent-effective-context-latest.json".equals(artifact.name())));
+    }
+
+    @Test
+    void shouldRejectV2StateArtifactIdentityMismatch() throws Exception {
+        String stateJson = canonicalInitialState("task-1", "stage-1", "snapshot-state-identity");
+        String stateHash = AgentStateV2Codec.hash(OBJECT_MAPPER.readTree(stateJson));
+        DockerPiAgentExecutor executor = executor(
+                new StateV2ArtifactRunner("STATE_IDENTITY"), AgentExecutionEventSink.noop(), ignored -> "secret"
+        );
+
+        RepairExecutionResult result = executor.execute(new AgentRuntimeExecutionRequest(
+                stateV2Snapshot("snapshot-state-identity", "stage-1", "task-1"),
+                commandWithInitialState("task-1", "CODING_AGENT", stateJson, stateHash)
+        ));
+
+        assertEquals(RepairExecutionStatus.FAILED, result.status());
+        assertTrue(result.errorMessage().contains("identity"), result.errorMessage());
+    }
+
+    @Test
+    void shouldRejectV2EffectiveContextBlockHashMismatch() throws Exception {
+        String stateJson = canonicalInitialState("task-1", "stage-1", "snapshot-state-hash");
+        String stateHash = AgentStateV2Codec.hash(OBJECT_MAPPER.readTree(stateJson));
+        DockerPiAgentExecutor executor = executor(
+                new StateV2ArtifactRunner("BLOCK_HASH"), AgentExecutionEventSink.noop(), ignored -> "secret"
+        );
+
+        RepairExecutionResult result = executor.execute(new AgentRuntimeExecutionRequest(
+                stateV2Snapshot("snapshot-state-hash", "stage-1", "task-1"),
+                commandWithInitialState("task-1", "CODING_AGENT", stateJson, stateHash)
+        ));
+
+        assertEquals(RepairExecutionStatus.FAILED, result.status());
+        assertTrue(result.errorMessage().contains("block hash"), result.errorMessage());
+    }
 
     @Test
     void shouldStreamPiEventsBuildFrozenRequestAndValidateTheJavaResult() throws Exception {
@@ -1474,6 +1636,79 @@ class DockerPiAgentExecutorTest {
         );
     }
 
+    private static RepairJobCommand commandWithInitialState(
+            String taskId,
+            String role,
+            String stateJson,
+            String stateHash
+    ) {
+        RepairJobCommand base = command(taskId, role);
+        Map<String, String> context = new java.util.LinkedHashMap<>(base.contextJson());
+        context.put("initialAgentStateProtocol", "rd-agent-state/v2");
+        context.put("initialAgentStateJson", stateJson);
+        context.put("initialAgentStateHash", stateHash);
+        return new RepairJobCommand(
+                base.repairRecordId(), base.taskId(), base.ticketId(), base.ticketTitle(), base.prompt(),
+                base.repositoryUrl(), base.repoOwner(), base.repoName(), base.baseBranch(), base.workBranch(),
+                context, base.policyJson(), base.attachments()
+        );
+    }
+
+    private static String canonicalInitialState(String taskId, String stageRunId, String snapshotId)
+            throws Exception {
+        return AgentStateV2Codec.canonicalize(OBJECT_MAPPER.readTree("""
+                {
+                  "protocol":"rd-agent-state/v2",
+                  "sequence":0,
+                  "taskId":"%s",
+                  "stageRunId":"%s",
+                  "role":"CODING_AGENT",
+                  "attemptNo":1,
+                  "runtimeType":"PI",
+                  "profileSnapshotId":"%s",
+                  "budget":{"availability":"UNKNOWN"},
+                  "todos":[],
+                  "facts":[]
+                }
+                """.formatted(taskId, stageRunId, snapshotId)));
+    }
+
+    private static AgentExecutionProfileSnapshot stateV2Snapshot(
+            String snapshotId,
+            String stageRunId,
+            String taskId
+    ) throws IOException {
+        AgentExecutionProfileSnapshot base = snapshot(
+                snapshotId, stageRunId, taskId, AgentRuntimeType.PI, "", "CODING_AGENT"
+        );
+        ObjectNode json = (ObjectNode) OBJECT_MAPPER.readTree(base.snapshotJson());
+        json.putArray("capabilities").add(AgentRuntimeCapability.PI_AGENT_STATE_V2.name());
+        json.put("dynamicStateEnabled", true);
+        json.put("agentStateSchemaVersion", "rd-agent-state/v2");
+        String snapshotJson = OBJECT_MAPPER.writeValueAsString(json);
+        return new AgentExecutionProfileSnapshot(
+                snapshotId, stageRunId, taskId, "CODING_AGENT", 1, AgentRuntimeType.PI,
+                snapshotJson, AgentExecutionProfileSnapshot.sha256(snapshotJson), 1L
+        );
+    }
+
+    private static AgentExecutionProfileSnapshot qaRemediationSnapshot(
+            String snapshotId,
+            String stageRunId,
+            String taskId
+    ) throws IOException {
+        AgentExecutionProfileSnapshot base = snapshot(
+                snapshotId, stageRunId, taskId, AgentRuntimeType.PI, "", "QA_AGENT"
+        );
+        ObjectNode json = (ObjectNode) OBJECT_MAPPER.readTree(base.snapshotJson());
+        json.putArray("capabilities").add(AgentRuntimeCapability.PI_QA_REMEDIATION_V2.name());
+        String snapshotJson = OBJECT_MAPPER.writeValueAsString(json);
+        return new AgentExecutionProfileSnapshot(
+                snapshotId, stageRunId, taskId, "QA_AGENT", 1, AgentRuntimeType.PI,
+                snapshotJson, AgentExecutionProfileSnapshot.sha256(snapshotJson), 1L
+        );
+    }
+
     private static RepairJobCommand command(String taskId, String role) {
         return command(taskId, role, "Implement the requested change");
     }
@@ -1877,6 +2112,144 @@ class DockerPiAgentExecutorTest {
                     null,
                     Map.of("containerName", request.containerName())
             );
+        }
+    }
+
+    private static final class ProtocolFailureReceiptRunner implements StreamingContainerRunnerPort {
+
+        private final String taskId;
+        private final String stageRunId;
+        private final boolean mismatchedIdentity;
+
+        private ProtocolFailureReceiptRunner(String taskId, String stageRunId, boolean mismatchedIdentity) {
+            this.taskId = taskId;
+            this.stageRunId = stageRunId;
+            this.mismatchedIdentity = mismatchedIdentity;
+        }
+
+        @Override
+        public boolean supportsNetworkPlans() {
+            return true;
+        }
+
+        @Override
+        public ContainerRunResult run(ContainerRunRequest request, ContainerOutputListener listener) throws IOException {
+            Files.createDirectories(request.outputDirectory());
+            Path resultPath = request.outputDirectory().resolve("result.json");
+            Files.writeString(resultPath, "{\"status\":\"FAILED\",\"failureCategory\":\"PI_BRIDGE_PROTOCOL\"}\n");
+            String events = """
+                    {"protocol":"rd-agent-event/v1","eventType":"RUNTIME_READY","sourceSequence":1,"stageRunId":"%s","taskId":"%s","role":"QA_AGENT"}
+                    {"protocol":"rd-agent-event/v1","eventType":"AGENT_SETTLED","sourceSequence":2,"stageRunId":"%s","taskId":"%s","role":"QA_AGENT"}
+                    {"protocol":"rd-agent-event/v1","eventType":"PROTOCOL_ERROR","sourceSequence":3,"stageRunId":"%s","taskId":"%s","role":"QA_AGENT","payload":{"category":"PI_RESULT_RECOVERY"}}
+                    {"protocol":"rd-agent-event/v1","eventType":"RESULT_SUBMITTED","sourceSequence":4,"stageRunId":"%s","taskId":"%s","role":"QA_AGENT","payload":{"source":"BRIDGE_SYNTHETIC"}}
+                    """.formatted(
+                    stageRunId, taskId,
+                    stageRunId, taskId,
+                    stageRunId, taskId,
+                    stageRunId, taskId
+            );
+            Files.writeString(request.outputDirectory().resolve("agent-events.jsonl"), events);
+            Files.writeString(request.outputDirectory().resolve("runtime-meta.json"), "{}\n");
+            ObjectNode receipt = OBJECT_MAPPER.createObjectNode();
+            receipt.put("protocol", "PiProtocolFailureReceipt/v1");
+            receipt.put("kind", "RESULT_MISSING_AFTER_RECOVERY");
+            receipt.putArray("missingFacts").add("AGENT_RESULT_SUBMITTED");
+            receipt.put("resultSubmitted", true);
+            receipt.put("resultSubmissionSource", "BRIDGE_SYNTHETIC");
+            receipt.put("roleSchemaAccepted", false);
+            receipt.put("acceptedResultDigest", "");
+            receipt.put("agentSettled", true);
+            receipt.put("eventStreamTrusted", true);
+            receipt.put("containerTerminated", true);
+            receipt.put("recoveryApplicable", true);
+            receipt.put("recoveryIssued", true);
+            receipt.put("recoveryExhausted", true);
+            receipt.put("lastRejectionKind", "NONE");
+            receipt.put("lastRejectionDigest", "");
+            receipt.putArray("diagnosticArtifactIds").add("agent-events.jsonl").add("runtime-meta.json");
+            receipt.put("taskId", mismatchedIdentity ? "wrong-task" : taskId);
+            receipt.put("stageRunId", stageRunId);
+            receipt.put("role", "QA_AGENT");
+            receipt.put("attemptNo", 1);
+            receipt.put("generatedAt", "2026-08-18T00:00:00Z");
+            Files.writeString(
+                    request.outputDirectory().resolve("pi-protocol-failure-receipt.json"),
+                    AgentStateV2Codec.canonicalize(receipt)
+            );
+            listener.onStdout(events);
+            return new ContainerRunResult(
+                    0, 12L, "", "", resultPath, null, null, null, null,
+                    Map.of("containerName", request.containerName())
+            );
+        }
+    }
+
+    private static final class StateV2ArtifactRunner extends CapturingRunner {
+
+        private final String corruption;
+
+        private StateV2ArtifactRunner(String corruption) {
+            this.corruption = corruption == null ? "" : corruption;
+        }
+
+        @Override
+        public ContainerRunResult run(ContainerRunRequest request, ContainerOutputListener listener) throws IOException {
+            ContainerRunResult result = super.run(request, listener);
+            Path inputDirectory = request.mounts().entrySet().stream()
+                    .filter(entry -> "/work/input:ro".equals(entry.getValue()) || "/work/input".equals(entry.getValue()))
+                    .map(entry -> Path.of(entry.getKey()))
+                    .findFirst()
+                    .orElseThrow(() -> new IOException("missing /work/input mount"));
+            JsonNode requestJson = OBJECT_MAPPER.readTree(Files.readString(
+                    inputDirectory.resolve("request.json"), StandardCharsets.UTF_8
+            ));
+            ObjectNode state = (ObjectNode) OBJECT_MAPPER.readTree(requestJson.path("initialAgentStateJson").asText());
+            if ("STATE_IDENTITY".equals(corruption)) {
+                state.put("taskId", "wrong-task");
+            }
+            String stateJson = AgentStateV2Codec.canonicalize(state);
+            String stateHash = AgentStateV2Codec.hash(state);
+            Files.writeString(
+                    request.outputDirectory().resolve("agent-state-latest.json"),
+                    stateJson,
+                    StandardCharsets.UTF_8
+            );
+
+            long injectionSequence = 1L;
+            long stateSequence = state.path("sequence").asLong();
+            String promptHash = "sha256:" + AgentExecutionProfileSnapshot.sha256(requestJson.path("prompt").asText());
+            String block = "<rd-agent-state protocol=\"rd-agent-state/v2\" state-sequence=\""
+                    + stateSequence + "\" injection-sequence=\"" + injectionSequence
+                    + "\" state-hash=\"" + stateHash + "\">\n" + stateJson + "\n</rd-agent-state>";
+            String blockHash = "sha256:" + AgentExecutionProfileSnapshot.sha256(block);
+            if ("BLOCK_HASH".equals(corruption)) {
+                blockHash = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+            }
+            String idempotencyKey = "sha256:" + AgentExecutionProfileSnapshot.sha256(
+                    requestJson.path("stageRunId").asText() + ":" + injectionSequence + ":" + blockHash
+            );
+            ObjectNode effective = OBJECT_MAPPER.createObjectNode();
+            effective.put("protocol", "rd-agent-effective-context/v1");
+            effective.put("taskId", requestJson.path("taskId").asText());
+            effective.put("stageRunId", requestJson.path("stageRunId").asText());
+            effective.put("role", requestJson.path("role").asText());
+            effective.put("attemptNo", requestJson.path("attemptNo").asInt());
+            effective.put("injectionSequence", injectionSequence);
+            effective.put("stateSequence", stateSequence);
+            effective.put("stateHash", stateHash);
+            effective.put("promptHash", promptHash);
+            effective.put("blockHash", blockHash);
+            effective.put("injectedBlock", block);
+            effective.put("injectedAt", "2026-08-18T00:00:00Z");
+            effective.put("idempotencyKey", idempotencyKey);
+            effective.put("bytes", block.getBytes(StandardCharsets.UTF_8).length);
+            effective.putArray("compositionOrder").add("PROMPT_SNAPSHOT").add("AGENT_STATE_BLOCK");
+            Files.writeString(
+                    request.outputDirectory().resolve("agent-effective-context-latest.json"),
+                    OBJECT_MAPPER.writeValueAsString(effective),
+                    StandardCharsets.UTF_8
+            );
+            return result;
         }
     }
 

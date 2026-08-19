@@ -16,9 +16,11 @@ import { cn } from "@/lib/utils";
 import { createTaskRequestGuard, loadTaskDetailShell } from "@/pages/admin/rdtask/rdTaskDetailLoader";
 import {
   canSubmitRequirementTask,
+  evaluateRolePromptsFreshness,
   isRetryableRequirementTaskStatus,
   roleStageSignature,
-  taskStatusNotice
+  taskStatusNotice,
+  type ExpectedStageIdentity
 } from "@/pages/admin/rdtask/roleWorkbenchModel";
 
 import {
@@ -277,30 +279,6 @@ export function RdTaskDetailPage() {
     }
   };
 
-  const loadRolePrompts = useCallback(async (signature: string) => {
-    const requestToken = requestGuardRef.current.capture(taskId);
-    const requestKey = `${requestToken.taskId}:${requestToken.generation}:${signature}`;
-    if (rolePromptInFlightRef.current === requestKey) return;
-    const requestSeq = ++rolePromptLoadSeqRef.current;
-    rolePromptInFlightRef.current = requestKey;
-    setLoadingRolePrompts(true);
-    try {
-      const response = await getRdTaskRolePrompts(taskId);
-      if (requestSeq !== rolePromptLoadSeqRef.current || !requestGuardRef.current.isCurrent(requestToken)) return;
-      setRolePromptStages(response.stagePrompts || []);
-      setRolePromptError("");
-      loadedRolePromptSignatureRef.current = signature;
-    } catch (error) {
-      if (requestSeq !== rolePromptLoadSeqRef.current || !requestGuardRef.current.isCurrent(requestToken)) return;
-      setRolePromptError(getErrorMessage(error, "加载角色 Prompt 失败"));
-    } finally {
-      if (rolePromptInFlightRef.current === requestKey) rolePromptInFlightRef.current = "";
-      if (requestSeq === rolePromptLoadSeqRef.current && requestGuardRef.current.isCurrent(requestToken)) {
-        setLoadingRolePrompts(false);
-      }
-    }
-  }, [taskId]);
-
   const loadInitial = useCallback(async () => {
     const requestToken = requestGuardRef.current.capture(taskId);
     setLoading(true);
@@ -363,6 +341,57 @@ export function RdTaskDetailPage() {
       if (coreLoadInFlightRef.current === requestKey) coreLoadInFlightRef.current = "";
     }
   }, [taskId]);
+
+  const loadRolePrompts = useCallback(async (signature: string) => {
+    const requestToken = requestGuardRef.current.capture(taskId);
+    const requestKey = `${requestToken.taskId}:${requestToken.generation}:${signature}`;
+    if (rolePromptInFlightRef.current === requestKey) return;
+    const requestSeq = ++rolePromptLoadSeqRef.current;
+    rolePromptInFlightRef.current = requestKey;
+
+    const expectedMap: Record<string, ExpectedStageIdentity> = {};
+    (executionOverview?.stageRuns || []).forEach((stage) => {
+      expectedMap[stage.stageRunId] = {
+        stateSequence: stage.agentStateSequence,
+        stateHash: stage.agentStateContentHash,
+        injectionSequence: stage.agentLastInjectionSequence,
+        injectedStateSequence: stage.agentLastInjectedStateSequence,
+        injectedBlockHash: stage.agentLastInjectedBlockHash,
+        promptHash: stage.agentLastInjectedPromptHash
+      };
+    });
+
+    setLoadingRolePrompts(true);
+    try {
+      const response = await getRdTaskRolePrompts(taskId);
+      if (requestSeq !== rolePromptLoadSeqRef.current || !requestGuardRef.current.isCurrent(requestToken)) return;
+
+      const freshness = evaluateRolePromptsFreshness(response.stagePrompts || [], expectedMap);
+      if (freshness === "STALE_DISCARD") {
+        return;
+      }
+      if (freshness === "CONSISTENCY_ERROR") {
+        setRolePromptError("有效上下文校验失败，请查看阶段错误或联系管理员");
+        return;
+      }
+
+      setRolePromptStages(response.stagePrompts || []);
+      setRolePromptError("");
+      loadedRolePromptSignatureRef.current = signature;
+
+      if (freshness === "ACCEPT_AND_RECONCILE") {
+        void refreshCore(true);
+      }
+    } catch (error) {
+      if (requestSeq !== rolePromptLoadSeqRef.current || !requestGuardRef.current.isCurrent(requestToken)) return;
+      setRolePromptError(getErrorMessage(error, "加载角色 Prompt 失败"));
+    } finally {
+      if (rolePromptInFlightRef.current === requestKey) rolePromptInFlightRef.current = "";
+      if (requestSeq === rolePromptLoadSeqRef.current && requestGuardRef.current.isCurrent(requestToken)) {
+        setLoadingRolePrompts(false);
+      }
+    }
+  }, [executionOverview?.stageRuns, refreshCore, taskId]);
 
   const loadMaterialsData = useCallback(async () => {
     const requestToken = requestGuardRef.current.capture(taskId);

@@ -69,9 +69,13 @@ import com.wish.rd.engine.requirement.job.model.ExternalEffectReceipt;
 import com.wish.rd.engine.requirement.job.model.RequirementStageCommand;
 import com.wish.rd.engine.requirement.job.model.RequirementStageExecutionPlan;
 import com.wish.rd.engine.requirement.job.model.RequirementTaskMutation;
+import com.wish.rd.engine.requirement.job.model.PiQaRemediationIntent;
+import com.wish.rd.engine.requirement.policy.CanonicalJsonSha256;
+import com.wish.rd.engine.requirement.remediation.model.AgentRemediationKind;
 import com.wish.rd.engine.requirement.model.RequirementDeliveryReviewResult;
 import com.wish.rd.engine.requirement.model.RequirementExecutionRequest;
 import com.wish.rd.engine.requirement.model.RequirementExecutionResult;
+import com.wish.rd.engine.requirement.model.RequirementExecutionProfileResolution;
 import com.wish.rd.engine.requirement.model.RequirementPlan;
 import com.wish.rd.engine.requirement.model.RequirementPolicyDecision;
 import com.wish.rd.engine.requirement.model.RequirementPullRequestPublication;
@@ -101,6 +105,8 @@ import com.wish.rd.engine.requirement.policy.model.RequirementPolicyRun;
 import com.wish.rd.engine.requirement.verify.HostVerificationPort;
 import com.wish.rd.engine.requirement.policy.model.RequirementPolicyRunState;
 import com.wish.rd.engine.provider.ProviderSideEffectStatusPort;
+import com.wish.rd.rag.project.agent.model.AgentExecutionProfileSnapshot;
+import com.wish.rd.rag.project.agent.model.AgentRuntimeCapability;
 
 /**
  * 需求交付编排引擎。
@@ -1258,9 +1264,49 @@ public class RequirementDeliveryEngine {
         // applies the returned task mutation atomically with the command completion.
         ensureRequirementStages(task);
         ensureRoleContexts(task, materials, null);
-        RequirementExecutionResult execution = stageOrchestrator.run(
-                boundedRolePlan(role), task, materials, context, plan, decision, null);
+        String qaProductRemediationJson = command.remediationKind() == AgentRemediationKind.QA_PRODUCT_FIX
+                && role == AgentRole.CODING_AGENT ? command.remediationRequestJson() : "";
+        String qaProductRemediationHash = command.remediationKind() == AgentRemediationKind.QA_PRODUCT_FIX
+                && role == AgentRole.CODING_AGENT ? command.remediationRequestHash() : "";
+        String qaProtocolRetryPrompt = command.remediationKind() == AgentRemediationKind.QA_PROTOCOL_RETRY
+                && role == AgentRole.QA_AGENT ? protocolRetryPrompt(command.remediationRequestJson()) : "";
+        RequirementExecutionResult execution = command.remediationKind() == null
+                ? stageOrchestrator.run(
+                boundedRolePlan(role), task, materials, context, plan, decision, null)
+                : stageOrchestrator.runRemediationRole(
+                boundedRolePlan(role), task, materials, context, plan, decision, null,
+                qaProductRemediationJson, qaProductRemediationHash, qaProtocolRetryPrompt);
         if (!execution.success()) {
+            if (role == AgentRole.QA_AGENT) {
+                PiQaRemediationIntent remediationIntent = buildPiQaRemediationIntent(
+                        task, command, execution
+                );
+                if (remediationIntent != null) {
+                    List<RequirementTaskMutation> mutations = new ArrayList<>();
+                    if (checkpointRecovery) {
+                        mutations.add(mutation(
+                                RdTaskStatus.RECOVERING, RdTaskStatus.EXECUTING, "", "", "", ""
+                        ));
+                    }
+                    mutations.add(RequirementTaskMutation.snapshotUpdate(
+                            RdTaskStatus.EXECUTING,
+                            "",
+                            execution.resultJson(),
+                            "",
+                            "",
+                            execution.errorMessage()
+                    ));
+                    return plan(
+                            task,
+                            command,
+                            mutations,
+                            CommandDisposition.SUCCEEDED,
+                            ContinuationSpec.terminal(),
+                            ExternalEffectReceipt.none(),
+                            remediationIntent
+                    );
+                }
+            }
             boolean needsHuman = needsHumanInterventionResult(execution);
             RdTaskStatus failureStatus = needsHuman
                     ? RdTaskStatus.FAILED_NEEDS_HUMAN
@@ -1287,6 +1333,154 @@ public class RequirementDeliveryEngine {
         return plan(task, command, mutations,
                 CommandDisposition.SUCCEEDED,
                 roleContinuation(role));
+    }
+
+    private PiQaRemediationIntent buildPiQaRemediationIntent(
+            RdRequirementTask task,
+            RequirementStageCommand command,
+            RequirementExecutionResult execution
+    ) {
+        List<AgentStageRun> stages = stageRunStore.listByTask(task.taskId());
+        AgentStageRun sourceQa = latestStageOrNull(stages, AgentRole.QA_AGENT);
+        if (sourceQa == null || sourceQa.attemptNo() > MAX_ROLE_ATTEMPTS) return null;
+        RequirementExecutionProfileResolution sourceResolution;
+        try {
+            sourceResolution = executionProfileResolver.resolve(
+                    task, AgentRole.QA_AGENT, sourceQa.stageRunId(), sourceQa.attemptNo()
+            );
+        } catch (RuntimeException unavailable) {
+            return null;
+        }
+        PiQaRemediationPlanner.Decision decision = new PiQaRemediationPlanner().decide(
+                execution.resultJson(), sourceResolution, command, sourceQa.stageRunId(), sourceQa.attemptNo()
+        ).orElse(null);
+        if (decision == null) return null;
+
+        int remediationNo = decision.kind() == AgentRemediationKind.QA_PROTOCOL_RETRY
+                ? 1
+                : (command.remediationKind() == AgentRemediationKind.QA_PRODUCT_FIX
+                ? command.remediationNo() + 1 : 1);
+        if (remediationNo > decision.kind().maximumRounds()) return null;
+        AgentStageRun latestQa = latestStageOrNull(stages, AgentRole.QA_AGENT);
+        AgentStageRun latestCoding = latestStageOrNull(stages, AgentRole.CODING_AGENT);
+        int targetQaAttempt = latestQa == null ? 1 : latestQa.attemptNo() + 1;
+        int targetCodingAttempt = decision.kind() == AgentRemediationKind.QA_PRODUCT_FIX
+                ? (latestCoding == null ? 1 : latestCoding.attemptNo() + 1) : 0;
+        if (targetQaAttempt > MAX_ROLE_ATTEMPTS
+                || targetCodingAttempt > MAX_ROLE_ATTEMPTS) return null;
+
+        String roundId = idGenerator.nextIdString();
+        String codingStageId = decision.kind() == AgentRemediationKind.QA_PRODUCT_FIX
+                ? idGenerator.nextIdString() : "";
+        String qaStageId = idGenerator.nextIdString();
+        String firstCommandId = idGenerator.nextIdString();
+        try {
+            AgentExecutionProfileSnapshot codingSnapshot = decision.kind() == AgentRemediationKind.QA_PRODUCT_FIX
+                    ? executionProfileResolver.prepareSnapshot(
+                    task, AgentRole.CODING_AGENT, codingStageId, targetCodingAttempt,
+                    AgentRuntimeCapability.PI_QA_REMEDIATION_V2) : null;
+            AgentExecutionProfileSnapshot qaSnapshot = executionProfileResolver.prepareSnapshot(
+                    task, AgentRole.QA_AGENT, qaStageId, targetQaAttempt,
+                    AgentRuntimeCapability.PI_QA_REMEDIATION_V2);
+
+            String requestJson = decision.requestJson();
+            String requestHash = decision.requestHash();
+            if (decision.kind() == AgentRemediationKind.QA_PRODUCT_FIX) {
+                QaRemediationPackageBuilder.Package requestPackage = new QaRemediationPackageBuilder().build(
+                        sourceQa.stageRunId(), remediationNo, execution.resultJson()
+                );
+                requestJson = requestPackage.attachment().content();
+                requestHash = requestPackage.requestHash();
+            }
+            PiQaRemediationIntent intent = new PiQaRemediationIntent(
+                    PiQaRemediationIntent.PROTOCOL,
+                    task.taskId(),
+                    sourceQa.stageRunId(),
+                    command.commandId(),
+                    CanonicalJsonSha256.digest(execution.resultJson()),
+                    command.taskVersion(),
+                    command.fencingToken(),
+                    decision.kind(),
+                    remediationNo,
+                    roundId,
+                    requestJson,
+                    requestHash,
+                    codingStageId,
+                    targetCodingAttempt,
+                    qaStageId,
+                    targetQaAttempt,
+                    firstCommandId,
+                    profileClaim(sourceResolution.snapshotJson()),
+                    codingSnapshot == null ? null : preparedProfile(codingSnapshot),
+                    preparedProfile(qaSnapshot),
+                    decision.receiptJson(),
+                    decision.receiptHash()
+            );
+            alertSink.publish(new AgentWorkflowAlert(
+                    task.taskId(),
+                    sourceQa.stageRunId(),
+                    AgentWorkflowAlertType.QA_REMEDIATION_PLANNED,
+                    "PI QA remediation intent prepared and awaiting Host finalization",
+                    Map.of(
+                            "remediationKind", decision.kind().name(),
+                            "remediationNo", Integer.toString(remediationNo),
+                            "plannedLimit", Integer.toString(decision.kind().maximumRounds()),
+                            "usedAfterFinalize", Integer.toString(remediationNo),
+                            "remainingAfterFinalize", Integer.toString(
+                                    Math.max(0, decision.kind().maximumRounds() - remediationNo)),
+                            "sourceStageRunId", sourceQa.stageRunId(),
+                            "targetCodingStageRunId", codingStageId,
+                            "targetQaStageRunId", qaStageId,
+                            "nextAction", decision.kind() == AgentRemediationKind.QA_PRODUCT_FIX
+                                    ? AgentRole.CODING_AGENT.name() : AgentRole.QA_AGENT.name(),
+                            "state", "PLANNED_PENDING_FINALIZATION"
+                    ),
+                    System.currentTimeMillis()
+            ));
+            return intent;
+        } catch (RuntimeException invalidTarget) {
+            return null;
+        }
+    }
+
+    private static String protocolRetryPrompt(String immutableRequestJson) {
+        try {
+            JsonNode request = OBJECT_MAPPER.readTree(immutableRequestJson);
+            if (!"rd-pi-protocol-retry-request/v1".equals(request.path("protocol").asText(""))) return "";
+            String kind = request.path("receiptKind").asText("");
+            String hash = request.path("receiptHash").asText("");
+            if (kind.isBlank() || !hash.matches("sha256:[0-9a-f]{64}")) return "";
+            return "PI QA 协议重试（上一轮 " + kind + "，receipt=" + hash + "）："
+                    + "复用并核验已有真实 QA 证据，只完成结构化结果协议收尾；"
+                    + "必须由 Agent 调用 rd_submit_result，禁止请求或创建 Coding 修复。";
+        } catch (Exception invalid) {
+            return "";
+        }
+    }
+
+    private static PiQaRemediationIntent.PreparedProfileSnapshot preparedProfile(
+            AgentExecutionProfileSnapshot snapshot
+    ) {
+        return new PiQaRemediationIntent.PreparedProfileSnapshot(
+                snapshot.snapshotId(), snapshot.stageRunId(), snapshot.role(), snapshot.attemptNo(),
+                profileClaim(snapshot.snapshotJson()), snapshot.snapshotJson(), snapshot.snapshotHash()
+        );
+    }
+
+    private static PiQaRemediationIntent.ExecutionProfileClaim profileClaim(String snapshotJson) {
+        try {
+            JsonNode value = OBJECT_MAPPER.readTree(snapshotJson);
+            List<String> capabilities = new ArrayList<>();
+            value.path("capabilities").forEach(capability -> capabilities.add(capability.asText()));
+            return new PiQaRemediationIntent.ExecutionProfileClaim(
+                    value.path("profileId").asText(),
+                    value.path("profileVersion").asLong(0L),
+                    value.path("runtimeType").asText(),
+                    capabilities
+            );
+        } catch (Exception invalid) {
+            throw new IllegalArgumentException("invalid remediation execution profile snapshot", invalid);
+        }
     }
 
     private RequirementStageExecutionPlan planDeterministicReviewStage(
@@ -1565,6 +1759,29 @@ public class RequirementDeliveryEngine {
                 disposition,
                 continuation,
                 externalEffectReceipt);
+    }
+
+    private RequirementStageExecutionPlan plan(
+            RdRequirementTask task,
+            RequirementStageCommand command,
+            List<RequirementTaskMutation> mutations,
+            CommandDisposition disposition,
+            ContinuationSpec continuation,
+            ExternalEffectReceipt externalEffectReceipt,
+            PiQaRemediationIntent remediationIntent
+    ) {
+        return new RequirementStageExecutionPlan(
+                RequirementStageExecutionPlan.CURRENT_SCHEMA_VERSION,
+                task.taskId(),
+                command.taskVersion(),
+                command.fencingToken(),
+                task.status(),
+                mutations,
+                disposition,
+                continuation,
+                externalEffectReceipt,
+                remediationIntent
+        );
     }
 
     private RequirementTaskMutation mutation(

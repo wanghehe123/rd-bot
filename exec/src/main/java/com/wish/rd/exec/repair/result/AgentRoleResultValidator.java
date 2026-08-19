@@ -39,6 +39,8 @@ public final class AgentRoleResultValidator {
             "FLAKY"
     );
     private static final Set<String> QA_RETRY_RECOMMENDATIONS = Set.of("NONE", "CODING_AGENT", "HUMAN");
+    private static final Set<String> QA_FINDING_SEVERITIES = Set.of("LOW", "MEDIUM", "HIGH", "CRITICAL");
+    private static final int QA_REMEDIATION_MAX_FINDINGS = 20;
     private static final Set<String> QA_SCOPES = Set.of("CURRENT", "REGRESSION");
     private static final Set<String> QA_DECISION_SOURCES = Set.of(
             "TASK_OVERRIDE",
@@ -89,7 +91,18 @@ public final class AgentRoleResultValidator {
      * @return 校验结果
      */
     public AgentRoleResultValidation validate(String role, String json) {
-        return validate(role, json, ContextProtocolVersion.LEGACY_ENVIRONMENT_NOTES.name(), null);
+        return validate(role, json, ContextProtocolVersion.LEGACY_ENVIRONMENT_NOTES.name(), null, false);
+    }
+
+    /** Validates a capability-gated PI QA remediation-v2 result while preserving legacy callers. */
+    public AgentRoleResultValidation validate(String role, String json, boolean qaRemediationV2Enabled) {
+        return validate(
+                role,
+                json,
+                ContextProtocolVersion.LEGACY_ENVIRONMENT_NOTES.name(),
+                null,
+                qaRemediationV2Enabled
+        );
     }
 
     /**
@@ -100,6 +113,16 @@ public final class AgentRoleResultValidator {
             String json,
             String contextProtocolVersion,
             FactFreshnessEvaluator.FreshnessContext freshnessContext
+    ) {
+        return validate(role, json, contextProtocolVersion, freshnessContext, false);
+    }
+
+    public AgentRoleResultValidation validate(
+            String role,
+            String json,
+            String contextProtocolVersion,
+            FactFreshnessEvaluator.FreshnessContext freshnessContext,
+            boolean qaRemediationV2Enabled
     ) {
         String normalizedRole = normalizeRole(role);
         if ("CODING_AGENT".equals(normalizedRole)) {
@@ -117,7 +140,7 @@ public final class AgentRoleResultValidator {
         List<String> errors = new ArrayList<>(switch (normalizedRole) {
             case "REQUIREMENT_REVIEWER" -> validateRequirementReview(root);
             case "SOLUTION_ARCHITECT" -> validateSolutionPlan(root);
-            case "QA_AGENT" -> validateQaReport(root);
+            case "QA_AGENT" -> validateQaReport(root, qaRemediationV2Enabled);
             default -> List.of("unsupported agent role: " + normalizedRole);
         });
         errors.addAll(RoleExecutionFactsValidator.validateFactsProtocol(
@@ -188,7 +211,7 @@ public final class AgentRoleResultValidator {
         return List.copyOf(errors);
     }
 
-    private List<String> validateQaReport(JsonNode root) {
+    private List<String> validateQaReport(JsonNode root, boolean qaRemediationV2Enabled) {
         List<String> errors = new ArrayList<>();
         validateEnum(root, "status", QA_STATUSES, errors);
         validateString(root, "summary", errors);
@@ -200,6 +223,9 @@ public final class AgentRoleResultValidator {
         JsonNode acceptanceResults = root.get("acceptanceResults");
         if (acceptanceResults == null || !acceptanceResults.isArray() || acceptanceResults.isEmpty()) {
             errors.add("acceptanceResults must be a non-empty array");
+            if (qaRemediationV2Enabled) {
+                validateQaRemediationV2(root, errors);
+            }
             return List.copyOf(errors);
         }
         String overallStatus = root.path("status").asText("").strip().toUpperCase(Locale.ROOT);
@@ -279,7 +305,135 @@ public final class AgentRoleResultValidator {
         if ("FAILED".equals(overallStatus) && "NONE".equals(retryRecommendation)) {
             errors.add("status FAILED requires a retryRecommendation");
         }
+        if (qaRemediationV2Enabled) {
+            validateQaRemediationV2(root, errors);
+        }
         return List.copyOf(errors);
+    }
+
+    private static void validateQaRemediationV2(JsonNode root, List<String> errors) {
+        JsonNode request = root.get("remediationRequest");
+        JsonNode findings = root.get("bugFindings");
+        if (request == null || !request.isObject()) {
+            errors.add("remediationRequest must be an object when PI_QA_REMEDIATION_V2 is enabled");
+            return;
+        }
+        if (findings == null || !findings.isArray()) {
+            errors.add("bugFindings must be an array when PI_QA_REMEDIATION_V2 is enabled");
+            return;
+        }
+        if (findings.size() > QA_REMEDIATION_MAX_FINDINGS) {
+            errors.add("bugFindings exceeds max items " + QA_REMEDIATION_MAX_FINDINGS);
+        }
+        validateBoolean(request, "requested", "remediationRequest.requested", errors);
+        boolean requested = request.path("requested").asBoolean(false);
+        String targetRole = request.path("targetRole").asText("").strip();
+        String reason = request.path("reason").asText("").strip();
+        if (reason.length() > 2048) {
+            errors.add("remediationRequest.reason exceeds max length 2048");
+        }
+        validateStringArray(request, "bugFindingIds", "remediationRequest.bugFindingIds", false, errors);
+
+        Set<String> failedCriteriaIds = new HashSet<>();
+        JsonNode acceptanceResults = root.path("acceptanceResults");
+        if (acceptanceResults.isArray()) {
+            for (JsonNode acceptance : acceptanceResults) {
+                if ("FAILED".equals(acceptance.path("status").asText("").strip().toUpperCase(Locale.ROOT))) {
+                    String criteriaId = acceptance.path("criteriaId").asText("").strip();
+                    if (!criteriaId.isBlank()) failedCriteriaIds.add(criteriaId);
+                }
+            }
+        }
+        Set<String> findingIds = new HashSet<>();
+        int index = 0;
+        for (JsonNode finding : findings) {
+            String prefix = "bugFindings[" + index + "]";
+            if (!finding.isObject()) {
+                errors.add(prefix + " must be an object");
+                index++;
+                continue;
+            }
+            validateBoundedString(finding, "id", prefix + ".id", 128, errors);
+            validateEnum(finding, "severity", prefix + ".severity", QA_FINDING_SEVERITIES, errors);
+            validateBoundedString(
+                    finding, "acceptanceCriteriaId", prefix + ".acceptanceCriteriaId", 256, errors
+            );
+            validateBoundedString(finding, "expected", prefix + ".expected", 2048, errors);
+            validateBoundedString(finding, "actual", prefix + ".actual", 2048, errors);
+            validateBoundedStringArray(
+                    finding, "reproductionSteps", prefix + ".reproductionSteps", true, 10, 512, errors
+            );
+            validateBoundedStringArray(
+                    finding, "evidenceArtifactIds", prefix + ".evidenceArtifactIds", true, 20, 512, errors
+            );
+            validateBoundedStringArray(
+                    finding, "suspectedFiles", prefix + ".suspectedFiles", false, 20, 512, errors
+            );
+            String id = finding.path("id").asText("").strip();
+            if (!id.isBlank() && !findingIds.add(id)) {
+                errors.add("bugFindings contains duplicate id: " + id);
+            }
+            String criteriaId = finding.path("acceptanceCriteriaId").asText("").strip();
+            if (!criteriaId.isBlank() && !failedCriteriaIds.contains(criteriaId)) {
+                errors.add(prefix + ".acceptanceCriteriaId must reference a FAILED acceptanceResults.criteriaId");
+            }
+            index++;
+        }
+
+        Set<String> requestedIds = new HashSet<>();
+        JsonNode bugFindingIds = request.path("bugFindingIds");
+        if (bugFindingIds.isArray()) {
+            for (JsonNode idNode : bugFindingIds) {
+                String id = idNode.asText("").strip();
+                if (!id.isBlank()) requestedIds.add(id);
+            }
+        }
+        for (String id : requestedIds) {
+            if (!findingIds.contains(id)) {
+                errors.add("remediationRequest references unknown bug finding: " + id);
+            }
+        }
+        for (String id : findingIds) {
+            if (!requestedIds.contains(id)) {
+                errors.add("bug finding is not selected by remediationRequest: " + id);
+            }
+        }
+
+        String status = root.path("status").asText("").strip().toUpperCase(Locale.ROOT);
+        String recommendation = root.path("retryRecommendation").asText("").strip().toUpperCase(Locale.ROOT);
+        if (requested) {
+            if (!"FAILED".equals(status)) {
+                errors.add("remediationRequest.requested=true requires status FAILED");
+            }
+            if (!"CODING_AGENT".equals(targetRole)) {
+                errors.add("remediationRequest.targetRole must be CODING_AGENT when requested=true");
+            }
+            if (reason.isBlank()) {
+                errors.add("remediationRequest.reason must not be blank when requested=true");
+            }
+            if (requestedIds.isEmpty() || findings.isEmpty()) {
+                errors.add("remediationRequest.requested=true requires non-empty bugFindingIds and bugFindings");
+            }
+            if (!"CODING_AGENT".equals(recommendation)) {
+                errors.add("remediationRequest.requested=true requires retryRecommendation CODING_AGENT");
+            }
+        } else {
+            if (!targetRole.isBlank()) {
+                errors.add("remediationRequest.requested=false requires targetRole to be blank");
+            }
+            if (!requestedIds.isEmpty()) {
+                errors.add("remediationRequest.requested=false requires bugFindingIds to be empty");
+            }
+            if (!findings.isEmpty()) {
+                errors.add("remediationRequest.requested=false requires bugFindings to be empty");
+            }
+            if ("CODING_AGENT".equals(recommendation)) {
+                errors.add("remediationRequest.requested=false cannot recommend CODING_AGENT");
+            }
+        }
+        if (!"FAILED".equals(status) && (requested || !findings.isEmpty())) {
+            errors.add("non-FAILED QA result cannot request remediation or contain bugFindings");
+        }
     }
 
     private static void validateHostAssertionResults(JsonNode root, List<String> errors) {
@@ -455,6 +609,43 @@ public final class AgentRoleResultValidator {
                 errors.add(displayName + "[" + index + "] must not be blank");
             }
             index++;
+        }
+    }
+
+    private static void validateBoundedString(
+            JsonNode root,
+            String fieldName,
+            String displayName,
+            int maxLength,
+            List<String> errors
+    ) {
+        validateString(root, fieldName, displayName, errors);
+        JsonNode value = root.get(fieldName);
+        if (value != null && value.isTextual() && value.asText("").strip().length() > maxLength) {
+            errors.add(displayName + " exceeds max length " + maxLength);
+        }
+    }
+
+    private static void validateBoundedStringArray(
+            JsonNode root,
+            String fieldName,
+            String displayName,
+            boolean nonEmpty,
+            int maxItems,
+            int maxLength,
+            List<String> errors
+    ) {
+        validateStringArray(root, fieldName, displayName, nonEmpty, errors);
+        JsonNode value = root.get(fieldName);
+        if (value == null || !value.isArray()) return;
+        if (value.size() > maxItems) {
+            errors.add(displayName + " exceeds max items " + maxItems);
+        }
+        for (JsonNode item : value) {
+            if (item.isTextual() && item.asText("").strip().length() > maxLength) {
+                errors.add(displayName + " contains an item exceeding max length " + maxLength);
+                break;
+            }
         }
     }
 

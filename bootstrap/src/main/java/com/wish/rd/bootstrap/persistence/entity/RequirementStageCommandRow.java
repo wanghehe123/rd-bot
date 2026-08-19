@@ -21,6 +21,12 @@ public class RequirementStageCommandRow {
     public Long retryCheckpointId;
     public Long businessGeneration;
     public Long targetRetryBindingId;
+    public Long remediationRoundId;
+    public String remediationKind;
+    public Integer remediationNo;
+    public Long remediationSourceStageRunId;
+    public String remediationRequestJson;
+    public String remediationRequestHash;
     public Integer attemptNo;
     public Integer maxAttempts;
     public OffsetDateTime deadlineAt;

@@ -1,0 +1,101 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - complementary [ref=e4]:
+      - generic [ref=e6]:
+        - generic [ref=e7]: RD
+        - generic [ref=e8]:
+          - heading "RD-Bot 管理后台" [level=1] [ref=e9]
+          - paragraph [ref=e10]: Delivery Console
+      - navigation [ref=e11]:
+        - generic [ref=e12]:
+          - paragraph [ref=e13]: 导航
+          - generic [ref=e14]:
+            - link "Dashboard" [ref=e15] [cursor=pointer]:
+              - /url: /admin/dashboard
+              - img [ref=e17]
+              - generic [ref=e22]: Dashboard
+            - link "知识库管理" [ref=e23] [cursor=pointer]:
+              - /url: /admin/knowledge
+              - img [ref=e25]
+              - generic [ref=e29]: 知识库管理
+            - link "项目管理" [ref=e30] [cursor=pointer]:
+              - /url: /admin/projects
+              - img [ref=e32]
+              - generic [ref=e35]: 项目管理
+            - link "任务管理" [ref=e36] [cursor=pointer]:
+              - /url: /admin/rd-tasks
+              - img [ref=e38]
+              - generic [ref=e41]: 任务管理
+            - link "Skill Hub" [ref=e42] [cursor=pointer]:
+              - /url: /admin/skills
+              - img [ref=e44]
+              - generic [ref=e46]: Skill Hub
+            - link "执行追踪" [ref=e47] [cursor=pointer]:
+              - /url: /admin/traces
+              - img [ref=e49]
+              - generic [ref=e53]: 执行追踪
+            - link "交付观测" [ref=e54] [cursor=pointer]:
+              - /url: /admin/observability
+              - img [ref=e56]
+              - generic [ref=e58]: 交付观测
+            - generic [ref=e59]:
+              - button "评测" [ref=e60] [cursor=pointer]:
+                - img [ref=e62]
+                - generic [ref=e64]: 评测
+                - img [ref=e65]
+              - generic [ref=e67]:
+                - link "本地评测" [ref=e68] [cursor=pointer]:
+                  - /url: /admin/evaluations
+                  - img [ref=e70]
+                  - generic [ref=e72]: 本地评测
+                - link "编码消融评测" [ref=e73] [cursor=pointer]:
+                  - /url: /admin/evaluations/coding-benchmarks
+                  - img [ref=e75]
+                  - generic [ref=e77]: 编码消融评测
+        - generic [ref=e78]:
+          - paragraph [ref=e79]: 设置
+          - generic [ref=e80]:
+            - link "用户管理" [ref=e81] [cursor=pointer]:
+              - /url: /admin/users
+              - img [ref=e83]
+              - generic [ref=e88]: 用户管理
+            - link "系统设置" [ref=e89] [cursor=pointer]:
+              - /url: /admin/settings
+              - img [ref=e91]
+              - generic [ref=e94]: 系统设置
+      - button "收起侧边栏" [ref=e96] [cursor=pointer]:
+        - img [ref=e97]
+        - generic [ref=e99]: 收起侧边栏
+    - main [ref=e100]:
+      - generic [ref=e102]:
+        - generic [ref=e103]:
+          - button "切换侧边栏" [ref=e104] [cursor=pointer]:
+            - img [ref=e105]
+          - generic "当前工作区" [ref=e106]:
+            - generic [ref=e107]: 交付控制台
+            - strong [ref=e109]: 项目管理
+        - generic [ref=e110]:
+          - button "新建任务" [ref=e111] [cursor=pointer]:
+            - img [ref=e112]
+            - text: 新建任务
+          - button "返回聊天" [ref=e113] [cursor=pointer]:
+            - img [ref=e114]
+            - text: 返回聊天
+          - button "RD-Bot Ops" [ref=e116] [cursor=pointer]:
+            - img [ref=e117]
+            - generic [ref=e120]: RD-Bot
+            - generic [ref=e121]: Ops
+          - button "RD admin" [ref=e122] [cursor=pointer]:
+            - generic [ref=e123]: RD
+            - generic [ref=e124]: admin
+            - img [ref=e125]
+      - generic [ref=e127]:
+        - navigation "面包屑" [ref=e128]:
+          - generic [ref=e129]:
+            - link "首页" [ref=e130] [cursor=pointer]:
+              - /url: /admin/dashboard
+            - generic [ref=e131]: /
+          - generic [ref=e133]: 项目管理
+        - status [ref=e134]:
+          - generic [ref=e136]: 加载页面...
+  - region "Notifications alt+T"

@@ -67,8 +67,10 @@ public final class PiWorkspaceArtifactCollector {
             case "agent-events.jsonl" -> RepairArtifactType.AGENT_EVENTS;
             case "agent-state-events.jsonl" -> RepairArtifactType.AGENT_STATE_EVENTS;
             case "agent-state-latest.json" -> RepairArtifactType.AGENT_STATE_SNAPSHOT;
+            case "agent-effective-context-latest.json" -> RepairArtifactType.AGENT_EFFECTIVE_CONTEXT;
             case "runtime-context-manifest.json" -> RepairArtifactType.RUNTIME_CONTEXT_MANIFEST;
             case "runtime-meta.json" -> RepairArtifactType.AGENT_RUNTIME_META;
+            case "pi-protocol-failure-receipt.json" -> RepairArtifactType.PI_PROTOCOL_FAILURE_RECEIPT;
             case "docker-meta.json" -> RepairArtifactType.DOCKER_METADATA;
             case "handoff/next.md" -> RepairArtifactType.HANDOFF_MARKDOWN;
             case "qa-evidence/manifest.json" -> RepairArtifactType.QA_EVIDENCE_MANIFEST;

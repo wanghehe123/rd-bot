@@ -2,6 +2,7 @@ package com.wish.rd.bootstrap.threading;
 
 import com.wish.rd.engine.agent.model.AgentRole;
 import com.wish.rd.engine.requirement.job.model.RequirementStageCommand;
+import com.wish.rd.engine.requirement.remediation.model.AgentRemediationKind;
 import com.wish.rd.engine.scheduling.FairRequirementDeliveryClaimPlanner;
 import com.wish.rd.engine.scheduling.model.RequirementDeliverySchedulingPolicy;
 import com.wish.rd.engine.scheduling.model.ScheduleResourceClass;
@@ -172,6 +173,39 @@ public final class RequirementStageCommandFactory {
                 maxAttempts, deadlineEpochMillis(nowEpochMillis), primaryResource(requirements), requirements,
                 safeProjectId, providerIdFor(taskId, safeProjectId, role, stage, previousProviderId), priority,
                 policyRunId, retryCheckpointId, businessGeneration, targetRetryBindingId, nowEpochMillis);
+    }
+
+    /** Creates a command that reuses one durable PI-remediation round identity. */
+    public RequirementStageCommand createRemediationPendingCommand(
+            String commandId,
+            String taskId,
+            long taskVersion,
+            long fencingToken,
+            String role,
+            String stage,
+            String projectId,
+            String priority,
+            String previousProviderId,
+            String policyRunId,
+            String remediationRoundId,
+            AgentRemediationKind remediationKind,
+            int remediationNo,
+            String remediationSourceStageRunId,
+            String remediationRequestJson,
+            String remediationRequestHash,
+            long nowEpochMillis
+    ) {
+        String safeProjectId = normalizeProject(projectId);
+        Set<ScheduleResourceClass> requirements =
+                FairRequirementDeliveryClaimPlanner.classifyStageRequirements(role, stage);
+        String effectiveCommandId = commandId == null || commandId.isBlank()
+                ? idGenerator.nextIdString() : commandId.strip();
+        return RequirementStageCommand.remediationPending(
+                effectiveCommandId, taskId, taskVersion, fencingToken, role, stage, maxAttempts,
+                deadlineEpochMillis(nowEpochMillis), primaryResource(requirements), requirements,
+                safeProjectId, providerIdFor(taskId, safeProjectId, role, stage, previousProviderId),
+                priority, policyRunId, remediationRoundId, remediationKind, remediationNo,
+                remediationSourceStageRunId, remediationRequestJson, remediationRequestHash, nowEpochMillis);
     }
 
     private String providerIdFor(

@@ -11,6 +11,48 @@ class AgentRoleResultValidatorTest {
     private final AgentRoleResultValidator validator = new AgentRoleResultValidator();
 
     @Test
+    void shouldAcceptPiV2QaExplicitCodingRequestForAnyFailureCategory() {
+        AgentRoleResultValidation validation = validator.validate("QA_AGENT", """
+                {
+                  "status":"FAILED","summary":"product bug observed during environment setup",
+                  "failureCategory":"ENVIRONMENT","retryRecommendation":"CODING_AGENT",
+                  "browserValidation":{"required":false,"performed":false,"decisionSource":"NOT_APPLICABLE","baseUrl":"","browser":"chromium","viewports":[]},
+                  "acceptanceResults":[
+                    {"criteriaId":"ac-current-1","criteria":"current","scope":"CURRENT","command":"npm test","status":"FAILED","exitCode":1,"durationMillis":10,"logArtifactId":"qa-evidence/commands/current.log","evidenceArtifactIds":["qa-evidence/commands/current.log"]},
+                    {"criteriaId":"ac-regression-1","criteria":"regression","scope":"REGRESSION","command":"npm test","status":"PASSED","exitCode":0,"durationMillis":10,"logArtifactId":"qa-evidence/commands/regression.log","evidenceArtifactIds":["qa-evidence/commands/regression.log"]}
+                  ],
+                  "evidenceManifestArtifactId":"qa-evidence/manifest.json",
+                  "remediationRequest":{"requested":true,"targetRole":"CODING_AGENT","reason":"Fix the checkout bug","bugFindingIds":["bug-1"]},
+                  "bugFindings":[{"id":"bug-1","severity":"HIGH","acceptanceCriteriaId":"ac-current-1","reproductionSteps":["run npm test"],"expected":"checkout succeeds","actual":"checkout fails","evidenceArtifactIds":["qa-evidence/commands/current.log"],"suspectedFiles":["src/checkout.ts"]}]
+                }
+                """, true);
+
+        assertTrue(validation.valid(), () -> String.join(", ", validation.errors()));
+    }
+
+    @Test
+    void shouldRejectContradictoryPiV2QaRemediationRequest() {
+        AgentRoleResultValidation validation = validator.validate("QA_AGENT", """
+                {
+                  "status":"PASSED","summary":"passed but forged remediation",
+                  "failureCategory":"NONE","retryRecommendation":"NONE",
+                  "browserValidation":{"required":false,"performed":false,"decisionSource":"NOT_APPLICABLE","baseUrl":"","browser":"chromium","viewports":[]},
+                  "acceptanceResults":[
+                    {"criteriaId":"ac-current-1","criteria":"current","scope":"CURRENT","command":"npm test","status":"PASSED","exitCode":0,"durationMillis":10,"logArtifactId":"qa-evidence/commands/current.log","evidenceArtifactIds":["qa-evidence/commands/current.log"]},
+                    {"criteriaId":"ac-regression-1","criteria":"regression","scope":"REGRESSION","command":"npm test","status":"PASSED","exitCode":0,"durationMillis":10,"logArtifactId":"qa-evidence/commands/regression.log","evidenceArtifactIds":["qa-evidence/commands/regression.log"]}
+                  ],
+                  "evidenceManifestArtifactId":"qa-evidence/manifest.json",
+                  "remediationRequest":{"requested":true,"targetRole":"CODING_AGENT","reason":"forged","bugFindingIds":["missing"]},
+                  "bugFindings":[]
+                }
+                """, true);
+
+        assertFalse(validation.valid());
+        assertTrue(validation.errors().stream().anyMatch(error -> error.contains("requires status FAILED")));
+        assertTrue(validation.errors().stream().anyMatch(error -> error.contains("unknown bug finding")));
+    }
+
+    @Test
     void shouldAcceptRequirementReviewResultWithFeasibilityAndCoverage() {
         AgentRoleResultValidation validation = validator.validate("REQUIREMENT_REVIEWER", """
                 {

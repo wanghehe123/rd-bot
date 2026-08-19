@@ -130,6 +130,20 @@ export interface RdTaskStageRun {
   finishedAtEpochMillis: number;
   elapsedMillis: number;
   running: boolean;
+  runtimeType?: string;
+  agentStateAvailable?: boolean;
+  agentStateSequence?: number;
+  agentStateSchemaVersion?: number | string;
+  agentStateTodoInProgressCount?: number;
+  agentStateTodoBlockedCount?: number;
+  agentStateTodoPendingCount?: number;
+  agentStateTodoDoneCount?: number;
+  agentStatePreviewTruncated?: boolean;
+  agentStateContentHash?: string;
+  agentLastInjectionSequence?: number;
+  agentLastInjectedStateSequence?: number;
+  agentLastInjectedBlockHash?: string;
+  agentLastInjectedPromptHash?: string;
 }
 
 export interface RdTaskRunningExecution {
@@ -189,8 +203,91 @@ export interface RdTaskRolePromptStage {
   status: string;
   attemptNo: number;
   providerName: string;
+  runtimeType?: string;
   prompt: RdTaskRolePrompt;
   context: RdTaskRolePromptContext;
+  effectiveContext?: RdTaskEffectiveContext;
+  latestState?: RdTaskLatestAgentState;
+}
+
+export interface RdTaskEffectiveContext {
+  available: boolean;
+  unavailableReason: string;
+  source: "LIVE_PROJECTION" | "ARCHIVED_ARTIFACT" | "";
+  finalized: boolean;
+  stale: boolean;
+  staleReason: string;
+  lastProjectionAtEpochMillis: number;
+  staleAfterMillis: number;
+  protocol: string;
+  compositionOrder: string[];
+  injectionSequence: number;
+  promptArtifactId: string;
+  promptContentHash: string;
+  stateArtifactId: string;
+  stateSequence: number;
+  stateContentHash: string;
+  injectedBlockHash: string;
+  contentPreview: string;
+  contentHash: string;
+  contentLength: number;
+  previewLength: number;
+  truncated: boolean;
+  generatedAtEpochMillis: number;
+}
+
+export interface RdTaskLatestAgentState {
+  available: boolean;
+  unavailableReason: string;
+  source: "LIVE_PROJECTION" | "ARCHIVED_ARTIFACT" | "";
+  finalized: boolean;
+  stale: boolean;
+  staleReason: string;
+  lastProjectionAtEpochMillis: number;
+  staleAfterMillis: number;
+  artifactId: string;
+  protocol: string;
+  sequence: number;
+  generatedAtEpochMillis: number;
+  currentGoal: string;
+  phase: string;
+  taskStartedAt: string;
+  stageStartedAt: string;
+  resultStatus: string;
+  blocker: string;
+  budget: RdTaskAgentStateBudget;
+  todos: RdTaskAgentTodo[];
+  recentErrors: RdTaskAgentRecentError[];
+  contentHash: string;
+  previewTruncated: boolean;
+}
+
+export interface RdTaskAgentStateBudget {
+  tokenUsed?: number;
+  tokenMax?: number;
+  tokenUsageRatio?: number;
+  contextUsedChars?: number;
+  contextMaxChars?: number;
+  contextUsageRatio?: number;
+  deadlineEpochMillis?: number;
+  available?: boolean;
+}
+
+export interface RdTaskAgentTodo {
+  id?: string;
+  title: string;
+  status: "IN_PROGRESS" | "BLOCKED" | "PENDING" | "DONE" | "CANCELLED" | string;
+  source?: string;
+  required?: boolean;
+  blockerReason?: string;
+  acceptanceReferences?: string[];
+  evidenceCount?: number;
+}
+
+export interface RdTaskAgentRecentError {
+  summary: string;
+  toolName?: string;
+  timestamp?: string | number;
 }
 
 export interface RdTaskRolePrompt {

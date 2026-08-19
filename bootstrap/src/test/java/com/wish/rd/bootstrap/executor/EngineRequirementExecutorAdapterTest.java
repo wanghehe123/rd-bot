@@ -66,6 +66,41 @@ class EngineRequirementExecutorAdapterTest {
     Path tempDirectory;
 
     @Test
+    void shouldTransferInitialAgentStateAndControlledAttachmentsIntoRuntimeCommand() {
+        List<RepairJobCommand> commands = new java.util.ArrayList<>();
+        EngineRequirementExecutorAdapter adapter = new EngineRequirementExecutorAdapter(command -> {
+            commands.add(command);
+            return new RepairExecutionResult(
+                    RepairExecutionStatus.SUCCESS, "ok", "", List.of(), Map.of(), Map.of(),
+                    Map.of(), Map.of(), Map.of(), ""
+            );
+        });
+        String stateJson = "{\"protocol\":\"rd-agent-state/v2\"}";
+        String stateHash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+        adapter.execute(new RequirementExecutionRequest(
+                "task-1001", task(), List.of(), "implement", AgentRole.CODING_AGENT, "{}",
+                false, "[]", "stage-1", "snapshot-1", "", "", "", "",
+                "rd-agent-state/v2", stateJson, stateHash,
+                List.of(new RequirementExecutionRequest.InitialAgentStateAttachment(
+                        "attachments/state-acceptance-AC-001-a.txt",
+                        "acceptance content",
+                        "sha256:" + sha256("acceptance content".getBytes(StandardCharsets.UTF_8)),
+                        18
+                ))
+        ));
+
+        RepairJobCommand command = commands.getFirst();
+        assertEquals("rd-agent-state/v2", command.contextJson().get("initialAgentStateProtocol"));
+        assertEquals(stateJson, command.contextJson().get("initialAgentStateJson"));
+        assertEquals(stateHash, command.contextJson().get("initialAgentStateHash"));
+        assertTrue(command.attachments().stream().anyMatch(attachment ->
+                attachment.filename().equals("state-acceptance-AC-001-a.txt")
+                        && new String(attachment.content(), StandardCharsets.UTF_8)
+                        .equals("acceptance content")));
+    }
+
+    @Test
     void shouldPreserveRequirementExecutionEvidenceWithoutCreatingPullRequest() throws IOException {
         RepairExecutorPort repairExecutor = ignored -> new RepairExecutionResult(
                 RepairExecutionStatus.SUCCESS,

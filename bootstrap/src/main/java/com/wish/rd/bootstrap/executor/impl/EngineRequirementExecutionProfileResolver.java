@@ -1,7 +1,5 @@
 package com.wish.rd.bootstrap.executor.impl;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wish.rd.engine.agent.model.AgentRole;
 import com.wish.rd.engine.requirement.RequirementExecutionProfileResolverPort;
 import com.wish.rd.engine.requirement.model.RequirementExecutionProfileResolution;
@@ -12,8 +10,10 @@ import com.wish.rd.rag.project.agent.AgentToolPolicyService;
 import com.wish.rd.rag.project.agent.ModelProviderProfileService;
 import com.wish.rd.rag.project.agent.model.AgentExecutionProfile;
 import com.wish.rd.rag.project.agent.model.AgentExecutionProfileSnapshot;
+import com.wish.rd.rag.project.agent.model.AgentManifestCanonicalJson;
 import com.wish.rd.rag.project.agent.model.AgentToolPolicy;
 import com.wish.rd.rag.project.agent.model.AgentRuntimeType;
+import com.wish.rd.rag.project.agent.model.AgentRuntimeCapability;
 import com.wish.rd.rag.project.agent.model.ModelProviderProfile;
 import com.wish.rd.rag.project.agent.model.ModelProviderProtocol;
 import com.wish.rd.rag.runtime.model.RdRequirementTask;
@@ -26,8 +26,6 @@ import java.util.Objects;
 /** Resolves one requirement-delivery profile and freezes it before RUNNING. */
 public final class EngineRequirementExecutionProfileResolver
         implements RequirementExecutionProfileResolverPort {
-
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     private final AgentExecutionProfileService profileService;
     private final AgentExecutionProfileSnapshotService snapshotService;
@@ -151,25 +149,49 @@ public final class EngineRequirementExecutionProfileResolver
             );
         }
 
-        AgentExecutionProfile profile = profileService.resolve(task.projectId(), task.taskId(), role.name())
-                .orElse(null);
-        AgentRuntimeType runtimeType = profile == null
-                ? compatibilityRuntime(role)
-                : profile.runtimeType();
-        String snapshotJson = snapshotJson(task, role, safeStageRunId, attemptNo, runtimeType, profile);
-        AgentExecutionProfileSnapshot requested = new AgentExecutionProfileSnapshot(
-                snapshotId(safeStageRunId),
-                safeStageRunId,
-                task.taskId(),
-                role.name(),
-                attemptNo,
-                runtimeType,
-                snapshotJson,
-                AgentExecutionProfileSnapshot.sha256(snapshotJson),
-                System.currentTimeMillis()
-        );
+        AgentExecutionProfileSnapshot requested = buildSnapshot(task, role, safeStageRunId, attemptNo);
         AgentExecutionProfileSnapshot stored = snapshotService.resolveOrSave(requested);
         return RequirementExecutionProfileResolution.of(stored.snapshotId(), stored.snapshotJson());
+    }
+
+    @Override
+    public AgentExecutionProfileSnapshot prepareSnapshot(
+            RdRequirementTask task,
+            AgentRole role,
+            String stageRunId,
+            int attemptNo,
+            AgentRuntimeCapability requiredCapability
+    ) {
+        if (task == null || role == null || requiredCapability == null) {
+            throw new IllegalArgumentException("task, role, and requiredCapability must not be null");
+        }
+        String safeStageRunId = requireText(stageRunId, "stageRunId");
+        if (snapshotStore.findByStageRunId(safeStageRunId).isPresent()) {
+            throw new IllegalStateException("prepared target stage already has a profile snapshot: " + safeStageRunId);
+        }
+        AgentExecutionProfileSnapshot prepared = buildSnapshot(task, role, safeStageRunId, attemptNo);
+        if (prepared.runtimeType() != AgentRuntimeType.PI || !prepared.hasCapability(requiredCapability)) {
+            throw new IllegalStateException("prepared target profile is not eligible PI runtime: "
+                    + safeStageRunId + " requires " + requiredCapability.name());
+        }
+        return prepared;
+    }
+
+    private AgentExecutionProfileSnapshot buildSnapshot(
+            RdRequirementTask task,
+            AgentRole role,
+            String stageRunId,
+            int attemptNo
+    ) {
+        if (attemptNo <= 0) throw new IllegalArgumentException("attemptNo must be positive");
+        AgentExecutionProfile profile = profileService.resolve(task.projectId(), task.taskId(), role.name())
+                .orElse(null);
+        AgentRuntimeType runtimeType = profile == null ? compatibilityRuntime(role) : profile.runtimeType();
+        String snapshotJson = snapshotJson(task, role, stageRunId, attemptNo, runtimeType, profile);
+        return new AgentExecutionProfileSnapshot(
+                snapshotId(stageRunId), stageRunId, task.taskId(), role.name(), attemptNo,
+                runtimeType, snapshotJson, AgentExecutionProfileSnapshot.sha256(snapshotJson),
+                System.currentTimeMillis());
     }
 
     private void verifyExisting(
@@ -209,6 +231,9 @@ public final class EngineRequirementExecutionProfileResolver
         value.put("runtimeType", runtimeType.name());
         value.put("profileId", profile == null ? "compatibility-default" : profile.profileId());
         value.put("profileVersion", profile == null ? 0L : profile.version());
+        value.put("capabilities", profile == null
+                ? List.of()
+                : profile.capabilities().stream().map(Enum::name).sorted().toList());
         value.put("providerProfileId", profile == null ? "legacy" : profile.providerProfileId());
         value.put("modelOverride", profile == null ? "" : profile.modelOverride());
         value.put("extensionSetId", profile == null ? "" : profile.extensionSetId());
@@ -232,11 +257,7 @@ public final class EngineRequirementExecutionProfileResolver
         value.put("dynamicStateEnabled", dynamicStateEnabled);
         value.put("maxInjectedStateBytes", maxInjectedStateBytes);
         value.put("toolRetryPolicyVersion", "rd-tool-retry/v1");
-        try {
-            return OBJECT_MAPPER.writeValueAsString(value);
-        } catch (JsonProcessingException exception) {
-            throw new IllegalStateException("AGENT_RUNTIME_SNAPSHOT_UNAVAILABLE: serialize snapshot", exception);
-        }
+        return AgentManifestCanonicalJson.canonicalJson(value);
     }
 
     private AgentToolPolicy resolveToolPolicy(

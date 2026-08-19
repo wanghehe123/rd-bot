@@ -1,4 +1,5 @@
 import { pathToFileURL } from "node:url";
+import { createHash } from "node:crypto";
 import { appendFile, mkdir, readFile, writeFile, rename, access } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -30,6 +31,7 @@ import {
   redact,
   validateRequest,
   validateRequestV2,
+  validatedInitialAgentStateV2,
 } from "./protocol.mjs";
 import { EventNormalizer } from "./event-normalizer.mjs";
 import {
@@ -49,8 +51,12 @@ import {
 } from "./result-tool.mjs";
 import { AgentStateProjector } from "./agent-state-projector.mjs";
 import { createAgentStateTools, STATE_TOOL_NAMES } from "./agent-state-tools.mjs";
-import { createDynamicStateExtension } from "./context-state-injection.mjs";
+import { createDynamicStateExtension, hashPrompt } from "./context-state-injection.mjs";
 import { runHostBrowserProbe } from "./host-browser-probe.mjs";
+import {
+  PI_PROTOCOL_FAILURE_KINDS,
+  writePiProtocolFailureReceipt,
+} from "./pi-protocol-failure-receipt.mjs";
 
 const RESULT_TOOL_NAME = "rd_submit_result";
 const DEFAULT_OUTPUT_PATH = "/work/output";
@@ -89,6 +95,7 @@ export async function run(options = {}) {
     model: request.model,
     hostAssertionContracts: request.hostAssertionContracts ?? [],
     candidateChangedFiles,
+    qaRemediationV2Enabled: request.qaRemediationV2Enabled === true,
   };
   const sink = new EventSink(paths, context, maxRawEventBytes());
   const startedAt = new Date().toISOString();
@@ -96,6 +103,17 @@ export async function run(options = {}) {
   let unsubscribe;
   let settled = false;
   let resultAccepted = false;
+  const protocolFacts = {
+    resultSubmitted: false,
+    resultSubmissionSource: "NONE",
+    roleSchemaAccepted: false,
+    acceptedResultDigest: "",
+    recoveryApplicable: false,
+    recoveryIssued: false,
+    recoveryExhausted: false,
+    lastRejectionKind: "NONE",
+    lastRejectionDigest: "",
+  };
   let protocolSucceeded = false;
   let failure;
   let verifiedManifest;
@@ -137,6 +155,7 @@ export async function run(options = {}) {
     }
     const settingsManager = safeSettingsManager(skillManifest.skillPaths);
     const dynamicState = resolveDynamicStateConfig(request);
+    const initialState = validatedInitialAgentStateV2(request);
     if (dynamicState.enabled) {
       assertStateToolsPermitted(request.toolPolicy);
     }
@@ -157,6 +176,8 @@ export async function run(options = {}) {
         },
         outputPath: paths.output,
         maxInjectedStateBytes: dynamicState.maxInjectedStateBytes,
+        initialState,
+        onSnapshotUpdated: (payload) => sink.lifecycle("STATE_SNAPSHOT_UPDATED", payload),
       });
       await stateProjector.initialize();
       stateTools = createAgentStateTools({ projector: stateProjector, sink });
@@ -164,6 +185,7 @@ export async function run(options = {}) {
         projector: stateProjector,
         sink,
         stageRunId: request.stageRunId,
+        promptHash: hashPrompt(request.prompt),
       }));
     }
     const resourceLoader = createApprovedResourceLoader({
@@ -278,8 +300,16 @@ export async function run(options = {}) {
       sink,
       context,
       stateProjector,
-      onAccepted: () => {
+      onAccepted: ({ digest }) => {
         resultAccepted = true;
+        protocolFacts.resultSubmitted = true;
+        protocolFacts.resultSubmissionSource = "AGENT_RD_SUBMIT_RESULT";
+        protocolFacts.roleSchemaAccepted = true;
+        protocolFacts.acceptedResultDigest = digest;
+      },
+      onRejected: ({ kind, digest }) => {
+        protocolFacts.lastRejectionKind = kind;
+        protocolFacts.lastRejectionDigest = digest;
       },
     });
     const sessionManager = SessionManager.create(request.repoPath, paths.session);
@@ -318,6 +348,8 @@ export async function run(options = {}) {
     } else if (settled && !resultAccepted) {
       // Sessions can settle without the result tool (for example a length-stopped
       // turn with no tool call). Issue exactly one recovery prompt before failing.
+      protocolFacts.recoveryApplicable = true;
+      protocolFacts.recoveryIssued = true;
       await safeLifecycle(sink, "PROTOCOL_ERROR", {
         category: "PI_RESULT_RECOVERY",
         error: "session settled without rd_submit_result; issuing one recovery prompt",
@@ -329,6 +361,7 @@ export async function run(options = {}) {
       );
       await session.waitForIdle();
       await sink.flush();
+      if (!resultAccepted) protocolFacts.recoveryExhausted = true;
     }
     if (!resultAccepted) {
       if (!settled) throw new Error("Pi session became idle without agent_settled");
@@ -371,8 +404,12 @@ export async function run(options = {}) {
             ? "Agent stopped after exhausting the coding-benchmark turn/token budget"
             : FAILURE_RESULT.summary,
           errorMessage: boundedText(safeError(error), 4096),
-        }, () => {
+        }, ({ digest }) => {
           resultAccepted = true;
+          protocolFacts.resultSubmitted = true;
+          protocolFacts.resultSubmissionSource = "BRIDGE_SYNTHETIC";
+          protocolFacts.roleSchemaAccepted = false;
+          protocolFacts.acceptedResultDigest = "";
         }, stateProjector);
         try {
           await ensureDeliveryArtifacts(
@@ -406,6 +443,25 @@ export async function run(options = {}) {
     }
     if (unsubscribe) unsubscribe();
     if (session) session.dispose();
+    if (request.qaRemediationV2Enabled === true && request.role === "QA_AGENT") {
+      const receipt = protocolFailureReceiptFromFacts(request, {
+        ...protocolFacts,
+        agentSettled: settled,
+      });
+      if (receipt) {
+        try {
+          const written = await writePiProtocolFailureReceipt(paths.protocolFailureReceipt, receipt);
+          await safeLifecycle(sink, "ARTIFACT_WRITTEN", {
+            artifact: "pi-protocol-failure-receipt.json",
+            path: paths.protocolFailureReceipt,
+            sha256: written.hash,
+            kind: receipt.kind,
+          });
+        } catch (receiptError) {
+          console.error(`[rd-pi-bridge] failed to write protocol failure receipt: ${safeError(receiptError)}`);
+        }
+      }
+    }
     await safeLifecycle(sink, "RUNTIME_STOPPED", {
       runtime: "PI",
       settled,
@@ -445,7 +501,8 @@ export async function run(options = {}) {
 
 async function acceptBridgeFailureResult(paths, sink, result, onAccepted, stateProjector) {
   await writeResultAtomically(paths.result, result);
-  onAccepted();
+  const digest = await sha256File(paths.result);
+  onAccepted({ digest });
   if (stateProjector) {
     await stateProjector.projectTerminalResult({
       status: result.status ?? "FAILED",
@@ -455,8 +512,73 @@ async function acceptBridgeFailureResult(paths, sink, result, onAccepted, stateP
   await safeLifecycle(sink, "RESULT_SUBMITTED", {
     status: result.status,
     summary: boundedText(result.summary, 4096),
-    source: "bridge-budget-or-protocol",
+    source: "BRIDGE_SYNTHETIC",
+    diagnosticSource: "bridge-budget-or-protocol",
   });
+}
+
+export function protocolFailureReceiptFromFacts(request, facts, generatedAt = new Date().toISOString()) {
+  let kind;
+  let missingFacts;
+  const recoveryAll = facts.recoveryApplicable === true
+    && facts.recoveryIssued === true
+    && facts.recoveryExhausted === true;
+  if (facts.resultSubmissionSource === "AGENT_RD_SUBMIT_RESULT"
+      && facts.roleSchemaAccepted === true
+      && facts.resultSubmitted === true
+      && facts.agentSettled === false
+      && typeof facts.acceptedResultDigest === "string"
+      && facts.acceptedResultDigest !== "") {
+    kind = PI_PROTOCOL_FAILURE_KINDS.AGENT_SETTLED_MISSING;
+    missingFacts = ["AGENT_SETTLED"];
+  } else if (facts.agentSettled === true
+      && recoveryAll
+      && facts.resultSubmissionSource !== "AGENT_RD_SUBMIT_RESULT"
+      && facts.lastRejectionKind === "ROLE_SCHEMA"
+      && typeof facts.lastRejectionDigest === "string"
+      && facts.lastRejectionDigest !== "") {
+    kind = PI_PROTOCOL_FAILURE_KINDS.ROLE_SCHEMA_REJECTED_AFTER_RECOVERY;
+    missingFacts = ["AGENT_RESULT_SUBMITTED", "ROLE_SCHEMA_ACCEPTED_RESULT"];
+  } else if (facts.agentSettled === true
+      && recoveryAll
+      && facts.resultSubmissionSource !== "AGENT_RD_SUBMIT_RESULT") {
+    kind = PI_PROTOCOL_FAILURE_KINDS.RESULT_MISSING_AFTER_RECOVERY;
+    missingFacts = ["AGENT_RESULT_SUBMITTED"];
+  } else {
+    return undefined;
+  }
+  return {
+    protocol: "PiProtocolFailureReceipt/v1",
+    kind,
+    missingFacts,
+    resultSubmitted: facts.resultSubmitted === true,
+    resultSubmissionSource: facts.resultSubmissionSource ?? "NONE",
+    roleSchemaAccepted: facts.roleSchemaAccepted === true,
+    acceptedResultDigest: facts.acceptedResultDigest ?? "",
+    agentSettled: facts.agentSettled === true,
+    eventStreamTrusted: true,
+    containerTerminated: true,
+    recoveryApplicable: facts.recoveryApplicable === true,
+    recoveryIssued: facts.recoveryIssued === true,
+    recoveryExhausted: facts.recoveryExhausted === true,
+    lastRejectionKind: facts.lastRejectionKind ?? "NONE",
+    lastRejectionDigest: facts.lastRejectionDigest ?? "",
+    diagnosticArtifactIds: [
+      "agent-events.jsonl",
+      "runtime-meta.json",
+      ...(facts.resultSubmitted === true ? ["result.json"] : []),
+    ],
+    taskId: request.taskId,
+    stageRunId: request.stageRunId,
+    role: request.role,
+    attemptNo: request.attemptNo,
+    generatedAt,
+  };
+}
+
+async function sha256File(path) {
+  const content = await readFile(path);
+  return `sha256:${createHash("sha256").update(content).digest("hex")}`;
 }
 
 export function executionPrompt(request, skillManifest = { skills: [] }) {
@@ -504,6 +626,9 @@ function roleArtifactInstructions(role, request = {}) {
         "Run the acceptance and regression checks yourself and record real evidence; do not fabricate test output.",
         "Your submitted result JSON must satisfy the QA_AGENT role protocol: include the QA report fields and one evidence entry per acceptance criterion at the top level of the result object alongside status and summary.",
         "For QA the result status MUST be one of PASSED, FAILED, or SKIPPED (not SUCCESS): use PASSED when every acceptance criterion is verified, FAILED otherwise, SKIPPED only when validation cannot run.",
+        ...(request.qaRemediationV2Enabled === true ? [
+          "This Attempt enables PI_QA_REMEDIATION_V2. Always include remediationRequest and bugFindings. Set remediationRequest.requested=true only when a reproducible bug requires CODING_AGENT work; each selected finding must point to a FAILED acceptanceResults.criteriaId and its real evidence files. For environment, authentication, infrastructure, ambiguity, or flaky failures that do not need a code fix, set requested=false and bugFindings=[].",
+        ] : []),
         ...hostAssertionContractInstructions(request),
       ];
     default:
@@ -677,6 +802,7 @@ function outputPaths(outputPath) {
     runtimeContextManifest: join(output, "runtime-context-manifest.json"),
     events: join(output, "agent-events.jsonl"),
     result: join(output, "result.json"),
+    protocolFailureReceipt: join(output, "pi-protocol-failure-receipt.json"),
   };
 }
 
@@ -930,7 +1056,15 @@ function stringSet(value, fallback) {
   return new Set(values.filter((item) => typeof item === "string" && item.trim() !== ""));
 }
 
-export function createResultTool({ resultPath, outputRoot, sink, context, onAccepted, stateProjector }) {
+export function createResultTool({
+  resultPath,
+  outputRoot,
+  sink,
+  context,
+  onAccepted,
+  onRejected = () => {},
+  stateProjector,
+}) {
   return defineTool({
     name: RESULT_TOOL_NAME,
     label: "Submit RD result",
@@ -953,6 +1087,7 @@ export function createResultTool({ resultPath, outputRoot, sink, context, onAcce
           {},
           context.hostAssertionContracts ?? [],
           context.candidateChangedFiles,
+          context.qaRemediationV2Enabled,
         );
         const manifestErrors = context.role === "QA_AGENT"
           ? await validateQaEvidenceManifest(result, outputRoot)
@@ -962,7 +1097,8 @@ export function createResultTool({ resultPath, outputRoot, sink, context, onAcce
           throw new Error(`role protocol violations: ${protocolErrors.join("; ")}. Fix every listed field and call ${RESULT_TOOL_NAME} again with the complete result.`);
         }
         await writeResultAtomically(resultPath, result);
-        onAccepted();
+        const digest = await sha256File(resultPath);
+        onAccepted({ digest, result });
         const submittedStatus = result.status ?? result.decision ?? "";
         const submittedSummary = typeof result.summary === "string"
           ? result.summary
@@ -976,6 +1112,9 @@ export function createResultTool({ resultPath, outputRoot, sink, context, onAcce
         await sink.lifecycle("RESULT_SUBMITTED", {
           status: submittedStatus,
           summary: boundedText(submittedSummary, 4096),
+          source: "AGENT_RD_SUBMIT_RESULT",
+          resultDigest: digest,
+          roleSchemaAccepted: true,
         });
         return {
           content: [{ type: "text", text: "Structured result accepted. Stop and do not submit another result." }],
@@ -983,8 +1122,17 @@ export function createResultTool({ resultPath, outputRoot, sink, context, onAcce
           terminate: true,
         };
       } catch (error) {
+        const message = safeError(error);
+        const roleSchemaRejected = message.startsWith("role protocol violations:");
+        const rejectionKind = roleSchemaRejected ? "ROLE_SCHEMA" : "NONE";
+        const rejectionDigest = roleSchemaRejected
+          ? `sha256:${createHash("sha256").update(message, "utf8").digest("hex")}`
+          : "";
+        onRejected({ kind: rejectionKind, digest: rejectionDigest });
         await sink.lifecycle("RESULT_REJECTED", {
-          error: safeError(error),
+          error: message,
+          rejectionKind,
+          rejectionDigest,
         });
         throw error;
       }

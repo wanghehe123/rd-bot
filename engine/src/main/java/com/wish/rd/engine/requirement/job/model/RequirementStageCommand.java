@@ -1,7 +1,10 @@
 package com.wish.rd.engine.requirement.job.model;
 
 import com.wish.rd.engine.scheduling.model.ScheduleResourceClass;
+import com.wish.rd.engine.requirement.policy.CanonicalJsonSha256;
+import com.wish.rd.engine.requirement.remediation.model.AgentRemediationKind;
 
+import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.EnumSet;
 import java.util.Set;
@@ -40,8 +43,16 @@ public record RequirementStageCommand(
         String policyRunId,
         String retryCheckpointId,
         long businessGeneration,
-        String targetRetryBindingId
+        String targetRetryBindingId,
+        String remediationRoundId,
+        AgentRemediationKind remediationKind,
+        int remediationNo,
+        String remediationSourceStageRunId,
+        String remediationRequestJson,
+        String remediationRequestHash
 ) {
+
+    private static final int MAX_REMEDIATION_REQUEST_BYTES = 65_536;
 
     /** Durable stage lifecycle. */
     public enum Status {
@@ -91,7 +102,48 @@ public record RequirementStageCommand(
         retryCheckpointId = safe(retryCheckpointId);
         businessGeneration = Math.max(0L, businessGeneration);
         targetRetryBindingId = safe(targetRetryBindingId);
-        validateRetryIdentity(retryCheckpointId, businessGeneration, targetRetryBindingId, stage);
+        remediationRoundId = safe(remediationRoundId);
+        remediationSourceStageRunId = safe(remediationSourceStageRunId);
+        remediationRequestJson = safe(remediationRequestJson);
+        remediationRequestHash = safe(remediationRequestHash).toLowerCase(java.util.Locale.ROOT);
+        validateGenerationIdentity(retryCheckpointId, businessGeneration, targetRetryBindingId, stage,
+                remediationRoundId, remediationKind, remediationNo);
+        validateRemediationRequest(remediationRoundId, remediationSourceStageRunId,
+                remediationRequestJson, remediationRequestHash);
+    }
+
+    /** Compatibility constructor for rows written before immutable remediation requests. */
+    public RequirementStageCommand(
+            String commandId, String taskId, long taskVersion, long fencingToken, String role, String stage,
+            int attemptNo, int maxAttempts, long deadlineEpochMillis, ScheduleResourceClass resourceClass,
+            Set<ScheduleResourceClass> resourceRequirements, String projectId, String providerId, int priorityRank,
+            Status status, String leaseOwner, long leaseUntilEpochMillis, long nextVisibleAtEpochMillis,
+            String lastError, long createdAtEpochMillis, long updatedAtEpochMillis, String policyRunId,
+            String retryCheckpointId, long businessGeneration, String targetRetryBindingId,
+            String remediationRoundId, AgentRemediationKind remediationKind, int remediationNo
+    ) {
+        this(commandId, taskId, taskVersion, fencingToken, role, stage, attemptNo, maxAttempts,
+                deadlineEpochMillis, resourceClass, resourceRequirements, projectId, providerId, priorityRank,
+                status, leaseOwner, leaseUntilEpochMillis, nextVisibleAtEpochMillis, lastError,
+                createdAtEpochMillis, updatedAtEpochMillis, policyRunId, retryCheckpointId,
+                businessGeneration, targetRetryBindingId, remediationRoundId, remediationKind, remediationNo,
+                "", "", "");
+    }
+
+    /** Backward-compatible canonical constructor for normal/checkpoint commands. */
+    public RequirementStageCommand(
+            String commandId, String taskId, long taskVersion, long fencingToken, String role, String stage,
+            int attemptNo, int maxAttempts, long deadlineEpochMillis, ScheduleResourceClass resourceClass,
+            Set<ScheduleResourceClass> resourceRequirements, String projectId, String providerId, int priorityRank,
+            Status status, String leaseOwner, long leaseUntilEpochMillis, long nextVisibleAtEpochMillis,
+            String lastError, long createdAtEpochMillis, long updatedAtEpochMillis, String policyRunId,
+            String retryCheckpointId, long businessGeneration, String targetRetryBindingId
+    ) {
+        this(commandId, taskId, taskVersion, fencingToken, role, stage, attemptNo, maxAttempts,
+                deadlineEpochMillis, resourceClass, resourceRequirements, projectId, providerId, priorityRank,
+                status, leaseOwner, leaseUntilEpochMillis, nextVisibleAtEpochMillis, lastError,
+                createdAtEpochMillis, updatedAtEpochMillis, policyRunId, retryCheckpointId,
+                businessGeneration, targetRetryBindingId, "", null, 0);
     }
 
     /**
@@ -332,6 +384,40 @@ public record RequirementStageCommand(
                 targetRetryBindingId);
     }
 
+    /** Creates a PI-remediation command bound to an already claimed durable round. */
+    public static RequirementStageCommand remediationPending(
+            String commandId,
+            String taskId,
+            long taskVersion,
+            long fencingToken,
+            String role,
+            String stage,
+            int maxAttempts,
+            long deadlineEpochMillis,
+            ScheduleResourceClass resourceClass,
+            Set<ScheduleResourceClass> resourceRequirements,
+            String projectId,
+            String providerId,
+            String priority,
+            String policyRunId,
+            String remediationRoundId,
+            AgentRemediationKind remediationKind,
+            int remediationNo,
+            String remediationSourceStageRunId,
+            String remediationRequestJson,
+            String remediationRequestHash,
+            long nowEpochMillis
+    ) {
+        requireNewCommandFence(fencingToken);
+        return new RequirementStageCommand(
+                commandId, taskId, taskVersion, fencingToken, role, stage, 0, maxAttempts,
+                deadlineEpochMillis, resourceClass, resourceRequirements, projectId, providerId,
+                priorityRank(priority), Status.PENDING, "", 0L, nowEpochMillis, "",
+                nowEpochMillis, nowEpochMillis, policyRunId, "", 0L, "",
+                remediationRoundId, remediationKind, remediationNo, remediationSourceStageRunId,
+                remediationRequestJson, remediationRequestHash);
+    }
+
     /** Claims this command for one worker. */
     public RequirementStageCommand claimed(String owner, long leaseUntil, long now) {
         return new RequirementStageCommand(
@@ -339,7 +425,8 @@ public record RequirementStageCommand(
                 deadlineEpochMillis, resourceClass, resourceRequirements, projectId, providerId, priorityRank,
                 Status.RUNNING, require(owner, "leaseOwner"), leaseUntil, nextVisibleAtEpochMillis,
                 "", createdAtEpochMillis, now, policyRunId, retryCheckpointId, businessGeneration,
-                targetRetryBindingId
+                targetRetryBindingId, remediationRoundId, remediationKind, remediationNo,
+                remediationSourceStageRunId, remediationRequestJson, remediationRequestHash
         );
     }
 
@@ -349,7 +436,9 @@ public record RequirementStageCommand(
                 commandId, taskId, taskVersion, fencingToken, role, stage, attemptNo, maxAttempts,
                 deadlineEpochMillis, resourceClass, resourceRequirements, projectId, providerId, priorityRank,
                 status, leaseOwner, leaseUntil, nextVisibleAtEpochMillis, lastError, createdAtEpochMillis, now,
-                policyRunId, retryCheckpointId, businessGeneration, targetRetryBindingId
+                policyRunId, retryCheckpointId, businessGeneration, targetRetryBindingId,
+                remediationRoundId, remediationKind, remediationNo,
+                remediationSourceStageRunId, remediationRequestJson, remediationRequestHash
         );
     }
 
@@ -365,7 +454,9 @@ public record RequirementStageCommand(
                 commandId, taskId, taskVersion, fencingToken, role, stage, attemptNo, maxAttempts,
                 deadlineEpochMillis, resourceClass, resourceRequirements, projectId, providerId, priorityRank,
                 target, "", 0L, now, error, createdAtEpochMillis, now, policyRunId,
-                retryCheckpointId, businessGeneration, targetRetryBindingId
+                retryCheckpointId, businessGeneration, targetRetryBindingId,
+                remediationRoundId, remediationKind, remediationNo,
+                remediationSourceStageRunId, remediationRequestJson, remediationRequestHash
         );
     }
 
@@ -423,8 +514,35 @@ public record RequirementStageCommand(
                 commandId, taskId, taskVersion, fencingToken, role, stage, attemptNo, maxAttempts,
                 deadlineEpochMillis, resourceClass, resourceRequirements, projectId, providerId, priorityRank,
                 target, "", 0L, nextVisibleAtEpochMillis, error, createdAtEpochMillis, now, policyRunId,
-                retryCheckpointId, businessGeneration, targetRetryBindingId
+                retryCheckpointId, businessGeneration, targetRetryBindingId,
+                remediationRoundId, remediationKind, remediationNo,
+                remediationSourceStageRunId, remediationRequestJson, remediationRequestHash
         );
+    }
+
+    private static void validateRemediationRequest(
+            String remediationRoundId,
+            String sourceStageRunId,
+            String requestJson,
+            String requestHash
+    ) {
+        if (remediationRoundId.isBlank()) {
+            if (!sourceStageRunId.isBlank() || !requestJson.isBlank() || !requestHash.isBlank()) {
+                throw new IllegalArgumentException("normal command must not carry a remediation request");
+            }
+            return;
+        }
+        if (sourceStageRunId.isBlank() || requestJson.isBlank()
+                || !requestHash.matches("sha256:[0-9a-f]{64}")) {
+            throw new IllegalArgumentException("remediation command requires source/request/hash identity");
+        }
+        String canonical = CanonicalJsonSha256.canonicalize(requestJson);
+        if (canonical.getBytes(StandardCharsets.UTF_8).length > MAX_REMEDIATION_REQUEST_BYTES) {
+            throw new IllegalArgumentException("remediation request exceeds protocol limit");
+        }
+        if (!canonical.equals(requestJson) || !CanonicalJsonSha256.digest(canonical).equals(requestHash)) {
+            throw new IllegalArgumentException("remediation request hash mismatch");
+        }
     }
 
     private static Set<ScheduleResourceClass> normalizeResourceRequirements(
@@ -466,10 +584,30 @@ public record RequirementStageCommand(
         }
     }
 
-    private static void validateRetryIdentity(
-            String checkpointId, long generation, String targetBindingId, String stage
+    private static void validateGenerationIdentity(
+            String checkpointId, long generation, String targetBindingId, String stage,
+            String remediationRoundId, AgentRemediationKind remediationKind, int remediationNo
     ) {
         boolean retry = !checkpointId.isBlank();
+        boolean remediation = !remediationRoundId.isBlank();
+        if (retry && remediation) {
+            throw new IllegalArgumentException("checkpoint and remediation command identities are mutually exclusive");
+        }
+        if (remediation) {
+            if (generation != 0L || !targetBindingId.isBlank() || remediationKind == null
+                    || remediationNo < 1 || remediationNo > remediationKind.maximumRounds()) {
+                throw new IllegalArgumentException("invalid remediation command identity");
+            }
+            try {
+                Long.parseLong(remediationRoundId);
+            } catch (NumberFormatException exception) {
+                throw new IllegalArgumentException("remediation round id must be numeric", exception);
+            }
+            return;
+        }
+        if (remediationKind != null || remediationNo != 0) {
+            throw new IllegalArgumentException("normal/checkpoint command must not carry partial remediation identity");
+        }
         if (!retry) {
             if (generation != 0L || !targetBindingId.isBlank()) {
                 throw new IllegalArgumentException("normal command must not carry retry identity");

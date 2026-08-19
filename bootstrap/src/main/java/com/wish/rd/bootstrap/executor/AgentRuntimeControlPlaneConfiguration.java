@@ -10,11 +10,13 @@ import com.wish.rd.rag.project.agent.AgentToolPolicyService;
 import com.wish.rd.rag.project.agent.AgentToolPolicyStore;
 import com.wish.rd.rag.project.agent.ModelProviderProfileService;
 import com.wish.rd.rag.project.agent.ModelProviderProfileStore;
+import com.wish.rd.rag.project.agent.AgentStageStateProjectionStore;
 import com.wish.rd.rag.project.agent.impl.InMemoryAgentExecutionProfileSnapshotStore;
 import com.wish.rd.rag.project.agent.impl.InMemoryAgentExecutionProfileStore;
 import com.wish.rd.rag.project.agent.impl.InMemoryAgentStrategyProfileStore;
 import com.wish.rd.rag.project.agent.impl.InMemoryAgentToolPolicyStore;
 import com.wish.rd.rag.project.agent.impl.InMemoryModelProviderProfileStore;
+import com.wish.rd.rag.project.agent.impl.InMemoryAgentStageStateProjectionStore;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
@@ -36,6 +38,13 @@ public class AgentRuntimeControlPlaneConfiguration {
     @ConditionalOnMissingBean(AgentExecutionProfileSnapshotStore.class)
     public AgentExecutionProfileSnapshotStore inMemoryAgentExecutionProfileSnapshotStore() {
         return new InMemoryAgentExecutionProfileSnapshotStore();
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "rd.knowledge.store", havingValue = "memory", matchIfMissing = true)
+    @ConditionalOnMissingBean(AgentStageStateProjectionStore.class)
+    public AgentStageStateProjectionStore inMemoryAgentStageStateProjectionStore() {
+        return new InMemoryAgentStageStateProjectionStore();
     }
 
     @Bean

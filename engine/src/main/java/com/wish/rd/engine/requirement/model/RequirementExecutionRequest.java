@@ -38,8 +38,35 @@ public record RequirementExecutionRequest(
         String inputManifestHash,
         String contextPolicyHash,
         String inputManifestJson,
-        String contextPolicyJson
+        String contextPolicyJson,
+        String initialAgentStateProtocol,
+        String initialAgentStateJson,
+        String initialAgentStateHash,
+        List<InitialAgentStateAttachment> initialAgentStateAttachments
 ) {
+
+    public RequirementExecutionRequest(
+            String taskId,
+            RdRequirementTask task,
+            List<TaskMaterial> materials,
+            String prompt,
+            AgentRole role,
+            String roleContextJson,
+            boolean pullRequestRequired,
+            String upstreamResultJson,
+            String stageRunId,
+            String executionProfileSnapshotId,
+            String inputManifestHash,
+            String contextPolicyHash,
+            String inputManifestJson,
+            String contextPolicyJson
+    ) {
+        this(
+                taskId, task, materials, prompt, role, roleContextJson, pullRequestRequired,
+                upstreamResultJson, stageRunId, executionProfileSnapshotId, inputManifestHash,
+                contextPolicyHash, inputManifestJson, contextPolicyJson, "", "", "", List.of()
+        );
+    }
 
     public RequirementExecutionRequest(
             String taskId,
@@ -122,5 +149,51 @@ public record RequirementExecutionRequest(
         contextPolicyHash = contextPolicyHash == null ? "" : contextPolicyHash.strip();
         inputManifestJson = inputManifestJson == null ? "" : inputManifestJson.strip();
         contextPolicyJson = contextPolicyJson == null ? "" : contextPolicyJson.strip();
+        initialAgentStateProtocol = initialAgentStateProtocol == null ? "" : initialAgentStateProtocol.strip();
+        initialAgentStateJson = initialAgentStateJson == null ? "" : initialAgentStateJson;
+        initialAgentStateHash = initialAgentStateHash == null ? "" : initialAgentStateHash.strip().toLowerCase();
+        initialAgentStateAttachments = initialAgentStateAttachments == null
+                ? List.of()
+                : List.copyOf(initialAgentStateAttachments);
+        boolean anyInitialState = !initialAgentStateProtocol.isBlank()
+                || !initialAgentStateJson.isBlank()
+                || !initialAgentStateHash.isBlank();
+        if (anyInitialState && (initialAgentStateProtocol.isBlank()
+                || initialAgentStateJson.isBlank()
+                || initialAgentStateHash.isBlank())) {
+            throw new IllegalArgumentException("initial agent state protocol/json/hash must be supplied together");
+        }
+        if (!initialAgentStateAttachments.isEmpty() && !anyInitialState
+                && initialAgentStateAttachments.stream().anyMatch(attachment ->
+                !"attachments/qa-remediation/request.json".equals(attachment.path()))) {
+            throw new IllegalArgumentException(
+                    "attachments without initial state are restricted to the Host QA remediation package");
+        }
+    }
+
+    public record InitialAgentStateAttachment(String path, String content, String hash, int bytes) {
+        public InitialAgentStateAttachment {
+            path = path == null ? "" : path.replace('\\', '/').strip();
+            content = content == null ? "" : content;
+            hash = hash == null ? "" : hash.strip().toLowerCase();
+            if (!path.startsWith("attachments/") || path.contains("..") || path.endsWith("/")) {
+                throw new IllegalArgumentException("initial state attachment path is unsafe");
+            }
+            byte[] encoded = content.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            if (encoded.length == 0 || bytes != encoded.length) {
+                throw new IllegalArgumentException("initial state attachment bytes mismatch");
+            }
+            String actualHash;
+            try {
+                actualHash = "sha256:" + java.util.HexFormat.of().formatHex(
+                        java.security.MessageDigest.getInstance("SHA-256").digest(encoded)
+                );
+            } catch (java.security.NoSuchAlgorithmException exception) {
+                throw new IllegalStateException("SHA-256 is unavailable", exception);
+            }
+            if (!actualHash.equals(hash)) {
+                throw new IllegalArgumentException("initial state attachment hash mismatch");
+            }
+        }
     }
 }

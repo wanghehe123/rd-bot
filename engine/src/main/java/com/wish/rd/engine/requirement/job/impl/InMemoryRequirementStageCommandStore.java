@@ -36,6 +36,7 @@ public final class InMemoryRequirementStageCommandStore implements RequirementSt
                 .filter(existing -> existing.role().equals(command.role()))
                 .filter(existing -> existing.stage().equals(command.stage()))
                 .filter(existing -> existing.retryCheckpointId().equals(command.retryCheckpointId()))
+                .filter(existing -> existing.remediationRoundId().equals(command.remediationRoundId()))
                 .findFirst()
                 .orElse(null);
         if (existingIdentity != null) {
@@ -58,6 +59,7 @@ public final class InMemoryRequirementStageCommandStore implements RequirementSt
                 .filter(command -> command.role().equals(expectedRole))
                 .filter(command -> command.stage().equals(expectedStage))
                 .filter(command -> command.retryCheckpointId().isBlank())
+                .filter(command -> command.remediationRoundId().isBlank())
                 .findFirst();
     }
 
@@ -74,6 +76,21 @@ public final class InMemoryRequirementStageCommandStore implements RequirementSt
                 .filter(command -> command.role().equals(expectedRole))
                 .filter(command -> command.stage().equals(expectedStage))
                 .filter(command -> command.retryCheckpointId().equals(expectedCheckpoint))
+                .filter(command -> command.remediationRoundId().isBlank())
+                .findFirst();
+    }
+
+    @Override
+    public synchronized Optional<RequirementStageCommand> findByRemediation(
+            String taskId, String role, String stage, String remediationRoundId
+    ) {
+        String expectedRound = safe(remediationRoundId);
+        return commands.values().stream()
+                .filter(command -> command.taskId().equals(safe(taskId)))
+                .filter(command -> command.role().equals(safe(role)))
+                .filter(command -> command.stage().equals(safe(stage)))
+                .filter(command -> command.retryCheckpointId().isBlank())
+                .filter(command -> command.remediationRoundId().equals(expectedRound))
                 .findFirst();
     }
 
@@ -384,7 +401,8 @@ public final class InMemoryRequirementStageCommandStore implements RequirementSt
                         RequirementStageCommand.Status.DEAD_LETTERED, "", 0L, next.nextVisibleAtEpochMillis(),
                         next.lastError(), next.createdAtEpochMillis(), next.updatedAtEpochMillis(),
                         next.policyRunId(), next.retryCheckpointId(), next.businessGeneration(),
-                        next.targetRetryBindingId());
+                        next.targetRetryBindingId(), next.remediationRoundId(), next.remediationKind(),
+                        next.remediationNo());
             }
             commands.put(next.commandId(), next);
             dead.add(next);
@@ -468,7 +486,10 @@ public final class InMemoryRequirementStageCommandStore implements RequirementSt
                 || !requested.policyRunId().equals(effective.policyRunId())
                 || !requested.retryCheckpointId().equals(effective.retryCheckpointId())
                 || requested.businessGeneration() != effective.businessGeneration()
-                || !requested.targetRetryBindingId().equals(effective.targetRetryBindingId())) {
+                || !requested.targetRetryBindingId().equals(effective.targetRetryBindingId())
+                || !requested.remediationRoundId().equals(effective.remediationRoundId())
+                || requested.remediationKind() != effective.remediationKind()
+                || requested.remediationNo() != effective.remediationNo()) {
             throw new IllegalStateException("stage command enqueue conflict has a different durable identity");
         }
     }

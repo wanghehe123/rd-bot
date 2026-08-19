@@ -19,6 +19,14 @@ import com.wish.rd.framework.id.SnowflakeIdGenerator;
 import com.wish.rd.rag.context.RoleContextPackageStore;
 import com.wish.rd.rag.context.impl.InMemoryRoleContextPackageStore;
 import com.wish.rd.rag.context.model.RoleContextPackage;
+import com.wish.rd.rag.project.agent.impl.InMemoryAgentExecutionProfileSnapshotStore;
+import com.wish.rd.rag.project.agent.impl.InMemoryAgentStageStateProjectionStore;
+import com.wish.rd.rag.project.agent.model.AgentContextInjectionProjectionUpdate;
+import com.wish.rd.rag.project.agent.model.AgentExecutionProfileSnapshot;
+import com.wish.rd.rag.project.agent.model.AgentRuntimeType;
+import com.wish.rd.rag.project.agent.model.AgentStageStateIdentity;
+import com.wish.rd.rag.project.agent.model.AgentStateProjectionUpdate;
+import com.wish.rd.rag.project.agent.model.AgentStateV2Codec;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
 import com.wish.rd.rag.runtime.impl.InMemoryRdTaskStatusEventStore;
 import com.wish.rd.rag.runtime.impl.InMemoryRdTaskStore;
@@ -56,6 +64,8 @@ class RdTaskExecutionOverviewControllerTest {
     private RoleContextPackageStore contextPackageStore;
     private DockerExecutionRegistry executionRegistry;
     private InMemoryAgentExecutionEventStore eventStore;
+    private InMemoryAgentExecutionProfileSnapshotStore profileSnapshotStore;
+    private InMemoryAgentStageStateProjectionStore stateProjectionStore;
 
     @TempDir
     Path temporaryDirectory;
@@ -71,6 +81,8 @@ class RdTaskExecutionOverviewControllerTest {
         contextPackageStore = new InMemoryRoleContextPackageStore();
         executionRegistry = DockerExecutionRegistry.noop();
         eventStore = new InMemoryAgentExecutionEventStore();
+        profileSnapshotStore = new InMemoryAgentExecutionProfileSnapshotStore();
+        stateProjectionStore = new InMemoryAgentStageStateProjectionStore();
         DockerExecutorProperties properties = new DockerExecutorProperties();
         properties.setBudgetAlertCny(new java.math.BigDecimal("54.00"));
         mockMvc = MockMvcBuilders.standaloneSetup(new RdTaskExecutionOverviewController(
@@ -81,8 +93,57 @@ class RdTaskExecutionOverviewControllerTest {
                 executionRegistry,
                 eventStore,
                 properties,
-                new FinancialProperties().toBudgetCurrencyConverter()
+                new FinancialProperties().toBudgetCurrencyConverter(),
+                profileSnapshotStore,
+                stateProjectionStore,
+                () -> 1_783_000_100_000L
         )).build();
+    }
+
+    @Test
+    void shouldExposeIndependentLatestStateAndInjectionProvenance() throws Exception {
+        RdRequirementTask task = registry.createRequirementTask(new CreateRequirementTaskCommand(
+                "独立状态与注入序列", "P1", "https://github.com/example/repo.git", "example", "repo", "main",
+                "overview 展示状态与注入", List.of("injection-only refresh 可见"), false
+        ));
+        AgentStageRun stage = stageRunStore.save(new AgentStageRun(
+                "stage-overview-state-v2", task.taskId(), AgentRole.CODING_AGENT,
+                AgentStageStatus.RUNNING, 1, task.taskId() + ":CODING_AGENT:1", "", "", "",
+                "pi", "[]", "{}", "", "", 1_783_000_000_000L, 1_783_000_090_000L,
+                1_783_000_000_000L, 0L
+        ));
+        savePiV2Profile(stage);
+        AgentStageStateIdentity identity = new AgentStageStateIdentity(
+                task.taskId(), stage.stageRunId(), stage.role().name(), stage.attemptNo()
+        );
+        String state = overviewStateJson(task.taskId(), stage.stageRunId(), 5);
+        String stateHash = hashState(state);
+        String promptHash = sha256("prompt");
+        stateProjectionStore.projectState(new AgentStateProjectionUpdate(
+                identity, 5, stateHash, state, 1_783_000_095_000L
+        ));
+        String blockOne = "<state>one</state>";
+        stateProjectionStore.projectInjection(new AgentContextInjectionProjectionUpdate(
+                identity, 1, 5, stateHash, promptHash, sha256(blockOne), blockOne,
+                sha256(stage.stageRunId() + ":1:" + sha256(blockOne)), 1_783_000_096_000L
+        ));
+        String blockTwo = "<state>two</state>";
+        stateProjectionStore.projectInjection(new AgentContextInjectionProjectionUpdate(
+                identity, 2, 5, stateHash, promptHash, sha256(blockTwo), blockTwo,
+                sha256(stage.stageRunId() + ":2:" + sha256(blockTwo)), 1_783_000_097_000L
+        ));
+
+        mockMvc.perform(get("/admin/rd-tasks/{taskId}/execution-overview", task.taskId()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.stageRuns[0].runtimeType", is("PI")))
+                .andExpect(jsonPath("$.stageRuns[0].agentStateSource", is("LIVE_PROJECTION")))
+                .andExpect(jsonPath("$.stageRuns[0].agentStateSequence", is(5)))
+                .andExpect(jsonPath("$.stageRuns[0].agentLastInjectionSequence", is(2)))
+                .andExpect(jsonPath("$.stageRuns[0].agentLastInjectedStateSequence", is(5)))
+                .andExpect(jsonPath("$.stageRuns[0].agentLastInjectedBlockHash", is(sha256(blockTwo))))
+                .andExpect(jsonPath("$.stageRuns[0].agentLastInjectedPromptHash", is(promptHash)))
+                .andExpect(jsonPath("$.stageRuns[0].agentStateStale", is(false)))
+                .andExpect(jsonPath("$.stageRuns[0].agentLatestStateNotInjected", is(false)));
     }
 
     @Test
@@ -716,5 +777,52 @@ class RdTaskExecutionOverviewControllerTest {
         return new com.fasterxml.jackson.databind.ObjectMapper().readTree("""
                 {"protocol":"rd-agent-event/v1","sourceSequence":%d,"taskId":"%s","stageRunId":"%s","role":"CODING_AGENT","eventType":"%s"}
                 """.formatted(sourceSequence, taskId, stageRunId, eventType));
+    }
+
+    private void savePiV2Profile(AgentStageRun stage) {
+        String profileJson = "{\"capabilities\":[\"PI_AGENT_STATE_V2\"],\"runtimeType\":\"PI\"}";
+        profileSnapshotStore.saveIfAbsent(new AgentExecutionProfileSnapshot(
+                "profile-" + stage.stageRunId(), stage.stageRunId(), stage.taskId(), stage.role().name(),
+                stage.attemptNo(), AgentRuntimeType.PI, profileJson,
+                AgentExecutionProfileSnapshot.sha256(profileJson), 1_783_000_000_000L
+        ));
+    }
+
+    private static String overviewStateJson(String taskId, String stageRunId, long sequence) {
+        try {
+            return AgentStateV2Codec.canonicalize(new com.fasterxml.jackson.databind.ObjectMapper().readTree("""
+                    {
+                      "protocol":"rd-agent-state/v2",
+                      "sequence":%d,
+                      "taskId":"%s",
+                      "stageRunId":"%s",
+                      "role":"CODING_AGENT",
+                      "attemptNo":1,
+                      "runtimeType":"PI",
+                      "profileSnapshotId":"profile-%s",
+                      "currentGoal":"验证 overview",
+                      "taskStartedAtEpochMillis":1783000000000,
+                      "stageStartedAtEpochMillis":1783000000000,
+                      "phase":"EXECUTING",
+                      "budget":{"availability":"UNKNOWN","model":"","estimatorVersion":""},
+                      "todos":[],
+                      "generatedAtEpochMillis":1783000095000
+                    }
+                    """.formatted(sequence, taskId, stageRunId, stageRunId)));
+        } catch (Exception exception) {
+            throw new IllegalStateException(exception);
+        }
+    }
+
+    private static String hashState(String stateJson) {
+        try {
+            return AgentStateV2Codec.hash(new com.fasterxml.jackson.databind.ObjectMapper().readTree(stateJson));
+        } catch (Exception exception) {
+            throw new IllegalStateException(exception);
+        }
+    }
+
+    private static String sha256(String value) {
+        return "sha256:" + AgentExecutionProfileSnapshot.sha256(value);
     }
 }

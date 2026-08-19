@@ -1,3 +1,9 @@
+import type {
+  RdTaskAgentTodo,
+  RdTaskEffectiveContext,
+  RdTaskLatestAgentState
+} from "@/services/rdTaskService";
+
 export const REQUIREMENT_ROLE_ORDER = [
   "REQUIREMENT_REVIEWER",
   "SOLUTION_ARCHITECT",
@@ -53,6 +59,14 @@ export interface RoleStageLike {
   promptArtifactId?: string;
   contextPackageId?: string;
   providerAttempts?: Record<string, unknown>[];
+  runtimeType?: string;
+  agentStateAvailable?: boolean;
+  agentStateSequence?: number;
+  agentStateContentHash?: string;
+  agentLastInjectionSequence?: number;
+  agentLastInjectedStateSequence?: number;
+  agentLastInjectedBlockHash?: string;
+  agentLastInjectedPromptHash?: string;
 }
 
 export interface RolePromptStageLike {
@@ -60,6 +74,9 @@ export interface RolePromptStageLike {
   role: string;
   status: string;
   attemptNo: number;
+  runtimeType?: string;
+  effectiveContext?: RdTaskEffectiveContext;
+  latestState?: RdTaskLatestAgentState;
 }
 
 export interface RoleQaEvidenceLike {
@@ -233,7 +250,13 @@ export function roleStageSignature(stageRuns: readonly RoleStageLike[]): string 
       stage.status,
       stage.promptArtifactId || "",
       stage.contextPackageId || "",
-      stage.resultArtifactId || ""
+      stage.resultArtifactId || "",
+      stage.agentStateSequence !== undefined ? String(stage.agentStateSequence) : "",
+      stage.agentStateContentHash || "",
+      stage.agentLastInjectionSequence !== undefined ? String(stage.agentLastInjectionSequence) : "",
+      stage.agentLastInjectedStateSequence !== undefined ? String(stage.agentLastInjectedStateSequence) : "",
+      stage.agentLastInjectedBlockHash || "",
+      stage.agentLastInjectedPromptHash || ""
     ].join(":"))
     .join("|");
 }
@@ -488,4 +511,132 @@ function formatBudgetEstimate(value: unknown): string {
 function toFiniteNumber(value: unknown): number | undefined {
   const number = typeof value === "number" ? value : Number(value);
   return Number.isFinite(number) ? number : undefined;
+}
+
+const TODO_STATUS_PRIORITY: Record<string, number> = {
+  IN_PROGRESS: 0,
+  BLOCKED: 1,
+  PENDING: 2,
+  DONE: 3,
+  CANCELLED: 4
+};
+
+export function sortAgentTodos(todos: readonly RdTaskAgentTodo[]): RdTaskAgentTodo[] {
+  return [...todos].sort((a, b) => {
+    const pA = TODO_STATUS_PRIORITY[a.status?.toUpperCase() || ""] ?? 99;
+    const pB = TODO_STATUS_PRIORITY[b.status?.toUpperCase() || ""] ?? 99;
+    if (pA !== pB) return pA - pB;
+    return (a.title || "").localeCompare(b.title || "");
+  });
+}
+
+export interface InjectionBadgeView {
+  label: string;
+  tone: "success" | "warning" | "neutral";
+}
+
+export function deriveInjectionBadge(
+  effectiveContext?: RdTaskEffectiveContext,
+  latestState?: RdTaskLatestAgentState,
+  runtimeType?: string
+): InjectionBadgeView {
+  if (effectiveContext?.available) {
+    return { label: "动态状态已注入", tone: "success" };
+  }
+  if (runtimeType && runtimeType !== "PI") {
+    return { label: "当前 Attempt 不是 PI，状态栏不适用", tone: "neutral" };
+  }
+  if (effectiveContext?.unavailableReason?.includes("未启用") || effectiveContext?.unavailableReason?.includes("disabled")) {
+    return { label: "动态状态未启用", tone: "neutral" };
+  }
+  if (latestState?.available) {
+    return { label: "最新状态未注入", tone: "warning" };
+  }
+  if (effectiveContext?.unavailableReason) {
+    return { label: effectiveContext.unavailableReason, tone: "neutral" };
+  }
+  return { label: "动态状态未启用", tone: "neutral" };
+}
+
+export function deriveSourceLabel(source?: string, finalized?: boolean): string {
+  if (source === "LIVE_PROJECTION") return finalized ? "运行中投影（终态）" : "运行中投影";
+  if (source === "ARCHIVED_ARTIFACT") return "已归档终态";
+  return "";
+}
+
+export function isEffectiveContextStale(
+  contextOrState?: { stale?: boolean; staleReason?: string } | null
+): boolean {
+  return Boolean(contextOrState?.stale);
+}
+
+export function shortHash(value?: string, length = 8): string {
+  if (!value) return "";
+  const trimmed = value.trim();
+  if (trimmed.length <= length) return trimmed;
+  return trimmed.slice(0, length);
+}
+
+export interface ExpectedStageIdentity {
+  stateSequence?: number;
+  stateHash?: string;
+  injectionSequence?: number;
+  injectedStateSequence?: number;
+  injectedBlockHash?: string;
+  promptHash?: string;
+}
+
+export type FreshnessEvaluationResult =
+  | "ACCEPT"
+  | "ACCEPT_AND_RECONCILE"
+  | "STALE_DISCARD"
+  | "CONSISTENCY_ERROR";
+
+export function evaluateRolePromptsFreshness(
+  stages: readonly RolePromptStageLike[],
+  expectedMap: Record<string, ExpectedStageIdentity>
+): FreshnessEvaluationResult {
+  let hasAhead = false;
+
+  for (const stage of stages) {
+    const expected = expectedMap[stage.stageRunId];
+    if (!expected) continue;
+
+    const respStateSeq = stage.latestState?.sequence ?? 0;
+    const expStateSeq = expected.stateSequence ?? 0;
+    const respStateHash = stage.latestState?.contentHash ?? "";
+    const expStateHash = expected.stateHash ?? "";
+
+    const respInjSeq = stage.effectiveContext?.injectionSequence ?? 0;
+    const expInjSeq = expected.injectionSequence ?? 0;
+    const respInjBlockHash = stage.effectiveContext?.injectedBlockHash ?? "";
+    const expInjBlockHash = expected.injectedBlockHash ?? "";
+    const respPromptHash = stage.effectiveContext?.promptContentHash ?? "";
+    const expPromptHash = expected.promptHash ?? "";
+
+    // 1. If any response sequence is behind expected -> discard as stale
+    if ((expStateSeq > 0 && respStateSeq < expStateSeq) || (expInjSeq > 0 && respInjSeq < expInjSeq)) {
+      return "STALE_DISCARD";
+    }
+
+    // 2. If sequences match but hashes differ -> consistency error
+    if (expStateSeq > 0 && respStateSeq === expStateSeq && expStateHash && respStateHash && respStateHash !== expStateHash) {
+      return "CONSISTENCY_ERROR";
+    }
+    if (expInjSeq > 0 && respInjSeq === expInjSeq) {
+      if (expInjBlockHash && respInjBlockHash && respInjBlockHash !== expInjBlockHash) {
+        return "CONSISTENCY_ERROR";
+      }
+      if (expPromptHash && respPromptHash && respPromptHash !== expPromptHash) {
+        return "CONSISTENCY_ERROR";
+      }
+    }
+
+    // 3. If any response identity is ahead of expected -> accept and reconcile overview
+    if ((expStateSeq > 0 && respStateSeq > expStateSeq) || (expInjSeq > 0 && respInjSeq > expInjSeq)) {
+      hasAhead = true;
+    }
+  }
+
+  return hasAhead ? "ACCEPT_AND_RECONCILE" : "ACCEPT";
 }

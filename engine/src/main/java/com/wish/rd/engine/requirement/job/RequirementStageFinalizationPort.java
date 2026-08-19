@@ -66,7 +66,9 @@ public interface RequirementStageFinalizationPort {
     Optional<RequirementStageFinalization> findLatestPrepared(String commandId);
 
     /**
-     * Records a non-mutating execution plan before any task snapshot can be changed.
+     * Records a non-mutating execution plan before any task snapshot can be changed. A v2 PI
+     * remediation intent is linearized against its frozen source/target profile claims here;
+     * finalization and recovery must not consult live profiles after this marker is recorded.
      *
      * @param marker prepared marker for the claimed command
      * @param stageCommand exact leased command

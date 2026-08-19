@@ -33,6 +33,22 @@ public final class CanonicalJsonSha256 {
         }
     }
 
+    /**
+     * Canonicalizes {@code json} and requires its digest to equal {@code expectedHash}.
+     *
+     * @param json raw or already-canonical JSON
+     * @param expectedHash {@code sha256:<hex>} identity
+     * @return RFC 8785 canonical JSON
+     */
+    public static String requireCanonicalMatchingHash(String json, String expectedHash) {
+        String canonical = canonicalize(json);
+        String expected = expectedHash == null ? "" : expectedHash.strip().toLowerCase(java.util.Locale.ROOT);
+        if (!digest(canonical).equals(expected)) {
+            throw new IllegalArgumentException("JSON hash mismatch");
+        }
+        return canonical;
+    }
+
     /** Validates I-JSON before delegating byte-exact serialization to the vetted JCS library. */
     public static String canonicalize(String json) {
         if (json == null || json.isBlank()) {

@@ -47,6 +47,245 @@ test("projector writes monotonic sequence and atomic latest snapshot", async () 
   assert.equal(events.at(-1).payload.decision, "ACCEPTED");
 });
 
+test("v2 projector starts from the verified Host snapshot instead of an empty fallback", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rd-state-v2-host-"));
+  const hostState = {
+    protocol: "rd-agent-state/v2",
+    sequence: 0,
+    ...identity,
+    runtimeType: "PI",
+    profileSnapshotId: "snapshot-1",
+    currentGoal: "implement and verify",
+    budget: { availability: "UNKNOWN" },
+    todos: [{
+      todoId: "host-acceptance-1",
+      owner: "HOST",
+      kind: "ACCEPTANCE",
+      title: "acceptance A",
+      status: "PENDING",
+      required: true,
+      acceptanceCriteriaId: "AC-001",
+      acceptanceContentHash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      evidenceArtifactIds: [],
+    }],
+  };
+  const projector = new AgentStateProjector({
+    identity,
+    outputPath: dir,
+    maxInjectedStateBytes: 8192,
+    initialState: hostState,
+  });
+
+  await projector.initialize();
+
+  assert.equal(projector.snapshot.protocol, "rd-agent-state/v2");
+  assert.equal(projector.snapshot.currentGoal, "implement and verify");
+  assert.equal(projector.snapshot.todos.length, 1);
+  assert.equal(projector.snapshot.todos[0].todoId, "host-acceptance-1");
+  assert.match(projector.prepareInjection().text, /protocol="rd-agent-state\/v2"/);
+});
+
+test("v2 actions preserve Host obligations, require scoped evidence, and commit atomically", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rd-state-v2-actions-"));
+  const hostTodo = {
+    todoId: "host-acceptance-1",
+    owner: "HOST",
+    kind: "ACCEPTANCE",
+    title: "acceptance A",
+    status: "PENDING",
+    required: true,
+    acceptanceCriteriaId: "AC-001",
+    acceptanceContentHash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    evidenceArtifactIds: [],
+  };
+  const projector = new AgentStateProjector({
+    identity,
+    outputPath: dir,
+    maxInjectedStateBytes: 4096,
+    initialState: {
+      protocol: "rd-agent-state/v2",
+      sequence: 0,
+      ...identity,
+      runtimeType: "PI",
+      profileSnapshotId: "snapshot-1",
+      currentGoal: "implement and verify",
+      budget: { availability: "UNKNOWN" },
+      todos: [hostTodo],
+      facts: [],
+    },
+  });
+  await projector.initialize();
+
+  const deleteHost = await projector.applyAction({
+    tool: "rd_todo_rewrite",
+    actionId: "rewrite-delete-host",
+    expectedSequence: 0,
+    clientSequence: 1,
+    reason: "replace",
+    todos: [{ id: "agent-1", title: "work", status: "PENDING" }],
+  });
+  assert.equal(deleteHost.decision, "REJECTED");
+  assert.match(deleteHost.reason, /Host TODO/i);
+  assert.equal(projector.sequence, 0);
+
+  const inProgress = await projector.applyAction({
+    tool: "rd_todo_update_status",
+    actionId: "host-start",
+    expectedSequence: 0,
+    clientSequence: 2,
+    todoId: hostTodo.todoId,
+    targetStatus: "IN_PROGRESS",
+  });
+  assert.equal(inProgress.decision, "ACCEPTED");
+  assert.equal(projector.sequence, 1);
+
+  const wrongEvidence = await projector.applyAction({
+    tool: "rd_todo_update_status",
+    actionId: "host-done-wrong",
+    expectedSequence: 1,
+    clientSequence: 3,
+    todoId: hostTodo.todoId,
+    targetStatus: "DONE",
+    evidenceRefs: ["artifact:test.log"],
+  });
+  assert.equal(wrongEvidence.decision, "REJECTED");
+  assert.match(wrongEvidence.reason, /AC-001/);
+  assert.equal(projector.sequence, 1);
+
+  const secret = await projector.applyAction({
+    tool: "rd_record_fact",
+    actionId: "secret-fact",
+    expectedSequence: 1,
+    clientSequence: 4,
+    statement: "api_key=sk-abcdefghijklmnop",
+    expectedKind: "INFERRED",
+  });
+  assert.equal(secret.decision, "REJECTED");
+  assert.match(secret.reason, /sensitive/i);
+  assert.equal(projector.sequence, 1);
+
+  const done = await projector.applyAction({
+    tool: "rd_todo_update_status",
+    actionId: "host-done",
+    expectedSequence: 1,
+    clientSequence: 5,
+    todoId: hostTodo.todoId,
+    targetStatus: "DONE",
+    evidenceRefs: ["acceptance:AC-001:artifact:test.log"],
+  });
+  assert.equal(done.decision, "ACCEPTED");
+  assert.equal(projector.sequence, 2);
+
+  const replay = await projector.applyAction({
+    tool: "rd_todo_update_status",
+    actionId: "host-done",
+    expectedSequence: 1,
+    clientSequence: 5,
+    todoId: hostTodo.todoId,
+    targetStatus: "DONE",
+    evidenceRefs: ["acceptance:AC-001:artifact:test.log"],
+  });
+  assert.equal(replay.decision, "ACCEPTED");
+  assert.equal(replay.replayed, true);
+  assert.equal(projector.sequence, 2);
+
+  const conflict = await projector.applyAction({
+    tool: "rd_todo_update_status",
+    actionId: "host-done",
+    expectedSequence: 2,
+    clientSequence: 6,
+    todoId: hostTodo.todoId,
+    targetStatus: "BLOCKED",
+    blockerReason: "conflicting replay",
+  });
+  assert.equal(conflict.decision, "REJECTED");
+  assert.match(conflict.reason, /conflicting replay/i);
+  assert.equal(projector.sequence, 2);
+});
+
+test("v2 rejects an uninjectable candidate without growing sequence", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rd-state-v2-overflow-"));
+  const projector = new AgentStateProjector({
+    identity,
+    outputPath: dir,
+    maxInjectedStateBytes: 1200,
+    initialState: {
+      protocol: "rd-agent-state/v2",
+      sequence: 0,
+      ...identity,
+      runtimeType: "PI",
+      profileSnapshotId: "snapshot-1",
+      currentGoal: "implement",
+      budget: { availability: "UNKNOWN" },
+      todos: [],
+      facts: [],
+    },
+  });
+  await projector.initialize();
+
+  const overflow = await projector.applyAction({
+    tool: "rd_record_fact",
+    actionId: "huge-fact",
+    expectedSequence: 0,
+    clientSequence: 1,
+    statement: "x".repeat(2_000),
+    expectedKind: "INFERRED",
+  });
+
+  assert.equal(overflow.decision, "REJECTED");
+  assert.match(overflow.reason, /limit|inject/i);
+  assert.equal(projector.sequence, 0);
+  assert.equal(projector.snapshot.facts.length, 0);
+});
+
+test("v2 publishes canonical snapshot projections only after committed state", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rd-state-v2-projection-"));
+  const projections = [];
+  const projector = new AgentStateProjector({
+    identity,
+    outputPath: dir,
+    maxInjectedStateBytes: 4096,
+    initialState: {
+      protocol: "rd-agent-state/v2",
+      sequence: 0,
+      ...identity,
+      runtimeType: "PI",
+      profileSnapshotId: "snapshot-1",
+      currentGoal: "implement and verify",
+      budget: { availability: "UNKNOWN" },
+      todos: [],
+      facts: [],
+    },
+    onSnapshotUpdated: async (payload) => projections.push(payload),
+  });
+  await projector.initialize();
+  const accepted = await projector.applyAction({
+    tool: "rd_record_fact",
+    actionId: "fact-1",
+    expectedSequence: 0,
+    clientSequence: 1,
+    statement: "focused test passed",
+    expectedKind: "OBSERVED",
+    sourceArtifactId: "artifact:test.log",
+  });
+  const rejected = await projector.applyAction({
+    tool: "rd_record_fact",
+    actionId: "fact-2",
+    expectedSequence: 0,
+    clientSequence: 2,
+    statement: "stale update",
+    expectedKind: "INFERRED",
+  });
+
+  assert.equal(accepted.decision, "ACCEPTED");
+  assert.equal(rejected.decision, "REJECTED");
+  assert.deepEqual(projections.map((projection) => projection.stateSequence), [0, 1]);
+  assert.match(projections[1].stateHash, /^sha256:[a-f0-9]{64}$/);
+  assert.equal(projections[1].snapshot.sequence, 1);
+  assert.match(projections[1].projectedAt, /^\d{4}-\d{2}-\d{2}T/);
+  assert.match(projections[1].idempotencyKey, /^sha256:[a-f0-9]{64}$/);
+});
+
 test("stale expectedSequence is rejected without advancing sequence", async () => {
   const dir = await mkdtemp(join(tmpdir(), "rd-state-"));
   const projector = new AgentStateProjector({ identity, outputPath: dir });
@@ -140,6 +379,26 @@ test("updateFromToolResult advances sequence and generatedAt", async () => {
   assert.ok(toolEvent);
   assert.equal(toolEvent.sequence, projector.sequence);
   assert.equal(toolEvent.payload.toolName, "bash");
+});
+
+test("updateFromToolResult redacts secret-bearing error text before state persistence", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rd-agent-state-secret-"));
+  const projector = new AgentStateProjector({
+    identity: { taskId: "task-1", stageRunId: "stage-1", role: "CODING_AGENT", attemptNo: 1 },
+    outputPath: dir,
+  });
+  await projector.initialize();
+
+  await projector.updateFromToolResult({
+    toolName: "bash",
+    isError: true,
+    error: "Authorization: Bearer sk-super-secret-token",
+    fingerprint: "fp-1",
+  });
+
+  const latest = JSON.parse(await readFile(join(dir, "agent-state-latest.json"), "utf8"));
+  assert.equal(latest.recentErrors[0].error.includes("super-secret"), false);
+  assert.match(latest.recentErrors[0].error, /\[REDACTED\]/);
 });
 
 test("projectTerminalResult writes terminal resultStatus to latest snapshot", async () => {

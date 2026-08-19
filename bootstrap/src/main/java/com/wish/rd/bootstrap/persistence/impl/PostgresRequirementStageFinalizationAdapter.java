@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.fasterxml.jackson.databind.MapperFeature;
 import com.wish.rd.bootstrap.persistence.PostgresPersistenceSupport;
+import com.wish.rd.bootstrap.persistence.entity.AgentExecutionProfileRow;
 import com.wish.rd.bootstrap.persistence.entity.RdAgentStageRunRow;
 import com.wish.rd.bootstrap.persistence.entity.RequirementDeliveryJobRow;
 import com.wish.rd.bootstrap.persistence.entity.RequirementPolicyRunRow;
@@ -16,7 +17,10 @@ import com.wish.rd.bootstrap.persistence.entity.RdTaskStatusEventRow;
 import com.wish.rd.bootstrap.persistence.entity.TaskFailureProvenanceRow;
 import com.wish.rd.bootstrap.persistence.entity.TaskRetryAttemptBindingRow;
 import com.wish.rd.bootstrap.persistence.entity.TaskRetryCheckpointRow;
+import com.wish.rd.bootstrap.persistence.entity.AgentRemediationRoundRow;
+import com.wish.rd.bootstrap.persistence.mapper.AgentRemediationRoundMapper;
 import com.wish.rd.bootstrap.persistence.mapper.RequirementDeliveryJobMapper;
+import com.wish.rd.bootstrap.persistence.mapper.AgentExecutionProfileMapper;
 import com.wish.rd.bootstrap.persistence.mapper.RequirementPolicyRunMapper;
 import com.wish.rd.bootstrap.persistence.mapper.RdAgentStageRunMapper;
 import com.wish.rd.bootstrap.persistence.mapper.RdTaskMapper;
@@ -28,10 +32,12 @@ import com.wish.rd.bootstrap.persistence.mapper.TaskFailureProvenanceMapper;
 import com.wish.rd.bootstrap.persistence.mapper.TaskRetryAttemptBindingMapper;
 import com.wish.rd.bootstrap.persistence.mapper.TaskRetryCheckpointMapper;
 import com.wish.rd.engine.requirement.job.RequirementStageFinalizationPort;
+import com.wish.rd.engine.requirement.job.RequirementStageExecutionPlanCodec;
 import com.wish.rd.engine.requirement.job.model.RequirementDeliveryJob;
 import com.wish.rd.engine.requirement.job.model.RequirementStageCommand;
 import com.wish.rd.engine.requirement.job.model.RequirementStageFinalization;
 import com.wish.rd.engine.requirement.job.model.RequirementStageExecutionPlan;
+import com.wish.rd.engine.requirement.job.model.PiQaRemediationIntent;
 import com.wish.rd.engine.requirement.job.model.RequirementTaskMutation;
 import com.wish.rd.engine.requirement.job.model.ExternalEffectReceipt;
 import com.wish.rd.engine.requirement.policy.model.RequirementPolicyRun;
@@ -51,6 +57,8 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -64,6 +72,7 @@ public class PostgresRequirementStageFinalizationAdapter implements RequirementS
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper()
             .disable(MapperFeature.AUTO_DETECT_IS_GETTERS);
+    private static final RequirementStageExecutionPlanCodec PLAN_CODEC = new RequirementStageExecutionPlanCodec();
 
     private final RequirementStageFinalizationMapper finalizationMapper;
     private final RequirementStageCommandMapper stageCommandMapper;
@@ -77,6 +86,12 @@ public class PostgresRequirementStageFinalizationAdapter implements RequirementS
     private final TaskFailureProvenanceMapper failureProvenanceMapper;
     private final TaskRetryCheckpointMapper checkpointMapper;
     private final TaskRetryAttemptBindingMapper attemptBindingMapper;
+    private final AgentExecutionProfileMapper executionProfileMapper;
+    private final PiRemediationFinalizationWriter remediationWriter;
+    private final AgentRemediationRoundMapper remediationRoundMapper;
+
+    /** Advisory-lock namespace distinct from fair stage admission. */
+    static final long REMEDIATION_TASK_LOCK_NAMESPACE = 0x5049_524D_4C4B_0000L;
 
     /**
      * Creates the PostgreSQL finalization transaction adapter.
@@ -199,13 +214,19 @@ public class PostgresRequirementStageFinalizationAdapter implements RequirementS
             RdAgentStageRunMapper agentStageRunMapper,
             TaskFailureProvenanceMapper failureProvenanceMapper,
             ObjectProvider<TaskRetryCheckpointMapper> checkpointMapperProvider,
-            ObjectProvider<TaskRetryAttemptBindingMapper> attemptBindingMapperProvider
+            ObjectProvider<TaskRetryAttemptBindingMapper> attemptBindingMapperProvider,
+            ObjectProvider<AgentExecutionProfileMapper> executionProfileMapperProvider,
+            ObjectProvider<PiRemediationFinalizationWriter> remediationWriterProvider,
+            ObjectProvider<AgentRemediationRoundMapper> remediationRoundMapperProvider
     ) {
         this(finalizationMapper, stageCommandMapper, jobMapper, taskMapper, taskStatusEventMapper,
                 eventIdGenerator, publicationMapper, policyRunMapper, agentStageRunMapper,
                 failureProvenanceMapper,
                 checkpointMapperProvider == null ? null : checkpointMapperProvider.getIfAvailable(),
-                attemptBindingMapperProvider == null ? null : attemptBindingMapperProvider.getIfAvailable());
+                attemptBindingMapperProvider == null ? null : attemptBindingMapperProvider.getIfAvailable(),
+                executionProfileMapperProvider == null ? null : executionProfileMapperProvider.getIfAvailable(),
+                remediationWriterProvider == null ? null : remediationWriterProvider.getIfAvailable(),
+                remediationRoundMapperProvider == null ? null : remediationRoundMapperProvider.getIfAvailable());
     }
 
     /**
@@ -228,6 +249,73 @@ public class PostgresRequirementStageFinalizationAdapter implements RequirementS
             TaskRetryCheckpointMapper checkpointMapper,
             TaskRetryAttemptBindingMapper attemptBindingMapper
     ) {
+        this(finalizationMapper, stageCommandMapper, jobMapper, taskMapper, taskStatusEventMapper,
+                eventIdGenerator, publicationMapper, policyRunMapper, agentStageRunMapper,
+                failureProvenanceMapper, checkpointMapper, attemptBindingMapper, null);
+    }
+
+    /** Focused constructor exposing the remediation profile linearization mapper. */
+    public PostgresRequirementStageFinalizationAdapter(
+            RequirementStageFinalizationMapper finalizationMapper,
+            RequirementStageCommandMapper stageCommandMapper,
+            RequirementDeliveryJobMapper jobMapper,
+            RdTaskMapper taskMapper,
+            RdTaskStatusEventMapper taskStatusEventMapper,
+            SnowflakeIdGenerator eventIdGenerator,
+            RequirementPublicationMapper publicationMapper,
+            RequirementPolicyRunMapper policyRunMapper,
+            RdAgentStageRunMapper agentStageRunMapper,
+            TaskFailureProvenanceMapper failureProvenanceMapper,
+            TaskRetryCheckpointMapper checkpointMapper,
+            TaskRetryAttemptBindingMapper attemptBindingMapper,
+            AgentExecutionProfileMapper executionProfileMapper
+    ) {
+        this(finalizationMapper, stageCommandMapper, jobMapper, taskMapper, taskStatusEventMapper,
+                eventIdGenerator, publicationMapper, policyRunMapper, agentStageRunMapper,
+                failureProvenanceMapper, checkpointMapper, attemptBindingMapper, executionProfileMapper, null);
+    }
+
+    /** Full constructor for focused remediation finalization tests. */
+    public PostgresRequirementStageFinalizationAdapter(
+            RequirementStageFinalizationMapper finalizationMapper,
+            RequirementStageCommandMapper stageCommandMapper,
+            RequirementDeliveryJobMapper jobMapper,
+            RdTaskMapper taskMapper,
+            RdTaskStatusEventMapper taskStatusEventMapper,
+            SnowflakeIdGenerator eventIdGenerator,
+            RequirementPublicationMapper publicationMapper,
+            RequirementPolicyRunMapper policyRunMapper,
+            RdAgentStageRunMapper agentStageRunMapper,
+            TaskFailureProvenanceMapper failureProvenanceMapper,
+            TaskRetryCheckpointMapper checkpointMapper,
+            TaskRetryAttemptBindingMapper attemptBindingMapper,
+            AgentExecutionProfileMapper executionProfileMapper,
+            PiRemediationFinalizationWriter remediationWriter
+    ) {
+        this(finalizationMapper, stageCommandMapper, jobMapper, taskMapper, taskStatusEventMapper,
+                eventIdGenerator, publicationMapper, policyRunMapper, agentStageRunMapper,
+                failureProvenanceMapper, checkpointMapper, attemptBindingMapper, executionProfileMapper,
+                remediationWriter, null);
+    }
+
+    /** Full constructor for focused remediation finalization tests. */
+    public PostgresRequirementStageFinalizationAdapter(
+            RequirementStageFinalizationMapper finalizationMapper,
+            RequirementStageCommandMapper stageCommandMapper,
+            RequirementDeliveryJobMapper jobMapper,
+            RdTaskMapper taskMapper,
+            RdTaskStatusEventMapper taskStatusEventMapper,
+            SnowflakeIdGenerator eventIdGenerator,
+            RequirementPublicationMapper publicationMapper,
+            RequirementPolicyRunMapper policyRunMapper,
+            RdAgentStageRunMapper agentStageRunMapper,
+            TaskFailureProvenanceMapper failureProvenanceMapper,
+            TaskRetryCheckpointMapper checkpointMapper,
+            TaskRetryAttemptBindingMapper attemptBindingMapper,
+            AgentExecutionProfileMapper executionProfileMapper,
+            PiRemediationFinalizationWriter remediationWriter,
+            AgentRemediationRoundMapper remediationRoundMapper
+    ) {
         this.finalizationMapper = Objects.requireNonNull(finalizationMapper, "finalizationMapper must not be null");
         this.stageCommandMapper = Objects.requireNonNull(stageCommandMapper, "stageCommandMapper must not be null");
         this.jobMapper = Objects.requireNonNull(jobMapper, "jobMapper must not be null");
@@ -241,6 +329,9 @@ public class PostgresRequirementStageFinalizationAdapter implements RequirementS
         this.failureProvenanceMapper = failureProvenanceMapper;
         this.checkpointMapper = checkpointMapper;
         this.attemptBindingMapper = attemptBindingMapper;
+        this.executionProfileMapper = executionProfileMapper;
+        this.remediationWriter = remediationWriter;
+        this.remediationRoundMapper = remediationRoundMapper;
     }
 
     /**
@@ -326,7 +417,6 @@ public class PostgresRequirementStageFinalizationAdapter implements RequirementS
         if (!marker.isPrepared() || !marker.matchesCommandIdentity(stageCommand)) {
             throw new IllegalStateException("stage finalization marker is not prepared: " + stageCommand.commandId());
         }
-        requireOwnedRunningAttempt(stageCommand, owner, nowEpochMillis);
         requirePlanIdentity(marker, plan);
         RequirementStageFinalizationRow current = finalizationMapper.findForUpdate(
                 PostgresPersistenceSupport.parseId(marker.commandId()), marker.attemptNo());
@@ -337,15 +427,133 @@ public class PostgresRequirementStageFinalizationAdapter implements RequirementS
         if (!marker.samePreparedIdentity(locked)) {
             throw new IllegalStateException("stage finalization marker changed: " + marker.commandId());
         }
+        plan = assignRemediationRound(plan);
+        lockAndVerifyRemediationProfiles(plan.piQaRemediationIntent());
+        requireOwnedRunningAttempt(stageCommand, owner, nowEpochMillis);
         // The marker was admitted under this owner; the command completion path rechecks it with
         // the full lease predicate before the task mutation is allowed to commit.
-        String planJson = RequirementPolicyRun.canonicalizeJson(encodePlan(plan));
+        String planJson = PLAN_CODEC.encodeCanonical(plan);
         RequirementStageFinalization recorded = marker.outcomeRecorded(
-                plan.postStatus(), planJson, RequirementPolicyRun.canonicalJsonDigest(planJson), nowEpochMillis);
+                plan.postStatus(), planJson, RequirementStageExecutionPlanCodec.digest(planJson), nowEpochMillis);
         if (finalizationMapper.recordOutcomePrepared(toRow(recorded)) != 1) {
             throw new IllegalStateException("stage outcome recording compare-and-set failed: " + marker.commandId());
         }
         return recorded;
+    }
+
+    private RequirementStageExecutionPlan assignRemediationRound(RequirementStageExecutionPlan plan) {
+        PiQaRemediationIntent intent = plan.piQaRemediationIntent();
+        if (intent == null || remediationRoundMapper == null) {
+            return plan;
+        }
+        long taskId = PostgresPersistenceSupport.parseId(intent.sourceTaskId());
+        remediationRoundMapper.acquireTaskLock(REMEDIATION_TASK_LOCK_NAMESPACE ^ taskId);
+        AgentRemediationRoundRow existing = remediationRoundMapper.findBySourceForUpdate(
+                PostgresPersistenceSupport.parseId(intent.sourceStageRunId()), intent.kind().name());
+        if (existing != null) {
+            if (!intent.roundId().equals(String.valueOf(existing.id))
+                    || intent.remediationNo() != existing.remediationNo
+                    || !intent.requestHash().equals(existing.requestHash)) {
+                throw new IllegalStateException("conflicting remediation replay for source stage");
+            }
+            return plan;
+        }
+        java.util.Set<Integer> occupied = occupiedRemediationNumbers(taskId, intent.kind().name());
+        int assigned = nextRemediationNo(intent, occupied);
+        if (assigned == intent.remediationNo()) {
+            return plan;
+        }
+        return plan.withRemediationIntent(intent.withAssignedRemediationNo(assigned));
+    }
+
+    private java.util.Set<Integer> occupiedRemediationNumbers(long taskId, String kind) {
+        java.util.Set<Integer> occupied = new java.util.TreeSet<>();
+        for (AgentRemediationRoundRow row : remediationRoundMapper.listByTask(taskId)) {
+            if (kind.equals(row.kind) && row.remediationNo != null) {
+                occupied.add(row.remediationNo);
+            }
+        }
+        for (RequirementStageFinalizationRow marker : finalizationMapper.listRecordedOutcomePlans(taskId)) {
+            if (marker.outcomePlanJson == null || marker.outcomePlanJson.isBlank()) {
+                continue;
+            }
+            RequirementStageExecutionPlan recorded = PLAN_CODEC.decodeAndVerify(
+                    marker.outcomePlanJson, marker.outcomePlanDigest);
+            PiQaRemediationIntent recordedIntent = recorded.piQaRemediationIntent();
+            if (recordedIntent != null && kind.equals(recordedIntent.kind().name())) {
+                occupied.add(recordedIntent.remediationNo());
+            }
+        }
+        return occupied;
+    }
+
+    private static int nextRemediationNo(PiQaRemediationIntent intent, java.util.Set<Integer> occupied) {
+        int proposed = intent.remediationNo();
+        if (!occupied.contains(proposed)) {
+            return proposed;
+        }
+        int maximum = intent.kind().maximumRounds();
+        for (int candidate = 1; candidate <= maximum; candidate++) {
+            if (!occupied.contains(candidate)) {
+                return candidate;
+            }
+        }
+        throw new IllegalStateException(intent.kind() + " remediation limit has been reached for task "
+                + intent.sourceTaskId());
+    }
+
+    private void lockAndVerifyRemediationProfiles(PiQaRemediationIntent intent) {
+        if (intent == null) return;
+        if (executionProfileMapper == null) {
+            throw new IllegalStateException("PI remediation profile linearization is unavailable");
+        }
+        Map<String, PiQaRemediationIntent.ExecutionProfileClaim> claims = new TreeMap<>();
+        addProfileClaim(claims, intent.sourceProfile());
+        if (intent.codingProfile() != null) addProfileClaim(claims, intent.codingProfile().profile());
+        addProfileClaim(claims, intent.qaProfile().profile());
+        for (Map.Entry<String, PiQaRemediationIntent.ExecutionProfileClaim> entry : claims.entrySet()) {
+            AgentExecutionProfileRow row = executionProfileMapper.findForUpdate(entry.getKey());
+            verifyProfileClaim(row, entry.getValue());
+        }
+    }
+
+    private static void addProfileClaim(
+            Map<String, PiQaRemediationIntent.ExecutionProfileClaim> claims,
+            PiQaRemediationIntent.ExecutionProfileClaim claim
+    ) {
+        PiQaRemediationIntent.ExecutionProfileClaim prior = claims.putIfAbsent(claim.profileId(), claim);
+        if (prior != null && !prior.equals(claim)) {
+            throw new IllegalStateException("conflicting remediation claims for profile " + claim.profileId());
+        }
+    }
+
+    private static void verifyProfileClaim(
+            AgentExecutionProfileRow row,
+            PiQaRemediationIntent.ExecutionProfileClaim claim
+    ) {
+        if (row == null || !claim.profileId().equals(row.profileId)
+                || row.version == null || row.version != claim.profileVersion()
+                || !claim.runtimeType().equals(row.runtimeType)
+                || !Boolean.TRUE.equals(row.enabled)) {
+            throw new IllegalStateException("execution profile drifted before remediation outcome: "
+                    + claim.profileId());
+        }
+        try {
+            com.fasterxml.jackson.databind.JsonNode capabilities = OBJECT_MAPPER.readTree(row.capabilitiesJson);
+            if (capabilities == null || !capabilities.isArray()) {
+                throw new IllegalStateException("execution profile capabilities are invalid: " + claim.profileId());
+            }
+            List<String> actual = java.util.stream.StreamSupport.stream(capabilities.spliterator(), false)
+                    .map(com.fasterxml.jackson.databind.JsonNode::asText)
+                    .map(value -> value.toUpperCase(java.util.Locale.ROOT))
+                    .distinct().sorted().toList();
+            if (!actual.equals(claim.capabilities())) {
+                throw new IllegalStateException("execution profile capabilities drifted before remediation outcome: "
+                        + claim.profileId());
+            }
+        } catch (JsonProcessingException invalid) {
+            throw new IllegalStateException("execution profile capabilities are invalid: " + claim.profileId(), invalid);
+        }
     }
 
     @Override
@@ -354,19 +562,16 @@ public class PostgresRequirementStageFinalizationAdapter implements RequirementS
         if (!marker.isOutcomeRecorded() || marker.outcomePlanJson().isBlank()) {
             throw new IllegalStateException("stage marker has no recorded plan: " + marker.commandId());
         }
-        String canonical = RequirementPolicyRun.canonicalizeJson(marker.outcomePlanJson());
-        if (!RequirementPolicyRun.canonicalJsonDigest(canonical).equals(marker.outcomePlanDigest())) {
-            throw new IllegalStateException("stage outcome plan digest mismatch: " + marker.commandId());
-        }
         try {
-            RequirementStageExecutionPlan plan = OBJECT_MAPPER.readValue(canonical, RequirementStageExecutionPlan.class);
+            RequirementStageExecutionPlan plan = PLAN_CODEC.decodeAndVerify(
+                    marker.outcomePlanJson(), marker.outcomePlanDigest());
             requirePlanIdentity(marker, plan);
             if (marker.outcomeStatus() != plan.postStatus()) {
                 throw new IllegalStateException("stage outcome plan post-status conflicts with marker: "
                         + marker.commandId());
             }
             return plan;
-        } catch (JsonProcessingException exception) {
+        } catch (IllegalArgumentException exception) {
             throw new IllegalStateException("stage outcome plan cannot be decoded: " + marker.commandId(), exception);
         }
     }
@@ -426,7 +631,17 @@ public class PostgresRequirementStageFinalizationAdapter implements RequirementS
         RequirementStageCommand completed = toCommand(completedRow);
 
         RequirementStageCommand next = null;
-        if (completed.status() == RequirementStageCommand.Status.SUCCEEDED && command.nextCommand() != null) {
+        PiQaRemediationIntent remediationIntent = command.plan().piQaRemediationIntent();
+        if (completed.status() == RequirementStageCommand.Status.SUCCEEDED && remediationIntent != null) {
+            if (remediationWriter == null) {
+                throw new IllegalStateException("PI remediation finalization writer is unavailable");
+            }
+            if (command.nextCommand() != null || command.plan().postStatus() != RdTaskStatus.EXECUTING) {
+                throw new IllegalStateException("PI remediation must preserve EXECUTING and use intent continuation");
+            }
+            next = remediationWriter.persist(
+                    remediationIntent, command.plan(), stageCommand, command.nowEpochMillis());
+        } else if (completed.status() == RequirementStageCommand.Status.SUCCEEDED && command.nextCommand() != null) {
             preparePolicyEvaluateLedger(command.plan(), command.nextCommand(), command.nowEpochMillis());
             stageCommandMapper.enqueue(toRow(command.nextCommand()));
             RequirementStageCommandRow nextRow = stageCommandMapper.findByIdentity(
@@ -1292,15 +1507,6 @@ public class PostgresRequirementStageFinalizationAdapter implements RequirementS
         }
     }
 
-    private static String encodePlan(RequirementStageExecutionPlan plan) {
-        try {
-            return OBJECT_MAPPER.writeValueAsString(plan);
-        } catch (JsonProcessingException exception) {
-            throw new IllegalStateException("stage execution plan cannot be serialized", exception);
-        }
-    }
-
-
     private void applyTaskMutation(FinalizationCommand command, RequirementStageFinalization marker) {
         if (command.taskMutationDisposition() == TaskMutationDisposition.ALREADY_APPLIED
                 || command.plan().mutations().isEmpty()
@@ -1435,6 +1641,16 @@ public class PostgresRequirementStageFinalizationAdapter implements RequirementS
         row.businessGeneration = command.businessGeneration();
         row.targetRetryBindingId = command.targetRetryBindingId().isBlank()
                 ? null : PostgresPersistenceSupport.parseId(command.targetRetryBindingId());
+        row.remediationRoundId = command.remediationRoundId().isBlank()
+                ? null : PostgresPersistenceSupport.parseId(command.remediationRoundId());
+        row.remediationKind = command.remediationKind() == null ? null : command.remediationKind().name();
+        row.remediationNo = command.remediationNo() == 0 ? null : command.remediationNo();
+        row.remediationSourceStageRunId = command.remediationSourceStageRunId().isBlank()
+                ? null : PostgresPersistenceSupport.parseId(command.remediationSourceStageRunId());
+        row.remediationRequestJson = command.remediationRequestJson().isBlank()
+                ? null : command.remediationRequestJson();
+        row.remediationRequestHash = command.remediationRequestHash().isBlank()
+                ? null : command.remediationRequestHash();
         row.attemptNo = command.attemptNo();
         row.maxAttempts = command.maxAttempts();
         row.deadlineAt = command.deadlineEpochMillis() <= 0L
@@ -1482,8 +1698,31 @@ public class PostgresRequirementStageFinalizationAdapter implements RequirementS
                 row.policyRunId == null ? "" : PostgresPersistenceSupport.idString(row.policyRunId),
                 row.retryCheckpointId == null ? "" : PostgresPersistenceSupport.idString(row.retryCheckpointId),
                 row.businessGeneration == null ? 0L : row.businessGeneration,
-                row.targetRetryBindingId == null ? "" : PostgresPersistenceSupport.idString(row.targetRetryBindingId)
+                row.targetRetryBindingId == null ? "" : PostgresPersistenceSupport.idString(row.targetRetryBindingId),
+                row.remediationRoundId == null ? "" : PostgresPersistenceSupport.idString(row.remediationRoundId),
+                row.remediationKind == null ? null
+                        : com.wish.rd.engine.requirement.remediation.model.AgentRemediationKind.valueOf(row.remediationKind),
+                row.remediationNo == null ? 0 : row.remediationNo,
+                row.remediationSourceStageRunId == null ? ""
+                        : PostgresPersistenceSupport.idString(row.remediationSourceStageRunId),
+                durableRemediationRequestJson(row.remediationRequestJson, row.remediationRequestHash),
+                row.remediationRequestHash == null ? "" : row.remediationRequestHash
         );
+    }
+
+    private static String durableRemediationRequestJson(String raw, String expectedHash) {
+        if (raw == null || raw.isBlank()) {
+            return "";
+        }
+        String hash = expectedHash == null ? "" : expectedHash.strip();
+        if (hash.isBlank()) {
+            throw new IllegalStateException("durable remediation request is missing its identity hash");
+        }
+        try {
+            return com.wish.rd.engine.requirement.policy.CanonicalJsonSha256.requireCanonicalMatchingHash(raw, hash);
+        } catch (IllegalArgumentException invalid) {
+            throw new IllegalStateException("durable remediation request hash mismatch", invalid);
+        }
     }
 
     private static RequirementStageFinalization.State parseState(String value) {

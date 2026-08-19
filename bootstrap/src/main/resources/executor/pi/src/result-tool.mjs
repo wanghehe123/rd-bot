@@ -24,6 +24,9 @@ const QA_FAILURE_CATEGORIES = new Set([
   "QA_INFRASTRUCTURE", "REQUIREMENT_AMBIGUITY", "FLAKY",
 ]);
 const QA_RETRY_RECOMMENDATIONS = new Set(["NONE", "CODING_AGENT", "HUMAN"]);
+const QA_FINDING_SEVERITIES = new Set(["LOW", "MEDIUM", "HIGH", "CRITICAL"]);
+const QA_REMEDIATION_TARGET_ROLES = new Set(["CODING_AGENT"]);
+const QA_REMEDIATION_MAX_FINDINGS = 20;
 const QA_SCOPES = new Set(["CURRENT", "REGRESSION"]);
 const QA_DECISION_SOURCES = new Set([
   "TASK_OVERRIDE", "PROJECT_PROFILE", "REPOSITORY_CONFIG", "AUTO_DETECTION", "NOT_APPLICABLE", "DOCS_ONLY",
@@ -247,6 +250,7 @@ export function validateRoleResult(
   freshnessContext = {},
   hostAssertionContracts = [],
   candidateChangedFiles = undefined,
+  qaRemediationV2Enabled = false,
 ) {
   if (!result || typeof result !== "object" || Array.isArray(result)) {
     return ["result must be a JSON object"];
@@ -260,7 +264,12 @@ export function validateRoleResult(
       case "CODING_AGENT":
         return validateCodingResult(result);
       case "QA_AGENT":
-        return validateQaReport(result, hostAssertionContracts, candidateChangedFiles);
+        return validateQaReport(
+          result,
+          hostAssertionContracts,
+          candidateChangedFiles,
+          qaRemediationV2Enabled,
+        );
       default:
         return [];
     }
@@ -342,7 +351,12 @@ function validateCodingResult(result) {
   return errors;
 }
 
-function validateQaReport(result, hostAssertionContracts = [], candidateChangedFiles = undefined) {
+function validateQaReport(
+  result,
+  hostAssertionContracts = [],
+  candidateChangedFiles = undefined,
+  qaRemediationV2Enabled = false,
+) {
   const errors = [];
   checkEnum(result, "status", QA_STATUSES, errors);
   checkNonBlankString(result, "summary", "summary", errors);
@@ -369,6 +383,7 @@ function validateQaReport(result, hostAssertionContracts = [], candidateChangedF
   const acceptance = result.acceptanceResults;
   if (!Array.isArray(acceptance) || acceptance.length === 0) {
     errors.push("acceptanceResults must be a non-empty array");
+    if (qaRemediationV2Enabled) validateQaRemediationV2(result, errors);
     return errors;
   }
   let failedCount = 0;
@@ -438,7 +453,119 @@ function validateQaReport(result, hostAssertionContracts = [], candidateChangedF
   if (result.status === "FAILED" && result.retryRecommendation === "NONE") {
     errors.push("status FAILED requires a retryRecommendation");
   }
+  if (qaRemediationV2Enabled) validateQaRemediationV2(result, errors);
   return errors;
+}
+
+function validateQaRemediationV2(result, errors) {
+  const request = result.remediationRequest;
+  const findings = result.bugFindings;
+  if (!request || typeof request !== "object" || Array.isArray(request)) {
+    errors.push("remediationRequest must be an object when PI_QA_REMEDIATION_V2 is enabled");
+    return;
+  }
+  if (!Array.isArray(findings)) {
+    errors.push("bugFindings must be an array when PI_QA_REMEDIATION_V2 is enabled");
+    return;
+  }
+  if (findings.length > QA_REMEDIATION_MAX_FINDINGS) {
+    errors.push(`bugFindings exceeds max items ${QA_REMEDIATION_MAX_FINDINGS}`);
+  }
+  if (typeof request.requested !== "boolean") {
+    errors.push("remediationRequest.requested must be boolean");
+  }
+  const requested = request.requested === true;
+  const targetRole = typeof request.targetRole === "string" ? request.targetRole.trim() : "";
+  const reason = typeof request.reason === "string" ? request.reason.trim() : "";
+  if (reason.length > 2048) errors.push("remediationRequest.reason exceeds max length 2048");
+  if (!Array.isArray(request.bugFindingIds)
+      || request.bugFindingIds.some((id) => typeof id !== "string" || id.trim() === "")) {
+    errors.push("remediationRequest.bugFindingIds must be an array of non-blank strings");
+  }
+
+  const findingIds = new Set();
+  const failedCriteriaIds = new Set((result.acceptanceResults ?? [])
+    .filter((item) => item?.status === "FAILED" && typeof item.criteriaId === "string")
+    .map((item) => item.criteriaId.trim())
+    .filter(Boolean));
+  findings.forEach((finding, index) => {
+    const prefix = `bugFindings[${index}]`;
+    if (!finding || typeof finding !== "object" || Array.isArray(finding)) {
+      errors.push(`${prefix} must be an object`);
+      return;
+    }
+    checkBoundedString(finding, "id", `${prefix}.id`, 128, errors);
+    checkEnum(finding, "severity", QA_FINDING_SEVERITIES, errors, `${prefix}.severity`);
+    checkBoundedString(finding, "acceptanceCriteriaId", `${prefix}.acceptanceCriteriaId`, 256, errors);
+    checkBoundedString(finding, "expected", `${prefix}.expected`, 2048, errors);
+    checkBoundedString(finding, "actual", `${prefix}.actual`, 2048, errors);
+    checkBoundedStringArray(finding, "reproductionSteps", `${prefix}.reproductionSteps`, true, 10, 512, errors);
+    checkBoundedStringArray(finding, "evidenceArtifactIds", `${prefix}.evidenceArtifactIds`, true, 20, 512, errors);
+    checkBoundedStringArray(finding, "suspectedFiles", `${prefix}.suspectedFiles`, false, 20, 512, errors);
+    const id = typeof finding.id === "string" ? finding.id.trim() : "";
+    if (id && findingIds.has(id)) errors.push(`bugFindings contains duplicate id: ${id}`);
+    if (id) findingIds.add(id);
+    const criteriaId = typeof finding.acceptanceCriteriaId === "string"
+      ? finding.acceptanceCriteriaId.trim() : "";
+    if (criteriaId && !failedCriteriaIds.has(criteriaId)) {
+      errors.push(`${prefix}.acceptanceCriteriaId must reference a FAILED acceptanceResults.criteriaId`);
+    }
+  });
+
+  const requestedIds = Array.isArray(request.bugFindingIds)
+    ? request.bugFindingIds.map((id) => String(id).trim()).filter(Boolean) : [];
+  for (const id of requestedIds) {
+    if (!findingIds.has(id)) errors.push(`remediationRequest references unknown bug finding: ${id}`);
+  }
+  for (const id of findingIds) {
+    if (!requestedIds.includes(id)) errors.push(`bug finding is not selected by remediationRequest: ${id}`);
+  }
+
+  if (requested) {
+    if (result.status !== "FAILED") errors.push("remediationRequest.requested=true requires status FAILED");
+    if (!QA_REMEDIATION_TARGET_ROLES.has(targetRole)) {
+      errors.push("remediationRequest.targetRole must be CODING_AGENT when requested=true");
+    }
+    if (!reason) errors.push("remediationRequest.reason must not be blank when requested=true");
+    if (requestedIds.length === 0 || findings.length === 0) {
+      errors.push("remediationRequest.requested=true requires non-empty bugFindingIds and bugFindings");
+    }
+    if (result.retryRecommendation !== "CODING_AGENT") {
+      errors.push("remediationRequest.requested=true requires retryRecommendation CODING_AGENT");
+    }
+  } else {
+    if (targetRole) errors.push("remediationRequest.requested=false requires targetRole to be blank");
+    if (requestedIds.length > 0) {
+      errors.push("remediationRequest.requested=false requires bugFindingIds to be empty");
+    }
+    if (findings.length > 0) errors.push("remediationRequest.requested=false requires bugFindings to be empty");
+    if (result.retryRecommendation === "CODING_AGENT") {
+      errors.push("remediationRequest.requested=false cannot recommend CODING_AGENT");
+    }
+  }
+  if (result.status !== "FAILED" && (requested || findings.length > 0)) {
+    errors.push("non-FAILED QA result cannot request remediation or contain bugFindings");
+  }
+}
+
+function checkBoundedString(node, field, label, maxLength, errors) {
+  checkNonBlankString(node, field, label, errors);
+  if (typeof node?.[field] === "string" && node[field].trim().length > maxLength) {
+    errors.push(`${label} exceeds max length ${maxLength}`);
+  }
+}
+
+function checkBoundedStringArray(node, field, label, required, maxItems, maxLength, errors) {
+  const value = node?.[field];
+  if (!Array.isArray(value) || (required && value.length === 0)
+      || value.some((item) => typeof item !== "string" || item.trim() === "")) {
+    errors.push(`${label} must be ${required ? "a non-empty" : "an"} array of non-blank strings`);
+    return;
+  }
+  if (value.length > maxItems) errors.push(`${label} exceeds max items ${maxItems}`);
+  if (value.some((item) => item.trim().length > maxLength)) {
+    errors.push(`${label} contains an item exceeding max length ${maxLength}`);
+  }
 }
 
 function validateHostAssertionResults(result, contracts, acceptance) {

@@ -18,11 +18,15 @@ public interface RequirementStageCommandMapper extends BaseMapper<RequirementSta
             INSERT INTO rd_requirement_stage_commands
                 (id, task_id, task_version, fencing_token, role, stage, policy_run_id, retry_checkpoint_id,
                  business_generation, target_retry_binding_id, attempt_no, max_attempts,
+                 remediation_round_id, remediation_kind, remediation_no, remediation_source_stage_run_id,
+                 remediation_request_json, remediation_request_hash,
                  deadline_at, resource_class, resource_requirements, project_id, provider_id, priority_rank, status,
                  lease_owner, lease_until, next_visible_at, last_error, created_at, updated_at)
             VALUES
                 (#{id}, #{taskId}, #{taskVersion}, #{fencingToken}, #{role}, #{stage}, #{policyRunId}, #{retryCheckpointId},
                  #{businessGeneration}, #{targetRetryBindingId}, #{attemptNo}, #{maxAttempts},
+                 #{remediationRoundId}, #{remediationKind}, #{remediationNo}, #{remediationSourceStageRunId},
+                 CAST(#{remediationRequestJson} AS jsonb), #{remediationRequestHash},
                  #{deadlineAt}, #{resourceClass}, #{resourceRequirements}, #{projectId}, #{providerId}, #{priorityRank}, #{status},
                  #{leaseOwner}, #{leaseUntil}, #{nextVisibleAt}, #{lastError}, #{createdAt}, #{updatedAt})
             ON CONFLICT DO NOTHING
@@ -33,7 +37,7 @@ public interface RequirementStageCommandMapper extends BaseMapper<RequirementSta
             SELECT *
              FROM rd_requirement_stage_commands
              WHERE task_id = #{taskId} AND role = #{role} AND stage = #{stage}
-               AND retry_checkpoint_id IS NULL
+               AND retry_checkpoint_id IS NULL AND remediation_round_id IS NULL
              ORDER BY id
              LIMIT 1
             """)
@@ -46,6 +50,7 @@ public interface RequirementStageCommandMapper extends BaseMapper<RequirementSta
     @Select("""
             SELECT * FROM rd_requirement_stage_commands
              WHERE task_id = #{taskId} AND role = #{role} AND stage = #{stage}
+               AND remediation_round_id IS NULL
                AND ((#{retryCheckpointId} = '' AND retry_checkpoint_id IS NULL)
                     OR retry_checkpoint_id = CAST(NULLIF(#{retryCheckpointId}, '') AS BIGINT))
              ORDER BY id LIMIT 1
@@ -53,6 +58,18 @@ public interface RequirementStageCommandMapper extends BaseMapper<RequirementSta
     RequirementStageCommandRow findByIdentity(
             @Param("taskId") long taskId, @Param("role") String role, @Param("stage") String stage,
             @Param("retryCheckpointId") String retryCheckpointId);
+
+    @Select("""
+            SELECT * FROM rd_requirement_stage_commands
+             WHERE task_id = #{taskId} AND role = #{role} AND stage = #{stage}
+               AND retry_checkpoint_id IS NULL AND remediation_round_id = #{remediationRoundId}
+             ORDER BY id LIMIT 1
+            """)
+    RequirementStageCommandRow findByRemediationIdentity(
+            @Param("taskId") long taskId,
+            @Param("role") String role,
+            @Param("stage") String stage,
+            @Param("remediationRoundId") long remediationRoundId);
 
     @Select("""
             SELECT *

@@ -15,4 +15,5 @@ public class AgentExecutionProfileRow {
     public Long toolPolicyVersion;
     public Boolean enabled;
     public Long version;
+    public String capabilitiesJson;
 }

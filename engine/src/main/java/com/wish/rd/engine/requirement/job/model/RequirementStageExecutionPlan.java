@@ -16,6 +16,7 @@ import java.util.List;
  * @param commandDisposition required current-command outcome
  * @param continuation optional continuation identity
  * @param externalEffectReceipt durable external-effect evidence
+ * @param piQaRemediationIntent optional immutable PI QA remediation intent
  */
 public record RequirementStageExecutionPlan(
         int schemaVersion,
@@ -26,15 +27,17 @@ public record RequirementStageExecutionPlan(
         List<RequirementTaskMutation> mutations,
         CommandDisposition commandDisposition,
         ContinuationSpec continuation,
-        ExternalEffectReceipt externalEffectReceipt
+        ExternalEffectReceipt externalEffectReceipt,
+        PiQaRemediationIntent piQaRemediationIntent
 ) {
 
+    public static final int LEGACY_SCHEMA_VERSION = 1;
     /** Current durable JSON schema accepted by the Host stage finalizer. */
-    public static final int CURRENT_SCHEMA_VERSION = 1;
+    public static final int CURRENT_SCHEMA_VERSION = 2;
 
     /** Normalizes the plan and verifies task-edge continuity before it becomes durable. */
     public RequirementStageExecutionPlan {
-        if (schemaVersion != CURRENT_SCHEMA_VERSION) {
+        if (schemaVersion != LEGACY_SCHEMA_VERSION && schemaVersion != CURRENT_SCHEMA_VERSION) {
             throw new IllegalArgumentException("unsupported stage execution plan schemaVersion: " + schemaVersion);
         }
         taskId = require(taskId, "taskId");
@@ -57,12 +60,49 @@ public record RequirementStageExecutionPlan(
         if (externalEffectReceipt == null) {
             throw new IllegalArgumentException("externalEffectReceipt must be explicit");
         }
+        if (schemaVersion == LEGACY_SCHEMA_VERSION && piQaRemediationIntent != null) {
+            throw new IllegalArgumentException("legacy stage execution plan must not carry remediation intent");
+        }
+        if (piQaRemediationIntent != null
+                && (!taskId.equals(piQaRemediationIntent.sourceTaskId())
+                || expectedVersion != piQaRemediationIntent.sourceTaskVersion()
+                || expectedFencingToken != piQaRemediationIntent.sourceFencingToken())) {
+            throw new IllegalArgumentException("remediation intent source task identity mismatch");
+        }
         if ((commandDisposition == CommandDisposition.TERMINAL_FAILURE
                 || commandDisposition == CommandDisposition.RETRYABLE_TECHNICAL_FAILURE)
                 && !continuation.isTerminal()) {
             throw new IllegalArgumentException("failed command disposition requires terminal continuation");
         }
         validateChain(expectedStatus, mutations);
+    }
+
+    /**
+     * Returns a copy whose frozen remediation intent is the Host-assigned linearization result.
+     *
+     * @param intent assigned intent, or {@code null} to clear it
+     * @return plan carrying {@code intent}
+     */
+    public RequirementStageExecutionPlan withRemediationIntent(PiQaRemediationIntent intent) {
+        return new RequirementStageExecutionPlan(
+                schemaVersion, taskId, expectedVersion, expectedFencingToken, expectedStatus,
+                mutations, commandDisposition, continuation, externalEffectReceipt, intent);
+    }
+
+    /** Backward-compatible constructor used by non-remediation plan producers. */
+    public RequirementStageExecutionPlan(
+            int schemaVersion,
+            String taskId,
+            long expectedVersion,
+            long expectedFencingToken,
+            RdTaskStatus expectedStatus,
+            List<RequirementTaskMutation> mutations,
+            CommandDisposition commandDisposition,
+            ContinuationSpec continuation,
+            ExternalEffectReceipt externalEffectReceipt
+    ) {
+        this(schemaVersion, taskId, expectedVersion, expectedFencingToken, expectedStatus, mutations,
+                commandDisposition, continuation, externalEffectReceipt, null);
     }
 
     /**

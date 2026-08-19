@@ -163,7 +163,12 @@ public class RepairWorkspaceFactory {
             if (Files.isSymbolicLink(target)) {
                 throw new IllegalArgumentException("attachment target must not be a symbolic link: " + filename);
             }
-            writeAttachmentAtomically(attachmentDirectory, target, attachment.content());
+            Path targetDirectory = target.getParent();
+            Files.createDirectories(targetDirectory);
+            if (Files.isSymbolicLink(targetDirectory)) {
+                throw new IllegalArgumentException("attachment parent must not be a symbolic link: " + filename);
+            }
+            writeAttachmentAtomically(targetDirectory, target, attachment.content());
         }
     }
 
@@ -193,6 +198,9 @@ public class RepairWorkspaceFactory {
 
     private static String safeAttachmentFilename(String filename) {
         String normalized = filename == null ? "" : filename.replace('\\', '/').strip();
+        if ("qa-remediation/request.json".equals(normalized)) {
+            return normalized;
+        }
         int separator = normalized.lastIndexOf('/');
         String basename = separator >= 0 ? normalized.substring(separator + 1) : normalized;
         basename = basename.replaceAll("[^A-Za-z0-9._-]", "_");

@@ -1,4 +1,5 @@
 import { STATE_CUSTOM_TYPE } from "./agent-state-projector.mjs";
+import { createHash } from "node:crypto";
 import {
   ToolRetryGuard,
   argsHash,
@@ -11,6 +12,7 @@ export function createDynamicStateExtension({
   retryGuard,
   sink,
   stageRunId,
+  promptHash = null,
 }) {
   const guard = retryGuard ?? new ToolRetryGuard({ stageRunId });
   return {
@@ -21,7 +23,7 @@ export function createDynamicStateExtension({
     factory(pi) {
       pi.on("context", (event) => {
         if (!Array.isArray(event?.messages)) return;
-        event.messages = injectLatestState(event.messages, projector, sink);
+        event.messages = injectLatestState(event.messages, projector, sink, { promptHash });
       });
       pi.on("tool_call", (event) => {
         const toolName = event?.toolName ?? "";
@@ -66,23 +68,31 @@ export function createDynamicStateExtension({
   };
 }
 
-export function injectLatestState(messages, projector, sink = null) {
+export function injectLatestState(messages, projector, sink = null, { promptHash = null } = {}) {
   const next = (messages ?? []).filter((message) => message?.customType !== STATE_CUSTOM_TYPE);
   if (!projector) return next;
   try {
-    const injection = projector.prepareInjection();
+    const injection = projector.prepareInjection({ promptHash });
     next.push(injection.message);
     if (sink?.lifecycle) {
-      void safeLifecycle(sink, "STATE_CONTEXT_INJECTED", {
+      const payload = injection.message.content[0].text.includes('protocol="rd-agent-state/v2"') ? {
+        injectionSequence: injection.injectionSequence,
+        stateSequence: injection.stateSequence,
+        stateHash: injection.stateHash,
+        promptHash: injection.promptHash,
+        blockHash: injection.blockHash,
+        injectedBlock: injection.injectedBlock,
+        injectedAt: injection.injectedAt,
+        idempotencyKey: injection.idempotencyKey,
+        bytes: injection.bytes,
+      } : {
         sequence: injection.sequence,
         hash: injection.hash,
         bytes: injection.bytes,
-      });
+      };
+      void safeLifecycle(sink, "STATE_CONTEXT_INJECTED", payload);
     }
-    void projector.recordContextInjected({
-      hash: injection.hash,
-      bytes: injection.bytes,
-    });
+    void projector.recordContextInjected(injection);
   } catch (error) {
     next.push({
       role: "custom",
@@ -95,6 +105,10 @@ export function injectLatestState(messages, projector, sink = null) {
     });
   }
   return next;
+}
+
+export function hashPrompt(prompt) {
+  return `sha256:${createHash("sha256").update(String(prompt ?? ""), "utf8").digest("hex")}`;
 }
 
 async function safeLifecycle(sink, eventType, payload) {

@@ -1,6 +1,7 @@
 package com.wish.rd.rag.project.agent;
 
 import com.wish.rd.rag.project.agent.model.AgentExecutionProfile;
+import com.wish.rd.rag.project.agent.model.AgentRuntimeType;
 
 import java.util.Locale;
 import java.util.List;
@@ -29,6 +30,27 @@ public final class AgentExecutionProfileService {
                     throw new IllegalArgumentException("profileId belongs to another project");
                 });
         return store.save(profile);
+    }
+
+    public AgentExecutionProfile create(AgentExecutionProfile profile) {
+        validate(profile);
+        AgentExecutionProfile created = profile.withVersion(1L);
+        return store.insert(created);
+    }
+
+    public AgentExecutionProfile update(AgentExecutionProfile profile, long expectedVersion) {
+        validate(profile);
+        if (expectedVersion <= 0L) {
+            throw new IllegalArgumentException("expectedVersion must be positive");
+        }
+        AgentExecutionProfile existing = requireProfile(profile.profileId());
+        if (!existing.projectId().equals(profile.projectId())) {
+            throw new IllegalArgumentException("profileId belongs to another project");
+        }
+        AgentExecutionProfile updated = profile.withVersion(expectedVersion + 1L);
+        return store.update(updated, expectedVersion)
+                .orElseThrow(() -> new IllegalStateException(
+                        "execution profile version conflict: " + profile.profileId()));
     }
 
     public void bindProjectDefault(String projectId, String role, String profileId) {
@@ -119,6 +141,9 @@ public final class AgentExecutionProfileService {
         requireText(profile.name(), "name");
         requireText(profile.providerProfileId(), "providerProfileId");
         requireText(profile.toolPolicyId(), "toolPolicyId");
+        if (profile.runtimeType() != AgentRuntimeType.PI && !profile.capabilities().isEmpty()) {
+            throw new IllegalArgumentException("PI capabilities require PI runtime");
+        }
     }
 
     private static void requireProfileMatches(

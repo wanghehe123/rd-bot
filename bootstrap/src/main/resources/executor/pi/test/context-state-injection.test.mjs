@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -16,6 +17,32 @@ const identity = {
   role: "CODING_AGENT",
   attemptNo: 1,
 };
+
+const SHA256_EMPTY = "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+function v2InitialState() {
+  return {
+    protocol: "rd-agent-state/v2",
+    sequence: 0,
+    ...identity,
+    runtimeType: "PI",
+    profileSnapshotId: "snapshot-1",
+    currentGoal: "ship verified backend behavior",
+    budget: { availability: "UNKNOWN" },
+    todos: [{
+      todoId: "host-acceptance-1",
+      owner: "HOST",
+      kind: "ACCEPTANCE",
+      title: "acceptance A",
+      status: "PENDING",
+      required: true,
+      acceptanceCriteriaId: "AC-001",
+      acceptanceContentHash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      evidenceArtifactIds: [],
+    }],
+    facts: [],
+  };
+}
 
 test("injectLatestState emits STATE_CONTEXT_INJECTED lifecycle evidence", async () => {
   const dir = await mkdtemp(join(tmpdir(), "rd-state-inject-evidence-"));
@@ -73,6 +100,59 @@ test("injectLatestState keeps only one latest rd-agent-state message", async () 
   assert.match(stateMessages[0].content[0].text, /<rd-agent-state/);
   assert.match(stateMessages[0].content[0].text, /"sequence":1/);
   assert.equal(stateMessages[0].display, false);
+  assert.equal(injected.at(-1), stateMessages[0]);
+});
+
+test("v2 injection advances independently and records exact state, prompt, and block provenance", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rd-state-inject-v2-"));
+  const projector = new AgentStateProjector({
+    identity,
+    outputPath: dir,
+    maxInjectedStateBytes: 8192,
+    initialState: v2InitialState(),
+  });
+  await projector.initialize();
+  const lifecycleEvents = [];
+  const sink = {
+    lifecycle: async (eventType, payload) => lifecycleEvents.push({ eventType, payload }),
+  };
+  const original = [
+    { role: "user", content: [{ type: "text", text: "start" }] },
+    { role: "custom", customType: STATE_CUSTOM_TYPE, content: [{ type: "text", text: "stale" }] },
+    { role: "assistant", content: [{ type: "text", text: "working" }] },
+  ];
+
+  const first = injectLatestState(original, projector, sink, { promptHash: SHA256_EMPTY });
+  const second = injectLatestState(first, projector, sink, { promptHash: SHA256_EMPTY });
+  await new Promise((resolve) => setImmediate(resolve));
+  await projector.flush();
+
+  const injections = lifecycleEvents.filter((event) => event.eventType === "STATE_CONTEXT_INJECTED");
+  assert.equal(injections.length, 2);
+  assert.deepEqual(injections.map((event) => event.payload.injectionSequence), [1, 2]);
+  assert.deepEqual(injections.map((event) => event.payload.stateSequence), [0, 0]);
+  assert.equal(injections[0].payload.stateHash, injections[1].payload.stateHash);
+  assert.match(injections[1].payload.stateHash, /^sha256:[a-f0-9]{64}$/);
+  assert.equal(injections[1].payload.promptHash, SHA256_EMPTY);
+  assert.match(injections[1].payload.blockHash, /^sha256:[a-f0-9]{64}$/);
+  assert.equal(
+    injections[1].payload.blockHash,
+    `sha256:${createHash("sha256").update(injections[1].payload.injectedBlock, "utf8").digest("hex")}`,
+  );
+  assert.equal(injections[1].payload.injectedBlock, second.at(-1).content[0].text);
+  assert.match(injections[1].payload.injectedAt, /^\d{4}-\d{2}-\d{2}T/);
+  assert.match(injections[1].payload.idempotencyKey, /^sha256:[a-f0-9]{64}$/);
+  assert.notEqual(injections[0].payload.idempotencyKey, injections[1].payload.idempotencyKey);
+  assert.equal(second.filter((message) => message.customType === STATE_CUSTOM_TYPE).length, 1);
+  assert.equal(second.at(-1).customType, STATE_CUSTOM_TYPE);
+  assert.match(second.at(-1).content[0].text, /injection-sequence="2"/);
+  assert.equal(projector.sequence, 0);
+  const effective = JSON.parse(await readFile(join(dir, "agent-effective-context-latest.json"), "utf8"));
+  assert.equal(effective.protocol, "rd-agent-effective-context/v1");
+  assert.equal(effective.stageRunId, identity.stageRunId);
+  assert.equal(effective.injectionSequence, 2);
+  assert.equal(effective.injectedBlock, second.at(-1).content[0].text);
+  assert.deepEqual(effective.compositionOrder, ["PROMPT_SNAPSHOT", "AGENT_STATE_BLOCK"]);
 });
 
 test("context hook replaces stale state without adding turns", async () => {

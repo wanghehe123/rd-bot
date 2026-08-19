@@ -316,6 +316,24 @@ public interface RequirementStageFinalizationMapper extends BaseMapper<Requireme
             """)
     RequirementStageFinalizationRow findLatestPrepared(@Param("commandId") Long commandId);
 
+    /**
+     * Returns already-frozen outcome plans for one task so a later {@code recordOutcome} can assign
+     * a unique remediation number before the ledger row exists.
+     *
+     * @param taskId owning task
+     * @return recorded or finalized markers that carry an outcome plan
+     */
+    @Select("""
+            SELECT *
+              FROM rd_requirement_stage_finalizations
+             WHERE task_id = #{taskId}
+               AND state IN ('OUTCOME_RECORDED', 'FINALIZED')
+               AND outcome_plan_json IS NOT NULL
+               AND CAST(outcome_plan_json AS text) NOT IN ('', 'null')
+             ORDER BY command_id ASC, attempt_no ASC
+            """)
+    java.util.List<RequirementStageFinalizationRow> listRecordedOutcomePlans(@Param("taskId") long taskId);
+
     /** Persists an immutable plan before task mutation can begin. */
     @Update("""
             UPDATE rd_requirement_stage_finalizations

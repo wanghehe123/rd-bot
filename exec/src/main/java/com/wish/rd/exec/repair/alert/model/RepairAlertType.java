@@ -97,6 +97,9 @@ public enum RepairAlertType {
      */
     QA_REMEDIATION_STARTED,
 
+    /** Host prepared a durable PI QA remediation intent pending finalization. */
+    QA_REMEDIATION_PLANNED,
+
     /**
      * 交付复核失败。
      */
