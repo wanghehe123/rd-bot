@@ -69,7 +69,6 @@ export default defineConfig({
       "/user": backendTarget,
       "/ingestion": backendTarget,
       "/rag": backendTarget,
-      "/conversations": backendTarget,
       "/test": backendTarget
     }
   },
