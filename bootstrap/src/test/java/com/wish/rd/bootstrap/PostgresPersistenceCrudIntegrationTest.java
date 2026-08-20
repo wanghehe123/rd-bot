@@ -2,16 +2,6 @@ package com.wish.rd.bootstrap;
 
 import com.wish.rd.bootstrap.user.controller.vo.UserVO;
 import com.wish.rd.bootstrap.user.service.UserAdminService;
-import com.wish.rd.exec.repair.model.CreateRepairAssetCommand;
-import com.wish.rd.exec.repair.model.CreateRepairRecordArtifactCommand;
-import com.wish.rd.exec.repair.model.CreateRepairRecordCommand;
-import com.wish.rd.exec.repair.model.RepairAsset;
-import com.wish.rd.exec.repair.model.RepairAssetType;
-import com.wish.rd.exec.repair.model.RepairRecord;
-import com.wish.rd.exec.repair.model.RepairRecordArtifact;
-import com.wish.rd.exec.repair.RepairRecordRepository;
-import com.wish.rd.exec.repair.model.RepairRecordQuery;
-import com.wish.rd.exec.repair.model.RepairRecordStatus;
 import com.wish.rd.engine.agent.model.AgentRole;
 import com.wish.rd.engine.agent.model.AgentStageRun;
 import com.wish.rd.engine.agent.AgentStageRunStore;
@@ -90,8 +80,6 @@ class PostgresPersistenceCrudIntegrationTest {
     private RoleContextPackageStore roleContextPackageStore;
     @Autowired
     private WorkflowExperienceStore workflowExperienceStore;
-    @Autowired
-    private RepairRecordRepository repairRecordRepository;
 
     @DynamicPropertySource
     static void registerPostgresProperties(DynamicPropertyRegistry registry) {
@@ -128,7 +116,6 @@ class PostgresPersistenceCrudIntegrationTest {
             verifyIngestionTaskCrud(marker, base.id(), document.id(), now);
             verifyRdTaskCrud(marker, now);
             verifyMultiAgentOrchestrationCrud(marker, now);
-            verifyRepairRecordCrud(marker);
             verifyKnowledgeDeletes(base.id(), document.id());
 
             assertDoesNotThrow(() -> userAdminService.delete(user.id()));
@@ -467,119 +454,6 @@ class PostgresPersistenceCrudIntegrationTest {
                 () -> assertTrue(agentStageRunStore.listByTask(taskId).stream()
                         .anyMatch(stage -> stage.stageRunId().equals(stageRun.stageRunId()))),
                 () -> assertEquals(List.of(experience), workflowExperienceStore.listByTask(taskId))
-        );
-    }
-
-    private void verifyRepairRecordCrud(String marker) {
-        RepairRecord created = repairRecordRepository.create(new CreateRepairRecordCommand(
-                marker + "-ticket",
-                "https://ticket.example.com/" + marker,
-                marker + "-repair",
-                Map.of("marker", marker, "priority", "P1", "traceId", "trace-" + marker)
-        ));
-        // P1 新增状态轮转：QUEUED -> CONTEXT_COLLECTING -> CONTEXT_READY
-        RepairRecord queued = repairRecordRepository.updateStatus(
-                created.id(), RepairRecordStatus.QUEUED, "queued"
-        );
-        RepairRecord collecting = repairRecordRepository.updateStatus(
-                created.id(), RepairRecordStatus.CONTEXT_COLLECTING, "collecting"
-        );
-        RepairRecord ready = repairRecordRepository.updateStatus(
-                created.id(), RepairRecordStatus.CONTEXT_READY, "rag summary " + marker
-        );
-        RepairRecordArtifact eventArtifact = repairRecordRepository.addArtifact(new CreateRepairRecordArtifactCommand(
-                created.id(), "FEISHU_EVENT", "", "event-" + marker
-        ));
-        RepairRecordArtifact snapshotArtifact = repairRecordRepository.addArtifact(new CreateRepairRecordArtifactCommand(
-                created.id(), "FEISHU_TICKET_SNAPSHOT", "", "snapshot-" + marker
-        ));
-        RepairRecordArtifact messagesArtifact = repairRecordRepository.addArtifact(new CreateRepairRecordArtifactCommand(
-                created.id(), "FEISHU_MESSAGES", "", "messages-" + marker
-        ));
-        RepairRecordArtifact ragArtifact = repairRecordRepository.addArtifact(new CreateRepairRecordArtifactCommand(
-                created.id(), "RAG_CONTEXT", "", "rag-" + marker
-        ));
-        RepairAsset rootCauseAsset = repairRecordRepository.addAsset(new CreateRepairAssetCommand(
-                created.id(),
-                RepairAssetType.BUG_CAUSE,
-                "root-cause-" + marker,
-                "client/server field mismatch",
-                "{\"field\":\"address\",\"marker\":\"" + marker + "\"}",
-                ragArtifact.id(),
-                true
-        ));
-        RepairAsset planAsset = repairRecordRepository.addAsset(new CreateRepairAssetCommand(
-                created.id(),
-                RepairAssetType.ACCEPTANCE_PLAN,
-                "acceptance-plan-" + marker,
-                "planner output",
-                "{\"status\":\"READY\",\"marker\":\"" + marker + "\"}",
-                "",
-                false
-        ));
-        repairRecordRepository.updateExecutorJson(created.id(), "{\"status\":\"SUCCESS\"}");
-        repairRecordRepository.updateDockerJson(created.id(), "{\"image\":\"rd-bot/claude-code:local\"}");
-        repairRecordRepository.updateGithubJson(created.id(),
-                "{\"pullRequestUrl\":\"https://github.com/example/repo/pull/1\"}");
-        repairRecordRepository.updateTestJson(created.id(), "{\"testStatus\":\"PASSED\"}");
-        repairRecordRepository.updateRiskJson(created.id(), "{\"riskLevel\":\"LOW\"}");
-        repairRecordRepository.updateErrorMessage(created.id(), "manual review note " + marker);
-        RepairRecord metadata = repairRecordRepository.findById(created.id()).orElseThrow();
-
-        // 第二条记录用于验证分页查询和跨记录 source artifact 拒绝
-        RepairRecord otherRecord = repairRecordRepository.create(new CreateRepairRecordCommand(
-                marker + "-ticket-2", "", marker + "-repair-2",
-                Map.of("priority", "P0")
-        ));
-        RepairRecordArtifact foreignArtifact = repairRecordRepository.addArtifact(new CreateRepairRecordArtifactCommand(
-                otherRecord.id(), "RAG_CONTEXT", "", "foreign-rag-" + marker
-        ));
-        IllegalArgumentException foreignArtifactException = assertThrows(
-                IllegalArgumentException.class,
-                () -> repairRecordRepository.addAsset(new CreateRepairAssetCommand(
-                        created.id(),
-                        RepairAssetType.ACCEPTANCE_PLAN,
-                        "foreign-asset-" + marker,
-                        "should fail",
-                        "{}",
-                        foreignArtifact.id(),
-                        false
-                ))
-        );
-
-        assertAll(
-                () -> assertEquals(RepairRecordStatus.QUEUED, queued.status()),
-                () -> assertEquals(RepairRecordStatus.CONTEXT_COLLECTING, collecting.status()),
-                () -> assertEquals(RepairRecordStatus.CONTEXT_READY, ready.status()),
-                () -> assertEquals("rag summary " + marker, ready.ragSummary()),
-                () -> assertEquals(ready.id(), repairRecordRepository.findById(created.id()).orElseThrow().id()),
-                () -> assertEquals(ready.id(), repairRecordRepository.findByTicketId(marker + "-ticket").orElseThrow().id()),
-                () -> assertEquals(4, repairRecordRepository.listArtifacts(created.id()).size()),
-                () -> assertEquals(2, repairRecordRepository.listAssets(created.id()).size()),
-                () -> assertEquals(rootCauseAsset.id(), repairRecordRepository.listAssets(created.id()).getFirst().id()),
-                () -> assertEquals(planAsset.id(), repairRecordRepository.listAssets(created.id()).get(1).id()),
-                () -> assertEquals(RepairAssetType.BUG_CAUSE,
-                        repairRecordRepository.listAssets(created.id()).getFirst().assetType()),
-                () -> assertTrue(foreignArtifactException.getMessage().contains("source artifact must belong")),
-                () -> assertTrue(metadata.executorJson().contains("\"status\"")),
-                () -> assertTrue(metadata.executorJson().contains("SUCCESS")),
-                () -> assertTrue(metadata.dockerJson().contains("rd-bot/claude-code:local")),
-                () -> assertTrue(metadata.githubJson().contains("https://github.com/example/repo/pull/1")),
-                () -> assertTrue(metadata.testJson().contains("PASSED")),
-                () -> assertTrue(metadata.riskJson().contains("LOW")),
-                () -> assertEquals("manual review note " + marker, metadata.errorMessage()),
-                // 分页查询：按 status 过滤
-                () -> assertTrue(repairRecordRepository.query(new RepairRecordQuery(
-                        "", "CONTEXT_READY", "", 0L, 0L, 1, 20
-                )).records().stream().anyMatch(record -> record.id().equals(created.id()))),
-                // 分页查询：按 priority 过滤（存于 extension_json）
-                () -> assertEquals(1, repairRecordRepository.query(new RepairRecordQuery(
-                        "", "", "P0", 0L, 0L, 1, 20
-                )).total()),
-                // 分页查询：按 ticketId 过滤
-                () -> assertEquals(1, repairRecordRepository.query(new RepairRecordQuery(
-                        marker + "-ticket-2", "", "", 0L, 0L, 1, 20
-                )).total())
         );
     }
 

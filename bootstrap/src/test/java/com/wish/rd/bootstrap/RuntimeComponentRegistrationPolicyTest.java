@@ -71,8 +71,6 @@ class RuntimeComponentRegistrationPolicyTest {
                 Map.entry("rag/src/main/java/com/wish/rd/rag/knowledge/KnowledgeDocumentMutationEngine.java", "@Component"),
                 Map.entry("rag/src/main/java/com/wish/rd/rag/ingestion/impl/InMemoryIngestionTaskStore.java", "@Component"),
                 Map.entry("bootstrap/src/main/java/com/wish/rd/bootstrap/persistence/impl/PostgresIngestionTaskStore.java", "@Component"),
-                Map.entry("exec/src/main/java/com/wish/rd/exec/repair/impl/InMemoryRepairRecordRepository.java", "@Component"),
-                Map.entry("bootstrap/src/main/java/com/wish/rd/bootstrap/persistence/impl/PostgresRepairRecordRepository.java", "@Component"),
                 Map.entry("rag/src/main/java/com/wish/rd/rag/knowledge/KnowledgeWorkspace.java", "@Component"),
                 Map.entry("bootstrap/src/main/java/com/wish/rd/bootstrap/feishu/impl/MockFeishuDocumentClient.java", "@Component"),
                 Map.entry("rag/src/main/java/com/wish/rd/rag/knowledge/FeishuDocKnowledgeImporter.java", "@Component"),
