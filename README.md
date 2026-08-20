@@ -6,7 +6,7 @@
 [![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.5.7-brightgreen)](https://spring.io/projects/spring-boot)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-RD-Bot 把飞书工单 / 管理台需求转化为**可治理的多角色自动化交付流水线**：任务级 RAG 构建工程上下文，在 Docker 隔离沙箱中运行 Pi Agent，自动验证并创建可审查 PR，同时沉淀完整审计证据。
+RD-Bot 把飞书 IM / 管理台需求转化为**可治理的多角色自动化交付流水线**：任务级 RAG 构建工程上下文，在 Docker 隔离沙箱中运行 Pi Agent，自动验证并创建可审查 PR，同时沉淀完整审计证据。
 
 > 不是「会改代码的聊天机器人」，而是 **AI-native Software Delivery Harness（研发流程自动化控制面）**。
 
@@ -95,7 +95,7 @@ RD-Bot 把飞书工单 / 管理台需求转化为**可治理的多角色自动�
 | 层 | 职责 |
 |----|------|
 | **PostgreSQL** | 事实源：任务、状态事件、阶段 run、检索 run、配置 |
-| **Redis** | 协调：分布式锁、Redis Stream 工单队列（lease / pending claim） |
+| **Redis** | 协调：分布式锁、模型健康状态 |
 | **RustFS / S3** | 内容：大产物、QA 证据、可选 Pi 原始事件 / session |
 | **Docker** | 隔离：每 attempt 独立 workspace |
 
@@ -145,11 +145,11 @@ PENDING → CONTEXT_READY → DISPATCHING → RUNNING
 | 模块 | 职责 |
 |------|------|
 | `bootstrap` | Spring Boot 宿主、REST、管理前端静态资源、Postgres/Redis/S3/Docker/飞书适配 |
-| `engine` | `RequirementDeliveryEngine`、阶段编排、修复/评测/复核、状态机与策略 |
+| `engine` | `RequirementDeliveryEngine`、阶段编排、状态机与策略 |
 | `rag` | 知识库、检索、角色上下文包、任务运行时端口与 Trace |
-| `exec` | `AgentRuntimeRouter`、Pi/Claude Docker 执行器、结果 / QA Validator |
+| `exec` | `AgentRuntimeRouter`、Pi Docker 执行器、结果 / QA Validator |
 | `skill` | Skill 目录端口、安装编排、角色白名单与风险门禁 |
-| `frontend` | React + Vite 管理台（任务 / 项目 / RAG / Skill Hub / 评测） |
+| `frontend` | React + Vite 管理台（任务 / 项目 / RAG / Skill Hub） |
 
 ---
 
@@ -251,7 +251,7 @@ export RD_EXECUTOR_DOCKER_ALLOWED_REQUIREMENT_BRANCH="requirement/*"
 
 ```bash
 # 任务
-curl -X POST http://127.0.0.1:18080/admin/rd-tasks -H 'Content-Type: application/json' -d '{...}'
+curl -X POST http://127.0.0.1:18080/admin/rd-tasks/requirements -H 'Content-Type: application/json' -d '{...}'
 curl http://127.0.0.1:18080/admin/rd-tasks/{taskId}
 
 # Skill Hub
@@ -267,7 +267,7 @@ curl http://127.0.0.1:18080/admin/skills/role-bindings
 | `/admin/rd-tasks` | 任务工作台 |
 | `/admin/skills` | Skill Hub |
 | `/admin/traces` | 执行追踪 |
-| `/admin/evaluations` | 评测 |
+| `/admin/observability` | 交付观测 |
 
 ---
 

@@ -65,6 +65,10 @@
 - 【强制】`REQUIREMENT_REVIEWER` 与 `SOLUTION_ARCHITECT` 必须走 Agent 容器。`rd.executor.agent-runtime.enabled` 默认 `true`，`compatibilityRuntime()` 默认返回 `PI`：项目未保存策略时也必须落到 Pi，不得回退到 `CLAUDE_CODE`（该运行时已删除，只剩枚举值）。`AgentRuntimeRouter` 必须能在没有 `RepairExecutorPort` 的情况下装配成功——缺少某运行时的执行器只允许在真正被请求时抛 `UnsupportedAgentRuntimeException`，不得让上下文启动失败。
   - 代码：`EngineRequirementExecutionProfileResolver.compatibilityRuntime`、`AgentRuntimeProperties.enabled`、`AgentRuntimeExecutorConfiguration.agentRuntimeRouter`、`EngineRequirementExecutorConfiguration.requirementExecutor`
   - 验证：`./mvnw -pl bootstrap -am -Dtest=EngineRequirementExecutionProfileResolverTest,AgentRuntimeExecutorConfigurationTest -Dsurefire.failIfNoSpecifiedTests=false test`
+- 【强制】BugFix / 工单修复链已下线，不得重新引入。`RdTaskType.BUG_FIX` 与 `RetrievalConsumerType.BUG_FIX` 只为读取历史行保留；非法枚举值失败关闭，空值落 `REQUIREMENT`。HTTP 写入面只接受需求任务（`POST /admin/rd-tasks/requirements`）；提交非需求任务必须拒绝。非需求飞书 IM 消息直接 `ignored`，不得再解析成工单。不得恢复 `RdBotFixEngine`、`TicketRepairEngine`、`RagBugFixEngine`、`RepairRagPipeline`、`createRdTask` / `POST /admin/rd-tasks` 的 BugFix 创建，或 `repair_records` 写入路径。
+  - 代码：`RdTaskType.parse`、`RdTaskController.submit`、`FeishuImMessageController`
+  - 验证：`rg -n 'RdBotFixEngine|TicketRepairEngine|RagBugFixEngine|RepairRagPipeline|createRdTask\\(' --glob '!**/target/**' --glob '!openspec/changes/**' --glob '!docs/superpowers/**' --glob '!RULE.md'` 必须无命中
+  - 验证：`./mvnw -pl rag -Dtest=RdTaskTypeTest -Dsurefire.failIfNoSpecifiedTests=false test`；`./mvnw -pl bootstrap -am -Dtest=RdTaskControllerTest,FeishuImMessageControllerTest -Dsurefire.failIfNoSpecifiedTests=false test`
 - 【强制】`rd_agent_tool_policies.policy_hash` 必须是 `SHA-256(policy_json)` 的 64 位 hex，不能用 `legacy-host-bound-v1` 这类占位标签。读到非 hex 种子哈希时，store 可回写真实 checksum；hex 不匹配必须失败关闭。Profile 解析失败写入任务 `errorMessage` 时必须带上底层原因，不能只写角色名。
   - 代码：`PostgresAgentToolPolicyStore.toPolicy`、`p8_pi_agent_runtime.sql`、`p17_fix_tool_policy_seed_hashes.sql`、`RequirementAgentStageOrchestrator`
   - 验证：`./mvnw -pl bootstrap -Dtest=PostgresAgentToolPolicyStoreTest -Dsurefire.failIfNoSpecifiedTests=false test` 与 `./mvnw -pl engine -Dtest=RequirementExecutionProfileFailureTest -Dsurefire.failIfNoSpecifiedTests=false test`
@@ -96,7 +100,7 @@
 
 ### 2.1 通用【强制】
 
-- **类名 UpperCamelCase**：`RepairRagPipeline`、`KnowledgeWorkspace`。
+- **类名 UpperCamelCase**：`RequirementDeliveryEngine`、`KnowledgeWorkspace`。
 - **方法名/变量 lowerCamelCase**：`prepareContext`、`vectorStore`。
 - **常量全大写下划线**：`MAX_CHUNK_LENGTH`、`DEFAULT_USER_ID`。
 - **包名全小写单数**：`retrieval`（非 `retrievals`）、`ingestion`。
@@ -107,16 +111,16 @@
 
 | 角色 | 后缀 / 命名 | 示例 |
 |------|------------|------|
-| REST 控制器 | `*Controller` | `RagV3ChatController` |
-| 业务编排 | `*Engine` | `KnowledgeAdminEngine` |
+| REST 控制器 | `*Controller` | `RdTaskController` |
+| 业务编排 | `*Engine` | `RequirementDeliveryEngine`、`KnowledgeAdminEngine` |
 | 内存仓储/聚合 | `*Registry` / `*Workspace` / `*Store` | `QueryTermMappingRegistry`、`KnowledgeWorkspace`、`RagTraceStore` |
 | 领域模型 | 名词（无后缀） | `KnowledgeBase`、`IntentNode` |
-| 不可变值对象 | `record`，无后缀 | `RetrievedChunk`、`RepairRagRequest` |
+| 不可变值对象 | `record`，无后缀 | `RetrievedChunk`、`RoleContextPackage` |
 | 命令对象（写操作入参） | `*Command` | `CreateKnowledgeBaseCommand` |
 | 端口（外部系统抽象） | `*Port` | `LogCenterPort` |
 | 策略 | `*Strategy` | `ChunkingStrategy` |
 | 工厂 | `*Factory` | `RagRuntimeFactory`、`ChunkingStrategyFactory` |
-| 测试结果 | `*Result` | `RagFullFlowTestResult` |
+| 测试结果 | `*Result` | `RequirementDeliveryResult`、`IngestionPipelineTestResult` |
 | 选择器 | `*Selector` | `DocumentParserSelector` |
 
 ### 2.3 方法命名【强制】
@@ -136,7 +140,7 @@
   (left, right) -> left.score() >= right.score() ? left : right
   ```
 - 【强制】注释与代码同步更新；过时注释比没有注释更糟。
-- 【参考】参考已注释的核心文件（`RepairRagPipeline`、`RagBugFixEngine`、`KnowledgeWorkspace`）的密度与风格。
+- 【参考】参考已注释的核心文件（`RequirementDeliveryEngine`、`TaskIngestionEngine`、`KnowledgeWorkspace`）的密度与风格。
 
 ---
 
@@ -146,7 +150,7 @@
 
 ### 3.1 分层架构 + 端口适配器（Hexagonal）【强制】
 
-- 外部系统（日志中心、代码仓库、工单、对象存储、LLM）一律抽象为 **Port 接口**，定义在 `rag`/`adapter` 层，实现在 `bootstrap` 或测试 mock：
+- 外部系统（飞书 IM、代码仓库、对象存储、LLM、GitHub PR）一律抽象为 **Port 接口**，定义在 `rag`/`adapter` 层，实现在 `bootstrap` 或测试 mock：
   ```java
   // rag 层只定义契约
   public interface LogCenterPort {
@@ -169,7 +173,7 @@
 
 ### 3.3 工厂模式（Factory）【推荐用于"复杂对象组装"】
 
-- **已落地**：`RagRuntimeFactory` 集中装配 `RepairRagPipeline`（基础版/完整版两个重载），避免调用方逐个 `new` 组件。
+- **已落地**：`RagRuntimeFactory` 集中装配 `IngestionPipeline`（`ingestionPipeline(VectorStore)`），避免调用方逐个 `new` 组件。不得把已删除的 `RepairRagPipeline` 重载加回来。
 - 【推荐】当某个对象的构造依赖 4 个以上组件时，提取静态工厂方法，命名 `xxx(...)` / `inMemory(...)` / `withDefaults(...)`。
 
 ### 3.4 模板方法 / 流程编排【强制用于"多步骤链路"】
@@ -177,9 +181,9 @@
 固定步骤的链路用**显式编排方法** + **`@RagTraceNode` 标记**，步骤间用不可变上下文对象传递：
 
 ```java
-@RagTraceNode(value = "repair-rag-pipeline", category = "rag")
-public RepairContextPackage prepareContext(RepairRagRequest request) {
-    // 1. 合并查询文本 → 2. 意图分类 → 3. 歧义引导 → 4. 多通道检索 → 5. 上下文打包
+@RagTraceNode(value = "multi-channel-retrieval", category = "rag")
+public RetrievalBundle retrieve(RetrievalRequest request) {
+    // 1. 按意图筛选通道 → 2. 虚拟线程并行检索 → 3. 按 chunkId 去重合并
 }
 ```
 
@@ -208,14 +212,14 @@ public RepairContextPackage prepareContext(RepairRagRequest request) {
 
 ### 3.5.3 任务状态与持久化派发【强制】
 
-- 【强制】`RdTaskStatus` 虽为共享枚举，合法边必须按 `RdTaskType` 分图校验；需求任务不得走 BugFix 的 `SEARCHING` 捷径。
+- 【强制】`RdTaskStatus` 虽为共享枚举，合法边必须按 `RdTaskType` 分图校验；需求任务不得走历史 BugFix 图上的 `SEARCHING` 捷径。`BUG_FIX` 状态图只为读取已有行保留，不得再有新的写入方。
 - 【强制】任务快照与对应状态事件必须通过同一个事务端口写入；PostgreSQL 实现必须使用 `@Transactional`，禁止先改快照、后补事件。
 - 【强制】声明 `@Transactional` 的 Spring Bean 类不得是 `final`：Boot 默认 CGLIB 子类代理，
   final 类会在真机启动时抛 `Cannot subclass final class` 并放弃整个上下文，而单测不加载
   Spring 上下文暴露不了（2026-08-13 两个 Postgres 投影适配器就这样把后端打挂）。
   由 `TransactionalProxyPolicyTest` 扫描 bootstrap 源码钉住；验证：
   `./mvnw -pl bootstrap -am -Dtest=TransactionalProxyPolicyTest -Dsurefire.failIfNoSpecifiedTests=false test`。
-- 【强制】任务写锁使用 task ID 粒度；工单幂等创建使用 ticket ID 粒度。禁止用全局注册表锁串行化不同任务。
+- 【强制】任务写锁使用 task ID 粒度。禁止用全局注册表锁串行化不同任务。已删除的工单 ticket-ID 幂等锁不得重新引入到需求交付路径。
 - 【强制】普通需求交付（含 umbrella 提交）先写 `rd_requirement_delivery_jobs`，再提交线程池。Worker 必须通过条件更新获得租约；进程重启后恢复 PENDING、FAILED_RETRYABLE 与租约过期的 RUNNING 作业。**窄化例外**：checkpoint-bound 阶段重试以初始化事务同写的 `rd_requirement_stage_commands` 为唯一派发真值，不得为该重试凭空创建第二个 umbrella job，除非既有运行时路径明确需要它；提交后的调度器只能按 checkpoint 记录的 command ID 唤醒该行。
 - 【强制】阶段重试必须创建新的 `attemptNo`；`FAILED_RETRYABLE` 是旧 attempt 的终态，不得把旧记录改写为 `RECOVERING`。
 - 【强制】达到派发重试上限时，作业与主任务都进入 `DEAD_LETTERED` 并保留失败原因。
@@ -625,9 +629,9 @@ public RepairContextPackage prepareContext(RepairRagRequest request) {
 
 - 纯数据载体一律用 `record`，并在紧凑构造器里做**防御性归一**：
   ```java
-  public record RepairContextPackage(...) {
-      public RepairContextPackage {
-          retrievedChunks = retrievedChunks == null ? List.of() : List.copyOf(retrievedChunks);
+  public record RetrievedChunk(...) {
+      public RetrievedChunk {
+          metadata = metadata == null ? Map.of() : Map.copyOf(metadata);
       }
   }
   ```
@@ -640,7 +644,7 @@ public RepairContextPackage prepareContext(RepairRagRequest request) {
 
 ### 3.9 函数式接口作为回调【推荐】
 
-- 端口/钩子优先用 `@FunctionalInterface`（如 `RepairTaskContextPort`），而非定义带单个方法的抽象类。
+- 端口/钩子优先用 `@FunctionalInterface`（如 `AgentRuntimeExecutorPort`、`RequirementStageExecutor`），而非定义带单个方法的抽象类。
 
 ---
 
@@ -734,7 +738,7 @@ public RepairContextPackage prepareContext(RepairRagRequest request) {
 ### 6.1 覆盖要求【强制】
 
 - 【强制】每个公开能力必须有对应测试（本项目 README "Verification" 列出的覆盖范围须持续维护）。
-- 【强制】核心链路（BugFix Chat、兼容聊天入口、修复主流程、检索、改写、Prompt、摄取）必须有端到端冒烟测试（`/test/*` 通道 + JUnit 断言）。
+- 【强制】核心链路（需求交付、检索、摄取、知识管理、Pi 桥接协议）必须有端到端冒烟测试（现存 `/test/ingestion` 通道 + JUnit 断言）。不得把已删除的 BugFix Chat / 兼容聊天入口 / 修复主流程冒烟通道加回来。
 - 【推荐】单测覆盖边界：空入参、空集合、并发、限流命中、歧义引导。
 
 ### 6.2 测试编写【强制】
@@ -785,14 +789,14 @@ public RepairContextPackage prepareContext(RepairRagRequest request) {
 | 分层单向依赖 | `bootstrap -> engine/exec/skill/rag`，`engine/exec/skill -> rag`，见各级 `pom.xml` |
 | 端口适配器 | `LogCenterPort` / `CodeRepositorySearchPort` / `ObjectStorageService` |
 | 策略 + 工厂 | `ChunkingStrategy` + `ChunkingStrategyFactory` |
-| 模板方法/编排 | `RepairRagPipeline.prepareContext`、`TaskIngestionEngine.execute` |
+| 模板方法/编排 | `MultiChannelRetrievalEngine.retrieve`、`TaskIngestionEngine.execute` |
 | 注册表 | `QueryTermMappingRegistry`、`IntentTreeRegistry`、`RagStreamTaskRegistry` |
 | 聚合根 | `KnowledgeWorkspace`（级联一致性） |
-| 值对象 | `RetrievedChunk`、`RepairContextPackage`（record + 防御性归一） |
+| 值对象 | `RetrievedChunk`、`RoleContextPackage`（record + 防御性归一） |
 | Builder | `IntentNode.builder()` |
-| 函数式端口 | `RepairTaskContextPort`（`@FunctionalInterface`） |
-| 虚拟线程并发 | `MultiChannelRetrievalEngine.retrieve`、`DefaultConversationMemoryService` |
-| Redis 队列限流 | `ChatQueueLimiter` + `RedisChatQueueLimiter` + `FairDistributedRateLimiter` |
+| 函数式端口 | `AgentRuntimeExecutorPort`、`RequirementStageExecutor`（`@FunctionalInterface`） |
+| 虚拟线程并发 | `MultiChannelRetrievalEngine.retrieve` |
+| 队列限流 | 对话队列限流（`ChatQueueLimiter` / `RedisChatQueueLimiter`）已随聊天栈删除，不得重新引入；需求交付用任务级调度与 checkpoint |
 | 链路追踪 | `@RagTraceNode` + `RagTraceStore` |
 
 ---
