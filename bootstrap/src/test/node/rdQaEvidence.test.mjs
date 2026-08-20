@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-const script = fileURLToPath(new URL("../../main/resources/executor/claude/rd-qa-evidence.mjs", import.meta.url));
+const script = fileURLToPath(new URL("../../main/resources/executor/pi/rd-qa-evidence.mjs", import.meta.url));
 
 test("records real command status and redacts credential values", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "rd-qa-evidence-"));
