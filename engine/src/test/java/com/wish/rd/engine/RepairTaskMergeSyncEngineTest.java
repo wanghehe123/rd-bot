@@ -4,10 +4,6 @@ import com.wish.rd.adapter.model.TicketSnapshot;
 import com.wish.rd.engine.merge.model.PullRequestMergeStatus;
 import com.wish.rd.engine.merge.PullRequestMergeStatusPort;
 import com.wish.rd.engine.merge.RepairTaskMergeSyncEngine;
-import com.wish.rd.engine.ticket.model.CreateRepairRecordCommand;
-import com.wish.rd.engine.ticket.impl.InMemoryRepairRecordRepository;
-import com.wish.rd.engine.ticket.RepairRecordRepository;
-import com.wish.rd.engine.ticket.model.RepairRecordStatus;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
 import com.wish.rd.rag.runtime.impl.InMemoryRdTaskStore;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
@@ -20,7 +16,6 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -31,15 +26,13 @@ class RepairTaskMergeSyncEngineTest {
     void shouldMarkCommittedTaskAsMergedWhenPullRequestIsMerged() {
         RagStreamTaskRegistry registry = newRegistry();
         RdBugFixTask task = committedTask(registry, "https://github.com/acme/order/pull/42");
-        RepairRecordRepository recordRepository = repairRecordRepository(task.ticketId());
         RecordingPullRequestMergeStatusPort statusPort = new RecordingPullRequestMergeStatusPort(true);
-        RepairTaskMergeSyncEngine engine = new RepairTaskMergeSyncEngine(registry, statusPort, recordRepository);
+        RepairTaskMergeSyncEngine engine = new RepairTaskMergeSyncEngine(registry, statusPort);
 
         RdTask synced = engine.syncTask(task.taskId());
 
         assertEquals(RdTaskStatus.MERGED, synced.status());
         assertEquals(RdTaskStatus.MERGED, registry.get(task.taskId()).status());
-        assertEquals(RepairRecordStatus.MERGED, recordRepository.findByTicketId(task.ticketId()).orElseThrow().status());
         assertEquals(List.of("https://github.com/acme/order/pull/42"), statusPort.urls());
     }
 
@@ -97,19 +90,17 @@ class RepairTaskMergeSyncEngineTest {
     }
 
     @Test
-    void shouldRepairRecordStatusForAlreadyMergedTask() {
+    void shouldNotRequeryPullRequestStatusForAnAlreadyMergedTask() {
         RagStreamTaskRegistry registry = newRegistry();
         RdBugFixTask committed = committedTask(registry, "https://github.com/acme/order/pull/45");
-        RdBugFixTask merged = registry.markMerged(committed.taskId());
-        RepairRecordRepository recordRepository = repairRecordRepository(merged.ticketId());
+        registry.markMerged(committed.taskId());
         RecordingPullRequestMergeStatusPort statusPort = new RecordingPullRequestMergeStatusPort(true);
-        RepairTaskMergeSyncEngine engine = new RepairTaskMergeSyncEngine(registry, statusPort, recordRepository);
+        RepairTaskMergeSyncEngine engine = new RepairTaskMergeSyncEngine(registry, statusPort);
 
         List<RdTask> synced = engine.syncAllCommitted();
 
         assertEquals(1, synced.size());
         assertEquals(RdTaskStatus.MERGED, synced.getFirst().status());
-        assertEquals(RepairRecordStatus.MERGED, recordRepository.findByTicketId(merged.ticketId()).orElseThrow().status());
         assertEquals(List.of(), statusPort.urls());
     }
 
@@ -185,13 +176,6 @@ class RepairTaskMergeSyncEngineTest {
                 new InMemoryRdTaskStore(),
                 new SnowflakeIdGenerator(1, 1, now::getAndIncrement)
         );
-    }
-
-    private static RepairRecordRepository repairRecordRepository(String ticketId) {
-        RepairRecordRepository repository = InMemoryRepairRecordRepository.inMemory();
-        String id = repository.create(new CreateRepairRecordCommand(ticketId, "", "外卖下单接口返回 500", Map.of())).id();
-        repository.updateStatus(id, RepairRecordStatus.CONTEXT_READY, "context ready");
-        return repository;
     }
 
     private static TicketSnapshot ticket(String ticketId) {

@@ -89,9 +89,7 @@ class RuntimeComponentRegistrationPolicyTest {
                 Map.entry("engine/src/main/java/com/wish/rd/engine/admin/ingestion/IngestionAdminEngine.java", "@Service"),
                 Map.entry("engine/src/main/java/com/wish/rd/engine/admin/rewrite/QueryTermMappingAdminEngine.java", "@Service"),
                 Map.entry("engine/src/main/java/com/wish/rd/engine/admin/intent/IntentTreeAdminEngine.java", "@Service"),
-                Map.entry("engine/src/main/java/com/wish/rd/engine/rag/RagBugFixEngine.java", "@Service"),
-                Map.entry("engine/src/main/java/com/wish/rd/engine/bugfix/RdBotFixEngine.java", "@Service"),
-                Map.entry("engine/src/main/java/com/wish/rd/engine/bugfix/BugFixPromptBuilder.java", "@Component")
+                Map.entry("engine/src/main/java/com/wish/rd/engine/requirement/RequirementDeliveryEngine.java", "@Service")
         );
 
         for (Map.Entry<String, String> entry : componentFiles.entrySet()) {

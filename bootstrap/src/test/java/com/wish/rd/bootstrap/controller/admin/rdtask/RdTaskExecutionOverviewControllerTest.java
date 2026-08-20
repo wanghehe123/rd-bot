@@ -10,7 +10,6 @@ import com.wish.rd.engine.agent.model.AgentRole;
 import com.wish.rd.engine.agent.model.AgentStageArtifact;
 import com.wish.rd.engine.agent.model.AgentStageRun;
 import com.wish.rd.engine.agent.model.AgentStageStatus;
-import com.wish.rd.engine.bugfix.observability.BugFixStageRecorder;
 import com.wish.rd.exec.repair.docker.impl.DockerExecutionRegistry;
 import com.wish.rd.exec.repair.docker.model.ContainerRunRequest;
 import com.wish.rd.exec.repair.execution.model.RepairJobCommand;
@@ -648,39 +647,17 @@ class RdTaskExecutionOverviewControllerTest {
     }
 
     @Test
-    void shouldUseBugFixStageOrderAndProgressForBugFixTask() throws Exception {
-        RdBugFixTask task = registry.createTaskManually(
-                "ticket-bug-overview",
-                "注册接口返回 HTML",
-                "修复注册接口",
-                "P1",
-                "prompt"
-        );
-        BugFixStageRecorder recorder = new BugFixStageRecorder(stageRunStore, artifactStore, generator());
-        for (AgentRole role : AgentRole.bugFixOrder()) {
-            AgentStageRun running = recorder.start(task.taskId(), role, role.name() + " input");
-            recorder.succeed(running, role.name() + " result", "", "[]");
-        }
-
-        mockMvc.perform(get("/admin/rd-tasks/{taskId}/execution-overview", task.taskId()))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.taskType", is("BUG_FIX")))
-                .andExpect(jsonPath("$.progressCompleted", is(24)))
-                .andExpect(jsonPath("$.progressTotal", is(24)))
-                .andExpect(jsonPath("$.stageRuns", hasSize(4)))
-                .andExpect(jsonPath("$.stageRuns[0].role", is("BUG_EVIDENCE_COLLECTOR")))
-                .andExpect(jsonPath("$.stageRuns[1].role", is("BUG_RAG_RETRIEVER")))
-                .andExpect(jsonPath("$.stageRuns[2].role", is("BUG_ACCEPTANCE_PLANNER")))
-                .andExpect(jsonPath("$.stageRuns[3].role", is("BUG_CODING_AGENT")));
-    }
-
-    @Test
     void shouldExcludeRequirementRolesFromBugFixOverview() throws Exception {
         RdBugFixTask task = registry.createTaskManually(
                 "ticket-bug-isolation", "Bug 角色隔离", "修复角色隔离", "P1", "prompt");
-        BugFixStageRecorder recorder = new BugFixStageRecorder(stageRunStore, artifactStore, generator());
-        AgentStageRun bugStage = recorder.start(task.taskId(), AgentRole.BUG_EVIDENCE_COLLECTOR, "evidence");
-        recorder.succeed(bugStage, "collected", "", "[]");
+        stageRunStore.save(AgentStageRun.pending(
+                "stage-bug-evidence",
+                task.taskId(),
+                AgentRole.BUG_EVIDENCE_COLLECTOR,
+                1,
+                task.taskId() + ":BUG_EVIDENCE_COLLECTOR:1",
+                1_782_000_000_000L
+        ));
         stageRunStore.save(AgentStageRun.pending(
                 "stage-requirement-leak",
                 task.taskId(),
