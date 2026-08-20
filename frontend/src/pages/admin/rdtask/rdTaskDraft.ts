@@ -1,17 +1,11 @@
 export interface TaskCreateDraft {
   savedAt: number;
-  taskKind: "BUG_FIX" | "REQUIREMENT";
+  /** Requirement is the only creatable task kind; historical BugFix drafts are dropped on load. */
+  taskKind: "REQUIREMENT";
   title: string;
-  ticketTitle: string;
   selectedProjectId: string;
   priority: string;
   baseBranch: string;
-  bugActualBehavior: string;
-  bugExpectedBehavior: string;
-  bugReproductionSteps: string;
-  bugErrorLog: string;
-  bugAffectedScope: string;
-  promptSnapshot: string;
   materialSourceType: "MANUAL_TEXT" | "FEISHU_DOC" | "LOCAL_UPLOAD";
   manualRequirementText: string;
   feishuDocumentUrl: string;
@@ -30,13 +24,6 @@ export function isTaskDraftDirty(draft: Partial<TaskCreateDraft>): boolean {
   if (!draft) return false;
   return Boolean(
     (draft.title && draft.title.trim()) ||
-      (draft.ticketTitle && draft.ticketTitle.trim()) ||
-      (draft.bugActualBehavior && draft.bugActualBehavior.trim()) ||
-      (draft.bugExpectedBehavior && draft.bugExpectedBehavior.trim()) ||
-      (draft.bugReproductionSteps && draft.bugReproductionSteps.trim()) ||
-      (draft.bugErrorLog && draft.bugErrorLog.trim()) ||
-      (draft.bugAffectedScope && draft.bugAffectedScope.trim()) ||
-      (draft.promptSnapshot && draft.promptSnapshot.trim()) ||
       (draft.manualRequirementText && draft.manualRequirementText.trim()) ||
       (draft.feishuDocumentUrl && draft.feishuDocumentUrl.trim()) ||
       (draft.expectedResult && draft.expectedResult.trim()) ||
@@ -61,24 +48,22 @@ export function loadTaskCreateDraft(storage?: Storage): TaskCreateDraft | null {
   try {
     const raw = s.getItem(RD_TASK_CREATE_DRAFT_STORAGE_KEY);
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<TaskCreateDraft>;
-    if (!parsed || typeof parsed !== "object" || !isTaskDraftDirty(parsed)) {
+    const parsed = JSON.parse(raw) as Partial<TaskCreateDraft> & { taskKind?: string };
+    if (
+      !parsed ||
+      typeof parsed !== "object" ||
+      parsed.taskKind !== "REQUIREMENT" ||
+      !isTaskDraftDirty(parsed)
+    ) {
       return null;
     }
     return {
       savedAt: Number(parsed.savedAt) || Date.now(),
-      taskKind: parsed.taskKind === "REQUIREMENT" ? "REQUIREMENT" : "BUG_FIX",
+      taskKind: "REQUIREMENT",
       title: String(parsed.title || ""),
-      ticketTitle: String(parsed.ticketTitle || ""),
       selectedProjectId: String(parsed.selectedProjectId || ""),
       priority: String(parsed.priority || "P2"),
       baseBranch: String(parsed.baseBranch || "main"),
-      bugActualBehavior: String(parsed.bugActualBehavior || ""),
-      bugExpectedBehavior: String(parsed.bugExpectedBehavior || ""),
-      bugReproductionSteps: String(parsed.bugReproductionSteps || ""),
-      bugErrorLog: String(parsed.bugErrorLog || ""),
-      bugAffectedScope: String(parsed.bugAffectedScope || ""),
-      promptSnapshot: String(parsed.promptSnapshot || ""),
       materialSourceType:
         parsed.materialSourceType === "FEISHU_DOC" || parsed.materialSourceType === "LOCAL_UPLOAD"
           ? parsed.materialSourceType
@@ -111,18 +96,11 @@ export function saveTaskCreateDraft(
     }
     const fullDraft: TaskCreateDraft = {
       savedAt: Date.now(),
-      taskKind: draft.taskKind === "REQUIREMENT" ? "REQUIREMENT" : "BUG_FIX",
+      taskKind: "REQUIREMENT",
       title: draft.title || "",
-      ticketTitle: draft.ticketTitle || "",
       selectedProjectId: draft.selectedProjectId || "",
       priority: draft.priority || "P2",
       baseBranch: draft.baseBranch || "main",
-      bugActualBehavior: draft.bugActualBehavior || "",
-      bugExpectedBehavior: draft.bugExpectedBehavior || "",
-      bugReproductionSteps: draft.bugReproductionSteps || "",
-      bugErrorLog: draft.bugErrorLog || "",
-      bugAffectedScope: draft.bugAffectedScope || "",
-      promptSnapshot: draft.promptSnapshot || "",
       materialSourceType: draft.materialSourceType || "MANUAL_TEXT",
       manualRequirementText: draft.manualRequirementText || "",
       feishuDocumentUrl: draft.feishuDocumentUrl || "",

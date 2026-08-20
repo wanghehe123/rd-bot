@@ -355,7 +355,7 @@ export function ProjectListPage() {
                             </DropdownMenuItem>
                             <DropdownMenuItem onClick={() => setTemplateTarget(project)}>
                               <LayoutTemplate className="mr-2 h-4 w-4 text-muted-foreground" />
-                              <span>任务模板</span>
+                              <span>需求模板</span>
                             </DropdownMenuItem>
                             <DropdownMenuItem onClick={() => setQaProfileTarget(project)}>
                               <MonitorCheck className="mr-2 h-4 w-4 text-muted-foreground" />
@@ -1055,12 +1055,7 @@ function ProjectQaProfileDialog({ project, onOpenChange }: { project: RdProject 
 }
 
 function ProjectTemplateDialog({ project, onOpenChange }: { project: RdProject | null; onOpenChange: (open: boolean) => void }) {
-  const [taskType, setTaskType] = useState<"BUG_FIX" | "REQUIREMENT">("BUG_FIX");
   const [name, setName] = useState("");
-  const [actual, setActual] = useState("");
-  const [expected, setExpected] = useState("");
-  const [steps, setSteps] = useState("");
-  const [scope, setScope] = useState("");
   const [criteria, setCriteria] = useState("");
   const [body, setBody] = useState("");
   const [result, setResult] = useState("");
@@ -1070,41 +1065,62 @@ function ProjectTemplateDialog({ project, onOpenChange }: { project: RdProject |
   useEffect(() => {
     const sequence = ++loadSequence.current;
     if (!project) return () => { loadSequence.current++; };
-    getProjectTaskTemplate(project.projectId, taskType).then((template) => {
+    getProjectTaskTemplate(project.projectId, "REQUIREMENT").then((template) => {
       if (sequence !== loadSequence.current) return;
-      setName(template.name || ""); setActual(template.actualBehavior || ""); setExpected(template.expectedBehavior || "");
-      setSteps(template.reproductionSteps || ""); setScope(template.affectedScope || "");
-      setCriteria((template.acceptanceCriteria || []).join("\n")); setBody(template.requirementBody || ""); setResult(template.expectedResult || "");
+      setName(template.name || "");
+      setCriteria((template.acceptanceCriteria || []).join("\n"));
+      setBody(template.requirementBody || "");
+      setResult(template.expectedResult || "");
     }).catch((error) => {
       if (sequence === loadSequence.current) toast.error(getErrorMessage(error, "加载任务模板失败"));
     });
     return () => { loadSequence.current++; };
-  }, [project?.projectId, taskType]);
+  }, [project?.projectId]);
 
   const save = async () => {
     if (!project) return;
     setSaving(true);
     try {
-      await updateProjectTaskTemplate(project.projectId, taskType, {
-        name, actualBehavior: actual, expectedBehavior: expected, reproductionSteps: steps,
-        affectedScope: scope, acceptanceCriteria: criteria.split("\n").map((line) => line.trim()).filter(Boolean),
-        requirementBody: body, expectedResult: result
+      await updateProjectTaskTemplate(project.projectId, "REQUIREMENT", {
+        name,
+        actualBehavior: "",
+        expectedBehavior: "",
+        reproductionSteps: "",
+        affectedScope: "",
+        acceptanceCriteria: criteria.split("\n").map((line) => line.trim()).filter(Boolean),
+        requirementBody: body,
+        expectedResult: result
       });
-      toast.success("任务模板已保存"); onOpenChange(false);
-    } catch (error) { toast.error(getErrorMessage(error, "保存任务模板失败")); }
-    finally { setSaving(false); }
+      toast.success("需求模板已保存");
+      onOpenChange(false);
+    } catch (error) {
+      toast.error(getErrorMessage(error, "保存任务模板失败"));
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
-    <Dialog open={!!project} onOpenChange={onOpenChange}><DialogContent className="flex max-h-[calc(100vh-2rem)] flex-col overflow-hidden sm:max-w-[720px]">
-      <DialogHeader><DialogTitle>任务模板</DialogTitle><DialogDescription>{project?.name} 的默认表单内容</DialogDescription></DialogHeader>
-      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
-        <Select value={taskType} onValueChange={(value) => setTaskType(value as "BUG_FIX" | "REQUIREMENT")}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="BUG_FIX">修 Bug</SelectItem><SelectItem value="REQUIREMENT">做需求</SelectItem></SelectContent></Select>
-        <div><label className="mb-2 block text-sm font-medium">模板名称</label><Input value={name} onChange={(e) => setName(e.target.value)} /></div>
-        {taskType === "BUG_FIX" ? <><div className="grid gap-4 sm:grid-cols-2"><Textarea value={actual} onChange={(e) => setActual(e.target.value)} placeholder="实际现象" /><Textarea value={expected} onChange={(e) => setExpected(e.target.value)} placeholder="期望表现" /></div><Textarea value={steps} onChange={(e) => setSteps(e.target.value)} placeholder="复现步骤" /><Textarea value={scope} onChange={(e) => setScope(e.target.value)} placeholder="影响范围" /></> : <><Textarea value={body} onChange={(e) => setBody(e.target.value)} placeholder="需求正文" /><Textarea value={result} onChange={(e) => setResult(e.target.value)} placeholder="预期结果" /></>}
-        <Textarea value={criteria} onChange={(e) => setCriteria(e.target.value)} placeholder="验收标准，每行一条" />
-      </div>
-      <DialogFooter className="shrink-0 border-t border-slate-200 pt-4"><Button variant="outline" onClick={() => onOpenChange(false)}>取消</Button><Button onClick={() => void save()} disabled={saving}>{saving ? "保存中" : "保存"}</Button></DialogFooter>
-    </DialogContent></Dialog>
+    <Dialog open={!!project} onOpenChange={onOpenChange}>
+      <DialogContent className="flex max-h-[calc(100vh-2rem)] flex-col overflow-hidden sm:max-w-[720px]">
+        <DialogHeader>
+          <DialogTitle>需求模板</DialogTitle>
+          <DialogDescription>{project?.name} 的默认需求表单内容</DialogDescription>
+        </DialogHeader>
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
+          <div>
+            <label className="mb-2 block text-sm font-medium">模板名称</label>
+            <Input value={name} onChange={(e) => setName(e.target.value)} />
+          </div>
+          <Textarea value={body} onChange={(e) => setBody(e.target.value)} placeholder="需求正文" />
+          <Textarea value={result} onChange={(e) => setResult(e.target.value)} placeholder="预期结果" />
+          <Textarea value={criteria} onChange={(e) => setCriteria(e.target.value)} placeholder="验收标准，每行一条" />
+        </div>
+        <DialogFooter className="shrink-0 border-t border-slate-200 pt-4">
+          <Button variant="outline" onClick={() => onOpenChange(false)}>取消</Button>
+          <Button onClick={() => void save()} disabled={saving}>{saving ? "保存中" : "保存"}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

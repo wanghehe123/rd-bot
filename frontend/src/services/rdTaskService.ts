@@ -364,16 +364,6 @@ export interface RdTaskListQuery {
   pageSize?: number;
 }
 
-export interface CreateRdTaskPayload {
-  ticketId?: string;
-  ticketTitle?: string;
-  title: string;
-  priority?: string;
-  promptSnapshot?: string;
-  projectId?: string;
-  autoExecute?: boolean;
-}
-
 export interface RequirementMaterialPayload {
   materialType?: string;
   sourceType: "MANUAL_TEXT" | "FEISHU_DOC" | "LOCAL_UPLOAD";
@@ -438,9 +428,6 @@ export const getRdTasksPage = (query: RdTaskListQuery = {}): Promise<RdTaskPage>
 
 export const getRdTask = (taskId: string): Promise<RdTask> =>
   api.get<RdTask, RdTask>(`/admin/rd-tasks/${taskId}`);
-
-export const createRdTask = (payload: CreateRdTaskPayload): Promise<RdTask> =>
-  api.post<RdTask, RdTask>("/admin/rd-tasks", payload);
 
 export const createRequirementTask = (payload: CreateRequirementTaskPayload): Promise<RdTask> =>
   api.post<RdTask, RdTask>("/admin/rd-tasks/requirements", payload);
@@ -542,7 +529,7 @@ export const taskMaterialContentUrl = (taskId: string, materialId: string) =>
   `/admin/rd-tasks/${taskId}/materials/${materialId}/content`;
 
 export const completeTaskDraft = (payload: {
-  taskType: "BUG_FIX" | "REQUIREMENT";
+  taskType: "REQUIREMENT";
   projectId?: string;
   currentValues: Record<string, string>;
   materialSummaries?: string[];
