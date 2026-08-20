@@ -9,10 +9,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 /**
- * 验证飞书 IM 需求入口只靠 {@code rd.feishu.im.enabled} 就能装配。
- *
- * <p>该测试故意不设置 {@code rd.repair.ticket.provider}：IM 入口曾被那个工单开关一起门控，
- * 于是"关掉工单"会连需求接入一并关掉。这里用默认值证明两者已解耦。
+ * 验证飞书 IM 需求入口只靠 {@code rd.feishu.im.enabled} 就能装配，不再依赖已删除的工单开关。
  */
 @SpringBootTest(
         webEnvironment = SpringBootTest.WebEnvironment.NONE,

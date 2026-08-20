@@ -98,13 +98,6 @@ rd:
       keep-alive-seconds: ${RD_THREAD_EXECUTOR_IO_KEEP_ALIVE_SECONDS:60}
       await-termination-seconds: ${RD_THREAD_EXECUTOR_IO_AWAIT_TERMINATION_SECONDS:30}
       thread-name-prefix: rd-executor-io-
-    repair-queue:
-      core-size: ${RD_THREAD_REPAIR_QUEUE_CORE_SIZE:2}
-      max-size: ${RD_THREAD_REPAIR_QUEUE_MAX_SIZE:4}
-      queue-capacity: ${RD_THREAD_REPAIR_QUEUE_QUEUE_CAPACITY:200}
-      keep-alive-seconds: ${RD_THREAD_REPAIR_QUEUE_KEEP_ALIVE_SECONDS:60}
-      await-termination-seconds: ${RD_THREAD_REPAIR_QUEUE_AWAIT_TERMINATION_SECONDS:30}
-      thread-name-prefix: rd-repair-queue-
     ingestion:
       core-size: ${RD_THREAD_INGESTION_CORE_SIZE:2}
       max-size: ${RD_THREAD_INGESTION_MAX_SIZE:4}
@@ -196,33 +189,6 @@ rd:
     request-timeout-millis: ${RD_OPENVIKING_REQUEST_TIMEOUT_MILLIS:30000}
   storage:
     mode: ${RD_STORAGE_MODE:s3}
-  redis-stream:
-    repair:
-      stream-key: ${RD_REDIS_STREAM_REPAIR_STREAM_KEY:rd-bot:repair:tickets}
-      consumer-group: ${RD_REDIS_STREAM_REPAIR_CONSUMER_GROUP:rd-bot-repair-workers}
-      consumer-name-base: ${RD_REDIS_STREAM_REPAIR_CONSUMER_NAME_BASE:rd-bot-repair}
-      consumer-concurrency: ${RD_REDIS_STREAM_REPAIR_CONSUMER_CONCURRENCY:2}
-      poll-timeout-millis: ${RD_REDIS_STREAM_REPAIR_POLL_TIMEOUT_MILLIS:1000}
-      batch-size: ${RD_REDIS_STREAM_REPAIR_BATCH_SIZE:10}
-      pending-claim-idle-millis: ${RD_REDIS_STREAM_REPAIR_PENDING_CLAIM_IDLE_MILLIS:60000}
-      failure-backoff-millis: ${RD_REDIS_STREAM_REPAIR_FAILURE_BACKOFF_MILLIS:1000}
-      max-retry-attempts: ${RD_REDIS_STREAM_REPAIR_MAX_RETRY_ATTEMPTS:3}
-  repair:
-    queue:
-      mode: ${RD_REPAIR_QUEUE_MODE:redis-stream}
-    ticket:
-      provider: ${RD_REPAIR_TICKET_PROVIDER:feishu-im}
-      auto-execute:
-        enabled: ${RD_REPAIR_TICKET_AUTO_EXECUTE_ENABLED:true}
-      ingestion:
-        default-source: ${RD_REPAIR_TICKET_DEFAULT_SOURCE:feishu}
-    acceptance:
-      enabled: ${RD_REPAIR_ACCEPTANCE_ENABLED:true}
-      max-steps: ${RD_REPAIR_ACCEPTANCE_MAX_STEPS:20}
-      write-operations-enabled: ${RD_REPAIR_ACCEPTANCE_WRITE_OPERATIONS_ENABLED:true}
-      environment-allowlist:
-        - local
-        - sit
   executor:
     agent-runtime:
       # Snapshot-driven routing is the only supported execution path. Setting this to

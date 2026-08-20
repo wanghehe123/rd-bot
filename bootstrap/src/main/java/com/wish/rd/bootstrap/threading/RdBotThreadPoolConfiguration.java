@@ -11,9 +11,8 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
  * Centralized RD-Bot thread-pool wiring.
  *
  * <p>The pools are intentionally separated by workload class instead of sharing
- * a global executor: delivery orchestration, blocking executor I/O, repair
- * queue consumption, ingestion, and maintenance each have independent capacity
- * and back-pressure.
+ * a global executor: delivery orchestration, blocking executor I/O, ingestion,
+ * and maintenance each have independent capacity and back-pressure.
  */
 @Configuration(proxyBeanMethods = false)
 @EnableConfigurationProperties(RdBotThreadPoolProperties.class)
@@ -24,9 +23,6 @@ public class RdBotThreadPoolConfiguration {
 
     /** Blocking model/Docker executor bean name. */
     public static final String EXECUTOR_IO_EXECUTOR_BEAN = "rdExecutorIoTaskExecutor";
-
-    /** Repair-ticket queue consumption executor bean name. */
-    public static final String REPAIR_QUEUE_EXECUTOR_BEAN = "rdRepairQueueTaskExecutor";
 
     /** Document ingestion executor bean name. */
     public static final String INGESTION_EXECUTOR_BEAN = "rdIngestionTaskExecutor";
@@ -54,17 +50,6 @@ public class RdBotThreadPoolConfiguration {
     @Bean(EXECUTOR_IO_EXECUTOR_BEAN)
     public ThreadPoolTaskExecutor rdExecutorIoTaskExecutor(RdBotThreadPoolProperties properties) {
         return executor(properties.getExecutorIo());
-    }
-
-    /**
-     * Creates the repair queue consumption executor.
-     *
-     * @param properties thread-pool settings
-     * @return bounded task executor
-     */
-    @Bean(REPAIR_QUEUE_EXECUTOR_BEAN)
-    public ThreadPoolTaskExecutor rdRepairQueueTaskExecutor(RdBotThreadPoolProperties properties) {
-        return executor(properties.getRepairQueue());
     }
 
     /**

@@ -6,15 +6,13 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * RD-Bot production thread-pool settings.
  *
  * <p>Each pool maps to one long-running workload family so queue pressure from
- * model execution, document ingestion, repair-ticket consumption, and
- * maintenance jobs cannot starve each other.
+ * model execution, document ingestion, and maintenance jobs cannot starve each other.
  */
 @ConfigurationProperties(prefix = "rd.thread-pools")
 public class RdBotThreadPoolProperties {
 
     private PoolProperties requirementDelivery = PoolProperties.of(2, 4, 100, "rd-requirement-");
     private PoolProperties executorIo = PoolProperties.of(4, 8, 200, "rd-executor-io-");
-    private PoolProperties repairQueue = PoolProperties.of(2, 4, 200, "rd-repair-queue-");
     private PoolProperties ingestion = PoolProperties.of(2, 4, 100, "rd-ingestion-");
     private PoolProperties maintenance = PoolProperties.of(1, 2, 50, "rd-maintenance-");
     private SchedulerProperties scheduler = new SchedulerProperties();
@@ -53,24 +51,6 @@ public class RdBotThreadPoolProperties {
      */
     public void setExecutorIo(PoolProperties executorIo) {
         this.executorIo = PoolProperties.safe(executorIo, this.executorIo);
-    }
-
-    /**
-     * Repair-ticket queue consumption pool.
-     *
-     * @return repair queue pool settings
-     */
-    public PoolProperties getRepairQueue() {
-        return repairQueue;
-    }
-
-    /**
-     * Updates repair-ticket queue consumption pool settings.
-     *
-     * @param repairQueue repair queue pool settings
-     */
-    public void setRepairQueue(PoolProperties repairQueue) {
-        this.repairQueue = PoolProperties.safe(repairQueue, this.repairQueue);
     }
 
     /**

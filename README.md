@@ -207,7 +207,6 @@ cd frontend && npm install && npm run dev
 export POSTGRES_URL="jdbc:postgresql://127.0.0.1:5432/rdbot"
 export POSTGRES_USERNAME="postgres"
 export POSTGRES_PASSWORD="postgres"
-export RD_REPAIR_QUEUE_MODE=redis-stream   # 或 memory
 export RD_EXECUTOR_AGENT_RUNTIME_ENABLED=true
 export RD_EXECUTOR_PI_IMAGE=rd-bot/pi-agent:local
 export RD_EXECUTOR_PI_QA_IMAGE=rd-bot/pi-agent-qa:local

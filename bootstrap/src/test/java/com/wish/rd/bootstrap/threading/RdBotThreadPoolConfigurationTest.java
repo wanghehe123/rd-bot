@@ -24,7 +24,6 @@ class RdBotThreadPoolConfigurationTest {
                         "rd.thread-pools.requirement-delivery.queue-capacity=11",
                         "rd.thread-pools.executor-io.core-size=4",
                         "rd.thread-pools.executor-io.max-size=6",
-                        "rd.thread-pools.repair-queue.core-size=1",
                         "rd.thread-pools.ingestion.core-size=2",
                         "rd.thread-pools.maintenance.core-size=1"
                 );
@@ -34,7 +33,6 @@ class RdBotThreadPoolConfigurationTest {
 
             assertTrue(executors.containsKey(RdBotThreadPoolConfiguration.REQUIREMENT_DELIVERY_EXECUTOR_BEAN));
             assertTrue(executors.containsKey(RdBotThreadPoolConfiguration.EXECUTOR_IO_EXECUTOR_BEAN));
-            assertTrue(executors.containsKey(RdBotThreadPoolConfiguration.REPAIR_QUEUE_EXECUTOR_BEAN));
             assertTrue(executors.containsKey(RdBotThreadPoolConfiguration.INGESTION_EXECUTOR_BEAN));
             assertTrue(executors.containsKey(RdBotThreadPoolConfiguration.MAINTENANCE_EXECUTOR_BEAN));
 
