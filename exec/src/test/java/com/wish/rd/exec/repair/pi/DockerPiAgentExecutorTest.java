@@ -324,7 +324,8 @@ class DockerPiAgentExecutorTest {
                 "v1",
                 true,
                 "http://host.docker.internal:18080/internal/pi/credential-relay/proxy",
-                "1100m"
+                "1100m",
+                "2"
         );
         DockerPiAgentExecutor executor = executor(
                 runner, AgentExecutionEventSink.noop(), ignored -> "test-provider-secret", configuration
@@ -337,6 +338,7 @@ class DockerPiAgentExecutorTest {
 
         assertEquals(RepairExecutionStatus.SUCCESS, result.status(), result.errorMessage());
         assertEquals("1100m", runner.request.securityPolicy().memoryLimit());
+        assertEquals("2", runner.request.securityPolicy().cpuLimit());
     }
 
     @Test
@@ -354,7 +356,8 @@ class DockerPiAgentExecutorTest {
                 "v1",
                 true,
                 "http://host.docker.internal:18080/internal/pi/credential-relay/proxy",
-                " "
+                " ",
+                ""
         ).containerMemoryLimit();
         assertEquals(DockerPiAgentExecutor.DEFAULT_CONTAINER_MEMORY_LIMIT, blankDefault);
 
@@ -371,7 +374,46 @@ class DockerPiAgentExecutorTest {
                 "v1",
                 true,
                 "http://host.docker.internal:18080/internal/pi/credential-relay/proxy",
-                "8 tb"
+                "8 tb",
+                "4"
+        ));
+    }
+
+    @Test
+    void shouldDefaultBlankContainerCpuLimitAndRejectInvalidValues() {
+        String blankDefault = new DockerPiAgentExecutor.Configuration(
+                "rd-bot/pi-agent:test",
+                "rd-bot/pi-agent-qa:local",
+                List.of("node", "/opt/rd-pi-bridge/src/rd-pi-bridge.mjs"),
+                "bridge",
+                true,
+                false,
+                60_000L,
+                900_000L,
+                16L * 1024L * 1024L,
+                "v1",
+                true,
+                "http://host.docker.internal:18080/internal/pi/credential-relay/proxy",
+                "1100m",
+                " "
+        ).containerCpuLimit();
+        assertEquals(DockerPiAgentExecutor.DEFAULT_CONTAINER_CPU_LIMIT, blankDefault);
+
+        assertThrows(IllegalArgumentException.class, () -> new DockerPiAgentExecutor.Configuration(
+                "rd-bot/pi-agent:test",
+                "rd-bot/pi-agent-qa:local",
+                List.of("node", "/opt/rd-pi-bridge/src/rd-pi-bridge.mjs"),
+                "bridge",
+                true,
+                false,
+                60_000L,
+                900_000L,
+                16L * 1024L * 1024L,
+                "v1",
+                true,
+                "http://host.docker.internal:18080/internal/pi/credential-relay/proxy",
+                "1100m",
+                "zero"
         ));
     }
 

@@ -105,6 +105,8 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
     private static final long DEFAULT_BASH_COMMAND_TIMEOUT_MILLIS = 15L * 60L * 1000L;
     /** 默认沿用历史硬编码值；小内存宿主经 RD_EXECUTOR_PI_MEMORY_LIMIT 收口，防止 QA 突发把宿主 OOM。 */
     public static final String DEFAULT_CONTAINER_MEMORY_LIMIT = "8g";
+    /** 默认沿用历史硬编码值；CPU 数少于 4 的宿主必须调低，否则 docker run 直接 exit 125。 */
+    public static final String DEFAULT_CONTAINER_CPU_LIMIT = "4";
     private static final String DEFAULT_CREDENTIAL_RELAY_URL =
             "http://host.docker.internal:18080/internal/pi/credential-relay/proxy";
     private static final String PI_RELAY_BASE_URL = "http://rd-pi-relay:8787";
@@ -1501,7 +1503,7 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                 true,
                 true,
                 configuration.containerMemoryLimit(),
-                "4",
+                configuration.containerCpuLimit(),
                 pidsLimit,
                 "1000:1000",
                 PI_TMPFS_MOUNTS
@@ -2854,7 +2856,8 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
             String requestProtocolVersion,
             boolean credentialRelayEnabled,
             String credentialRelayUrl,
-            String containerMemoryLimit
+            String containerMemoryLimit,
+            String containerCpuLimit
     ) {
 
         public Configuration {
@@ -2870,6 +2873,7 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
             requestProtocolVersion = PiRequestV2Materializer.normalizeProtocolVersion(requestProtocolVersion);
             credentialRelayUrl = imageText(credentialRelayUrl);
             containerMemoryLimit = normalizeMemoryLimit(containerMemoryLimit);
+            containerCpuLimit = normalizeCpuLimit(containerCpuLimit);
             if (allowPrivileged) {
                 throw new IllegalArgumentException("Pi executor never permits privileged containers");
             }
@@ -2915,7 +2919,8 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         ) {
             this(image, qaImage, command, networkMode, removeAfterExit, allowPrivileged, executionTimeoutMillis,
                     bashCommandTimeoutMillis, rawEventMaxBytes, requestProtocolVersion, credentialRelayEnabled,
-                    DEFAULT_CREDENTIAL_RELAY_URL, DEFAULT_CONTAINER_MEMORY_LIMIT);
+                    DEFAULT_CREDENTIAL_RELAY_URL, DEFAULT_CONTAINER_MEMORY_LIMIT,
+                    DEFAULT_CONTAINER_CPU_LIMIT);
         }
 
         public Configuration(
@@ -2932,7 +2937,8 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         ) {
             this(image, qaImage, command, networkMode, removeAfterExit, allowPrivileged, executionTimeoutMillis,
                     bashCommandTimeoutMillis, rawEventMaxBytes, requestProtocolVersion, true,
-                    DEFAULT_CREDENTIAL_RELAY_URL, DEFAULT_CONTAINER_MEMORY_LIMIT);
+                    DEFAULT_CREDENTIAL_RELAY_URL, DEFAULT_CONTAINER_MEMORY_LIMIT,
+                    DEFAULT_CONTAINER_CPU_LIMIT);
         }
 
         public static Configuration defaultConfiguration() {
@@ -2960,6 +2966,23 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
          * 非 Docker 内存格式（如 {@code 1100m}、{@code 8g}）在装配期即失败，
          * 避免拖到首次执行才被 {@link ContainerSecurityPolicy} 拒绝。
          */
+        private static String normalizeCpuLimit(String value) {
+            String normalized = imageText(value);
+            if (normalized.isBlank()) {
+                return DEFAULT_CONTAINER_CPU_LIMIT;
+            }
+            try {
+                if (Double.parseDouble(normalized) <= 0D) {
+                    throw new NumberFormatException("non-positive");
+                }
+            } catch (NumberFormatException exception) {
+                throw new IllegalArgumentException(
+                        "containerCpuLimit must be a positive Docker CPU value (e.g. 4, 1.5) but was: "
+                                + value);
+            }
+            return normalized;
+        }
+
         private static String normalizeMemoryLimit(String value) {
             String normalized = imageText(value);
             if (normalized.isBlank()) {

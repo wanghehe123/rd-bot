@@ -205,6 +205,8 @@ rd:
       # Pi/QA 容器 docker --memory 上限；小内存宿主（如 2G ECS）应收口（如 1100m），
       # 配合 docker 默认 memory-swap=2x 让 QA 突发在容器内受控颠簀而不是 OOM 宿主。
       container-memory-limit: ${RD_EXECUTOR_PI_MEMORY_LIMIT:8g}
+      # 不得超过宿主 CPU 数（2G 小机设为 2），否则 docker run 以 exit 125 拒绝启动。
+      container-cpu-limit: ${RD_EXECUTOR_PI_CPU_LIMIT:4}
       remove-after-exit: ${RD_EXECUTOR_PI_REMOVE_AFTER_EXIT:true}
       allow-privileged: ${RD_EXECUTOR_PI_ALLOW_PRIVILEGED:false}
       # Relay is the safe production default. Credentialed Pi runs must use the
