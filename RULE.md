@@ -99,6 +99,9 @@
 - 【强制】Pi credential-relay 单次上游等待必须与 `rd.executor.pi.execution-timeout-millis` / `RD_EXECUTOR_PI_EXECUTION_TIMEOUT_MILLIS`（默认 1h）对齐：sidecar `RD_PI_RELAY_TIMEOUT_MILLIS` 与 lease `RelayPolicy.requestTimeout` 都取该值。禁止再硬编码 60s；否则长上下文 QA 补全会被 sidecar/Host abort 成 502，Pi 会 `AGENT_SETTLED` 却没有 `rd_submit_result`。改 Java 注入即可，不必为改超时重建 Pi 镜像。
   - 代码：`DockerPiAgentExecutor.relayNetworkPlan`、`DockerPiAgentExecutor.relayPolicy`、`PiCredentialRelayService.JdkUpstreamClient`
   - 验证：`./mvnw -pl exec -am -Dtest=DockerPiAgentExecutorTest#shouldAlignCredentialRelayTimeoutWithPiExecutionTimeout -Dsurefire.failIfNoSpecifiedTests=false test`
+- 【强制】Pi/QA agent 与 QA npm 预安装容器的 docker `--memory` 上限必须经 `rd.executor.pi.container-memory-limit` / `RD_EXECUTOR_PI_MEMORY_LIMIT` 下发（默认 `8g` 保持历史行为），不得回退为源码硬编码；空白回落默认值，非正 Docker 内存格式（如 `8 tb`、`0m`）必须在 `DockerPiAgentExecutor.Configuration` 装配期失败关闭。小内存宿主（如 2G ECS）必须收口该值（如 `1100m`），依赖 docker 默认 `--memory-swap=2x` 让 QA 突发在容器内受控颠簸而不是 OOM 宿主数据容器。
+  - 代码：`DockerPiAgentExecutor.Configuration#normalizeMemoryLimit`、`DockerPiAgentExecutor#piSecurityPolicy`、`PiAgentExecutorProperties.containerMemoryLimit`
+  - 验证：`./mvnw -pl exec -am -Dtest=DockerPiAgentExecutorTest#shouldHonorConfiguredContainerMemoryLimitInThePiSecurityPolicy,DockerPiAgentExecutorTest#shouldDefaultBlankContainerMemoryLimitAndRejectInvalidValues -Dsurefire.failIfNoSpecifiedTests=false test`
 - 【强制】宿主 `git clone` / `git fetch origin <base>` 对 GitHub TLS 闪断（`SSL_ERROR_SYSCALL`、`unable to access`、连接重置）最多重试 3 次，失败 clone 必须清空目标 `repo/`，避免残留文件挡住下一次 prepare。禁止设 `GIT_SSL_NO_VERIFY`。认证失败、401/403/404、仓库不存在不得当闪断重试。
   - 代码：`ProcessGitRepairWorkspaceRepository.runGitRetryingTransientNetwork`
   - 验证：`./mvnw -pl bootstrap -Dtest=ProcessGitRepairWorkspaceRepositoryTest#shouldClassifyLibreSslGithubDropsAsTransient -Dsurefire.failIfNoSpecifiedTests=false test`

@@ -103,6 +103,8 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
     private static final long QA_NPM_PROVISION_TIMEOUT_MILLIS = 600_000L;
     private static final long DEFAULT_EXECUTION_TIMEOUT_MILLIS = 60L * 60L * 1000L;
     private static final long DEFAULT_BASH_COMMAND_TIMEOUT_MILLIS = 15L * 60L * 1000L;
+    /** 默认沿用历史硬编码值；小内存宿主经 RD_EXECUTOR_PI_MEMORY_LIMIT 收口，防止 QA 突发把宿主 OOM。 */
+    public static final String DEFAULT_CONTAINER_MEMORY_LIMIT = "8g";
     private static final String DEFAULT_CREDENTIAL_RELAY_URL =
             "http://host.docker.internal:18080/internal/pi/credential-relay/proxy";
     private static final String PI_RELAY_BASE_URL = "http://rd-pi-relay:8787";
@@ -120,8 +122,6 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
             "/tmp", "rw,noexec,nosuid,size=1g,uid=1000,gid=1000",
             "/home/node", "rw,noexec,nosuid,size=256m,uid=1000,gid=1000"
     );
-    private static final ContainerSecurityPolicy PI_SECURITY_POLICY = piSecurityPolicy(512);
-    private static final ContainerSecurityPolicy PI_QA_SECURITY_POLICY = piSecurityPolicy(1024);
     private static final ContainerSecurityPolicy PI_RELAY_SECURITY_POLICY = new ContainerSecurityPolicy(
             true,
             true,
@@ -1280,7 +1280,7 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                 browserQa,
                 browserQa ? "1g" : "",
                 configuration.executionTimeoutMillis(),
-                browserQa ? PI_QA_SECURITY_POLICY : PI_SECURITY_POLICY,
+                piSecurityPolicy(browserQa, browserQa ? 1024 : 512),
                 networkPlan
         );
     }
@@ -1353,7 +1353,7 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                 false,
                 "",
                 QA_NPM_PROVISION_TIMEOUT_MILLIS,
-                PI_QA_SECURITY_POLICY,
+                piSecurityPolicy(false, 1024),
                 null,
                 "sh"
         );
@@ -1487,13 +1487,20 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         };
     }
 
-    private static ContainerSecurityPolicy piSecurityPolicy(int pidsLimit) {
+    /**
+     * 构建 Pi agent / QA 容器安全策略。
+     *
+     * <p>内存上限来自 {@link Configuration#containerMemoryLimit()}（默认 8g，可经
+     * {@code RD_EXECUTOR_PI_MEMORY_LIMIT} 收口）；pids 上限沿用历史语义：
+     * 浏览器 QA 与 npm 预安装容器 1024，其余角色 512。</p>
+     */
+    private ContainerSecurityPolicy piSecurityPolicy(boolean browserQa, int pidsLimit) {
         return new ContainerSecurityPolicy(
                 true,
                 true,
                 true,
                 true,
-                "8g",
+                configuration.containerMemoryLimit(),
                 "4",
                 pidsLimit,
                 "1000:1000",
@@ -2846,7 +2853,8 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
             long rawEventMaxBytes,
             String requestProtocolVersion,
             boolean credentialRelayEnabled,
-            String credentialRelayUrl
+            String credentialRelayUrl,
+            String containerMemoryLimit
     ) {
 
         public Configuration {
@@ -2861,6 +2869,7 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
             rawEventMaxBytes = Math.max(1L, rawEventMaxBytes);
             requestProtocolVersion = PiRequestV2Materializer.normalizeProtocolVersion(requestProtocolVersion);
             credentialRelayUrl = imageText(credentialRelayUrl);
+            containerMemoryLimit = normalizeMemoryLimit(containerMemoryLimit);
             if (allowPrivileged) {
                 throw new IllegalArgumentException("Pi executor never permits privileged containers");
             }
@@ -2906,7 +2915,7 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         ) {
             this(image, qaImage, command, networkMode, removeAfterExit, allowPrivileged, executionTimeoutMillis,
                     bashCommandTimeoutMillis, rawEventMaxBytes, requestProtocolVersion, credentialRelayEnabled,
-                    DEFAULT_CREDENTIAL_RELAY_URL);
+                    DEFAULT_CREDENTIAL_RELAY_URL, DEFAULT_CONTAINER_MEMORY_LIMIT);
         }
 
         public Configuration(
@@ -2923,7 +2932,7 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         ) {
             this(image, qaImage, command, networkMode, removeAfterExit, allowPrivileged, executionTimeoutMillis,
                     bashCommandTimeoutMillis, rawEventMaxBytes, requestProtocolVersion, true,
-                    DEFAULT_CREDENTIAL_RELAY_URL);
+                    DEFAULT_CREDENTIAL_RELAY_URL, DEFAULT_CONTAINER_MEMORY_LIMIT);
         }
 
         public static Configuration defaultConfiguration() {
@@ -2944,6 +2953,24 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
 
         private static long positiveTimeout(long value, long fallback) {
             return value > 0L ? value : fallback;
+        }
+
+        /**
+         * 归一化容器内存上限：空白回落 {@link #DEFAULT_CONTAINER_MEMORY_LIMIT}，
+         * 非 Docker 内存格式（如 {@code 1100m}、{@code 8g}）在装配期即失败，
+         * 避免拖到首次执行才被 {@link ContainerSecurityPolicy} 拒绝。
+         */
+        private static String normalizeMemoryLimit(String value) {
+            String normalized = imageText(value);
+            if (normalized.isBlank()) {
+                return DEFAULT_CONTAINER_MEMORY_LIMIT;
+            }
+            if (!normalized.matches("\\d+(?:[kKmMgG](?:[bB])?)?") || normalized.startsWith("0")) {
+                throw new IllegalArgumentException(
+                        "containerMemoryLimit must be a positive Docker memory value (e.g. 8g, 1100m) but was: "
+                                + value);
+            }
+            return normalized;
         }
 
         private static String requireText(String value, String field) {

@@ -17,6 +17,8 @@ public class PiAgentExecutorProperties {
     public static final String DEFAULT_NETWORK_MODE = "bridge";
     public static final String DEFAULT_CREDENTIAL_RELAY_URL =
             "http://host.docker.internal:18080/internal/pi/credential-relay/proxy";
+    public static final String DEFAULT_CONTAINER_MEMORY_LIMIT =
+            DockerPiAgentExecutor.DEFAULT_CONTAINER_MEMORY_LIMIT;
     public static final long DEFAULT_EXECUTION_TIMEOUT_MILLIS = 60L * 60L * 1000L;
     public static final long DEFAULT_BASH_COMMAND_TIMEOUT_MILLIS = 15L * 60L * 1000L;
 
@@ -40,6 +42,8 @@ public class PiAgentExecutorProperties {
     /** Credentialed Pi requests must use the Host-owned relay by default. */
     private boolean credentialRelayEnabled = true;
     private String credentialRelayUrl = DEFAULT_CREDENTIAL_RELAY_URL;
+    /** Pi/QA 容器 docker --memory 上限；小内存宿主应收口（如 1100m），默认保持历史 8g。 */
+    private String containerMemoryLimit = DEFAULT_CONTAINER_MEMORY_LIMIT;
 
     public String getContextProtocolVersion() {
         return contextProtocolVersion;
@@ -95,6 +99,15 @@ public class PiAgentExecutorProperties {
 
     public void setCredentialRelayUrl(String credentialRelayUrl) {
         this.credentialRelayUrl = textOrDefault(credentialRelayUrl, DEFAULT_CREDENTIAL_RELAY_URL);
+    }
+
+    public String getContainerMemoryLimit() {
+        return containerMemoryLimit;
+    }
+
+    public void setContainerMemoryLimit(String containerMemoryLimit) {
+        // 空白回落默认值；格式校验统一在 Configuration 紧凑构造器中失败关闭。
+        this.containerMemoryLimit = textOrDefault(containerMemoryLimit, DEFAULT_CONTAINER_MEMORY_LIMIT);
     }
 
     public String getImage() {
@@ -183,7 +196,8 @@ public class PiAgentExecutorProperties {
                 rawEventMaxBytes,
                 requestProtocolVersion,
                 credentialRelayEnabled,
-                credentialRelayUrl
+                credentialRelayUrl,
+                containerMemoryLimit
         );
     }
 

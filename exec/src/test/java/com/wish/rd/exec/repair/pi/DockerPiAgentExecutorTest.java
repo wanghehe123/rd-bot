@@ -56,6 +56,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class DockerPiAgentExecutorTest {
@@ -305,6 +306,73 @@ class DockerPiAgentExecutorTest {
         assertFalse(runner.request.initEnabled());
         assertFalse(result.dockerMetadataJson().containsValue("test-provider-secret"));
         assertEquals("snapshot-1", result.dockerMetadataJson().get("executionProfileSnapshotId"));
+    }
+
+    @Test
+    void shouldHonorConfiguredContainerMemoryLimitInThePiSecurityPolicy() throws Exception {
+        CapturingRunner runner = new CapturingRunner();
+        DockerPiAgentExecutor.Configuration configuration = new DockerPiAgentExecutor.Configuration(
+                "rd-bot/pi-agent:test",
+                "rd-bot/pi-agent-qa:local",
+                List.of("node", "/opt/rd-pi-bridge/src/rd-pi-bridge.mjs"),
+                "bridge",
+                true,
+                false,
+                60_000L,
+                900_000L,
+                16L * 1024L * 1024L,
+                "v1",
+                true,
+                "http://host.docker.internal:18080/internal/pi/credential-relay/proxy",
+                "1100m"
+        );
+        DockerPiAgentExecutor executor = executor(
+                runner, AgentExecutionEventSink.noop(), ignored -> "test-provider-secret", configuration
+        );
+
+        RepairExecutionResult result = executor.execute(new AgentRuntimeExecutionRequest(
+                snapshot("snapshot-1", "stage-1", "task-1", AgentRuntimeType.PI, ""),
+                command("task-1", "CODING_AGENT")
+        ));
+
+        assertEquals(RepairExecutionStatus.SUCCESS, result.status(), result.errorMessage());
+        assertEquals("1100m", runner.request.securityPolicy().memoryLimit());
+    }
+
+    @Test
+    void shouldDefaultBlankContainerMemoryLimitAndRejectInvalidValues() {
+        String blankDefault = new DockerPiAgentExecutor.Configuration(
+                "rd-bot/pi-agent:test",
+                "rd-bot/pi-agent-qa:local",
+                List.of("node", "/opt/rd-pi-bridge/src/rd-pi-bridge.mjs"),
+                "bridge",
+                true,
+                false,
+                60_000L,
+                900_000L,
+                16L * 1024L * 1024L,
+                "v1",
+                true,
+                "http://host.docker.internal:18080/internal/pi/credential-relay/proxy",
+                " "
+        ).containerMemoryLimit();
+        assertEquals(DockerPiAgentExecutor.DEFAULT_CONTAINER_MEMORY_LIMIT, blankDefault);
+
+        assertThrows(IllegalArgumentException.class, () -> new DockerPiAgentExecutor.Configuration(
+                "rd-bot/pi-agent:test",
+                "rd-bot/pi-agent-qa:local",
+                List.of("node", "/opt/rd-pi-bridge/src/rd-pi-bridge.mjs"),
+                "bridge",
+                true,
+                false,
+                60_000L,
+                900_000L,
+                16L * 1024L * 1024L,
+                "v1",
+                true,
+                "http://host.docker.internal:18080/internal/pi/credential-relay/proxy",
+                "8 tb"
+        ));
     }
 
     @Test

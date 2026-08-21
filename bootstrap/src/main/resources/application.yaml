@@ -202,6 +202,9 @@ rd:
         - node
         - /opt/rd-pi-bridge/src/rd-pi-bridge.mjs
       network-mode: ${RD_EXECUTOR_PI_NETWORK_MODE:bridge}
+      # Pi/QA 容器 docker --memory 上限；小内存宿主（如 2G ECS）应收口（如 1100m），
+      # 配合 docker 默认 memory-swap=2x 让 QA 突发在容器内受控颠簀而不是 OOM 宿主。
+      container-memory-limit: ${RD_EXECUTOR_PI_MEMORY_LIMIT:8g}
       remove-after-exit: ${RD_EXECUTOR_PI_REMOVE_AFTER_EXIT:true}
       allow-privileged: ${RD_EXECUTOR_PI_ALLOW_PRIVILEGED:false}
       # Relay is the safe production default. Credentialed Pi runs must use the
