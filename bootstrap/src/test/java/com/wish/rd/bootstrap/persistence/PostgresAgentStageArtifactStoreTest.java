@@ -11,6 +11,8 @@ import com.wish.rd.engine.agent.model.AgentStageArtifact;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
+import org.apache.ibatis.annotations.Select;
+
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
@@ -19,10 +21,13 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -56,7 +61,7 @@ class PostgresAgentStageArtifactStoreTest {
                 "{\"contentLength\":42}",
                 1_783_000_000_000L
         );
-        when(mapper.selectList(any())).thenReturn(List.of(row(artifact)));
+        when(mapper.selectByTaskOmittingPrivateQaPreviews(7478000000000000000L)).thenReturn(List.of(row(artifact)));
 
         store.save(artifact);
 
@@ -71,6 +76,54 @@ class PostgresAgentStageArtifactStoreTest {
         assertEquals("{\"success\":true,\"summary\":\"done\"}", saved.contentPreview);
         assertEquals("sha256:abc", saved.contentHash);
         assertEquals(List.of(artifact), store.listByTask(artifact.taskId()));
+    }
+
+    @Test
+    void listByTaskOmitsPrivateQaEvidenceContentPreviews() throws Exception {
+        when(mapper.selectByTaskOmittingPrivateQaPreviews(7478000000000000000L)).thenReturn(List.of());
+        store.listByTask("7478000000000000000");
+        verify(mapper).selectByTaskOmittingPrivateQaPreviews(7478000000000000000L);
+        verify(mapper, never()).selectList(any());
+
+        Select select = RdAgentStageArtifactMapper.class
+                .getMethod("selectByTaskOmittingPrivateQaPreviews", long.class)
+                .getAnnotation(Select.class);
+        String sql = String.join(" ", select.value());
+        assertTrue(sql.contains("THEN NULL ELSE content_preview END"));
+        assertTrue(sql.contains("'QA_SCREENSHOT'"));
+        assertTrue(sql.contains("'QA_TRACE'"));
+        assertTrue(sql.contains("'QA_COMMAND_LOG'"));
+        assertTrue(sql.contains("'QA_CONSOLE_LOG'"));
+        assertTrue(sql.contains("'QA_NETWORK_LOG'"));
+        assertTrue(sql.contains("'QA_HTTP_TRANSCRIPT'"));
+        assertTrue(sql.contains("'QA_VIDEO'"));
+        assertTrue(sql.contains("'QA_EVIDENCE_MANIFEST'"));
+        assertFalse(sql.contains("'AGENT_EVENTS'"));
+        assertFalse(sql.contains("'PROMPT_SNAPSHOT'"));
+    }
+
+    @Test
+    void listByTaskStageAndTypeDoesNotScanEveryTaskArtifact() {
+        AgentStageArtifact artifact = new AgentStageArtifact(
+                "7478000000000000201",
+                "7478000000000000101",
+                "7478000000000000000",
+                AgentRole.CODING_AGENT,
+                "AGENT_EVENTS",
+                "rd-agent-stage://7478000000000000000/7478000000000000101/events",
+                "Pi agent events",
+                "{\"protocol\":\"rd-agent-event/v1\"}",
+                "sha256:events",
+                "{}",
+                1_783_000_000_000L
+        );
+        when(mapper.selectList(any())).thenReturn(List.of(row(artifact)));
+
+        assertEquals(List.of(artifact), store.listByTaskStageAndType(
+                artifact.taskId(), artifact.stageRunId(), "AGENT_EVENTS"));
+
+        verify(mapper).selectList(any());
+        verify(mapper, never()).selectByTaskOmittingPrivateQaPreviews(anyLong());
     }
 
     @Test

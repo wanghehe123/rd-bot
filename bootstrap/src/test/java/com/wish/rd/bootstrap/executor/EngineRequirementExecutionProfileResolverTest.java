@@ -114,6 +114,38 @@ class EngineRequirementExecutionProfileResolverTest {
     }
 
     @Test
+    void shouldFreezeAgentStateV2SchemaWhenCapabilityAndKillSwitchAreOn() {
+        InMemoryAgentExecutionProfileStore profiles = new InMemoryAgentExecutionProfileStore();
+        AgentExecutionProfileService profileService = new AgentExecutionProfileService(profiles);
+        AgentExecutionProfile profile = new AgentExecutionProfile(
+                "pi-state-v2", "project-1", "CODING_AGENT", "Pi state v2", AgentRuntimeType.PI,
+                "provider-1", "", "", 0L, "tool-v1", 1L, true, 3L,
+                List.of(AgentRuntimeCapability.PI_AGENT_STATE_V2)
+        );
+        profileService.register(profile);
+        profileService.bindProjectDefault("project-1", "CODING_AGENT", profile.profileId());
+        InMemoryAgentExecutionProfileSnapshotStore snapshots = new InMemoryAgentExecutionProfileSnapshotStore();
+        EngineRequirementExecutionProfileResolver resolver = new EngineRequirementExecutionProfileResolver(
+                profileService,
+                new AgentExecutionProfileSnapshotService(snapshots),
+                snapshots,
+                false,
+                null,
+                null,
+                "FACTS_V1",
+                true,
+                8192
+        );
+
+        resolver.resolve(task(), AgentRole.CODING_AGENT, "stage-state-v2", 1);
+        String snapshotJson = snapshots.findByStageRunId("stage-state-v2").orElseThrow().snapshotJson();
+
+        assertTrue(snapshotJson.contains("\"agentStateSchemaVersion\":\"rd-agent-state/v2\""));
+        assertTrue(snapshotJson.contains("\"dynamicStateEnabled\":true"));
+        assertTrue(snapshotJson.contains("\"capabilities\":[\"PI_AGENT_STATE_V2\"]"));
+    }
+
+    @Test
     void shouldDecodeLegacySnapshotWithoutCapabilitiesAsDisabled() {
         String legacyJson = "{\"snapshotVersion\":1,\"runtimeType\":\"PI\"}";
         AgentExecutionProfileSnapshot legacy = new AgentExecutionProfileSnapshot(

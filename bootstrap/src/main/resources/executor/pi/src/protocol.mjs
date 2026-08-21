@@ -178,9 +178,10 @@ function validateRequestForProtocol(request, expectedProtocol) {
       throw new Error("attemptNo must be a positive integer");
     }
   }
-  if (request.agentStateSchemaVersion === AGENT_STATE_V2_PROTOCOL) {
-    if (expectedProtocol !== REQUEST_PROTOCOL_V2 || request.dynamicStateEnabled !== true) {
-      throw new Error("rd-agent-state/v2 requires request v2 with dynamicStateEnabled");
+  if (request.agentStateSchemaVersion === AGENT_STATE_V2_PROTOCOL
+      || request.initialAgentStateProtocol === AGENT_STATE_V2_PROTOCOL) {
+    if (request.dynamicStateEnabled !== true) {
+      throw new Error("rd-agent-state/v2 requires dynamicStateEnabled");
     }
     validatedInitialAgentStateV2(request);
   }
@@ -189,7 +190,12 @@ function validateRequestForProtocol(request, expectedProtocol) {
 
 /** Decode and bind the Host-owned initial v2 state to the immutable Pi request identity. */
 export function validatedInitialAgentStateV2(request) {
-  if (request?.agentStateSchemaVersion !== AGENT_STATE_V2_PROTOCOL) return null;
+  const schemaV2 = request?.agentStateSchemaVersion === AGENT_STATE_V2_PROTOCOL;
+  const hostV2 = request?.initialAgentStateProtocol === AGENT_STATE_V2_PROTOCOL;
+  if (!schemaV2 && !hostV2) return null;
+  if (request?.dynamicStateEnabled !== true) {
+    throw new Error("rd-agent-state/v2 requires dynamicStateEnabled");
+  }
   for (const field of [
     "initialAgentStateProtocol",
     "initialAgentStateJson",
@@ -418,13 +424,24 @@ export function redact(value) {
   if (!isObject(value)) return boundedText(value);
   const output = {};
   for (const [key, raw] of Object.entries(value)) {
-    if (/(api.?key|token|secret|password|authorization|cookie|credential)/i.test(key)) {
+    if (isRedactedKey(key)) {
       output[key] = "[REDACTED]";
     } else {
       output[key] = redact(raw);
     }
   }
   return output;
+}
+
+function isRedactedKey(key) {
+  if (/(api.?key|secret|password|authorization|cookie|credential)/i.test(key)) {
+    return true;
+  }
+  // Budget counters such as estimatedInputTokens must remain canonical integers.
+  if (/tokens$/i.test(key)) {
+    return false;
+  }
+  return /token/i.test(key);
 }
 
 function usagePayload(usage) {

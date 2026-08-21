@@ -78,6 +78,12 @@
 - 【强制】检查点绑定命令成功后续跑时，continuation 必须沿用同一 `retryCheckpointId` / `businessGeneration`，角色命令还要带上该检查点预绑定的下一角色 `targetRetryBindingId`，不得再 `createPendingCommand` 成 `retry_checkpoint_id IS NULL`。否则会撞上首次流水线的 `(task_id, role, stage)` 唯一索引，`ON CONFLICT DO NOTHING` 后 `requireExactContinuationIdentity` 失败，coding 已 SUCCEEDED 也无法入 QA。有真实续跑时检查点必须保持 `DISPATCHED`，禁止把中间角色成功当成 checkpoint SUCCEEDED。`TECHNICAL_EXHAUSTED` 若钉在已 SUCCEEDED 的绑定 stage 上，重试点必须落到被取消/失败的下游 attempt，否则 `/failure-recovery` 会 `RETRY_POINT_AMBIGUOUS`。
   - 代码：`RequirementDeliveryDispatchService.continuationCommand`、`TaskRetryPointResolver.resolve`
   - 验证：`./mvnw -pl engine -Dtest=TaskRetryPointResolverTest#remapsTechnicalExhaustionOfASucceededRoleOntoTheCancelledDownstreamAttempt -Dsurefire.failIfNoSpecifiedTests=false test`；`./mvnw -pl bootstrap -am -Dtest=RequirementDeliveryDispatchServiceTest#checkpointBoundCodingSuccessContinuesAsThePreBoundQaRetryCommand -Dsurefire.failIfNoSpecifiedTests=false test`
+- 【强制】checkpoint 的 `idempotency_key` 必须带上 `attemptNo`（`taskId:sourceTaskVersion:failurePhase:role:attemptNo`）。禁止只按版本+角色去重：一次准备失败留下的 `FAILED_RETRYABLE` 行会占住旧键，下一次同角色操作员重试会 `retry checkpoint idempotency conflict has different immutable source or route`。进行中的重复点击仍靠 `findActiveByTask`，不靠这条键。
+  - 代码：`TaskRetryEngine.retry`、`uk_task_retry_checkpoint_idempotency`
+  - 验证：`./mvnw -pl engine -Dtest=TaskRetryEngineTest#failedPreparationCheckpointDoesNotBlockLaterRetryOfSameRoleAndVersion -Dsurefire.failIfNoSpecifiedTests=false test`
+- 【强制】从失败角色初始化 checkpoint-bound 重试时，重试路线上尚未终态的下游 attempt（尤其 `PENDING`）必须绑定为该检查点的现有 attempt，禁止 `continue` 跳过绑定、也禁止为此另开新 attempt。`CONTEXT_READY`/`DISPATCHING`/`RUNNING`/`RESULT_COLLECTING`/`VERIFYING` 仍走 `requiresFreshAttemptOnRecovery` 先关闭再开新 attempt。若该 PENDING attempt 的 `stage_run_id` 已被更早检查点占用（`uk_rd_task_retry_attempt_binding_stage_target` 全局唯一），必须先 `CANCELLED` 再开新 attempt，禁止把同一 stage run 插入第二个检查点，否则 PostgreSQL `ON CONFLICT DO NOTHING` 后会变成 `retry attempt binding insert did not return a row`。跳过绑定会使 `continuationCommand` 抛 `checkpoint-bound continuation is missing a pre-bound attempt`，outcome 已记但命令未失败，lease reclaim 会循环同一异常。
+  - 代码：`TaskRetryEngine.createRoleAttemptsFrom`、`RequirementDeliveryDispatchService.continuationTargetBindingId`、`TaskRetryAttemptBindingStore.findByStageRunId`
+  - 验证：`./mvnw -pl engine -Dtest=TaskRetryEngineTest#reviewerRetryBindsExistingPendingDownstreamAttemptsWithoutCreatingFreshOnes,TaskRetryEngineTest#architectRetryAfterEarlierCheckpointMintsFreshDownstreamAttempts,TaskRetryEngineTest#createsNewAttemptsFromFailedCodingRoleAndDispatchesOnce -Dsurefire.failIfNoSpecifiedTests=false test`
 - 【强制】Pi `QA_AGENT` 使用 credential-relay 的 `--internal` 网络，agent 不得直连 npm/pypi。浏览器 QA 且仓库含 `package.json` 时，宿主必须先用 QA 镜像在 **bridge** 上安装依赖（写入任务 `repo/` 与 `/work/cache`，native addon 按 Linux ABI），再启动隔离 agent；agent 侧 `npm_config_offline=true`。禁止给 Pi agent 放开公网来“修好” `EAI_AGAIN`/`ENOTCACHED`。docs-only 跳过安装。
   - 代码：`QaNpmInstallPlan`、`DockerPiAgentExecutor.provisionQaNpmDependencies`、`ProcessContainerRunner` 的 `--entrypoint`
   - 验证：`./mvnw -pl exec -am -Dtest=QaNpmInstallPlanTest,DockerPiAgentExecutorTest#shouldProvisionNpmDependenciesOnBridgeBeforeIsolatedQaAgent,DockerPiAgentExecutorTest#shouldFailQaAsEnvironmentWhenNpmProvisionExitsNonZero,DockerPiAgentExecutorTest#shouldRouteQaAgentSnapshotToTheQaImage -Dsurefire.failIfNoSpecifiedTests=false test`
@@ -87,6 +93,9 @@
 - 【强制】Pi credential-relay 单次上游等待必须与 `rd.executor.pi.execution-timeout-millis` / `RD_EXECUTOR_PI_EXECUTION_TIMEOUT_MILLIS`（默认 1h）对齐：sidecar `RD_PI_RELAY_TIMEOUT_MILLIS` 与 lease `RelayPolicy.requestTimeout` 都取该值。禁止再硬编码 60s；否则长上下文 QA 补全会被 sidecar/Host abort 成 502，Pi 会 `AGENT_SETTLED` 却没有 `rd_submit_result`。`RD_EXECUTOR_OPENAI_CHAT_TIMEOUT` 只管 MODEL_ONLY HTTP，不是这条路径。改 Java 注入即可，不必为改超时重建 Pi 镜像。
   - 代码：`DockerPiAgentExecutor.relayNetworkPlan`、`DockerPiAgentExecutor.relayPolicy`、`PiCredentialRelayService.JdkUpstreamClient`
   - 验证：`./mvnw -pl exec -am -Dtest=DockerPiAgentExecutorTest#shouldAlignCredentialRelayTimeoutWithPiExecutionTimeout -Dsurefire.failIfNoSpecifiedTests=false test`
+- 【强制】宿主 `git clone` / `git fetch origin <base>` 对 GitHub TLS 闪断（`SSL_ERROR_SYSCALL`、`unable to access`、连接重置）最多重试 3 次，失败 clone 必须清空目标 `repo/`，避免残留文件挡住下一次 prepare。禁止设 `GIT_SSL_NO_VERIFY`。认证失败、401/403/404、仓库不存在不得当闪断重试。
+  - 代码：`ProcessGitRepairWorkspaceRepository.runGitRetryingTransientNetwork`
+  - 验证：`./mvnw -pl bootstrap -Dtest=ProcessGitRepairWorkspaceRepositoryTest#shouldClassifyLibreSslGithubDropsAsTransient -Dsurefire.failIfNoSpecifiedTests=false test`
 
 ---
 
@@ -725,6 +734,18 @@ public RepairContextPackage prepareContext(RepairRagRequest request) {
 - 【强制】每次新增或修改 `/admin/*` 前端请求，都必须更新代理契约测试，分别断言页面导航和嵌套 API 的行为。
 - 【强制】异步加载的 Select/Input 必须始终保持 controlled；不能在 `undefined` 与具体值之间切换并把 React warning 留到运行期。
 - 【强制】管理端响应式变更至少验证 390px、900px 与桌面视口：不得出现横向溢出或顶栏交叠；隐藏侧栏必须 `aria-hidden` 且 `inert`，打开后转移焦点，关闭或按 Escape 后归还焦点。
+- 【强制】任务工作台 `GET /admin/rd-tasks/{taskId}/execution-overview` 与 `GET /admin/rd-tasks/{taskId}/role-prompts` 每个请求只能调用一次 `AgentStageArtifactStore.listByTask`。token 回退、latest agent state、角色 Prompt 预览必须复用该列表，禁止按 stage 再扫全量 `content_preview`。否则杭州 Postgres 上百条产物会把前端 axios 30s 打满，详情页一直 timeout。PostgreSQL `listByTask` 必须把私有 QA 证据类型的 `content_preview` 置空（截图/trace/日志走对象存储），保留 `AGENT_EVENTS` / `PROMPT_SNAPSHOT` 等审计预览。
+  - 代码：`RdTaskExecutionOverviewController.getExecutionOverview`、`RdTaskRolePromptController.list`、`PostgresAgentStageArtifactStore.listByTask`、`RdAgentStageArtifactMapper.selectByTaskOmittingPrivateQaPreviews`
+  - 验证：`./mvnw -pl bootstrap -am -Dtest=RdTaskExecutionOverviewControllerTest#executionOverviewReadsTaskArtifactsOnceAcrossStages,RdTaskRolePromptControllerTest#rolePromptsReadTaskArtifactsOnceAcrossStages,PostgresAgentStageArtifactStoreTest#listByTaskOmitsPrivateQaEvidenceContentPreviews -Dsurefire.failIfNoSpecifiedTests=false test`
+- 【强制】任务详情 `loadInitial` 在 `getRdTask` 返回后必须立刻 `setLoading(false)`，不得等 `execution-overview` 才解除空白页。首次加载期间必须占用 `coreLoadInFlightRef`，避免 `RECOVERING` 的 2s 轮询与 overview 叠打。`loadInitial` 不得请求 `execution-overview`；概览只在 `view === "roles"` 时加载。
+  - 代码：`frontend/src/pages/admin/rdtask/RdTaskDetailPage.tsx` `loadInitial` / `onTask` / `loadExecutionOverview`
+  - 验证：`cd frontend && node --experimental-strip-types --test test/taskDetailInformationArchitecture.test.ts`
+- 【强制】任务工作台 `GET /admin/rd-tasks/{taskId}` 不得选择或返回 `prompt_snapshot` / `execution_result_json`；这两块只走 `GET /admin/rd-tasks/{taskId}/audit-content`，由交付/审计视图按需加载。引擎路径继续用 `findTask` / `selectById` 读完整快照。`GET` 仍返回 `hostAssertionBundle`。
+  - 代码：`RdTaskStore.findAdminShell`、`PostgresRdTaskStore.findAdminShell`、`RagStreamTaskRegistry.getAdminShell`、`RdTaskController.get` / `getAuditContent`、`frontend/src/pages/admin/rdtask/RdTaskDetailPage.tsx` `loadAuditContent`
+  - 验证：`./mvnw -pl bootstrap -am -Dtest=RdTaskControllerTest#workbenchGetOmitsPromptAndExecutionBlobsUntilAuditContentIsRequested,PostgresRdTaskStoreCasTest#findAdminShellDoesNotSelectPromptOrExecutionBlobs -Dsurefire.failIfNoSpecifiedTests=false test`；`cd frontend && node --experimental-strip-types --test test/taskDetailInformationArchitecture.test.ts`
+- 【强制】归档运行时事件不得 `listByTask` 整任务产物，也不得为读轨迹再 `getTask` 拉 2.7MB 快照。PostgreSQL 必须按 `task_id + stage_run_id + artifact_type` 查询；归档首次打开用 `latest=true` 返回末页，禁止从 sequence 0 把 jsonl 一页页从杭州拉回来。黄条「超出当前保留范围」来自 jsonl `[truncated]` 或 `RD_EXECUTOR_PI_MAX_RAW_EVENT_BYTES`，不是本机 Docker 慢。
+  - 代码：`AgentStageArtifactStore.listByTaskStageAndType`、`PostgresAgentStageArtifactStore.listByTaskStageAndType`、`RdTaskExecutionOverviewController.getExecutionEvents`、`AgentExecutionEventParser.parseJsonl(..., latest)`、`TaskRoleWorkbench` `RuntimeExecutionEventsPanel`
+  - 验证：`./mvnw -pl bootstrap -am -Dtest=RdTaskExecutionOverviewControllerTest#archivedExecutionEventsReadOnlyTheMatchingStageArtifact,RdTaskExecutionOverviewControllerTest#archivedExecutionEventsLatestWindowSkipsPagingFromTheStart,PostgresAgentStageArtifactStoreTest#listByTaskStageAndTypeDoesNotScanEveryTaskArtifact -Dsurefire.failIfNoSpecifiedTests=false test`；`./mvnw -pl exec -am -Dtest=AgentExecutionEventParserTest -Dsurefire.failIfNoSpecifiedTests=false test`；`cd frontend && node --experimental-strip-types --test test/roleWorkbenchPresentation.test.ts`
 
 ---
 
@@ -824,6 +845,15 @@ public RepairContextPackage prepareContext(RepairRagRequest request) {
   `rd-pi-bridge.mjs` 在启用后遇到缺失、非法或 hash 不一致的初始状态必须在
   Agent 运行前失败，禁止回退为空状态。Claude Code、`MODEL_ONLY`、无 capability
   PI 和旧 BugFix 链路不得被隐式升级。
+- 【强制】`rd-agent-state/v2` 由冻结 capability 与 Host kill switch 启用，不得要求
+  `rd-pi-request/v2`。`protocol.mjs` 的 `validatedInitialAgentStateV2` 在 Host 已提供
+  `initialAgentStateProtocol=rd-agent-state/v2` 且 kill switch 开启时必须绑定该状态，
+  即使冻结 snapshot 的 `agentStateSchemaVersion` 仍为 v1。Resolver 仅在
+  PI + `PI_AGENT_STATE_V2` + kill switch 时把 snapshot schema 冻成 v2。
+- 【强制】规范化事件脱敏不得破坏 v2 状态 canonical hash。对象 key 中的预算计数
+  `estimatedInputTokens` / `maxContextTokens` / `reservedOutputTokens` 等 `*Tokens`
+  字段不是密钥；`STATE_SNAPSHOT_UPDATED` 必须原样投影这些整数。`token` 作为独立密钥
+  字段名仍须脱敏。验证：`cd bootstrap/src/main/resources/executor/pi && node --test test/*.test.mjs`。
 - 【强制】Host 验收 TODO 不得由 Agent 删除；完成状态必须绑定本次验收证据。
   状态 candidate 必须在 sequence 增长前完成 identity、状态迁移、secret、大小和
   injectability 校验。状态 sequence 与 injection sequence 独立；模型上下文末尾只能
@@ -839,6 +869,19 @@ public RepairContextPackage prepareContext(RepairRagRequest request) {
   `attachments/qa-remediation/request.json` 进入 Coding 上下文。Coding 必须
   `QaRemediationPackageBuilder.fromFrozen` 消费已冻结 request；PostgreSQL `jsonb`
   回读后按 hash recanonicalize，禁止依赖字节级原文相等或用 live QA JSON 重建。
+- 【强制】分角色 command（`RequirementDeliveryEngine.boundedRolePlan`）必须关掉
+  orchestrator 内的 QA 修复循环（`qaRemediationEnabled=false`），打回只走
+  `buildPiQaRemediationIntent`。该路径不得用聚合根 `status=NEEDS_HUMAN` 判断。权威
+  FAILED JSON 优先读 `qaRoleResult` 对象（或编码字符串），再回退
+  `stages[].resultJson`；`PiQaRemediationPlanner.authoritativeQaResultJson` 取出后再交给
+  planner 与 `QaRemediationPackageBuilder.build`。根上的 NEEDS_HUMAN 只是 CP-06 聚合，
+  不是 QA 合同。`RESULT_JSON` artifact 的 20_000 字符 `contentPreview` 不是权威正文，
+  禁止用它重建打回。CP-06 聚合字符串必须用 Jackson 转义全部控制字符（含 ANSI ESC），
+  不得只用 `\\ " \n \r \t`。intent 构造失败必须 warn，禁止静默 `return null`。
+  代码：`PiQaRemediationPlanner`、`RequirementAgentStageOrchestrator.attachAuthoritativeQaRoleResult`、
+  `RequirementDeliveryEngine.buildPiQaRemediationIntent`、
+  `RequirementDeliveryEngine.boundedRolePlan`
+  验证：`./mvnw -pl engine -Dtest=PiQaRemediationPlannerTest,QaRemediationPackageBuilderTest,RequirementDeliveryStageExecutionTest,RequirementAgentStageOrchestratorTest -Dsurefire.failIfNoSpecifiedTests=false test`
 - 【强制】PI 协议失败只能依据 Host 验证的 canonical
   `PiProtocolFailureReceipt/v1`，且仅允许 allowlist kind 触发一次 QA→QA；synthetic result、
   矛盾 receipt、第二次协议失败或 identity/artifact/event 不一致必须转人工，永不创建
@@ -863,14 +906,33 @@ git diff --check
 
 真实 PostgreSQL 竞态测试、两套 PI image 重建和全新 PI 任务验收是 canary 启用前置门槛；
 无 PostgreSQL 或 Docker 运行证据时只能记录未验证，禁止据单元测试宣称已上线。
-两套 PI image 允许在 linux/amd64 云 Docker 重建并记录 `docker image inspect` 的 Id；
-镜像重建本身不得勾选完整 task 8.4，也不得启用 canary——仍需已运行的 RD-Bot 与 PI
-capability 上的全新任务证据。
+Pi / QA image 必须在本机 Docker Desktop arm64 重建并记录 `docker image inspect` 的 Id；
+杭州 ECS 上的 amd64 镜像只作备份，禁止把本机 `DOCKER_HOST` 指到 ECS，也禁止在 ECS
+上跑 Pi/QA 或 Spring Boot。`Dockerfile.qa` 可用
+`BROWSER_CACHE_IMAGE`（默认上一份 `rd-bot/pi-agent-qa:local`）COPY `/ms-playwright`，
+避免 Playwright CDN 中断阻断重建；目标镜像仍须 `FROM` 当前
+`rd-bot/pi-agent:local`。镜像重建本身不得勾选完整 task 8.4，也不得启用 canary——
+仍需已运行的 RD-Bot 与 PI capability 上的全新任务证据。
+全模块 `./mvnw -pl exec,bootstrap,rag,engine -am test` 不得继承 live 实例的
+`SPRING_CONFIG_ADDITIONAL_LOCATION`（会把 `rd.executor.agent-runtime.enabled=true`
+泄漏进 `@SpringBootTest`）。bootstrap `UserAdminControllerTest` 在 memory 模式仍会因
+`InMemoryKnowledgeMutationTransactionAdapter` 无默认构造失败；禁止为了把 8.3 刷绿
+去扩展 OpenViking / knowledge-mutation 接线。
 `PostgresRequirementStageFinalizationRealSmokeTest` 使用 throwaway
 `pgvector/pgvector:pg16`（`127.0.0.1:55432/rdbot_acceptance`），由
 `PostgresClasspathSchemaInitializer` 在 Spring 刷新前整文件执行
-`p0`/`p1`/`p4`/`p8`/`p18`；`@Sql` 的 `;\n\n` 分隔会切断 `p18` 的 `DO $$` 块。
+`p0`/`p1`/`p4`/`p8`/`p16`/`p18`；`@Sql` 的 `;\n\n` 分隔会切断 `p18` 的 `DO $$` 块。
 禁止把该 smoke 自动套到 docker-compose 共享库 `rdbot:5432`。
+- 【强制】供应商 LLM API key 只允许出现在 `rd_model_provider_credentials` 或进程环境变量
+  （含 macOS `launchctl getenv` 回退）。`ModelProviderProfile` 与所有
+  GET `/admin/model-provider-profiles*` 响应禁止包含密钥。解析顺序：库存（按
+  `credentialEnvironmentVariable` 取最新已配置项）→ `System.getenv` → `launchctl`。
+  元数据 PUT 若带 `apiKey` 必须 400。验证：
+  `ModelProviderCredentialServiceTest`、`StoredThenSystemAuthEnvironmentResolverTest`、
+  `ModelProviderAdminControllerTest`、`ModelProviderCredentialSqlPolicyTest`。
+  命令：`./mvnw -pl rag -Dtest=ModelProviderCredentialServiceTest,ModelProviderProfileServiceTest -Dsurefire.failIfNoSpecifiedTests=false test`；
+  `./mvnw -pl bootstrap -am -Dtest=StoredThenSystemAuthEnvironmentResolverTest,ModelProviderAdminControllerTest,ModelProviderCredentialSqlPolicyTest,OpenAiChatCompletionsRepairExecutorTest,AgentExecutionProfileAdminControllerTest,DockerExecutorConfigurationTest,OpenAiChatCompletionsExecutorConfigurationTest -Dsurefire.failIfNoSpecifiedTests=false test`；
+  `./mvnw -pl exec -am -Dtest=DockerPiAgentExecutorTest#shouldFailClosedWhenProviderCredentialIsMissing -Dsurefire.failIfNoSpecifiedTests=false test`。
 
 ---
 

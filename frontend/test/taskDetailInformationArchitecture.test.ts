@@ -44,17 +44,21 @@ test("keeps initial load and two-second polling focused on the task shell", () =
     detailPage.indexOf("const loadMaterialsData")
   );
 
-  assert.match(initialLoad, /overview/);
+  assert.match(initialLoad, /getRdTask\(taskId\)/);
+  assert.doesNotMatch(initialLoad, /getRdTaskExecutionOverview|overview:/);
+  assert.match(initialLoad, /onTask[\s\S]*setLoading\(false\)/);
   assert.doesNotMatch(initialLoad, /timeline:|materials:|qaEvidence:|retrievalRuns:|aiReviews:/);
   assert.match(coreRefresh, /getRdTask\(taskId\)/);
-  assert.match(coreRefresh, /getRdTaskExecutionOverview\(taskId\)/);
+  assert.match(detailPage, /view === "roles"[\s\S]*getRdTaskExecutionOverview\(taskId\)/);
   assert.doesNotMatch(coreRefresh, /getRdTaskMaterials|getRdTaskQaEvidence|getRetrievalRuns|getAiReviews/);
 });
 
-test("loads prompt and evidence panels only when the evidence view is selected", () => {
+test("loads prompt, evidence and audit blobs only when those views are selected", () => {
   assert.match(detailPage, /selectedRoleTab === "evidence"/);
   assert.match(detailPage, /view === "delivery"/);
   assert.match(detailPage, /view === "audit"/);
+  assert.match(detailPage, /getRdTaskAuditContent\(taskId\)/);
+  assert.match(detailPage, /view !== "roles" \|\| selectedRoleTab !== "evidence"/);
 });
 
 test("serializes non-core detail polling and refreshes evidence when the stage signature changes", () => {

@@ -2,12 +2,10 @@ package com.wish.rd.bootstrap.controller.admin.agent;
 
 import com.wish.rd.rag.project.agent.AgentExecutionProfileService;
 import com.wish.rd.rag.project.agent.AgentExecutionProfileSnapshotStore;
-import com.wish.rd.rag.project.agent.ModelProviderProfileService;
 import com.wish.rd.rag.project.agent.model.AgentExecutionProfile;
 import com.wish.rd.rag.project.agent.model.AgentExecutionProfileSnapshot;
 import com.wish.rd.rag.project.agent.model.AgentRuntimeType;
 import com.wish.rd.rag.project.agent.model.AgentRuntimeCapability;
-import com.wish.rd.rag.project.agent.model.ModelProviderProfile;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
 import com.wish.rd.rag.runtime.model.RdRequirementTask;
 import com.wish.rd.rag.runtime.model.RdTask;
@@ -36,28 +34,20 @@ import java.util.NoSuchElementException;
 public final class AgentExecutionProfileAdminController {
 
     private final AgentExecutionProfileService profileService;
-    private final ModelProviderProfileService providerProfileService;
     private final AgentExecutionProfileSnapshotStore snapshotStore;
     private final RagStreamTaskRegistry taskRegistry;
     private final AgentRuntimeMutationAccessPolicy mutationAccessPolicy;
 
     public AgentExecutionProfileAdminController(
             AgentExecutionProfileService profileService,
-            ModelProviderProfileService providerProfileService,
             AgentExecutionProfileSnapshotStore snapshotStore,
             RagStreamTaskRegistry taskRegistry,
             AgentRuntimeMutationAccessPolicy mutationAccessPolicy
     ) {
         this.profileService = profileService;
-        this.providerProfileService = providerProfileService;
         this.snapshotStore = snapshotStore;
         this.taskRegistry = taskRegistry;
         this.mutationAccessPolicy = mutationAccessPolicy;
-    }
-
-    @GetMapping("/admin/model-provider-profiles")
-    public List<ModelProviderProfile> listProviderProfiles() {
-        return providerProfileService.list();
     }
 
     @GetMapping("/admin/projects/{projectId}/agent-execution-profiles")

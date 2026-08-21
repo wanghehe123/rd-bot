@@ -202,6 +202,56 @@ git diff --check
 
 真实 PostgreSQL 测试使用两个连接和 latch 证明 Admin update 与 recordOutcome 只有两种线性化结果且无死锁。运行态验收使用全新 PI 任务保存 role-prompts/overview HTTP、stage/ledger/command/execution-plan、两轮 remediation、state/effective-context artifact 和协议 QA→QA 证据。未取得这些证据前不得声明已上线。
 
+### Implementation verification snapshot (2026-08-20 waimai + hy3)
+
+Next.js 任务 `7496048851825070080` 已 `POST /stop` 为 `CANCELLED`，残留 Pi/relay 容器已停。隔离实例 OpenCode 模型改为 `hy3`（yaml `rd.ai.chat` / docker `opencode-go` / `openai-chat`，以及 `rd_model_provider_profiles.opencode-go.model_id`）。18081 已重启。
+
+新项目 `p18-verify-waimai`（`7496050931340021760`）仓库 `wanghehe123/rd-bot-waimai-acceptance-20260624-141045`。全新任务 `7496050931679760384` 已 `COMPLETED`：四角色 attempt 1 均 SUCCEEDED，QA result `PASSED`，PR https://github.com/wanghehe123/rd-bot-waimai-acceptance-20260624-141045/pull/27 。request `opencode-go`/`hy3`/`rd-agent-state/v2`；QA latest `sequence=44` / effective `injectionSequence=42`。remediation ledger 为空：`QA_PRODUCT_FIX` used=0 remaining=2，`QA_PROTOCOL_RETRY` used=0 remaining=1。首轮交付成功，未出现两轮产品修复、协议 QA→QA 或上限转人工。task 8.4 保持未勾选。
+
+### Implementation verification snapshot (2026-08-20 Next.js 8.4 vehicle)
+
+未重构 QA agent。隔离 `127.0.0.1:18081` 新建项目 `p18-verify-nextjs`（`7496048851602771968`）指向已有 npm-lock Next.js 仓库 `wanghehe123/next-js-16-sqlite-drizzle-local-kbr-20260724-001`（`package-lock.json`，自动探测生产模式 `npm run build && npm run start`）。Profile `p18-next-*` 绑定 `opencode-go` + `PI_AGENT_STATE_V2` + `PI_QA_REMEDIATION_V2`。
+
+全新任务 `7496048851825070080`：7 条浏览器/README AC（dashboard 标记、Sidebar、仪表盘、skip-link、375px banner、`/status`、README）。启动后 reviewer `LIVE_PROJECTION` `rd-agent-state/v2`，request 仍为 `rd-pi-request/v1`；latest `sequence=6` / effective `injectionSequence=4`；Host TODO=7；`estimatedInputTokens=2408`；无 `canonical hash mismatch`；relay `opencode-go` 200。REQUIREMENT_REVIEWER attempt 1 已 SUCCEEDED，SOLUTION_ARCHITECT 进行中。未勾选 8.4。
+
+### Implementation verification snapshot (2026-08-20 OpenCode Go live)
+
+隔离验收实例 `127.0.0.1:18081`（p18 DB `127.0.0.1:55433/rdbot_p18_verify`，未改云上 `ragent`；供应商 `opencode-go` / `deepseek-v4-flash` / `OPENCODE_API_KEY`）。全新任务 `7495901867017375744`（标记 `p18-v2-opencode-20260820`）：
+
+- request 仍为 `rd-pi-request/v1`，`initialAgentStateProtocol` 与 `agentStateSchemaVersion` 均为 `rd-agent-state/v2`。relay `opencode-go POST /chat/completions` 全程 `status=200`；18081 日志无 `snapshot canonical hash mismatch`。
+- REQUIREMENT_REVIEWER / SOLUTION_ARCHITECT / CODING_AGENT 均 attempt 1 `SUCCEEDED`。Coding 归一化事件顺序为 `RESULT_SUBMITTED` → `AGENT_SETTLED` → `RUNTIME_STOPPED`（`resultAccepted=true`）。`estimatedInputTokens` 为整数（reviewer 1678，coding 2579），不是 `[REDACTED]`。
+- Coding workspace `/tmp/rd-bot/repair-workspaces/7495901867017375744`：latest `sequence=30`，effective `injectionSequence=28` / `stateSequence=30` / `stateHash=sha256:f1283f8f84848819ec0b094c14dc0e3881ef1721f2cebca44922c42ea9c011c5`。role-prompts：reviewer/architect `LIVE_PROJECTION` `stale=false` `protocol=rd-agent-state/v2`。Host ACCEPTANCE TODO 仍为 3 条 PENDING。
+- QA 在 isolated agent 启动前被 `QaNpmInstallPlan` 的 `npm install --include=dev` 以 `ERESOLVE`（`dsh-settings@0.1.0-rc.6` vs peer `^0.1.0-rc.8`）打成 `ENVIRONMENT`，任务 `FAILED_NEEDS_HUMAN`。这是环境失败直转人工，不是产品修复轮次上限。deps 容器 `rd-bot-pi-7495901867017375744-qa_agent-deps` 使用 `rd-bot/pi-agent-qa:local`，exit 1，约 8s。
+- 未出现 `QA_PRODUCT_FIX` 或 `QA_PROTOCOL_RETRY` ledger 行。task 8.4 保持未勾选。
+
+### Implementation verification snapshot (2026-08-20 protocol crack)
+
+已实际执行并通过（本机 Docker Desktop arm64，不使用 ECS 跑 Pi）：
+
+- `cd bootstrap/src/main/resources/executor/pi && node --test test/*.test.mjs`：109 tests，109 passed（含 request v1 + Host v2 绑定、stale schema v1、以及 `estimatedInputTokens` 不得被 redact 成 `[REDACTED]`）。
+- RULE.md §十一 Java focused matrix（上一轮）：rag 11 + engine 60 + exec 70（2 skipped）+ bootstrap 124 = 265 tests，0 failures。
+- `./mvnw -pl exec,bootstrap,rag,engine -am --fail-at-end test`（2026-08-20T17:24Z，约 169s，已 `unset SPRING_CONFIG_ADDITIONAL_LOCATION` 且 `RD_EXECUTOR_AGENT_RUNTIME_ENABLED=false`）：rag 353/0/0/2，engine 600/0/0/0，exec 314/0/0/2，skill 7/0/0/0。bootstrap 在 `UserAdminControllerTest` 因 `InMemoryKnowledgeMutationTransactionAdapter` 无默认构造（`knowledgeDocumentMutationEngine`）未跑完模块；不扩展 OpenViking/知识变更 wiring。先前 16:59Z 那次是 live `SPRING_CONFIG_ADDITIONAL_LOCATION` 泄漏把 `agent-runtime` 打开后的 `agentRuntimeRouter` 失败。task 8.3 保持未勾选。
+- `OPENSPEC_NO_UPDATE_CHECK=1 openspec validate --all --strict`：8 passed。
+- 后端 `git diff --check -- . ':!frontend/**' ':!bootstrap/src/main/resources/static/admin/**'`：通过。
+- 本机 `rd-bot/pi-agent:local` Id=`sha256:9744415b199a869cc2629ad295f5b2ab8cc6882daee6973c769d4c361b9b85ec` Created=2026-08-19T17:01:03Z Arch=arm64（含 schema-v2 绑定与 `*Tokens` redact 豁免）。
+- 隔离验收实例 `127.0.0.1:18081`（local p18 DB `127.0.0.1:55433/rdbot_p18_verify`，未改云上 `ragent`）。全新任务 `7495883299257192448`：reviewer `agentStateSchemaVersion=rd-agent-state/v2`，`agentStateAvailable=true`，Host TODO pending=3，`STATE_CONTEXT_INJECTED` injectionSequence 1–6 与 stateHash `sha256:c441e7a318625ec2ec498df5bbfda941225da975d860ce2c20aacc48ed7958ea`。`STATE_SNAPSHOT_UPDATED` 曾因 `estimatedInputTokens` 被误脱敏导致 `snapshot canonical hash mismatch`；已用 RED/GREEN 测试修复 redact，待额度恢复后用新镜像复验投影。
+- 该任务随后因 LongCat `402 too_many_requests` / Token 额度不足进入 `FAILED_NEEDS_HUMAN`。OPENCODE/DEEPSEEK 未配置。未完成两轮产品修复或协议 QA→QA。task 8.4 保持未完成。
+- 本机 `rd-bot/pi-agent-qa:local` Id=`sha256:2fb6c49631901550d2497590435787bad438ceb6faff5656895b232925ab2451` Created=2026-08-19T17:27:02Z Arch=arm64；`FROM` 当前 Pi `9744415b…`，容器内 `protocol.mjs` 含 `*Tokens` 豁免；`/ms-playwright` 含 `chromium-1232`、`chromium_headless_shell-1232`、`ffmpeg-1011`。`Dockerfile.qa` 增加 `BROWSER_CACHE_IMAGE` 以免 Playwright CDN 再阻断重建。镜像重建不得单独勾选 8.4。
+
+### Implementation verification snapshot (2026-08-20 protocol crack)
+
+已实际执行并通过（本机 Docker Desktop arm64，不使用 ECS 跑 Pi）：
+
+- `cd bootstrap/src/main/resources/executor/pi && node --test test/*.test.mjs`：108 tests，108 passed。含 request v1 + Host v2 绑定、stale snapshot schema v1 仍绑定。
+- RULE.md §十一 Java focused matrix：rag 11 + engine 60 + exec 70（2 skipped）+ bootstrap 124 = 265 tests，0 failures，0 errors。`DockerPiAgentExecutorTest` 2 skipped 仍为 aspirational QA isolation。
+- `OPENSPEC_NO_UPDATE_CHECK=1 openspec validate --all --strict`：8 passed。
+- 后端 `git diff --check -- . ':!frontend/**' ':!bootstrap/src/main/resources/static/admin/**'`：通过。
+- 本机 `rd-bot/pi-agent:local` Id=`sha256:32f0a130e44afb12bd42e4b9dc144123a0ffbe374e6491519164b51413e45266` Created=2026-08-19T16:33:33Z Arch=arm64。容器内 `protocol.mjs` 已无 `requires request v2` gate。
+- 隔离验收实例 `127.0.0.1:18081`（local p18 DB `127.0.0.1:55433/rdbot_p18_verify`，未改云上 `ragent`）。全新任务 `7495883299257192448`：reviewer `agentStateSchemaVersion=rd-agent-state/v2`，`agentStateAvailable=true`，Host TODO pending=3，`STATE_CONTEXT_INJECTED` injectionSequence 1–6 与 stateHash `sha256:c441e7a318625ec2ec498df5bbfda941225da975d860ce2c20aacc48ed7958ea`。先前 `injectionSequence must be a non-negative integer` 与 missing `agent-effective-context-latest.json` 未再出现。
+- 该任务随后因 LongCat `402 too_many_requests` / Token 额度不足进入 `FAILED_NEEDS_HUMAN`（`RESULT_SUBMITTED` 后缺 `AGENT_SETTLED` 生命周期）。未完成两轮产品修复或协议 QA→QA。task 8.4 保持未完成。
+- `STATE_SNAPSHOT_UPDATED` 曾告警 `snapshot canonical hash mismatch`（injection 投影成功）；未在额度恢复前当作 8.4 完成证据。
+- `rd-bot/pi-agent-qa:local` 于本次 Pi base 上重建中（Playwright Chromium Headless Shell 下载缓慢）；完成前不得用旧 QA digest 勾选 8.4。
+
 ### Implementation verification snapshot (2026-08-19)
 
 已实际执行并通过：

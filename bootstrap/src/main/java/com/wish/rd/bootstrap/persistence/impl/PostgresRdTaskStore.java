@@ -88,6 +88,17 @@ public final class PostgresRdTaskStore implements RdTaskStore {
     }
 
     @Override
+    public Optional<com.wish.rd.rag.runtime.model.RdTask> findAdminShell(String taskId) {
+        String[] columns = TASK_ROW_COLUMNS.stream()
+                .filter(PostgresRdTaskStore::includeColumnInTaskList)
+                .toArray(String[]::new);
+        return Optional.ofNullable(taskMapper.selectOne(new QueryWrapper<RdTaskRow>()
+                        .select(columns)
+                        .eq("id", PostgresPersistenceSupport.parseId(taskId))))
+                .map(this::toAnyTask);
+    }
+
+    @Override
     public Optional<RdBugFixTask> findLatestBugFixTaskByTicketId(String ticketId) {
         String safeTicketId = ticketId == null ? "" : ticketId.strip();
         if (safeTicketId.isBlank()) {
@@ -103,10 +114,63 @@ public final class PostgresRdTaskStore implements RdTaskStore {
                 .map(this::toBugFixTask);
     }
 
+    private static final List<String> TASK_ROW_COLUMNS = List.of(
+            "id",
+            "task_type",
+            "ticket_id",
+            "ticket_title",
+            "priority",
+            "status",
+            "message_id",
+            "title",
+            "prompt_snapshot",
+            "execution_result_json",
+            "pull_request_url",
+            "error_message",
+            "paused",
+            "source_type",
+            "source_id",
+            "source_url",
+            "project_id",
+            "project_key",
+            "project_name",
+            "repository_url",
+            "repo_owner",
+            "repo_name",
+            "base_branch",
+            "work_branch",
+            "expected_result",
+            "acceptance_criteria_json",
+            "host_assertion_bundle_json",
+            "token_budget_override",
+            "version",
+            "fencing_token",
+            "created_at",
+            "updated_at"
+    );
+
+    /**
+     * List queries omit prompt/result blobs so the Hangzhou round-trip stays small enough
+     * for the admin page. Detail reads still use {@code selectById}.
+     */
+    static boolean includeColumnInTaskList(String column) {
+        return column != null
+                && !"prompt_snapshot".equals(column)
+                && !"execution_result_json".equals(column);
+    }
+
+    private static QueryWrapper<RdTaskRow> listSnapshotQuery(String taskType) {
+        String[] columns = TASK_ROW_COLUMNS.stream()
+                .filter(PostgresRdTaskStore::includeColumnInTaskList)
+                .toArray(String[]::new);
+        return new QueryWrapper<RdTaskRow>()
+                .select(columns)
+                .eq("task_type", taskType);
+    }
+
     @Override
     public List<RdBugFixTask> listBugFixTasks() {
-        return taskMapper.selectList(new QueryWrapper<RdTaskRow>()
-                        .eq("task_type", RdBugFixTask.TASK_TYPE))
+        return taskMapper.selectList(listSnapshotQuery(RdBugFixTask.TASK_TYPE))
                 .stream()
                 .sorted(Comparator
                         .comparing((RdTaskRow row) -> row.updatedAt)
@@ -117,8 +181,7 @@ public final class PostgresRdTaskStore implements RdTaskStore {
 
     @Override
     public List<RdRequirementTask> listRequirementTasks() {
-        return taskMapper.selectList(new QueryWrapper<RdTaskRow>()
-                        .eq("task_type", RdRequirementTask.TASK_TYPE))
+        return taskMapper.selectList(listSnapshotQuery(RdRequirementTask.TASK_TYPE))
                 .stream()
                 .sorted(Comparator
                         .comparing((RdTaskRow row) -> row.updatedAt)
@@ -246,6 +309,13 @@ public final class PostgresRdTaskStore implements RdTaskStore {
             return toRow(requirementTask);
         }
         throw new IllegalArgumentException("unsupported rd task type: " + task.getClass().getName());
+    }
+
+    private com.wish.rd.rag.runtime.model.RdTask toAnyTask(RdTaskRow row) {
+        if (RdRequirementTask.TASK_TYPE.equals(row.taskType)) {
+            return toRequirementTask(row);
+        }
+        return toBugFixTask(row);
     }
 
     private RdTaskRow toRow(RdBugFixTask task) {

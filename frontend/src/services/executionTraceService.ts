@@ -137,7 +137,7 @@ export const getAgentRuntimeSnapshot = (
 export const getAgentRuntimeEvents = (
   taskId: string,
   stageRunId: string,
-  query: { after?: number; limit?: number } = {}
+  query: { after?: number; limit?: number; latest?: boolean } = {}
 ): Promise<AgentRuntimeEventSnapshot> =>
   api.get<AgentRuntimeEventSnapshot, AgentRuntimeEventSnapshot>(
     agentRuntimeEventsPath(taskId, stageRunId, query)
@@ -146,10 +146,11 @@ export const getAgentRuntimeEvents = (
 export function agentRuntimeEventsPath(
   taskId: string,
   stageRunId: string,
-  query: { after?: number; limit?: number } = {}
+  query: { after?: number; limit?: number; latest?: boolean } = {}
 ): string {
   const params = new URLSearchParams();
   if (query.after && query.after > 0) params.set("after", String(query.after));
   params.set("limit", String(query.limit && query.limit > 0 ? query.limit : 100));
+  if (query.latest) params.set("latest", "true");
   return `/admin/rd-tasks/${encodeURIComponent(taskId)}/stage-runs/${encodeURIComponent(stageRunId)}/execution-events?${params.toString()}`;
 }

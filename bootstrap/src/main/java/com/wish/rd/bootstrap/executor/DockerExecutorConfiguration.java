@@ -209,7 +209,8 @@ public class DockerExecutorConfiguration {
             RoleHandoffDocumentSkillProvisioner.Provision handoffSkillProvision,
             ObjectProvider<RepairWorkspaceRepositoryPort> repositoryPortProvider,
             ObjectProvider<FinancialProperties> financialPropertiesProvider,
-            ObjectProvider<ProviderFallbackPreflightPort> providerFallbackPreflightProvider
+            ObjectProvider<ProviderFallbackPreflightPort> providerFallbackPreflightProvider,
+            ObjectProvider<DockerClaudeCodeExecutor.AuthEnvironmentResolver> authEnvironmentResolverProvider
     ) {
         DockerClaudeCodeExecutor.Configuration configuration = properties.toExecutorConfiguration()
                 .withQaSkill(new DockerClaudeCodeExecutor.QaSkillConfiguration(
@@ -236,7 +237,8 @@ public class DockerExecutorConfiguration {
                 modelHealthStore,
                 executionRegistry,
                 executionAllowlistPolicy,
-                DockerClaudeCodeExecutor.AuthEnvironmentResolver.system(),
+                authEnvironmentResolverProvider.getIfAvailable(
+                        DockerClaudeCodeExecutor.AuthEnvironmentResolver::system),
                 financialPropertiesProvider.getIfAvailable(FinancialProperties::new).toBudgetCurrencyConverter(),
                 providerFallbackPreflightProvider.getIfAvailable(
                         ProviderFallbackPreflightPort::unavailable)

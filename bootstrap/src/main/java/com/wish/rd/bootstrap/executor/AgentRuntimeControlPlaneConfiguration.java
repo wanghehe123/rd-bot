@@ -8,6 +8,8 @@ import com.wish.rd.rag.project.agent.AgentStrategyProfileService;
 import com.wish.rd.rag.project.agent.AgentStrategyProfileStore;
 import com.wish.rd.rag.project.agent.AgentToolPolicyService;
 import com.wish.rd.rag.project.agent.AgentToolPolicyStore;
+import com.wish.rd.rag.project.agent.ModelProviderCredentialService;
+import com.wish.rd.rag.project.agent.ModelProviderCredentialStore;
 import com.wish.rd.rag.project.agent.ModelProviderProfileService;
 import com.wish.rd.rag.project.agent.ModelProviderProfileStore;
 import com.wish.rd.rag.project.agent.AgentStageStateProjectionStore;
@@ -15,8 +17,10 @@ import com.wish.rd.rag.project.agent.impl.InMemoryAgentExecutionProfileSnapshotS
 import com.wish.rd.rag.project.agent.impl.InMemoryAgentExecutionProfileStore;
 import com.wish.rd.rag.project.agent.impl.InMemoryAgentStrategyProfileStore;
 import com.wish.rd.rag.project.agent.impl.InMemoryAgentToolPolicyStore;
+import com.wish.rd.rag.project.agent.impl.InMemoryModelProviderCredentialStore;
 import com.wish.rd.rag.project.agent.impl.InMemoryModelProviderProfileStore;
 import com.wish.rd.rag.project.agent.impl.InMemoryAgentStageStateProjectionStore;
+import com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
@@ -62,6 +66,13 @@ public class AgentRuntimeControlPlaneConfiguration {
     }
 
     @Bean
+    @ConditionalOnProperty(name = "rd.knowledge.store", havingValue = "memory", matchIfMissing = true)
+    @ConditionalOnMissingBean(ModelProviderCredentialStore.class)
+    public ModelProviderCredentialStore inMemoryModelProviderCredentialStore() {
+        return new InMemoryModelProviderCredentialStore();
+    }
+
+    @Bean
     @ConditionalOnMissingBean
     public AgentExecutionProfileService agentExecutionProfileService(AgentExecutionProfileStore store) {
         return new AgentExecutionProfileService(store);
@@ -85,6 +96,26 @@ public class AgentRuntimeControlPlaneConfiguration {
     @ConditionalOnMissingBean
     public ModelProviderProfileService modelProviderProfileService(ModelProviderProfileStore store) {
         return new ModelProviderProfileService(store);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public ModelProviderCredentialService modelProviderCredentialService(
+            ModelProviderCredentialStore store,
+            ModelProviderProfileStore profiles
+    ) {
+        return new ModelProviderCredentialService(store, profiles);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(DockerClaudeCodeExecutor.AuthEnvironmentResolver.class)
+    public DockerClaudeCodeExecutor.AuthEnvironmentResolver storedThenSystemAuthEnvironmentResolver(
+            ModelProviderCredentialService credentials
+    ) {
+        return new StoredThenSystemAuthEnvironmentResolver(
+                credentials,
+                DockerClaudeCodeExecutor.AuthEnvironmentResolver.system()
+        );
     }
 
     @Bean

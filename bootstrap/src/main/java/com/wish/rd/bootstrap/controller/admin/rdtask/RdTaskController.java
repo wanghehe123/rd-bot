@@ -318,7 +318,21 @@ public class RdTaskController {
      */
     @GetMapping(value = "/admin/rd-tasks/{taskId}", produces = MediaType.APPLICATION_JSON_VALUE)
     public RdTaskView get(@PathVariable("taskId") String taskId) {
-        return toDetailView(registry.getTask(taskId));
+        return toWorkbenchView(registry.getAdminShell(taskId));
+    }
+
+    /**
+     * Prompt snapshot and execution evidence for delivery/audit views. Workbench GET omits these blobs.
+     */
+    @GetMapping(value = "/admin/rd-tasks/{taskId}/audit-content", produces = MediaType.APPLICATION_JSON_VALUE)
+    public RdTaskAuditContentView getAuditContent(@PathVariable("taskId") String taskId) {
+        RdTaskView detail = toDetailView(registry.getTask(taskId));
+        return new RdTaskAuditContentView(
+                detail.taskId(),
+                detail.promptSnapshot(),
+                detail.executionResultJson(),
+                detail.executionEvidence()
+        );
     }
 
     /**
@@ -849,14 +863,18 @@ public class RdTaskController {
     }
 
     private static RdTaskView toListView(RdTask task) {
-        return toView(task, true);
+        return toView(task, true, false);
     }
 
     private static RdTaskView toDetailView(RdTask task) {
-        return toView(task, false);
+        return toView(task, false, false);
     }
 
-    private static RdTaskView toView(RdTask task, boolean listView) {
+    private static RdTaskView toWorkbenchView(RdTask task) {
+        return toView(task, false, true);
+    }
+
+    private static RdTaskView toView(RdTask task, boolean listView, boolean omitAuditBlobs) {
         String ticketId = "";
         String ticketTitle = "";
         String promptSnapshot = "";
@@ -912,6 +930,10 @@ public class RdTaskController {
             acceptanceCriteriaJson = requirementTask.acceptanceCriteriaJson();
             hostAssertionBundle = listView ? null : requirementTask.hostAssertionBundle();
             tokenBudgetOverride = requirementTask.tokenBudgetOverride();
+        }
+        if (omitAuditBlobs) {
+            promptSnapshot = "";
+            executionResultJson = "";
         }
         return new RdTaskView(
                 task.taskId(),
@@ -1556,6 +1578,23 @@ public class RdTaskController {
             String containerName,
             String message
     ) {
+    }
+
+    /** Prompt and execution blobs loaded only for delivery/audit views. */
+    public record RdTaskAuditContentView(
+            String taskId,
+            String promptSnapshot,
+            String executionResultJson,
+            ExecutionEvidenceView executionEvidence
+    ) {
+        public RdTaskAuditContentView {
+            taskId = taskId == null ? "" : taskId.strip();
+            promptSnapshot = promptSnapshot == null ? "" : promptSnapshot;
+            executionResultJson = executionResultJson == null ? "" : executionResultJson;
+            executionEvidence = executionEvidence == null
+                    ? new ExecutionEvidenceView("", "", List.of(), "", "", List.of(), "")
+                    : executionEvidence;
+        }
     }
 
     /** 任务视图。 */

@@ -51,4 +51,7 @@ public interface TaskRetryAttemptBindingMapper extends BaseMapper<TaskRetryAttem
     List<TaskRetryAttemptBindingRow> findChild(
             @Param("checkpointId") long checkpointId, @Param("parentBindingId") long parentBindingId,
             @Param("kind") String kind, @Param("ordinal") int ordinal);
+
+    @Select("SELECT * FROM rd_task_retry_attempt_bindings WHERE stage_run_id = #{stageRunId} ORDER BY id")
+    List<TaskRetryAttemptBindingRow> findByStageRunId(@Param("stageRunId") long stageRunId);
 }

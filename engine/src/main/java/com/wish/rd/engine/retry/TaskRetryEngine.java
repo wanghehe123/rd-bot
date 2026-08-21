@@ -307,7 +307,9 @@ public final class TaskRetryEngine {
         int attemptNo = checkpointStore.listByTask(taskId).stream()
                 .mapToInt(TaskRetryCheckpoint::attemptNo).max().orElse(0) + 1;
         String idempotencyKey = taskId + ":" + point.sourceTaskVersion() + ":"
-                + point.failurePhase() + ":" + (point.retryFromRole() == null ? "" : point.retryFromRole().name());
+                + point.failurePhase() + ":"
+                + (point.retryFromRole() == null ? "" : point.retryFromRole().name())
+                + ":" + attemptNo;
         // Legacy resolver points may still carry the task fence without a durable command/stage
         // pair. Checkpoint creation requires that audit-only shape to use fence 0 explicitly.
         TaskRetryPoint checkpointPoint = point.failedStageCommandId().isBlank()
@@ -597,7 +599,17 @@ public final class TaskRetryEngine {
                 );
             }
             if (latest != null && !latest.status().isTerminal()) {
-                continue;
+                if (!alreadyBoundToACheckpoint(latest.stageRunId())) {
+                    boundStages.add(latest);
+                    continue;
+                }
+                latest = stageRunStore.transition(
+                        latest.stageRunId(),
+                        AgentStageStatus.CANCELLED,
+                        "RETRY_CHECKPOINT_SUPERSEDED",
+                        "pending role attempt is already bound to an earlier retry checkpoint",
+                        now()
+                );
             }
             int attemptNo = latest == null ? 1 : latest.attemptNo() + 1;
             AgentStageRun prepared = stageRunStore.save(AgentStageRun.pending(
@@ -607,6 +619,11 @@ public final class TaskRetryEngine {
             boundStages.add(prepared);
         }
         return boundStages;
+    }
+
+    private boolean alreadyBoundToACheckpoint(String stageRunId) {
+        return retryAttemptBindingStore != null
+                && retryAttemptBindingStore.findByStageRunId(stageRunId).isPresent();
     }
 
     private void compensatePreparedStages(List<AgentStageRun> preparedStageRuns, RuntimeException original) {

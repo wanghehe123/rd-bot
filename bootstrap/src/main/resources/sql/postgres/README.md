@@ -30,6 +30,7 @@ Scripts are applied in **numeric** `pN_` order (then filename). `p10` runs after
 | 13 | `p13_openviking_identity_backfill.sql` |
 | 14 | `p14_agent_strategy_profiles.sql` |
 | 15 | `p15_host_verification.sql` |
+| 16 | `p16_model_provider_credentials.sql` |
 | 17 | `p17_fix_tool_policy_seed_hashes.sql` |
 | 18 | `p18_pi_agent_state_and_remediation.sql` |
 
@@ -49,6 +50,8 @@ docker compose up -d
 ```
 
 Defaults: `localhost:5432`, database `rdbot`, user/password `postgres`/`postgres`.
+
+The local RD-Bot control-plane database is often `ragent`. Use `POSTGRES_DB=ragent` (or `POSTGRES_URL`) when applying against that instance.
 
 Overrides: `POSTGRES_URL` (JDBC or `postgresql://…`), or `POSTGRES_HOST` / `POSTGRES_PORT` / `POSTGRES_DB` / `POSTGRES_USER` / `POSTGRES_PASSWORD` (also `POSTGRES_USERNAME`).
 

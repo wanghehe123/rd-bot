@@ -43,6 +43,8 @@ import com.wish.rd.rag.runtime.model.TaskMaterial;
 import com.wish.rd.rag.runtime.TaskMaterialStore;
 import com.wish.rd.rag.runtime.model.TaskMaterialSourceType;
 import com.wish.rd.rag.runtime.model.TaskMaterialType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -119,6 +121,7 @@ import com.wish.rd.rag.project.agent.model.AgentRuntimeCapability;
 public class RequirementDeliveryEngine {
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final Logger log = LoggerFactory.getLogger(RequirementDeliveryEngine.class);
     /** 单角色阶段最大 attempt 数，防止协议失败引发的盲重试风暴（审查报告 F2）。 */
     private static final int MAX_ROLE_ATTEMPTS = 3;
     /** 单次回注的失败明细上限，防止巨型校验错误把 prompt 撑爆。 */
@@ -1342,32 +1345,54 @@ public class RequirementDeliveryEngine {
     ) {
         List<AgentStageRun> stages = stageRunStore.listByTask(task.taskId());
         AgentStageRun sourceQa = latestStageOrNull(stages, AgentRole.QA_AGENT);
-        if (sourceQa == null || sourceQa.attemptNo() > MAX_ROLE_ATTEMPTS) return null;
+        if (sourceQa == null || sourceQa.attemptNo() > MAX_ROLE_ATTEMPTS) {
+            log.warn("PI QA bounce declined: no usable QA stage taskId={} sourceQa={}",
+                    task.taskId(), sourceQa == null ? "null" : sourceQa.attemptNo());
+            return null;
+        }
         RequirementExecutionProfileResolution sourceResolution;
         try {
             sourceResolution = executionProfileResolver.resolve(
                     task, AgentRole.QA_AGENT, sourceQa.stageRunId(), sourceQa.attemptNo()
             );
         } catch (RuntimeException unavailable) {
+            log.warn("PI QA bounce declined: profile resolve failed taskId={} stageRunId={}",
+                    task.taskId(), sourceQa.stageRunId(), unavailable);
             return null;
         }
+        String qaResultJson = PiQaRemediationPlanner.authoritativeQaResultJson(execution.resultJson());
         PiQaRemediationPlanner.Decision decision = new PiQaRemediationPlanner().decide(
-                execution.resultJson(), sourceResolution, command, sourceQa.stageRunId(), sourceQa.attemptNo()
+                qaResultJson, sourceResolution, command, sourceQa.stageRunId(), sourceQa.attemptNo()
         ).orElse(null);
-        if (decision == null) return null;
+        if (decision == null) {
+            log.warn("PI QA bounce declined: planner empty taskId={} stageRunId={} v2={} qaStatus={}",
+                    task.taskId(),
+                    sourceQa.stageRunId(),
+                    sourceResolution.piQaRemediationV2Enabled(),
+                    qaStatusPreview(qaResultJson));
+            return null;
+        }
 
         int remediationNo = decision.kind() == AgentRemediationKind.QA_PROTOCOL_RETRY
                 ? 1
                 : (command.remediationKind() == AgentRemediationKind.QA_PRODUCT_FIX
                 ? command.remediationNo() + 1 : 1);
-        if (remediationNo > decision.kind().maximumRounds()) return null;
+        if (remediationNo > decision.kind().maximumRounds()) {
+            log.warn("PI QA bounce declined: kind {} round {} exceeds limit taskId={}",
+                    decision.kind(), remediationNo, task.taskId());
+            return null;
+        }
         AgentStageRun latestQa = latestStageOrNull(stages, AgentRole.QA_AGENT);
         AgentStageRun latestCoding = latestStageOrNull(stages, AgentRole.CODING_AGENT);
         int targetQaAttempt = latestQa == null ? 1 : latestQa.attemptNo() + 1;
         int targetCodingAttempt = decision.kind() == AgentRemediationKind.QA_PRODUCT_FIX
                 ? (latestCoding == null ? 1 : latestCoding.attemptNo() + 1) : 0;
         if (targetQaAttempt > MAX_ROLE_ATTEMPTS
-                || targetCodingAttempt > MAX_ROLE_ATTEMPTS) return null;
+                || targetCodingAttempt > MAX_ROLE_ATTEMPTS) {
+            log.warn("PI QA bounce declined: next attempts QA={} coding={} exceed {} taskId={}",
+                    targetQaAttempt, targetCodingAttempt, MAX_ROLE_ATTEMPTS, task.taskId());
+            return null;
+        }
 
         String roundId = idGenerator.nextIdString();
         String codingStageId = decision.kind() == AgentRemediationKind.QA_PRODUCT_FIX
@@ -1387,7 +1412,7 @@ public class RequirementDeliveryEngine {
             String requestHash = decision.requestHash();
             if (decision.kind() == AgentRemediationKind.QA_PRODUCT_FIX) {
                 QaRemediationPackageBuilder.Package requestPackage = new QaRemediationPackageBuilder().build(
-                        sourceQa.stageRunId(), remediationNo, execution.resultJson()
+                        sourceQa.stageRunId(), remediationNo, qaResultJson
                 );
                 requestJson = requestPackage.attachment().content();
                 requestHash = requestPackage.requestHash();
@@ -1397,7 +1422,7 @@ public class RequirementDeliveryEngine {
                     task.taskId(),
                     sourceQa.stageRunId(),
                     command.commandId(),
-                    CanonicalJsonSha256.digest(execution.resultJson()),
+                    CanonicalJsonSha256.digest(qaResultJson),
                     command.taskVersion(),
                     command.fencingToken(),
                     decision.kind(),
@@ -1439,7 +1464,20 @@ public class RequirementDeliveryEngine {
             ));
             return intent;
         } catch (RuntimeException invalidTarget) {
+            log.warn("PI QA bounce declined: intent construction failed taskId={} stageRunId={}",
+                    task.taskId(), sourceQa.stageRunId(), invalidTarget);
             return null;
+        }
+    }
+
+    private static String qaStatusPreview(String qaResultJson) {
+        try {
+            JsonNode root = OBJECT_MAPPER.readTree(qaResultJson == null ? "{}" : qaResultJson);
+            return "status=" + root.path("status").asText("")
+                    + " requested=" + root.path("remediationRequest").path("requested").asBoolean(false)
+                    + " target=" + root.path("remediationRequest").path("targetRole").asText("");
+        } catch (Exception ignored) {
+            return "unparseable";
         }
     }
 

@@ -14,6 +14,7 @@ import com.wish.rd.rag.project.agent.model.AgentManifestCanonicalJson;
 import com.wish.rd.rag.project.agent.model.AgentToolPolicy;
 import com.wish.rd.rag.project.agent.model.AgentRuntimeType;
 import com.wish.rd.rag.project.agent.model.AgentRuntimeCapability;
+import com.wish.rd.rag.project.agent.model.AgentStateV2Codec;
 import com.wish.rd.rag.project.agent.model.ModelProviderProfile;
 import com.wish.rd.rag.project.agent.model.ModelProviderProtocol;
 import com.wish.rd.rag.runtime.model.RdRequirementTask;
@@ -253,7 +254,13 @@ public final class EngineRequirementExecutionProfileResolver
         value.put("resolvedFrom", profile == null ? "COMPATIBILITY_DEFAULT" : "REGISTERED_PROFILE");
         value.put("contextProtocolVersion", contextProtocolVersion);
         value.put("contextPolicyMode", contextPolicyMode);
-        value.put("agentStateSchemaVersion", "rd-agent-state/v1");
+        boolean agentStateV2 = runtimeType == AgentRuntimeType.PI
+                && profile != null
+                && profile.hasCapability(AgentRuntimeCapability.PI_AGENT_STATE_V2)
+                && dynamicStateEnabled;
+        value.put("agentStateSchemaVersion", agentStateV2
+                ? AgentStateV2Codec.PROTOCOL
+                : "rd-agent-state/v1");
         value.put("dynamicStateEnabled", dynamicStateEnabled);
         value.put("maxInjectedStateBytes", maxInjectedStateBytes);
         value.put("toolRetryPolicyVersion", "rd-tool-retry/v1");

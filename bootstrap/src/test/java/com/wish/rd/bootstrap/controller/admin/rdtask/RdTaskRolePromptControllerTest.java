@@ -29,10 +29,13 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.is;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -64,6 +67,32 @@ class RdTaskRolePromptControllerTest {
                 stateProjectionStore,
                 () -> 1_783_000_100_000L
         )).build();
+    }
+
+    @Test
+    void rolePromptsReadTaskArtifactsOnceAcrossStages() throws Exception {
+        CountingAgentStageArtifactStore counting = new CountingAgentStageArtifactStore(new InMemoryAgentStageArtifactStore());
+        MockMvc isolated = MockMvcBuilders.standaloneSetup(new RdTaskRolePromptController(
+                registry,
+                stageRunStore,
+                counting,
+                contextPackageStore,
+                profileSnapshotStore,
+                stateProjectionStore,
+                () -> 1_783_000_100_000L
+        )).build();
+        RdRequirementTask task = registry.createRequirementTask(new CreateRequirementTaskCommand(
+                "role-prompts 产物只读一次", "P1", "https://github.com/acme/repo.git", "acme", "repo", "main",
+                "多阶段不得反复 listByTask", List.of("一次拉取"), false
+        ));
+        savePromptStage(counting, task.taskId(), AgentRole.REQUIREMENT_REVIEWER, "stage-reviewer-once", "prompt-reviewer-once");
+        savePromptStage(counting, task.taskId(), AgentRole.CODING_AGENT, "stage-coding-once", "prompt-coding-once");
+        savePromptStage(counting, task.taskId(), AgentRole.QA_AGENT, "stage-qa-once", "prompt-qa-once");
+
+        isolated.perform(get("/admin/rd-tasks/{taskId}/role-prompts", task.taskId()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.stagePrompts", hasSize(3)));
+        assertEquals(1, counting.listByTaskCalls.get());
     }
 
     @Test
@@ -430,6 +459,55 @@ class RdTaskRolePromptControllerTest {
             return new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(value);
         } catch (Exception exception) {
             throw new IllegalStateException(exception);
+        }
+    }
+
+    private void savePromptStage(
+            AgentStageArtifactStore store,
+            String taskId,
+            AgentRole role,
+            String stageRunId,
+            String promptArtifactId
+    ) {
+        stageRunStore.save(new AgentStageRun(
+                stageRunId, taskId, role, AgentStageStatus.SUCCEEDED, 1,
+                taskId + ":" + role.name() + ":1", "", promptArtifactId, "", "pi", "[]", "{}", "", "",
+                1_783_000_000_000L, 1_783_000_090_000L, 1_783_000_000_000L, 1_783_000_090_000L
+        ));
+        store.save(new AgentStageArtifact(
+                promptArtifactId, stageRunId, taskId, role, "PROMPT_SNAPSHOT",
+                "rd-agent-stage://" + stageRunId + "/prompt", role.name() + " prompt",
+                "# " + role.name(), "sha256:" + promptArtifactId, "{}", 1_783_000_000_010L
+        ));
+    }
+
+    private static final class CountingAgentStageArtifactStore implements AgentStageArtifactStore {
+        private final AgentStageArtifactStore delegate;
+        private final AtomicInteger listByTaskCalls = new AtomicInteger();
+
+        private CountingAgentStageArtifactStore(AgentStageArtifactStore delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public AgentStageArtifact save(AgentStageArtifact artifact) {
+            return delegate.save(artifact);
+        }
+
+        @Override
+        public AgentStageArtifact saveImmutable(AgentStageArtifact artifact) {
+            return delegate.saveImmutable(artifact);
+        }
+
+        @Override
+        public List<AgentStageArtifact> listByTask(String taskId) {
+            listByTaskCalls.incrementAndGet();
+            return delegate.listByTask(taskId);
+        }
+
+        @Override
+        public int deleteByTaskAndTypes(String taskId, Set<String> artifactTypes) {
+            return delegate.deleteByTaskAndTypes(taskId, artifactTypes);
         }
     }
 }

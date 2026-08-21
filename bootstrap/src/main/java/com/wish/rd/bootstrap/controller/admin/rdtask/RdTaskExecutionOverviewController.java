@@ -230,8 +230,9 @@ public class RdTaskExecutionOverviewController {
         long now = nowMillis.getAsLong();
         List<AgentRole> stageOrder = stageOrder(task);
         List<AgentStageRun> stageRuns = sortedStageRuns(task.taskId(), stageOrder);
-        Map<String, AgentStageArtifact> artifactById = artifactsById(task.taskId());
-        Map<String, AgentStageArtifact> latestAgentStateByStage = latestAgentStateSnapshots(task.taskId());
+        List<AgentStageArtifact> artifacts = artifactStore.listByTask(task.taskId());
+        Map<String, AgentStageArtifact> artifactById = artifactsById(artifacts);
+        Map<String, AgentStageArtifact> latestAgentStateByStage = latestAgentStateSnapshots(artifacts);
         AgentStageProgressCalculator.AgentStageProgress stageProgress = stageProgressCalculator.calculate(
                 task.taskType(),
                 stageRuns
@@ -269,7 +270,7 @@ public class RdTaskExecutionOverviewController {
                         )
                 ))
                 .toList();
-        TokenBudgetView tokenBudget = tokenBudget(task, stageRuns, runningExecutionSnapshots);
+        TokenBudgetView tokenBudget = tokenBudget(task, stageRuns, runningExecutionSnapshots, artifacts);
         long elapsedMillis = Math.max(0L, (isTaskTerminal(task.status()) ? task.updateTimeEpochMillis() : now)
                 - task.createTimeEpochMillis());
 
@@ -300,10 +301,9 @@ public class RdTaskExecutionOverviewController {
             @RequestParam(name = "after", defaultValue = "0") long afterSequence,
             @RequestParam(name = "limit", defaultValue = "100") int limit
     ) {
-        RdTask task = findTask(taskId);
-        AgentStageRun stageRun = findStageRun(task.taskId(), stageRunId);
+        AgentStageRun stageRun = findStageRun(taskId, stageRunId);
         ClaudeExecutionTraceSnapshot live = executionRegistry.executionTrace(
-                task.taskId(),
+                taskId,
                 stageRun.stageRunId(),
                 Math.max(0L, afterSequence),
                 Math.max(1, Math.min(200, limit))
@@ -311,14 +311,10 @@ public class RdTaskExecutionOverviewController {
         // Preserve the LIVE source while a container is registered, even before Claude has emitted
         // its first safe user-visible event. Otherwise the UI treats the empty snapshot as archived
         // and stops polling just as a role starts.
-        if (live.available() || executionRegistry.isRunning(task.taskId(), stageRun.stageRunId())) {
+        if (live.available() || executionRegistry.isRunning(taskId, stageRun.stageRunId())) {
             return live;
         }
-        return artifactStore.listByTask(task.taskId()).stream()
-                .filter(artifact -> stageRun.stageRunId().equals(artifact.stageRunId()))
-                .filter(artifact -> "CLAUDE_EVENTS".equals(artifact.artifactType()))
-                .max(RdTaskExecutionOverviewController::compareArtifact)
-                .map(AgentStageArtifact::contentPreview)
+        return latestArtifactPreview(taskId, stageRun.stageRunId(), "CLAUDE_EVENTS")
                 .map(executionTraceParser::parsePersistedSnapshot)
                 .filter(ClaudeExecutionTraceSnapshot::available)
                 .orElseGet(() -> ClaudeExecutionTraceSnapshot.unavailable("ARCHIVED"));
@@ -333,12 +329,12 @@ public class RdTaskExecutionOverviewController {
             @PathVariable("taskId") String taskId,
             @PathVariable("stageRunId") String stageRunId,
             @RequestParam(name = "after", defaultValue = "0") long afterSequence,
-            @RequestParam(name = "limit", defaultValue = "100") int limit
+            @RequestParam(name = "limit", defaultValue = "100") int limit,
+            @RequestParam(name = "latest", defaultValue = "false") boolean latest
     ) {
-        RdTask task = findTask(taskId);
-        findStageRun(task.taskId(), stageRunId);
+        findStageRun(taskId, stageRunId);
         AgentExecutionTraceSnapshot live = eventStore.snapshot(
-                task.taskId(),
+                taskId,
                 stageRunId,
                 Math.max(0L, afterSequence),
                 Math.max(1, Math.min(200, limit))
@@ -346,17 +342,14 @@ public class RdTaskExecutionOverviewController {
         if (live.available()) {
             return live;
         }
-        return artifactStore.listByTask(task.taskId()).stream()
-                .filter(artifact -> stageRunId.equals(artifact.stageRunId()))
-                .filter(artifact -> "AGENT_EVENTS".equals(artifact.artifactType()))
-                .max(RdTaskExecutionOverviewController::compareArtifact)
-                .map(AgentStageArtifact::contentPreview)
+        return latestArtifactPreview(taskId, stageRunId, "AGENT_EVENTS")
                 .map(content -> AgentExecutionEventParser.parseJsonl(
                         content,
-                        task.taskId(),
+                        taskId,
                         stageRunId,
                         Math.max(0L, afterSequence),
-                        Math.max(1, Math.min(200, limit))
+                        Math.max(1, Math.min(200, limit)),
+                        latest
                 ))
                 .orElse(live);
     }
@@ -376,8 +369,7 @@ public class RdTaskExecutionOverviewController {
             @RequestParam(name = "limit", defaultValue = "100") int limit,
             @RequestHeader(name = "Last-Event-ID", required = false) String lastEventId
     ) {
-        RdTask task = findTask(taskId);
-        findStageRun(task.taskId(), stageRunId);
+        findStageRun(taskId, stageRunId);
         long cursor = Math.max(Math.max(0L, afterSequence), parseSequence(lastEventId));
         int boundedLimit = Math.max(1, Math.min(200, limit));
         SseEmitter emitter = new SseEmitter(30_000L);
@@ -393,7 +385,7 @@ public class RdTaskExecutionOverviewController {
         emitter.onError(ignored -> closeSubscription.run());
 
         try {
-            AutoCloseable subscription = eventStore.subscribe(task.taskId(), stageRunId, event -> {
+            AutoCloseable subscription = eventStore.subscribe(taskId, stageRunId, event -> {
                 synchronized (sendLock) {
                     if (event.sequence() <= delivered.get()) {
                         return;
@@ -409,7 +401,7 @@ public class RdTaskExecutionOverviewController {
             });
             subscriptionRef.set(subscription);
             AgentExecutionTraceSnapshot snapshot = eventStore.snapshot(
-                    task.taskId(), stageRunId, cursor, boundedLimit
+                    taskId, stageRunId, cursor, boundedLimit
             );
             synchronized (sendLock) {
                 for (JsonNode event : snapshot.events()) {
@@ -433,6 +425,12 @@ public class RdTaskExecutionOverviewController {
             emitter.completeWithError(exception);
         }
         return emitter;
+    }
+
+    private java.util.Optional<String> latestArtifactPreview(String taskId, String stageRunId, String artifactType) {
+        return artifactStore.listByTaskStageAndType(taskId, stageRunId, artifactType).stream()
+                .max(RdTaskExecutionOverviewController::compareArtifact)
+                .map(AgentStageArtifact::contentPreview);
     }
 
     private AgentStageRun findStageRun(String taskId, String stageRunId) {
@@ -474,7 +472,7 @@ public class RdTaskExecutionOverviewController {
 
     private RdTask findTask(String taskId) {
         try {
-            return registry.getTask(taskId);
+            return registry.getAdminShell(taskId);
         } catch (NoSuchElementException exception) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, exception.getMessage(), exception);
         }
@@ -492,8 +490,8 @@ public class RdTaskExecutionOverviewController {
                 .toList();
     }
 
-    private Map<String, AgentStageArtifact> artifactsById(String taskId) {
-        return artifactStore.listByTask(taskId).stream()
+    private Map<String, AgentStageArtifact> artifactsById(List<AgentStageArtifact> artifacts) {
+        return artifacts.stream()
                 .collect(Collectors.toMap(
                         AgentStageArtifact::artifactId,
                         Function.identity(),
@@ -502,9 +500,9 @@ public class RdTaskExecutionOverviewController {
                 ));
     }
 
-    private Map<String, AgentStageArtifact> latestAgentStateSnapshots(String taskId) {
+    private Map<String, AgentStageArtifact> latestAgentStateSnapshots(List<AgentStageArtifact> artifacts) {
         Map<String, AgentStageArtifact> latest = new LinkedHashMap<>();
-        for (AgentStageArtifact artifact : artifactStore.listByTask(taskId)) {
+        for (AgentStageArtifact artifact : artifacts) {
             if (!"AGENT_STATE_SNAPSHOT".equals(artifact.artifactType())) {
                 continue;
             }
@@ -772,7 +770,8 @@ public class RdTaskExecutionOverviewController {
     private TokenBudgetView tokenBudget(
             RdTask task,
             List<AgentStageRun> stageRuns,
-            List<DockerExecutionRegistry.RunningExecution> runningExecutions
+            List<DockerExecutionRegistry.RunningExecution> runningExecutions,
+            List<AgentStageArtifact> artifacts
     ) {
         JsonNode budget = latestRequirementBudget(stageRuns);
         long effectiveTokenBudget = budget.has("effectiveTokenBudget")
@@ -787,7 +786,7 @@ public class RdTaskExecutionOverviewController {
         boolean actualAvailable = false;
         long finalActualTokens = 0L;
         for (AgentStageRun stageRun : stageRuns) {
-            long stageTokens = measuredStageActualTokens(stageRun);
+            long stageTokens = measuredStageActualTokens(stageRun, artifacts);
             if (stageTokens > 0L) {
                 actualAvailable = true;
                 finalActualTokens = safeAdd(finalActualTokens, stageTokens);
@@ -823,7 +822,7 @@ public class RdTaskExecutionOverviewController {
         );
     }
 
-    private long measuredStageActualTokens(AgentStageRun stageRun) {
+    private long measuredStageActualTokens(AgentStageRun stageRun, List<AgentStageArtifact> artifacts) {
         long attemptTokens = 0L;
         boolean attemptMeasured = false;
         for (Map<String, Object> attempt : providerAttempts(stageRun.providerAttemptsJson())) {
@@ -836,19 +835,19 @@ public class RdTaskExecutionOverviewController {
         if (attemptMeasured) {
             return attemptTokens;
         }
-        long measurementTokens = measuredTokensFromRuntimeMeasurement(stageRun);
+        long measurementTokens = measuredTokensFromRuntimeMeasurement(stageRun, artifacts);
         if (measurementTokens > 0L) {
             return measurementTokens;
         }
-        if (shouldMeasureAgentEventsArtifact(stageRun)) {
-            return measuredTokensFromAgentEvents(stageRun);
+        if (shouldMeasureAgentEventsArtifact(stageRun, artifacts)) {
+            return measuredTokensFromAgentEvents(stageRun, artifacts);
         }
         return 0L;
     }
 
-    private boolean shouldMeasureAgentEventsArtifact(AgentStageRun stageRun) {
+    private boolean shouldMeasureAgentEventsArtifact(AgentStageRun stageRun, List<AgentStageArtifact> artifacts) {
         if (isTerminalFailureStage(stageRun)) {
-            return hasAgentEventsArtifact(stageRun);
+            return hasAgentEventsArtifact(stageRun, artifacts);
         }
         return true;
     }
@@ -863,8 +862,8 @@ public class RdTaskExecutionOverviewController {
                 || "ORCHESTRATION_INTERRUPTED".equalsIgnoreCase(text(stageRun.errorCategory()));
     }
 
-    private boolean hasAgentEventsArtifact(AgentStageRun stageRun) {
-        return artifactStore.listByTask(stageRun.taskId()).stream()
+    private boolean hasAgentEventsArtifact(AgentStageRun stageRun, List<AgentStageArtifact> artifacts) {
+        return artifacts.stream()
                 .anyMatch(artifact -> stageRun.stageRunId().equals(artifact.stageRunId())
                         && "AGENT_EVENTS".equals(artifact.artifactType()));
     }
@@ -915,8 +914,8 @@ public class RdTaskExecutionOverviewController {
         );
     }
 
-    private long measuredTokensFromRuntimeMeasurement(AgentStageRun stageRun) {
-        return artifactStore.listByTask(stageRun.taskId()).stream()
+    private long measuredTokensFromRuntimeMeasurement(AgentStageRun stageRun, List<AgentStageArtifact> artifacts) {
+        return artifacts.stream()
                 .filter(artifact -> stageRun.stageRunId().equals(artifact.stageRunId()))
                 .filter(artifact -> "RUNTIME_MEASUREMENT".equals(artifact.artifactType()))
                 .max(RdTaskExecutionOverviewController::compareArtifact)
@@ -938,8 +937,8 @@ public class RdTaskExecutionOverviewController {
         }
     }
 
-    private long measuredTokensFromAgentEvents(AgentStageRun stageRun) {
-        return artifactStore.listByTask(stageRun.taskId()).stream()
+    private long measuredTokensFromAgentEvents(AgentStageRun stageRun, List<AgentStageArtifact> artifacts) {
+        return artifacts.stream()
                 .filter(artifact -> stageRun.stageRunId().equals(artifact.stageRunId()))
                 .filter(artifact -> "AGENT_EVENTS".equals(artifact.artifactType()))
                 .max(RdTaskExecutionOverviewController::compareArtifact)

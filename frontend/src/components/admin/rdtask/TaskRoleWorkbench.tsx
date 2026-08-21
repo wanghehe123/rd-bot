@@ -1032,13 +1032,14 @@ function RuntimeExecutionEventsPanel({
       }, 1_500);
     };
 
-    const poll = async (): Promise<AgentRuntimeEventSnapshot | null> => {
+    const poll = async (options?: { latest?: boolean }): Promise<AgentRuntimeEventSnapshot | null> => {
       if (cancelled || polling) return null;
       polling = true;
       try {
         const next = await getAgentRuntimeEvents(taskId, stage.stageRunId, {
           after: cursorRef.current,
-          limit: 100
+          limit: 100,
+          latest: Boolean(options?.latest && cursorRef.current === 0)
         });
         if (cancelled) return null;
         cursorRef.current = Math.max(cursorRef.current, next.nextSequence);
@@ -1104,8 +1105,8 @@ function RuntimeExecutionEventsPanel({
     };
 
     void (async () => {
-      let next = await poll();
-      while (next?.hasMore && !cancelled) {
+      let next = await poll({ latest: true });
+      while (next?.hasMore && next.source !== "ARCHIVED" && !cancelled) {
         next = await poll();
       }
       if (!cancelled) setLoadingHistory(false);

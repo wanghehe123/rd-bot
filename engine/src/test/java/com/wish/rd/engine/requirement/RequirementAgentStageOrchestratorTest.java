@@ -1,6 +1,7 @@
 package com.wish.rd.engine.requirement;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wish.rd.engine.agent.model.AgentRole;
 import com.wish.rd.engine.agent.model.AgentStageRun;
 import com.wish.rd.engine.agent.model.AgentStageStatus;
@@ -549,6 +550,34 @@ class RequirementAgentStageOrchestratorTest {
 
         assertEquals(1, declined.executor.executedRoleCount(AgentRole.CODING_AGENT));
         assertEquals(1, forged.executor.executedRoleCount(AgentRole.CODING_AGENT));
+    }
+
+    @Test
+    void commandScopedQaFailureAttachesQaRoleResultAndKeepsParseableAggregate() throws Exception {
+        AgentWorkflowPlan plan = new AgentWorkflowPlan(
+                List.of(AgentRole.QA_AGENT), false, false, 1, false, 2,
+                Map.of(AgentRole.QA_AGENT, 0.08d), "TEST_BOUNDED_QA");
+        OrchestratorTestHarness harness = new OrchestratorTestHarness()
+                .prestageRoles(plan.roles())
+                .prestageRoleContexts(plan.roles());
+        JsonNode qaPayload = new ObjectMapper().readTree(qaRemediationResult(true, "PRODUCT_DEFECT", true));
+        ((com.fasterxml.jackson.databind.node.ObjectNode) qaPayload.path("remediationRequest"))
+                .put("reason", "Fix the reproducible bug \u001b[31mHTTP 500\u001b[0m");
+        harness.executor.qaFailureResultJson = new ObjectMapper().writeValueAsString(qaPayload);
+
+        RequirementExecutionResult result = harness.orchestrator.run(
+                plan, harness.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION, null);
+
+        assertFalse(result.success());
+        assertEquals(0, harness.executor.executedRoleCount(AgentRole.CODING_AGENT));
+        assertEquals(1, harness.executor.executedRoleCount(AgentRole.QA_AGENT));
+        JsonNode root = new ObjectMapper().readTree(result.resultJson());
+        assertEquals("NEEDS_HUMAN", root.path("status").asText());
+        JsonNode qa = root.path("qaRoleResult");
+        assertEquals("FAILED", qa.path("status").asText());
+        assertTrue(qa.path("remediationRequest").path("requested").asBoolean());
+        assertEquals("CODING_AGENT", qa.path("remediationRequest").path("targetRole").asText());
+        assertTrue(qa.path("remediationRequest").path("reason").asText().contains("HTTP 500"));
     }
 
     @Test

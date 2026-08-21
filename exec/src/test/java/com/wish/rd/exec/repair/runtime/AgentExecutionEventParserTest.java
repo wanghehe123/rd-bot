@@ -27,4 +27,23 @@ class AgentExecutionEventParserTest {
         assertEquals("AGENT_SETTLED", snapshot.events().getFirst().path("eventType").asText());
         assertEquals(2L, snapshot.nextSequence());
     }
+
+    @Test
+    void latestWindowReturnsTheNewestEventsWithoutPagingFromTheStart() {
+        String jsonl = """
+                {"protocol":"rd-agent-event/v1","sourceSequence":1,"taskId":"task-1","stageRunId":"stage-1","eventType":"RUNTIME_READY"}
+                {"protocol":"rd-agent-event/v1","sourceSequence":2,"taskId":"task-1","stageRunId":"stage-1","eventType":"TURN_STARTED"}
+                {"protocol":"rd-agent-event/v1","sourceSequence":3,"taskId":"task-1","stageRunId":"stage-1","eventType":"AGENT_SETTLED"}
+                """;
+
+        AgentExecutionTraceSnapshot snapshot = AgentExecutionEventParser.parseJsonl(
+                jsonl, "task-1", "stage-1", 0L, 1, true
+        );
+
+        assertEquals(1, snapshot.events().size());
+        assertEquals("AGENT_SETTLED", snapshot.events().getFirst().path("eventType").asText());
+        assertEquals(3L, snapshot.nextSequence());
+        assertEquals(false, snapshot.hasMore());
+        assertEquals(true, snapshot.finalized());
+    }
 }

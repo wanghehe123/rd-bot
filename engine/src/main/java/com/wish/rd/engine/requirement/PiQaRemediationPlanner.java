@@ -21,6 +21,25 @@ public final class PiQaRemediationPlanner {
             "ROLE_SCHEMA_REJECTED_AFTER_RECOVERY"
     );
 
+    /**
+     * Command-scoped role execution wraps a failed QA report as
+     * {@code {"status":"NEEDS_HUMAN","stages":[{"role":"QA_AGENT","resultJson":"..."}]}}.
+     * Product/protocol decisions must read the nested QA FAILED object, not the aggregate root.
+     */
+    public static String authoritativeQaResultJson(String resultJson) {
+        String raw = resultJson == null ? "" : resultJson;
+        try {
+            JsonNode root = MAPPER.readTree(raw.isBlank() ? "{}" : raw);
+            JsonNode qa = authoritativeQaNode(root);
+            if (qa == null || qa == root || !qa.isObject()) {
+                return raw;
+            }
+            return MAPPER.writeValueAsString(qa);
+        } catch (Exception ignored) {
+            return raw;
+        }
+    }
+
     public Optional<Decision> decide(
             String resultJson,
             RequirementExecutionProfileResolution sourceProfile,
@@ -30,7 +49,7 @@ public final class PiQaRemediationPlanner {
     ) {
         if (sourceProfile == null || !sourceProfile.piQaRemediationV2Enabled()) return Optional.empty();
         try {
-            JsonNode root = MAPPER.readTree(resultJson == null ? "" : resultJson);
+            JsonNode root = MAPPER.readTree(authoritativeQaResultJson(resultJson));
             if (root == null || !root.isObject()) return Optional.empty();
             JsonNode metadata = root.path("dockerMetadata");
             boolean protocolReceiptPresent = !metadata.path("piProtocolFailureReceiptJson").asText("").isBlank()
@@ -128,6 +147,61 @@ public final class PiQaRemediationPlanner {
                     && receipt.path("lastRejectionDigest").asText("").matches("sha256:[0-9a-f]{64}");
             default -> false;
         };
+    }
+
+    private static JsonNode authoritativeQaNode(JsonNode root) {
+        if (root == null || !root.isObject()) {
+            return root;
+        }
+        JsonNode dedicated = parsePossiblyEncoded(root.get("qaRoleResult"));
+        if (dedicated != null && dedicated.isObject()) {
+            return dedicated;
+        }
+        if (looksLikeQaRoleResult(root)) {
+            return root;
+        }
+        JsonNode nested = null;
+        JsonNode stages = root.path("stages");
+        if (stages.isArray()) {
+            for (JsonNode stage : stages) {
+                if (!"QA_AGENT".equals(stage.path("role").asText("").strip())) {
+                    continue;
+                }
+                JsonNode parsed = parsePossiblyEncoded(stage.get("resultJson"));
+                if (parsed != null && parsed.isObject()) {
+                    nested = parsed;
+                }
+            }
+        }
+        return nested != null ? nested : root;
+    }
+
+    private static boolean looksLikeQaRoleResult(JsonNode root) {
+        String status = root.path("status").asText("").strip().toUpperCase();
+        return root.has("acceptanceResults")
+                || root.has("remediationRequest")
+                || root.has("bugFindings")
+                || !root.path("dockerMetadata").path("piProtocolFailureReceiptJson").asText("").isBlank()
+                || (("FAILED".equals(status) || "PASSED".equals(status) || "SKIPPED".equals(status))
+                && (root.has("browserValidation") || root.has("failureCategory")));
+    }
+
+    private static JsonNode parsePossiblyEncoded(JsonNode node) {
+        if (node == null || node.isNull()) {
+            return null;
+        }
+        if (node.isObject()) {
+            return node;
+        }
+        if (!node.isTextual()) {
+            return null;
+        }
+        try {
+            JsonNode parsed = MAPPER.readTree(node.asText(""));
+            return parsed != null && parsed.isObject() ? parsed : null;
+        } catch (Exception ignored) {
+            return null;
+        }
     }
 
     private static boolean verifiedProductRequest(JsonNode root) {

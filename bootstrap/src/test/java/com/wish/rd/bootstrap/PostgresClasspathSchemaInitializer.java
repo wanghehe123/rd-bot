@@ -36,15 +36,11 @@ public final class PostgresClasspathSchemaInitializer
             try (Connection connection = DriverManager.getConnection(url, username, password)) {
                 connection.setAutoCommit(true);
                 if (schemaAlreadyApplied(connection)) {
+                    applyScript(connection, "p16_model_provider_credentials.sql");
                     return;
                 }
                 for (Resource script : listedScripts()) {
-                    String sql = script.getContentAsString(StandardCharsets.UTF_8);
-                    try (Statement statement = connection.createStatement()) {
-                        statement.execute(sql);
-                    } catch (Exception failed) {
-                        throw new IllegalStateException("failed to apply " + script.getFilename(), failed);
-                    }
+                    executeSql(connection, script);
                 }
             }
         } catch (Exception failed) {
@@ -60,6 +56,7 @@ public final class PostgresClasspathSchemaInitializer
                 "p1_multi_agent_orchestration.sql",
                 "p4_web_evaluation_console.sql",
                 "p8_pi_agent_runtime.sql",
+                "p16_model_provider_credentials.sql",
                 "p18_pi_agent_state_and_remediation.sql"
         );
         List<Resource> scripts = new ArrayList<>();
@@ -74,6 +71,20 @@ public final class PostgresClasspathSchemaInitializer
              var result = statement.executeQuery(
                      "SELECT to_regclass('public.rd_agent_remediation_rounds')")) {
             return result.next() && result.getString(1) != null;
+        }
+    }
+
+    private static void applyScript(Connection connection, String name) throws Exception {
+        PathMatchingResourcePatternResolver resolver = new PathMatchingResourcePatternResolver();
+        executeSql(connection, resolver.getResource("classpath:sql/postgres/" + name));
+    }
+
+    private static void executeSql(Connection connection, Resource script) throws Exception {
+        String sql = script.getContentAsString(StandardCharsets.UTF_8);
+        try (Statement statement = connection.createStatement()) {
+            statement.execute(sql);
+        } catch (Exception failed) {
+            throw new IllegalStateException("failed to apply " + script.getFilename(), failed);
         }
     }
 }

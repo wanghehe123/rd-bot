@@ -4,6 +4,10 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.wish.rd.bootstrap.persistence.entity.RdAgentStageArtifactRow;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
+
+import java.util.List;
 
 /**
  * Agent 阶段产物 MyBatis-Plus mapper。
@@ -56,4 +60,27 @@ public interface RdAgentStageArtifactMapper extends BaseMapper<RdAgentStageArtif
             ON CONFLICT (id) DO NOTHING
             """)
     int insertStageArtifactIgnoringConflict(RdAgentStageArtifactRow row);
+
+    /**
+     * Task-scoped list for workbench and recovery. Private QA evidence blobs stay in object
+     * storage; pulling {@code content_preview} for every screenshot/trace over Hangzhou
+     * Postgres makes {@code /execution-overview} miss the frontend 30s timeout.
+     */
+    @Select("""
+            SELECT id, stage_run_id, task_id, role, artifact_type, artifact_uri, summary,
+                   CASE WHEN artifact_type IN (
+                       'QA_COMMAND_LOG',
+                       'QA_CONSOLE_LOG',
+                       'QA_EVIDENCE_MANIFEST',
+                       'QA_HTTP_TRANSCRIPT',
+                       'QA_NETWORK_LOG',
+                       'QA_SCREENSHOT',
+                       'QA_TRACE',
+                       'QA_VIDEO'
+                   ) THEN NULL ELSE content_preview END AS content_preview,
+                   content_hash, metadata_json, created_at
+            FROM rd_agent_stage_artifacts
+            WHERE task_id = #{taskId}
+            """)
+    List<RdAgentStageArtifactRow> selectByTaskOmittingPrivateQaPreviews(@Param("taskId") long taskId);
 }

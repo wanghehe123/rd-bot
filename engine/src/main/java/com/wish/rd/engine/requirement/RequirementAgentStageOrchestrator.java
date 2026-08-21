@@ -589,10 +589,14 @@ public class RequirementAgentStageOrchestrator {
                 }
                 // 任意角色 FAILED_NEEDS_HUMAN 都必须聚合为 NEEDS_HUMAN，
                 // 否则上层会把任务误标成 REJECTED（CP-06）。
+                String aggregate = aggregateAgentResultsJson("NEEDS_HUMAN", pullRequestUrl, stageResults);
+                if (role == AgentRole.QA_AGENT) {
+                    aggregate = attachAuthoritativeQaRoleResult(aggregate, roleResult.resultJson());
+                }
                 return RequirementExecutionResult.failure(
                         task.taskId(),
                         role + " failed: " + reason,
-                        aggregateAgentResultsJson("NEEDS_HUMAN", pullRequestUrl, stageResults)
+                        aggregate
                 );
             }
             if (role == AgentRole.REQUIREMENT_REVIEWER) {
@@ -2391,6 +2395,37 @@ public class RequirementAgentStageOrchestrator {
         ).strip();
     }
 
+    /**
+     * Command-scoped QA failure keeps CP-06 aggregate {@code status=NEEDS_HUMAN}, but Host
+     * bounce must read the inner FAILED object as JSON. Prefer the {@code qaRoleResult}
+     * sibling; {@code stages[].resultJson} is only a fallback string.
+     */
+    private String attachAuthoritativeQaRoleResult(String aggregateJson, String qaRoleResultJson) {
+        try {
+            JsonNode qa = OBJECT_MAPPER.readTree(qaRoleResultJson == null ? "{}" : qaRoleResultJson);
+            if (qa == null || !qa.isObject()) {
+                return aggregateJson;
+            }
+            JsonNode root;
+            try {
+                root = OBJECT_MAPPER.readTree(aggregateJson == null ? "{}" : aggregateJson);
+            } catch (JsonProcessingException invalidAggregate) {
+                root = OBJECT_MAPPER.createObjectNode();
+                ((ObjectNode) root).put("status", "NEEDS_HUMAN");
+            }
+            if (root == null || !root.isObject()) {
+                ObjectNode envelope = OBJECT_MAPPER.createObjectNode();
+                envelope.put("status", "NEEDS_HUMAN");
+                envelope.set("qaRoleResult", qa);
+                return OBJECT_MAPPER.writeValueAsString(envelope);
+            }
+            ((ObjectNode) root).set("qaRoleResult", qa);
+            return OBJECT_MAPPER.writeValueAsString(root);
+        } catch (JsonProcessingException ignored) {
+            return aggregateJson;
+        }
+    }
+
     private String mergeDeliveryResultJson(String deliveryResultJson, String pullRequestUrl, List<String> stageResults) {
         String normalized = deliveryResultJson == null ? "" : deliveryResultJson.strip();
         String appended = """
@@ -3711,12 +3746,11 @@ public class RequirementAgentStageOrchestrator {
     }
 
     private String json(String value) {
-        return "\"" + safe(value)
-                .replace("\\", "\\\\")
-                .replace("\"", "\\\"")
-                .replace("\n", "\\n")
-                .replace("\r", "\\r")
-                .replace("\t", "\\t") + "\"";
+        try {
+            return OBJECT_MAPPER.writeValueAsString(safe(value));
+        } catch (JsonProcessingException invalid) {
+            return "\"\"";
+        }
     }
 
     private static String safe(String value) {

@@ -93,6 +93,22 @@ public final class InMemoryTaskRetryAttemptBindingStore implements TaskRetryAtte
                 .findFirst();
     }
 
+    @Override
+    public synchronized Optional<TaskRetryAttemptBinding> findByStageRunId(String stageRunId) {
+        String expected = safe(stageRunId);
+        if (expected.isBlank()) {
+            return Optional.empty();
+        }
+        List<TaskRetryAttemptBinding> matches = bindings.values().stream()
+                .filter(binding -> binding.kind() == TaskRetryAttemptKind.AGENT_STAGE)
+                .filter(binding -> binding.attemptId().equals(expected))
+                .toList();
+        if (matches.size() > 1) {
+            throw new IllegalStateException("retry stage-run binding is ambiguous: " + expected);
+        }
+        return matches.stream().findFirst();
+    }
+
     private static void conflict(String identity, TaskRetryAttemptBinding existing, TaskRetryAttemptBinding requested) {
         if (!existing.equals(requested)) {
             throw new IllegalStateException("retry " + identity + " already has a different immutable binding");

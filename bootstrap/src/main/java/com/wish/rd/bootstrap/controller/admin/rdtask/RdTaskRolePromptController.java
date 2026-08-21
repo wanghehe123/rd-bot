@@ -131,7 +131,8 @@ public final class RdTaskRolePromptController {
         RdTask task = requireTask(taskId);
         List<AgentRole> stageOrder = stageOrder(task);
         Map<AgentRole, Integer> roleOrder = roleOrder(stageOrder);
-        Map<String, AgentStageArtifact> artifactsById = artifactStore.listByTask(task.taskId()).stream()
+        List<AgentStageArtifact> artifacts = artifactStore.listByTask(task.taskId());
+        Map<String, AgentStageArtifact> artifactsById = artifacts.stream()
                 .collect(Collectors.toMap(
                         AgentStageArtifact::artifactId,
                         Function.identity(),
@@ -146,20 +147,21 @@ public final class RdTaskRolePromptController {
                         .thenComparingInt(AgentStageRun::attemptNo)
                         .thenComparingLong(AgentStageRun::createTimeEpochMillis)
                         .thenComparing(AgentStageRun::stageRunId))
-                .map(stage -> toStageView(stage, artifactsById))
+                .map(stage -> toStageView(stage, artifactsById, artifacts))
                 .toList();
         return new RolePromptResponse(task.taskId(), task.taskType(), stagePrompts);
     }
 
     private RolePromptStageView toStageView(
             AgentStageRun stage,
-            Map<String, AgentStageArtifact> artifactsById
+            Map<String, AgentStageArtifact> artifactsById,
+            List<AgentStageArtifact> artifacts
     ) {
         AgentExecutionProfileSnapshot profile = matchingProfile(stage);
         String runtimeType = profile == null ? "" : profile.runtimeType().name();
         String capabilityFailure = stateCapabilityFailure(profile);
         AgentStageStateProjection projection = matchingProjection(stage);
-        List<AgentStageArtifact> stageArtifacts = artifactStore.listByTask(stage.taskId()).stream()
+        List<AgentStageArtifact> stageArtifacts = artifacts.stream()
                 .filter(artifact -> matchesStage(stage, artifact))
                 .toList();
         LatestStateView latestState = capabilityFailure.isBlank()

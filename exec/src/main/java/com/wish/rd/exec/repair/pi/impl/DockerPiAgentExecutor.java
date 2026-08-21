@@ -837,6 +837,7 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         request.put("initialAgentStateProtocol", protocol);
         request.put("initialAgentStateJson", json);
         request.put("initialAgentStateHash", hash);
+        request.put("agentStateSchemaVersion", AgentStateV2Codec.PROTOCOL);
     }
 
     private static List<Map<String, Object>> hostAssertionContracts(
@@ -1143,8 +1144,7 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
             if (credential == null || credential.isBlank()) {
                 throw new PiConfigurationException(
                         "PI_PROVIDER_CONFIGURATION",
-                        "provider credential environment variable is missing: "
-                                + provider.credentialEnvironmentVariable()
+                        missingProviderCredentialMessage(provider.credentialEnvironmentVariable())
                 );
             }
             if (configuration.credentialRelayUrl().isBlank()) {
@@ -1185,8 +1185,13 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         }
         throw new PiConfigurationException(
                 "PI_PROVIDER_CONFIGURATION",
-                "provider credential environment variable is missing: " + provider.credentialEnvironmentVariable()
+                missingProviderCredentialMessage(provider.credentialEnvironmentVariable())
         );
+    }
+
+    private static String missingProviderCredentialMessage(String envName) {
+        return "provider credential is missing for " + envName
+                + "; set it under 供应商配置 or export the environment variable";
     }
 
     private void populateSharedRuntimeEnvironment(

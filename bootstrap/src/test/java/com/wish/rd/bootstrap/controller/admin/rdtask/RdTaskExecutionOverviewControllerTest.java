@@ -43,9 +43,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.hamcrest.Matchers.greaterThanOrEqualTo;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.not;
@@ -83,8 +86,7 @@ class RdTaskExecutionOverviewControllerTest {
         eventStore = new InMemoryAgentExecutionEventStore();
         profileSnapshotStore = new InMemoryAgentExecutionProfileSnapshotStore();
         stateProjectionStore = new InMemoryAgentStageStateProjectionStore();
-        DockerExecutorProperties properties = new DockerExecutorProperties();
-        properties.setBudgetAlertCny(new java.math.BigDecimal("54.00"));
+        DockerExecutorProperties properties = dockerExecutorProperties();
         mockMvc = MockMvcBuilders.standaloneSetup(new RdTaskExecutionOverviewController(
                 registry,
                 stageRunStore,
@@ -621,6 +623,96 @@ class RdTaskExecutionOverviewControllerTest {
     }
 
     @Test
+    void archivedExecutionEventsReadOnlyTheMatchingStageArtifact() throws Exception {
+        CountingAgentStageArtifactStore counting = new CountingAgentStageArtifactStore(new InMemoryAgentStageArtifactStore());
+        MockMvc isolated = MockMvcBuilders.standaloneSetup(new RdTaskExecutionOverviewController(
+                registry,
+                stageRunStore,
+                counting,
+                contextPackageStore,
+                executionRegistry,
+                eventStore,
+                dockerExecutorProperties(),
+                new FinancialProperties().toBudgetCurrencyConverter(),
+                profileSnapshotStore,
+                stateProjectionStore,
+                () -> 1_783_000_100_000L
+        )).build();
+        RdRequirementTask task = registry.createRequirementTask(new CreateRequirementTaskCommand(
+                "归档轨迹按阶段读取", "P1", "https://github.com/example/repo.git", "example", "repo", "main",
+                "不得 listByTask 整任务产物", List.of("只读本阶段 AGENT_EVENTS"), false
+        ));
+        AgentStageRun coding = stageRunStore.save(new AgentStageRun(
+                "stage-coding-events", task.taskId(), AgentRole.CODING_AGENT, AgentStageStatus.SUCCEEDED, 1,
+                task.taskId() + ":CODING_AGENT:1", "", "", "", "pi", "[]", "{}", "", "", 1L, 2L, 1L, 2L
+        ));
+        stageRunStore.save(new AgentStageRun(
+                "stage-review-events", task.taskId(), AgentRole.REQUIREMENT_REVIEWER, AgentStageStatus.SUCCEEDED, 1,
+                task.taskId() + ":REQUIREMENT_REVIEWER:1", "", "", "", "pi", "[]", "{}", "", "", 1L, 2L, 1L, 2L
+        ));
+        String events = """
+                {"protocol":"rd-agent-event/v1","eventType":"RUNTIME_READY","sourceSequence":1,"taskId":"%s","stageRunId":"%s"}
+                {"protocol":"rd-agent-event/v1","eventType":"AGENT_SETTLED","sourceSequence":2,"taskId":"%s","stageRunId":"%s"}
+                """.formatted(task.taskId(), coding.stageRunId(), task.taskId(), coding.stageRunId());
+        counting.save(new AgentStageArtifact(
+                "coding-events", coding.stageRunId(), task.taskId(), AgentRole.CODING_AGENT, "AGENT_EVENTS",
+                "rd-artifact://stage-coding-events/agent-events", "Pi agent events", events,
+                "sha256:coding-events", "{}", 1_783_000_100_000L
+        ));
+        counting.save(new AgentStageArtifact(
+                "review-noise", "stage-review-events", task.taskId(), AgentRole.REQUIREMENT_REVIEWER, "AGENT_EVENTS",
+                "rd-artifact://stage-review-events/agent-events", "other stage", "noise",
+                "sha256:review-noise", "{}", 1_783_000_100_000L
+        ));
+
+        isolated.perform(get(
+                        "/admin/rd-tasks/{taskId}/stage-runs/{stageRunId}/execution-events",
+                        task.taskId(), coding.stageRunId()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.source", is("ARCHIVED")))
+                .andExpect(jsonPath("$.available", is(true)))
+                .andExpect(jsonPath("$.events", hasSize(2)));
+        assertEquals(0, counting.listByTaskCalls.get());
+        assertEquals(1, counting.listByTaskStageAndTypeCalls.get());
+    }
+
+    @Test
+    void archivedExecutionEventsLatestWindowSkipsPagingFromTheStart() throws Exception {
+        RdRequirementTask task = registry.createRequirementTask(new CreateRequirementTaskCommand(
+                "归档轨迹定位最新", "P1", "https://github.com/example/repo.git", "example", "repo", "main",
+                "一次返回末页", List.of("latest=true"), false
+        ));
+        AgentStageRun coding = stageRunStore.save(new AgentStageRun(
+                "stage-coding-latest", task.taskId(), AgentRole.CODING_AGENT, AgentStageStatus.SUCCEEDED, 1,
+                task.taskId() + ":CODING_AGENT:1", "", "", "", "pi", "[]", "{}", "", "", 1L, 2L, 1L, 2L
+        ));
+        String events = """
+                {"protocol":"rd-agent-event/v1","eventType":"RUNTIME_READY","sourceSequence":1,"taskId":"%s","stageRunId":"%s"}
+                {"protocol":"rd-agent-event/v1","eventType":"TURN_STARTED","sourceSequence":2,"taskId":"%s","stageRunId":"%s"}
+                {"protocol":"rd-agent-event/v1","eventType":"AGENT_SETTLED","sourceSequence":3,"taskId":"%s","stageRunId":"%s"}
+                """.formatted(
+                task.taskId(), coding.stageRunId(),
+                task.taskId(), coding.stageRunId(),
+                task.taskId(), coding.stageRunId());
+        artifactStore.save(new AgentStageArtifact(
+                "coding-latest-events", coding.stageRunId(), task.taskId(), AgentRole.CODING_AGENT, "AGENT_EVENTS",
+                "rd-artifact://stage-coding-latest/agent-events", "Pi agent events", events,
+                "sha256:coding-latest-events", "{}", 1_783_000_100_000L
+        ));
+
+        mockMvc.perform(get(
+                        "/admin/rd-tasks/{taskId}/stage-runs/{stageRunId}/execution-events",
+                        task.taskId(), coding.stageRunId())
+                        .param("limit", "1")
+                        .param("latest", "true"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.source", is("ARCHIVED")))
+                .andExpect(jsonPath("$.events", hasSize(1)))
+                .andExpect(jsonPath("$.events[0].eventType", is("AGENT_SETTLED")))
+                .andExpect(jsonPath("$.hasMore", is(false)));
+    }
+
+    @Test
     void shouldExposeTokenBudgetEstimateAndFinalActualUsage() throws Exception {
         RdRequirementTask task = registry.createRequirementTask(new CreateRequirementTaskCommand(
                 "Token 预算测试", "P1", "https://github.com/example/repo.git", "example", "repo", "main",
@@ -648,6 +740,37 @@ class RdTaskExecutionOverviewControllerTest {
                 .andExpect(jsonPath("$.tokenBudget.finalActualTokens", is(880)))
                 .andExpect(jsonPath("$.tokenBudget.actualAvailable", is(true)))
                 .andExpect(jsonPath("$.tokenBudget.historicalSamples[0].scope", is("SAME_PROJECT")));
+    }
+
+    @Test
+    void executionOverviewReadsTaskArtifactsOnceAcrossStages() throws Exception {
+        CountingAgentStageArtifactStore counting = new CountingAgentStageArtifactStore(new InMemoryAgentStageArtifactStore());
+        MockMvc isolated = MockMvcBuilders.standaloneSetup(new RdTaskExecutionOverviewController(
+                registry,
+                stageRunStore,
+                counting,
+                contextPackageStore,
+                executionRegistry,
+                eventStore,
+                dockerExecutorProperties(),
+                new FinancialProperties().toBudgetCurrencyConverter(),
+                profileSnapshotStore,
+                stateProjectionStore,
+                () -> 1_783_000_100_000L
+        )).build();
+        RdRequirementTask task = registry.createRequirementTask(new CreateRequirementTaskCommand(
+                "overview 产物只读一次", "P1", "https://github.com/example/repo.git", "example", "repo", "main",
+                "多阶段 token 回退不得反复 listByTask", List.of("一次拉取"), false
+        ));
+        saveUnmeasuredStageWithAgentEvents(counting, task.taskId(), AgentRole.REQUIREMENT_REVIEWER, "stage-reviewer-once");
+        saveUnmeasuredStageWithAgentEvents(counting, task.taskId(), AgentRole.CODING_AGENT, "stage-coding-once");
+        saveUnmeasuredStageWithAgentEvents(counting, task.taskId(), AgentRole.QA_AGENT, "stage-qa-once");
+
+        isolated.perform(get("/admin/rd-tasks/{taskId}/execution-overview", task.taskId()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.tokenBudget.actualAvailable", is(true)))
+                .andExpect(jsonPath("$.tokenBudget.finalActualTokens", is(600)));
+        assertEquals(1, counting.listByTaskCalls.get());
     }
 
     @Test
@@ -824,5 +947,81 @@ class RdTaskExecutionOverviewControllerTest {
 
     private static String sha256(String value) {
         return "sha256:" + AgentExecutionProfileSnapshot.sha256(value);
+    }
+
+    private DockerExecutorProperties dockerExecutorProperties() {
+        DockerExecutorProperties properties = new DockerExecutorProperties();
+        properties.setBudgetAlertCny(new java.math.BigDecimal("54.00"));
+        return properties;
+    }
+
+    private void saveUnmeasuredStageWithAgentEvents(
+            AgentStageArtifactStore store,
+            String taskId,
+            AgentRole role,
+            String stageRunId
+    ) {
+        stageRunStore.save(new AgentStageRun(
+                stageRunId, taskId, role, AgentStageStatus.FAILED_RETRYABLE, 1,
+                taskId + ":" + role.name() + ":1", "", "", "", "pi",
+                "[{\"provider\":\"pi\",\"status\":\"FAILED\",\"errorCategory\":\"ORCHESTRATION_INTERRUPTED\"}]",
+                "{}", "ORCHESTRATION_INTERRUPTED", "previous role attempt was interrupted", 1L, 2L, 1L, 2L
+        ));
+        String agentEvents = """
+                {"protocol":"rd-agent-event/v1","eventType":"TURN_STARTED","sourceSequence":1}
+                {"protocol":"rd-agent-event/v1","eventType":"ASSISTANT_TEXT_COMPLETED","sourceSequence":2,"payload":{"usage":{"input":120,"output":80,"cacheRead":0,"cacheWrite":0}}}
+                {"protocol":"rd-agent-event/v1","eventType":"TURN_COMPLETED","sourceSequence":3,"payload":{"usage":{"input":120,"output":80,"cacheRead":0,"cacheWrite":0}}}
+                {"protocol":"rd-agent-event/v1","eventType":"RUNTIME_STOPPED","sourceSequence":4}
+                """;
+        store.save(new AgentStageArtifact(
+                stageRunId + "-events",
+                stageRunId,
+                taskId,
+                role,
+                "AGENT_EVENTS",
+                "rd-artifact://" + stageRunId + "/agent-events",
+                "Pi agent events",
+                agentEvents,
+                "sha256:" + stageRunId,
+                "{}",
+                1_783_000_100_000L
+        ));
+    }
+
+    private static final class CountingAgentStageArtifactStore implements AgentStageArtifactStore {
+        private final AgentStageArtifactStore delegate;
+        private final AtomicInteger listByTaskCalls = new AtomicInteger();
+        private final AtomicInteger listByTaskStageAndTypeCalls = new AtomicInteger();
+
+        private CountingAgentStageArtifactStore(AgentStageArtifactStore delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public AgentStageArtifact save(AgentStageArtifact artifact) {
+            return delegate.save(artifact);
+        }
+
+        @Override
+        public AgentStageArtifact saveImmutable(AgentStageArtifact artifact) {
+            return delegate.saveImmutable(artifact);
+        }
+
+        @Override
+        public List<AgentStageArtifact> listByTask(String taskId) {
+            listByTaskCalls.incrementAndGet();
+            return delegate.listByTask(taskId);
+        }
+
+        @Override
+        public List<AgentStageArtifact> listByTaskStageAndType(String taskId, String stageRunId, String artifactType) {
+            listByTaskStageAndTypeCalls.incrementAndGet();
+            return delegate.listByTaskStageAndType(taskId, stageRunId, artifactType);
+        }
+
+        @Override
+        public int deleteByTaskAndTypes(String taskId, Set<String> artifactTypes) {
+            return delegate.deleteByTaskAndTypes(taskId, artifactTypes);
+        }
     }
 }

@@ -25,6 +25,7 @@ import {
 
 import {
   getRdTask,
+  getRdTaskAuditContent,
   getRdTaskExecutionOverview,
   getRdTaskRolePrompts,
   getRdTaskMaterials,
@@ -165,6 +166,21 @@ function scheduleActiveDetailRefresh(refresh: () => Promise<void>, delayMillis =
   };
 }
 
+function mergeWorkbenchTask(shell: RdTask, current: RdTask | null): RdTask {
+  if (!current || current.taskId !== shell.taskId) return shell;
+  const keepPrompt = Boolean(current.promptSnapshot);
+  const keepEvidence = Boolean(current.executionEvidence?.summary)
+    || Boolean(current.executionEvidence?.prBody)
+    || (current.executionEvidence?.changedFiles?.length || 0) > 0;
+  if (!keepPrompt && !keepEvidence) return shell;
+  return {
+    ...shell,
+    promptSnapshot: keepPrompt ? current.promptSnapshot : shell.promptSnapshot,
+    executionResultJson: current.executionResultJson || shell.executionResultJson,
+    executionEvidence: keepEvidence ? current.executionEvidence : shell.executionEvidence
+  };
+}
+
 export function RdTaskDetailPage() {
   const { taskId = "" } = useParams();
   const navigate = useNavigate();
@@ -214,10 +230,12 @@ export function RdTaskDetailPage() {
   const aiReviewLoadSeqRef = useRef(0);
   const hostVerificationLoadSeqRef = useRef(0);
   const coreLoadSeqRef = useRef(0);
+  const overviewLoadSeqRef = useRef(0);
   const retrievalDetailLoadSeqRef = useRef(0);
   const aiReviewDetailLoadSeqRef = useRef(0);
   const coreLoadInFlightRef = useRef("");
   const rolePromptInFlightRef = useRef("");
+  const auditContentLoadedRef = useRef("");
   const requestGuardRef = useRef(createTaskRequestGuard());
   const loadedRolePromptSignatureRef = useRef<string | null>(null);
   const loadedRoleEvidenceSignatureRef = useRef<string | null>(null);
@@ -281,26 +299,24 @@ export function RdTaskDetailPage() {
 
   const loadInitial = useCallback(async () => {
     const requestToken = requestGuardRef.current.capture(taskId);
+    const requestBaseKey = `${requestToken.taskId}:${requestToken.generation}`;
     setLoading(true);
     setTaskLoadError("");
     setPanelErrors({});
     const requestSeq = ++loadSeqRef.current;
+    coreLoadInFlightRef.current = `${requestBaseKey}:initial`;
     try {
-      const result = await loadTaskDetailShell({
+      await loadTaskDetailShell({
         loadTask: () => getRdTask(taskId),
         onTask: (detail) => {
-          if (requestSeq === loadSeqRef.current && requestGuardRef.current.isCurrent(requestToken)) setTask(detail);
+          if (requestSeq === loadSeqRef.current && requestGuardRef.current.isCurrent(requestToken)) {
+            setTask(detail);
+            setLoading(false);
+          }
         },
-        panels: {
-          overview: () => getRdTaskExecutionOverview(taskId)
-        }
+        panels: {}
       });
       if (requestSeq !== loadSeqRef.current || !requestGuardRef.current.isCurrent(requestToken)) return;
-
-      setExecutionOverview(result.panels.overview || null);
-      const errors = Object.fromEntries(Object.entries(result.errors).filter((entry) => Boolean(entry[1]))) as Record<string, string>;
-      setPanelErrors(errors);
-      setExecutionOverviewError(errors.overview || "");
     } catch (error) {
       if (requestSeq !== loadSeqRef.current || !requestGuardRef.current.isCurrent(requestToken)) return;
       setTask(null);
@@ -308,6 +324,9 @@ export function RdTaskDetailPage() {
     } finally {
       if (requestSeq === loadSeqRef.current && requestGuardRef.current.isCurrent(requestToken)) {
         setLoading(false);
+      }
+      if (coreLoadInFlightRef.current === `${requestBaseKey}:initial`) {
+        coreLoadInFlightRef.current = "";
       }
     }
   }, [taskId]);
@@ -322,23 +341,60 @@ export function RdTaskDetailPage() {
     try {
       const [taskResult, overviewResult] = await Promise.allSettled([
         getRdTask(taskId),
-        getRdTaskExecutionOverview(taskId)
+        view === "roles" ? getRdTaskExecutionOverview(taskId) : Promise.resolve(null)
       ]);
       if (requestSeq !== coreLoadSeqRef.current || !requestGuardRef.current.isCurrent(requestToken)) return;
       if (taskResult.status === "fulfilled") {
-        setTask(taskResult.value);
+        setTask((current) => mergeWorkbenchTask(taskResult.value, current));
         setTaskLoadError("");
       } else if (!silent) {
         toast.error(getErrorMessage(taskResult.reason, "刷新任务状态失败"));
       }
-      if (overviewResult.status === "fulfilled") {
-        setExecutionOverview(overviewResult.value);
-        setExecutionOverviewError("");
-      } else {
-        setExecutionOverviewError(getErrorMessage(overviewResult.reason, "刷新执行概览失败"));
+      if (view === "roles") {
+        if (overviewResult.status === "fulfilled" && overviewResult.value) {
+          setExecutionOverview(overviewResult.value);
+          setExecutionOverviewError("");
+        } else if (overviewResult.status === "rejected") {
+          setExecutionOverviewError(getErrorMessage(overviewResult.reason, "刷新执行概览失败"));
+        }
       }
     } finally {
       if (coreLoadInFlightRef.current === requestKey) coreLoadInFlightRef.current = "";
+    }
+  }, [taskId, view]);
+
+  const loadExecutionOverview = useCallback(async () => {
+    const requestToken = requestGuardRef.current.capture(taskId);
+    const requestSeq = ++overviewLoadSeqRef.current;
+    try {
+      const overview = await getRdTaskExecutionOverview(taskId);
+      if (requestSeq !== overviewLoadSeqRef.current || !requestGuardRef.current.isCurrent(requestToken)) return;
+      setExecutionOverview(overview);
+      setExecutionOverviewError("");
+    } catch (error) {
+      if (requestSeq !== overviewLoadSeqRef.current || !requestGuardRef.current.isCurrent(requestToken)) return;
+      setExecutionOverviewError(getErrorMessage(error, "加载执行概览失败"));
+    }
+  }, [taskId]);
+
+  const loadAuditContent = useCallback(async () => {
+    if (!taskId || auditContentLoadedRef.current === taskId) return;
+    const requestToken = requestGuardRef.current.capture(taskId);
+    try {
+      const content = await getRdTaskAuditContent(taskId);
+      if (!requestGuardRef.current.isCurrent(requestToken)) return;
+      auditContentLoadedRef.current = taskId;
+      setTask((current) => current && current.taskId === content.taskId
+        ? {
+          ...current,
+          promptSnapshot: content.promptSnapshot,
+          executionResultJson: content.executionResultJson,
+          executionEvidence: content.executionEvidence
+        }
+        : current);
+    } catch (error) {
+      if (!requestGuardRef.current.isCurrent(requestToken)) return;
+      toast.error(getErrorMessage(error, "加载任务审计内容失败"));
     }
   }, [taskId]);
 
@@ -625,6 +681,8 @@ export function RdTaskDetailPage() {
     rolePromptInFlightRef.current = "";
     loadedRolePromptSignatureRef.current = null;
     loadedRoleEvidenceSignatureRef.current = null;
+    auditContentLoadedRef.current = "";
+    overviewLoadSeqRef.current += 1;
     setRolePromptStages([]);
     setExecutionOverview(null);
     setEvents([]);
@@ -669,12 +727,23 @@ export function RdTaskDetailPage() {
       aiReviewLoadSeqRef.current += 1;
       hostVerificationLoadSeqRef.current += 1;
       coreLoadSeqRef.current += 1;
+      overviewLoadSeqRef.current += 1;
       coreLoadInFlightRef.current = "";
       rolePromptInFlightRef.current = "";
       retrievalDetailLoadSeqRef.current += 1;
       aiReviewDetailLoadSeqRef.current += 1;
     };
   }, [loadHostVerificationsData, loadInitial, taskId]);
+
+  useEffect(() => {
+    if (view !== "roles") return;
+    void loadExecutionOverview();
+  }, [loadExecutionOverview, view]);
+
+  useEffect(() => {
+    if (view !== "delivery" && view !== "audit") return;
+    void loadAuditContent();
+  }, [loadAuditContent, view]);
 
   useEffect(() => {
     if (view !== "roles" || selectedRoleTab !== "evidence") return;

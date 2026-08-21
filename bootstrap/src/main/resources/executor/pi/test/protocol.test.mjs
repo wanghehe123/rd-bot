@@ -125,6 +125,33 @@ test("validates request v2 fixed manifest path, hashes, and context policy", () 
   }));
 });
 
+test("binds Host initial v2 state on request v1 when kill switch and initial bytes are present", () => {
+  const v1WithState = {
+    ...request,
+    dynamicStateEnabled: true,
+    agentStateSchemaVersion: "rd-agent-state/v2",
+    attemptNo: 1,
+    initialAgentStateProtocol: "rd-agent-state/v2",
+    initialAgentStateJson: initialStateJson,
+    initialAgentStateHash: hashStateV2(initialState),
+  };
+  assert.equal(validateRequest(v1WithState), v1WithState);
+  assert.deepEqual(validatedInitialAgentStateV2(v1WithState), initialState);
+});
+
+test("binds Host initial v2 state even if snapshot schema version stayed on v1", () => {
+  const staleSchema = {
+    ...request,
+    dynamicStateEnabled: true,
+    agentStateSchemaVersion: "rd-agent-state/v1",
+    attemptNo: 1,
+    initialAgentStateProtocol: "rd-agent-state/v2",
+    initialAgentStateJson: initialStateJson,
+    initialAgentStateHash: hashStateV2(initialState),
+  };
+  assert.deepEqual(validatedInitialAgentStateV2(staleSchema), initialState);
+});
+
 test("requires and verifies Host initial state for enabled state v2 requests", () => {
   assert.equal(validateRequestV2(stateV2Request), stateV2Request);
   assert.deepEqual(validatedInitialAgentStateV2(stateV2Request), initialState);
@@ -313,6 +340,56 @@ test("normalizes text and tool events without exposing thinking or secrets", () 
     apiKey: "[REDACTED]",
     nested: { token: "[REDACTED]" },
   });
+});
+
+test("keeps v2 budget token counters when redacting STATE_SNAPSHOT_UPDATED", () => {
+  const snapshot = {
+    protocol: "rd-agent-state/v2",
+    sequence: 0,
+    taskId: "task-1",
+    stageRunId: "stage-1",
+    role: "REQUIREMENT_REVIEWER",
+    attemptNo: 1,
+    runtimeType: "PI",
+    profileSnapshotId: "snapshot-1",
+    currentGoal: "审查并澄清需求",
+    generatedAtEpochMillis: 1787157846103,
+    phase: "REQUIREMENT_REVIEWER_EXECUTION",
+    taskStartedAtEpochMillis: 1787157845320,
+    stageStartedAtEpochMillis: 1787157846103,
+    budget: {
+      availability: "UNKNOWN",
+      estimatedInputTokens: 1613,
+      maxContextTokens: 128000,
+      reservedOutputTokens: 4096,
+      estimatorVersion: "chars/4-v1",
+      model: "LongCat-2.0",
+    },
+    todos: [],
+  };
+  const stateHash = hashStateV2(snapshot);
+  const redacted = redact({
+    stateSequence: 0,
+    stateHash,
+    snapshot,
+  });
+  assert.equal(redacted.snapshot.budget.estimatedInputTokens, 1613);
+  assert.equal(redacted.snapshot.budget.maxContextTokens, 128000);
+  assert.equal(redacted.snapshot.budget.reservedOutputTokens, 4096);
+  assert.equal(hashStateV2(redacted.snapshot), stateHash);
+  const normalized = new EventNormalizer().lifecycle("STATE_SNAPSHOT_UPDATED", {
+    stageRunId: "stage-1",
+    taskId: "task-1",
+    role: "REQUIREMENT_REVIEWER",
+    runtimeType: "PI",
+    snapshotId: "snapshot-1",
+  }, {
+    stateSequence: 0,
+    stateHash,
+    snapshot,
+  });
+  assert.equal(hashStateV2(normalized.payload.snapshot), stateHash);
+  assert.equal(normalized.payload.snapshot.budget.estimatedInputTokens, 1613);
 });
 
 test("keeps a tool call correlated while exposing only a redacted invocation summary", () => {

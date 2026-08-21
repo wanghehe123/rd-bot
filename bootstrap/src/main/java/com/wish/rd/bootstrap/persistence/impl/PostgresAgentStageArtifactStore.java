@@ -83,8 +83,25 @@ public final class PostgresAgentStageArtifactStore implements AgentStageArtifact
 
     @Override
     public List<AgentStageArtifact> listByTask(String taskId) {
+        return mapper.selectByTaskOmittingPrivateQaPreviews(PostgresPersistenceSupport.parseId(taskId))
+                .stream()
+                .sorted(Comparator
+                        .comparing((RdAgentStageArtifactRow row) -> row.createdAt)
+                        .thenComparing(row -> row.id))
+                .map(this::toArtifact)
+                .toList();
+    }
+
+    @Override
+    public List<AgentStageArtifact> listByTaskStageAndType(String taskId, String stageRunId, String artifactType) {
+        String type = artifactType == null ? "" : artifactType.strip();
+        if (type.isBlank() || stageRunId == null || stageRunId.isBlank()) {
+            return List.of();
+        }
         return mapper.selectList(new QueryWrapper<RdAgentStageArtifactRow>()
-                        .eq("task_id", PostgresPersistenceSupport.parseId(taskId)))
+                        .eq("task_id", PostgresPersistenceSupport.parseId(taskId))
+                        .eq("stage_run_id", PostgresPersistenceSupport.parseId(stageRunId))
+                        .eq("artifact_type", type))
                 .stream()
                 .sorted(Comparator
                         .comparing((RdAgentStageArtifactRow row) -> row.createdAt)

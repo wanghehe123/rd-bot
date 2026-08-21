@@ -237,6 +237,54 @@ class PostgresRdTaskStoreCasTest {
         assertEquals(1L, reloaded.fencingToken());
     }
 
+    @Test
+    void taskListSnapshotOmitsPromptAndExecutionBlobs() {
+        assertEquals(false, PostgresRdTaskStore.includeColumnInTaskList("prompt_snapshot"));
+        assertEquals(false, PostgresRdTaskStore.includeColumnInTaskList("execution_result_json"));
+        assertEquals(true, PostgresRdTaskStore.includeColumnInTaskList("title"));
+        assertEquals(true, PostgresRdTaskStore.includeColumnInTaskList("status"));
+    }
+
+    @Test
+    void findAdminShellDoesNotSelectPromptOrExecutionBlobs() {
+        RdTaskMapper mapper = mock(RdTaskMapper.class);
+        RdTaskRow row = requirementRow(8L, 1L, 1L);
+        row.title = "shell-row";
+        row.promptSnapshot = null;
+        row.executionResultJson = null;
+        row.createdAt = OffsetDateTime.parse("2026-08-20T00:00:00Z");
+        row.updatedAt = OffsetDateTime.parse("2026-08-20T00:00:00Z");
+        when(mapper.selectOne(any())).thenReturn(row);
+
+        PostgresRdTaskStore store = new PostgresRdTaskStore(mapper);
+        Optional<com.wish.rd.rag.runtime.model.RdTask> found = store.findAdminShell("8");
+
+        assertEquals(true, found.isPresent());
+        assertEquals("", ((RdRequirementTask) found.get()).promptSnapshot());
+        verify(mapper).selectOne(any());
+        verify(mapper, never()).selectById(any());
+    }
+
+    @Test
+    void listRequirementTasksMapsMissingBlobsToEmpty() {
+        RdTaskMapper mapper = mock(RdTaskMapper.class);
+        RdTaskRow row = requirementRow(7L, 1L, 1L);
+        row.title = "list-row";
+        row.promptSnapshot = null;
+        row.executionResultJson = null;
+        row.createdAt = OffsetDateTime.parse("2026-08-20T00:00:00Z");
+        row.updatedAt = OffsetDateTime.parse("2026-08-20T00:00:00Z");
+        when(mapper.selectList(any())).thenReturn(List.of(row));
+
+        PostgresRdTaskStore store = new PostgresRdTaskStore(mapper);
+        List<RdRequirementTask> tasks = store.listRequirementTasks();
+
+        assertEquals(1, tasks.size());
+        assertEquals("", tasks.get(0).promptSnapshot());
+        assertEquals("{}", tasks.get(0).executionResultJson());
+        assertEquals("list-row", tasks.get(0).title());
+    }
+
     private static RdTaskRow requirementRow(Long id, Long version, Long fencingToken) {
         RdTaskRow row = new RdTaskRow();
         row.id = id;

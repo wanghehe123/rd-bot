@@ -1,10 +1,8 @@
 package com.wish.rd.bootstrap.controller.admin.agent;
 
 import com.wish.rd.rag.project.agent.AgentExecutionProfileService;
-import com.wish.rd.rag.project.agent.ModelProviderProfileService;
 import com.wish.rd.rag.project.agent.impl.InMemoryAgentExecutionProfileSnapshotStore;
 import com.wish.rd.rag.project.agent.impl.InMemoryAgentExecutionProfileStore;
-import com.wish.rd.rag.project.agent.impl.InMemoryModelProviderProfileStore;
 import com.wish.rd.rag.project.agent.model.AgentExecutionProfileSnapshot;
 import com.wish.rd.rag.project.agent.model.AgentRuntimeCapability;
 import com.wish.rd.rag.project.agent.model.AgentRuntimeType;
@@ -26,7 +24,6 @@ class AgentExecutionProfileAdminControllerTest {
         RagStreamTaskRegistry tasks = RagStreamTaskRegistry.inMemory();
         var controller = new AgentExecutionProfileAdminController(
                 new AgentExecutionProfileService(profileStore),
-                new ModelProviderProfileService(new InMemoryModelProviderProfileStore()),
                 snapshotStore,
                 tasks,
                 new AgentRuntimeMutationAccessPolicy("runtime-token")
@@ -113,7 +110,6 @@ class AgentExecutionProfileAdminControllerTest {
         InMemoryAgentExecutionProfileSnapshotStore snapshots = new InMemoryAgentExecutionProfileSnapshotStore();
         var controller = new AgentExecutionProfileAdminController(
                 new AgentExecutionProfileService(new InMemoryAgentExecutionProfileStore()),
-                new ModelProviderProfileService(new InMemoryModelProviderProfileStore()),
                 snapshots,
                 tasks,
                 new AgentRuntimeMutationAccessPolicy("token")

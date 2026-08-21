@@ -1,15 +1,32 @@
 package com.wish.rd.engine.requirement;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.wish.rd.engine.agent.AgentStagePlanner;
+import com.wish.rd.engine.agent.AgentWorkflowAlertSinkPort;
+import com.wish.rd.engine.agent.WorkflowExperienceStore;
+import com.wish.rd.engine.agent.impl.InMemoryAgentStageRunStore;
 import com.wish.rd.engine.agent.model.AgentRole;
+import com.wish.rd.engine.agent.model.AgentStageRun;
+import com.wish.rd.engine.agent.model.AgentStageStatus;
+import com.wish.rd.engine.requirement.job.model.CommandDisposition;
 import com.wish.rd.engine.requirement.job.model.RequirementStageCommand;
 import com.wish.rd.engine.requirement.job.model.RequirementStageExecutionPlan;
 import com.wish.rd.engine.requirement.model.RequirementDeliveryResult;
+import com.wish.rd.engine.requirement.model.RequirementExecutionProfileResolution;
 import com.wish.rd.engine.requirement.model.RequirementExecutionRequest;
 import com.wish.rd.engine.requirement.model.RequirementExecutionResult;
 import com.wish.rd.engine.requirement.policy.RequirementPolicyRunStore;
 import com.wish.rd.engine.requirement.policy.model.RequirementPolicyRun;
 import com.wish.rd.engine.requirement.policy.model.RequirementPolicyRunState;
+import com.wish.rd.engine.requirement.remediation.model.AgentRemediationKind;
+import com.wish.rd.engine.agent.AgentStageRunStore;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
+import com.wish.rd.rag.context.RoleContextBuilder;
+import com.wish.rd.rag.context.impl.InMemoryRoleContextPackageStore;
+import com.wish.rd.rag.project.agent.model.AgentExecutionProfileSnapshot;
+import com.wish.rd.rag.project.agent.model.AgentManifestCanonicalJson;
+import com.wish.rd.rag.project.agent.model.AgentRuntimeCapability;
+import com.wish.rd.rag.project.agent.model.AgentRuntimeType;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
 import com.wish.rd.rag.runtime.impl.InMemoryRdTaskStatusEventStore;
 import com.wish.rd.rag.runtime.impl.InMemoryRdTaskStore;
@@ -19,12 +36,15 @@ import com.wish.rd.rag.runtime.model.RdRequirementTask;
 import com.wish.rd.rag.runtime.model.RdTaskStatus;
 import org.junit.jupiter.api.Test;
 
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -264,6 +284,153 @@ class RequirementDeliveryStageExecutionTest {
         assertEquals(com.wish.rd.engine.requirement.job.model.CommandDisposition.TERMINAL_FAILURE,
                 human.commandDisposition());
         assertTrue(human.continuation().isTerminal());
+    }
+
+    @Test
+    void commandScopedQaProductDefectMustPlanCodingBounceInsteadOfHuman() throws Exception {
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(), new InMemoryRdTaskStatusEventStore(),
+                SnowflakeIdGenerator.defaultGenerator());
+        RdRequirementTask task = executingTask(registry, "qa product bounce");
+        RequirementPolicyRun authorization = appliedRun(
+                "qa-bounce-policy", task.taskId(), task.version(), task.fencingToken());
+        RequirementPolicyRunStore policies = mock(RequirementPolicyRunStore.class);
+        when(policies.findById(authorization.id())).thenReturn(Optional.of(authorization));
+        InMemoryAgentStageRunStore stages = new InMemoryAgentStageRunStore();
+        stages.save(AgentStageRun.pending(
+                "201", task.taskId(), AgentRole.QA_AGENT, 2, task.taskId() + ":QA_AGENT:2", 10L
+        ).withStatus(AgentStageStatus.FAILED_NEEDS_HUMAN, "AGENT_RESULT_REJECTED", "qa failed", 20L));
+        stages.save(AgentStageRun.pending(
+                "101", task.taskId(), AgentRole.CODING_AGENT, 2, task.taskId() + ":CODING_AGENT:2", 8L
+        ).withStatus(AgentStageStatus.SUCCEEDED, "", "", 9L));
+
+        String qaJson = """
+                {"status":"FAILED","failureCategory":"PRODUCT_DEFECT","retryRecommendation":"CODING_AGENT",
+                  "remediationRequest":{"requested":true,"targetRole":"CODING_AGENT",
+                    "reason":"two reproducible backend 500s block AC-003 and AC-013",
+                    "bugFindingIds":["bf-ac003-status-500"]},
+                  "bugFindings":[{"id":"bf-ac003-status-500","severity":"HIGH","acceptanceCriteriaId":"AC-003",
+                    "reproductionSteps":["PATCH /api/merchants/manage/status"],
+                    "expected":"200 closed","actual":"HTTP 500 no such column now",
+                    "evidenceArtifactIds":["qa-evidence/commands/bug-repro.log"],
+                    "suspectedFiles":["server/src/routes/merchants.ts"]}]}
+                """.replaceAll("\\s+", "");
+        String aggregate = new ObjectMapper().writeValueAsString(java.util.Map.of(
+                "status", "NEEDS_HUMAN",
+                "pullRequestUrl", "",
+                "stages", java.util.List.of(java.util.Map.of(
+                        "role", "QA_AGENT",
+                        "success", false,
+                        "summary", "QA failed acceptance",
+                        "pullRequestUrl", "",
+                        "errorMessage", "QA_AGENT failed acceptance",
+                        "resultJson", qaJson
+                ))
+        ));
+        RequirementAgentStageOrchestrator orchestrator = mock(RequirementAgentStageOrchestrator.class);
+        when(orchestrator.run(any(), any(), anyList(), any(), any(), any(), isNull()))
+                .thenReturn(RequirementExecutionResult.failure(
+                        task.taskId(), "QA_AGENT failed: QA_AGENT failed acceptance", aggregate));
+
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry,
+                new InMemoryTaskMaterialStore(),
+                request -> {
+                    throw new AssertionError("orchestrator owns role execution");
+                },
+                new RequirementContextBuilder(),
+                new RequirementPlanGenerator(),
+                new RuleBasedRequirementPolicyGate(),
+                new AgentStagePlanner(SnowflakeIdGenerator.defaultGenerator()::nextIdString),
+                stages,
+                new RoleContextBuilder(),
+                new InMemoryRoleContextPackageStore(),
+                AgentWorkflowAlertSinkPort.noop(),
+                WorkflowExperienceStore.noop(),
+                new RequirementDeliveryReviewer(),
+                RequirementPullRequestPublisherPort.unavailable()
+        );
+        engine.setRequirementPolicyRunStore(policies);
+        engine.setStageOrchestrator(orchestrator);
+        engine.setExecutionProfileResolver(new CommandScopedPiRemediationResolver());
+
+        RequirementStageExecutionPlan plan = engine.planStage(
+                roleCommand(task, authorization.id(), AgentRole.QA_AGENT, "qa-2-command"));
+
+        assertEquals(CommandDisposition.SUCCEEDED, plan.commandDisposition());
+        assertNotNull(plan.piQaRemediationIntent(), "command-scoped QA product bounce must mint a Host intent");
+        assertEquals(AgentRemediationKind.QA_PRODUCT_FIX, plan.piQaRemediationIntent().kind());
+        assertEquals("201", plan.piQaRemediationIntent().sourceStageRunId());
+        assertEquals(3, plan.piQaRemediationIntent().targetCodingAttemptNo());
+        assertEquals(3, plan.piQaRemediationIntent().targetQaAttemptNo());
+    }
+
+    @Test
+    void commandScopedQaProductDefectPrefersQaRoleResultWhenNestedResultJsonIsUnparseable() throws Exception {
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(), new InMemoryRdTaskStatusEventStore(),
+                SnowflakeIdGenerator.defaultGenerator());
+        RdRequirementTask task = executingTask(registry, "qa role result sibling bounce");
+        RequirementPolicyRun authorization = appliedRun(
+                "qa-sibling-policy", task.taskId(), task.version(), task.fencingToken());
+        RequirementPolicyRunStore policies = mock(RequirementPolicyRunStore.class);
+        when(policies.findById(authorization.id())).thenReturn(Optional.of(authorization));
+        InMemoryAgentStageRunStore stages = new InMemoryAgentStageRunStore();
+        stages.save(AgentStageRun.pending(
+                "201", task.taskId(), AgentRole.QA_AGENT, 2, task.taskId() + ":QA_AGENT:2", 10L
+        ).withStatus(AgentStageStatus.FAILED_NEEDS_HUMAN, "AGENT_RESULT_REJECTED", "qa failed", 20L));
+        stages.save(AgentStageRun.pending(
+                "101", task.taskId(), AgentRole.CODING_AGENT, 2, task.taskId() + ":CODING_AGENT:2", 8L
+        ).withStatus(AgentStageStatus.SUCCEEDED, "", "", 9L));
+
+        String qaJson = """
+                {"status":"FAILED","failureCategory":"PRODUCT_DEFECT","retryRecommendation":"CODING_AGENT",
+                  "remediationRequest":{"requested":true,"targetRole":"CODING_AGENT",
+                    "reason":"two reproducible backend 500s block AC-003 and AC-013",
+                    "bugFindingIds":["bf-ac003-status-500"]},
+                  "bugFindings":[{"id":"bf-ac003-status-500","severity":"HIGH","acceptanceCriteriaId":"AC-003",
+                    "reproductionSteps":["PATCH /api/merchants/manage/status"],
+                    "expected":"200 closed","actual":"HTTP 500 no such column now",
+                    "evidenceArtifactIds":["qa-evidence/commands/bug-repro.log"],
+                    "suspectedFiles":["server/src/routes/merchants.ts"]}]}
+                """.replaceAll("\\s+", "");
+        String aggregate = """
+                {"status":"NEEDS_HUMAN","stages":[{"role":"QA_AGENT","success":false,
+                "resultJson":"{status:FAILED"}],"qaRoleResult":%s}
+                """.formatted(qaJson);
+        RequirementAgentStageOrchestrator orchestrator = mock(RequirementAgentStageOrchestrator.class);
+        when(orchestrator.run(any(), any(), anyList(), any(), any(), any(), isNull()))
+                .thenReturn(RequirementExecutionResult.failure(
+                        task.taskId(), "QA_AGENT failed: QA_AGENT failed acceptance", aggregate));
+
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry,
+                new InMemoryTaskMaterialStore(),
+                request -> {
+                    throw new AssertionError("orchestrator owns role execution");
+                },
+                new RequirementContextBuilder(),
+                new RequirementPlanGenerator(),
+                new RuleBasedRequirementPolicyGate(),
+                new AgentStagePlanner(SnowflakeIdGenerator.defaultGenerator()::nextIdString),
+                stages,
+                new RoleContextBuilder(),
+                new InMemoryRoleContextPackageStore(),
+                AgentWorkflowAlertSinkPort.noop(),
+                WorkflowExperienceStore.noop(),
+                new RequirementDeliveryReviewer(),
+                RequirementPullRequestPublisherPort.unavailable()
+        );
+        engine.setRequirementPolicyRunStore(policies);
+        engine.setStageOrchestrator(orchestrator);
+        engine.setExecutionProfileResolver(new CommandScopedPiRemediationResolver());
+
+        RequirementStageExecutionPlan plan = engine.planStage(
+                roleCommand(task, authorization.id(), AgentRole.QA_AGENT, "qa-2-command"));
+
+        assertEquals(CommandDisposition.SUCCEEDED, plan.commandDisposition());
+        assertNotNull(plan.piQaRemediationIntent());
+        assertEquals(AgentRemediationKind.QA_PRODUCT_FIX, plan.piQaRemediationIntent().kind());
     }
 
     @Test
@@ -573,5 +740,57 @@ class RequirementDeliveryStageExecutionTest {
                 RequirementPolicyRun.canonicalJsonDigest(policy), "ALLOWED",
                 RequirementPolicyRunState.APPLIED, boundVersion, boundFence,
                 null, null, "", "", "", 0L, "", "apply-command", 1L, 2L, 1L, 1L);
+    }
+
+    private static final class CommandScopedPiRemediationResolver implements RequirementExecutionProfileResolverPort {
+        @Override
+        public RequirementExecutionProfileResolution resolve(
+                RdRequirementTask task, AgentRole role, String stageRunId, int attemptNo
+        ) {
+            return RequirementExecutionProfileResolution.of(
+                    "agent-profile-" + stageRunId, snapshotJson(task, role, stageRunId, attemptNo));
+        }
+
+        @Override
+        public AgentExecutionProfileSnapshot prepareSnapshot(
+                RdRequirementTask task,
+                AgentRole role,
+                String stageRunId,
+                int attemptNo,
+                AgentRuntimeCapability requiredCapability
+        ) {
+            String json = snapshotJson(task, role, stageRunId, attemptNo);
+            AgentExecutionProfileSnapshot snapshot = new AgentExecutionProfileSnapshot(
+                    "agent-profile-" + stageRunId,
+                    stageRunId,
+                    task.taskId(),
+                    role.name(),
+                    attemptNo,
+                    AgentRuntimeType.PI,
+                    json,
+                    AgentExecutionProfileSnapshot.sha256(json),
+                    System.currentTimeMillis()
+            );
+            if (!snapshot.hasCapability(requiredCapability)) {
+                throw new IllegalStateException("prepared target profile is not eligible PI runtime");
+            }
+            return snapshot;
+        }
+
+        private static String snapshotJson(
+                RdRequirementTask task, AgentRole role, String stageRunId, int attemptNo
+        ) {
+            Map<String, Object> value = new LinkedHashMap<>();
+            value.put("snapshotVersion", 1);
+            value.put("stageRunId", stageRunId);
+            value.put("taskId", task.taskId());
+            value.put("role", role.name());
+            value.put("attemptNo", attemptNo);
+            value.put("runtimeType", "PI");
+            value.put("profileId", "pi-test-" + role.name().toLowerCase());
+            value.put("profileVersion", 1L);
+            value.put("capabilities", List.of("PI_AGENT_STATE_V2", "PI_QA_REMEDIATION_V2"));
+            return AgentManifestCanonicalJson.canonicalJson(value);
+        }
     }
 }

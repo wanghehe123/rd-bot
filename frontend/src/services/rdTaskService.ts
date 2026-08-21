@@ -536,6 +536,16 @@ export const getRdTasksPage = (query: RdTaskListQuery = {}): Promise<RdTaskPage>
 export const getRdTask = (taskId: string): Promise<RdTask> =>
   api.get<RdTask, RdTask>(`/admin/rd-tasks/${taskId}`);
 
+export interface RdTaskAuditContent {
+  taskId: string;
+  promptSnapshot: string;
+  executionResultJson: string;
+  executionEvidence: RdTaskExecutionEvidence;
+}
+
+export const getRdTaskAuditContent = (taskId: string): Promise<RdTaskAuditContent> =>
+  api.get<RdTaskAuditContent, RdTaskAuditContent>(`/admin/rd-tasks/${taskId}/audit-content`);
+
 export const createRdTask = (payload: CreateRdTaskPayload): Promise<RdTask> =>
   api.post<RdTask, RdTask>("/admin/rd-tasks", payload);
 

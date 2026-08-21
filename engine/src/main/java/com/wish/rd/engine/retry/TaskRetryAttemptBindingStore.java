@@ -32,4 +32,12 @@ public interface TaskRetryAttemptBindingStore {
             TaskRetryAttemptKind kind,
             int ordinal
     );
+
+    /**
+     * Returns the sole binding that already claims this agent-stage attempt.
+     *
+     * <p>{@code rd_task_retry_attempt_bindings.stage_run_id} is globally unique, so a PENDING
+     * attempt bound to an earlier checkpoint cannot join a later checkpoint.
+     */
+    Optional<TaskRetryAttemptBinding> findByStageRunId(String stageRunId);
 }

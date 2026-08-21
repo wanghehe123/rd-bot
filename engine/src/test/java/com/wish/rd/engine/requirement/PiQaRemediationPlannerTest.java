@@ -53,6 +53,65 @@ class PiQaRemediationPlannerTest {
     }
 
     @Test
+    void routesExplicitProductRequestOnRawQaResult() throws Exception {
+        PiQaRemediationPlanner.Decision decision = planner.decide(
+                productRequestJson(), piProfile(), command(null), "201", 1
+        ).orElseThrow();
+        assertEquals(AgentRemediationKind.QA_PRODUCT_FIX, decision.kind());
+    }
+
+    @Test
+    void routesExplicitProductRequestNestedInNeedsHumanAggregate() throws Exception {
+        String aggregate = needsHumanAggregate(productRequestJson());
+
+        PiQaRemediationPlanner.Decision decision = planner.decide(
+                aggregate, piProfile(), command(null), "201", 1
+        ).orElseThrow();
+        assertEquals(AgentRemediationKind.QA_PRODUCT_FIX, decision.kind());
+    }
+
+    @Test
+    void routesExplicitProductRequestFromQaRoleResultSibling() throws Exception {
+        ObjectNode aggregate = MAPPER.createObjectNode();
+        aggregate.put("status", "NEEDS_HUMAN");
+        aggregate.set("qaRoleResult", MAPPER.readTree(productRequestJson()));
+
+        PiQaRemediationPlanner.Decision decision = planner.decide(
+                MAPPER.writeValueAsString(aggregate), piProfile(), command(null), "201", 1
+        ).orElseThrow();
+        assertEquals(AgentRemediationKind.QA_PRODUCT_FIX, decision.kind());
+    }
+
+    @Test
+    void prefersQaRoleResultSiblingWhenNestedResultJsonIsGarbage() throws Exception {
+        ObjectNode aggregate = MAPPER.createObjectNode();
+        aggregate.put("status", "NEEDS_HUMAN");
+        ObjectNode stage = aggregate.putArray("stages").addObject();
+        stage.put("role", "QA_AGENT");
+        stage.put("success", false);
+        stage.put("resultJson", "{status:FAILED");
+        aggregate.set("qaRoleResult", MAPPER.readTree(productRequestJson()));
+
+        PiQaRemediationPlanner.Decision decision = planner.decide(
+                MAPPER.writeValueAsString(aggregate), piProfile(), command(null), "201", 1
+        ).orElseThrow();
+        assertEquals(AgentRemediationKind.QA_PRODUCT_FIX, decision.kind());
+    }
+
+    @Test
+    void needsHumanAggregateWithoutNestedFailedQaDoesNotRouteCoding() throws Exception {
+        String aggregate = MAPPER.writeValueAsString(Map.of(
+                "status", "NEEDS_HUMAN",
+                "stages", java.util.List.of(Map.of(
+                        "role", "QA_AGENT",
+                        "success", false,
+                        "resultJson", "{\"status\":\"NEEDS_HUMAN\"}"
+                ))
+        ));
+        assertTrue(planner.decide(aggregate, piProfile(), command(null), "201", 1).isEmpty());
+    }
+
+    @Test
     void contradictoryProtocolReceiptCannotFallThroughToCodingRemediation() throws Exception {
         String receipt = receipt("RESULT_MISSING_AFTER_RECOVERY", "BRIDGE_SYNTHETIC");
         ObjectNode result = MAPPER.createObjectNode();
@@ -76,6 +135,42 @@ class PiQaRemediationPlannerTest {
         return RequirementExecutionProfileResolution.of("snapshot-1", """
                 {"runtimeType":"PI","capabilities":["PI_QA_REMEDIATION_V2"]}
                 """);
+    }
+
+    private static String productRequestJson() throws Exception {
+        ObjectNode result = MAPPER.createObjectNode();
+        result.put("status", "FAILED");
+        result.put("failureCategory", "PRODUCT_DEFECT");
+        result.put("retryRecommendation", "CODING_AGENT");
+        ObjectNode request = result.putObject("remediationRequest");
+        request.put("requested", true);
+        request.put("targetRole", "CODING_AGENT");
+        request.put("reason", "reproducible backend 500 blocks AC-003");
+        request.putArray("bugFindingIds").add("bug-1");
+        ObjectNode finding = result.putArray("bugFindings").addObject();
+        finding.put("id", "bug-1");
+        finding.put("severity", "HIGH");
+        finding.put("acceptanceCriteriaId", "AC-003");
+        finding.putArray("reproductionSteps").add("PATCH /api/merchants/manage/status");
+        finding.put("expected", "HTTP 200");
+        finding.put("actual", "HTTP 500");
+        finding.putArray("evidenceArtifactIds").add("qa-evidence/commands/bug-repro.log");
+        finding.putArray("suspectedFiles").add("server/src/routes/merchants.ts");
+        return MAPPER.writeValueAsString(result);
+    }
+
+    private static String needsHumanAggregate(String qaResultJson) throws Exception {
+        ObjectNode aggregate = MAPPER.createObjectNode();
+        aggregate.put("status", "NEEDS_HUMAN");
+        aggregate.put("pullRequestUrl", "");
+        ObjectNode stage = aggregate.putArray("stages").addObject();
+        stage.put("role", "QA_AGENT");
+        stage.put("success", false);
+        stage.put("summary", "QA_AGENT failed acceptance");
+        stage.put("pullRequestUrl", "");
+        stage.put("errorMessage", "QA_AGENT failed acceptance");
+        stage.put("resultJson", qaResultJson);
+        return MAPPER.writeValueAsString(aggregate);
     }
 
     private static RequirementStageCommand command(AgentRemediationKind kind) {

@@ -170,6 +170,35 @@ class DockerPiAgentExecutorTest {
     }
 
     @Test
+    void shouldWriteAgentStateV2SchemaEvenWhenFrozenSnapshotStillSaysV1() throws Exception {
+        String stateJson = canonicalInitialState("task-1", "stage-1", "snapshot-stale-schema");
+        String stateHash = AgentStateV2Codec.hash(OBJECT_MAPPER.readTree(stateJson));
+        AgentExecutionProfileSnapshot stale = stateV2Snapshot("snapshot-stale-schema", "stage-1", "task-1");
+        ObjectNode json = (ObjectNode) OBJECT_MAPPER.readTree(stale.snapshotJson());
+        json.put("agentStateSchemaVersion", "rd-agent-state/v1");
+        String snapshotJson = OBJECT_MAPPER.writeValueAsString(json);
+        stale = new AgentExecutionProfileSnapshot(
+                stale.snapshotId(), stale.stageRunId(), stale.taskId(), stale.role(), stale.attemptNo(),
+                stale.runtimeType(), snapshotJson, AgentExecutionProfileSnapshot.sha256(snapshotJson),
+                stale.profileVersion()
+        );
+        DockerPiAgentExecutor enabledExecutor = executor(
+                new StateV2ArtifactRunner(""), AgentExecutionEventSink.noop(), ignored -> "secret"
+        );
+
+        RepairExecutionResult enabled = enabledExecutor.execute(new AgentRuntimeExecutionRequest(
+                stale, commandWithInitialState("task-1", "CODING_AGENT", stateJson, stateHash)
+        ));
+
+        assertEquals(RepairExecutionStatus.SUCCESS, enabled.status(), enabled.errorMessage());
+        JsonNode enabledRequest = OBJECT_MAPPER.readTree(Files.readString(
+                temporaryDirectory.resolve("workspaces/task-1/input/request.json")
+        ));
+        assertEquals("rd-agent-state/v2", enabledRequest.path("agentStateSchemaVersion").asText());
+        assertEquals("rd-agent-state/v2", enabledRequest.path("initialAgentStateProtocol").asText());
+    }
+
+    @Test
     void shouldCollectVerifiedV2StateAndEffectiveContextArtifacts() throws Exception {
         String stateJson = canonicalInitialState("task-1", "stage-1", "snapshot-state-artifacts");
         String stateHash = AgentStateV2Codec.hash(OBJECT_MAPPER.readTree(stateJson));
@@ -1149,6 +1178,9 @@ class DockerPiAgentExecutorTest {
 
         assertEquals(RepairExecutionStatus.FAILED_VALIDATION, result.status());
         assertEquals("PI_PROVIDER_CONFIGURATION", result.rawResultJson().get("failureCategory"));
+        assertTrue(result.errorMessage().contains("供应商配置"));
+        assertTrue(result.errorMessage().contains("PI_TEST_API_KEY")
+                || result.errorMessage().contains("credential"));
         assertEquals(0, calls.get());
     }
 
