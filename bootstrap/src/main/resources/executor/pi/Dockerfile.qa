@@ -11,6 +11,9 @@ USER root
 # Mirror override for restricted-network builds; versions stay pinned by the base image lockfile.
 ARG NPM_REGISTRY=https://registry.npmjs.org
 ARG PLAYWRIGHT_CLI_VERSION=0.1.17
+# Optional Debian mirror override (e.g. http://mirrors.aliyun.com/debian) for
+# restricted-network builds; default keeps the official mirror.
+ARG DEBIAN_MIRROR=deb.debian.org
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     PLAYWRIGHT_MCP_CONFIG=/etc/rd-bot/playwright-cli.config.json
 
@@ -35,8 +38,12 @@ RUN npm install -g "@playwright/cli@${PLAYWRIGHT_CLI_VERSION}" --registry=${NPM_
     && npm cache clean --force \
     && chown -R node:node /ms-playwright /home/node
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl zip \
+# build-essential keeps node-gyp fallbacks working for native modules
+# (better-sqlite3 etc.) when prebuilt binary downloads fail; without it a
+# flaky GitHub release download turns into an unrecoverable provision error.
+RUN sed -i "s|deb.debian.org|${DEBIAN_MIRROR}|g" /etc/apt/sources.list.d/debian.sources 2>/dev/null || true \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends curl zip build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 COPY rd-qa-evidence.mjs /usr/local/bin/rd-qa-evidence.mjs
