@@ -16,6 +16,9 @@ const REVIEW_DECISIONS = new Set(["APPROVED", "NEED_INFO", "REJECTED"]);
 const FEASIBILITY_VALUES = new Set(["CAN_DO", "NEED_INFO", "UNSAFE"]);
 const BUDGET_CONFIDENCE_VALUES = new Set(["LOW", "MEDIUM", "HIGH"]);
 const CODING_STATUSES = new Set(["SUCCESS", "FAILED", "NEED_INFO", "UNSAFE"]);
+// Reviewer/architect role results must also carry a top-level execution status:
+// the host maps it via toStatus and rejects blank/unknown values terminally.
+const ROLE_PLAN_STATUSES = CODING_STATUSES;
 const TEST_STATUSES = new Set(["PASSED", "FAILED", "SKIPPED"]);
 const RISK_LEVELS = new Set(["LOW", "MEDIUM", "HIGH"]);
 const QA_STATUSES = new Set(["PASSED", "FAILED", "SKIPPED"]);
@@ -280,6 +283,7 @@ export function validateRoleResult(
 
 function validateRequirementReview(result) {
   const errors = [];
+  checkEnum(result, "status", ROLE_PLAN_STATUSES, errors);
   checkEnum(result, "decision", REVIEW_DECISIONS, errors);
   checkEnum(result, "feasibility", FEASIBILITY_VALUES, errors);
   checkArray(result, "missingInformation", false, errors);
@@ -309,6 +313,7 @@ function validateRequirementReview(result) {
 
 function validateSolutionPlan(result) {
   const errors = [];
+  checkEnum(result, "status", ROLE_PLAN_STATUSES, errors);
   checkNonBlankString(result, "summary", "summary", errors);
   checkArray(result, "affectedFiles", true, errors);
   checkArray(result, "implementationSteps", true, errors);

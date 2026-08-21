@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -25,6 +26,10 @@ import com.wish.rd.rag.project.agent.model.RoleExecutionFactsValidator;
 public final class AgentRoleResultValidator {
 
     private static final Set<String> REVIEW_DECISIONS = Set.of("APPROVED", "NEED_INFO", "REJECTED");
+
+    /** 与 DockerPiAgentExecutor#toStatus 对齐：缺失或非法 status 会以 FAILED_VALIDATION 终态拒绝。 */
+    private static final Set<String> ROLE_PLAN_STATUSES =
+            new LinkedHashSet<>(List.of("SUCCESS", "FAILED", "NEED_INFO", "UNSAFE"));
     private static final Set<String> FEASIBILITY_VALUES = Set.of("CAN_DO", "NEED_INFO", "UNSAFE");
     private static final Set<String> BUDGET_CONFIDENCE_VALUES = Set.of("LOW", "MEDIUM", "HIGH");
     private static final Set<String> QA_STATUSES = Set.of("PASSED", "FAILED", "SKIPPED");
@@ -165,6 +170,7 @@ public final class AgentRoleResultValidator {
 
     private List<String> validateRequirementReview(JsonNode root) {
         List<String> errors = new ArrayList<>();
+        validateEnum(root, "status", ROLE_PLAN_STATUSES, errors);
         validateEnum(root, "decision", REVIEW_DECISIONS, errors);
         validateEnum(root, "feasibility", FEASIBILITY_VALUES, errors);
         validateArray(root, "missingInformation", false, errors);
@@ -203,6 +209,7 @@ public final class AgentRoleResultValidator {
 
     private List<String> validateSolutionPlan(JsonNode root) {
         List<String> errors = new ArrayList<>();
+        validateEnum(root, "status", ROLE_PLAN_STATUSES, errors);
         validateString(root, "summary", errors);
         validateArray(root, "affectedFiles", true, errors);
         validateArray(root, "implementationSteps", true, errors);

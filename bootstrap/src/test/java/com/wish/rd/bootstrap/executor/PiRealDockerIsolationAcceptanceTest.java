@@ -740,7 +740,8 @@ class PiRealDockerIsolationAcceptanceTest {
                         "v1",
                         true,
                         fixture.hostRelayUrl(),
-                        DockerPiAgentExecutor.DEFAULT_CONTAINER_MEMORY_LIMIT
+                        DockerPiAgentExecutor.DEFAULT_CONTAINER_MEMORY_LIMIT,
+                        DockerPiAgentExecutor.DEFAULT_CONTAINER_CPU_LIMIT
                 ),
                 RepairWorkspaceRepositoryPort.noop(),
                 ExecutionAllowlistPolicy.disabled(),
@@ -840,7 +841,8 @@ class PiRealDockerIsolationAcceptanceTest {
                         "v1",
                         true,
                         fixture.hostRelayUrl(),
-                        DockerPiAgentExecutor.DEFAULT_CONTAINER_MEMORY_LIMIT
+                        DockerPiAgentExecutor.DEFAULT_CONTAINER_MEMORY_LIMIT,
+                        DockerPiAgentExecutor.DEFAULT_CONTAINER_CPU_LIMIT
                 ),
                 RepairWorkspaceRepositoryPort.noop(),
                 ExecutionAllowlistPolicy.disabled(),

@@ -948,3 +948,7 @@ Pi / QA image 必须在本机 Docker Desktop arm64 重建并记录 `docker image
 ---
 
 *本规范随项目演进持续更新；规范的解释权归 RD-Bot 维护者。*
+
+- 【强制】角色结果 JSON 的顶层 `status` 字段必须在 prompt 合同、容器内预校验、宿主校验三处同时声明或同时不声明，禁止只改一层。宿主 `DockerPiAgentExecutor#toStatus` 对缺失/非法 status 以 FAILED_VALIDATION 终态拒绝且错误消息为空（引擎侧只见 `requirement execution failed: FAILED_VALIDATION`），而 agent 忠实按单层合同提交就会命中——2026-08-21 杭州真机：REQUIREMENT_REVIEWER 因模型自发多带 `"status":"SUCCESS"` 侥幸通过，SOLUTION_ARCHITECT 按合同提交即终态失败。任何新增宿主侧结果校验规则，同步修改 `RequirementDeliveryEngine#roleOutputContract`（prompt）、`result-tool.mjs`（容器内预校验，agent 可一次自纠）、`AgentRoleResultValidator` 与 `RepairWorkspaceFactory` 角色 schema（宿主），并跑两侧测试。
+  - 代码：`RepairWorkspaceFactory.REQUIREMENT_REVIEWER_SCHEMA_JSON/SOLUTION_ARCHITECT_SCHEMA_JSON`、`AgentRoleResultValidator.ROLE_PLAN_STATUSES`、`result-tool.mjs validateRequirementReview/validateSolutionPlan`
+  - 验证：`./mvnw -pl exec -am -Dtest='AgentRoleResultValidatorTest,FactsProtocolValidatorParityTest' -Dsurefire.failIfNoSpecifiedTests=false test`；`cd bootstrap/src/main/resources/executor/pi && npm test`；改 bridge 后重建两个 Pi 镜像（见上条）

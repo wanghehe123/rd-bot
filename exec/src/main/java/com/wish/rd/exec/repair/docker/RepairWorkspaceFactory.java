@@ -230,6 +230,7 @@ public class RepairWorkspaceFactory {
               "type": "object",
               "additionalProperties": true,
               "required": [
+                "status",
                 "decision",
                 "feasibility",
                 "missingInformation",
@@ -238,6 +239,11 @@ public class RepairWorkspaceFactory {
                 "budgetEstimate"
               ],
               "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": ["SUCCESS", "FAILED", "NEED_INFO", "UNSAFE"],
+                  "description": "APPROVED→SUCCESS、NEED_INFO→NEED_INFO、REJECTED→FAILED"
+                },
                 "decision": {
                   "type": "string",
                   "enum": ["APPROVED", "NEED_INFO", "REJECTED"]

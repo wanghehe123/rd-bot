@@ -4496,6 +4496,7 @@ public class RequirementDeliveryEngine {
             case REQUIREMENT_REVIEWER -> """
                     必须调用 rd_submit_result 恰好一次，提交下面这个完整 JSON 对象（字段都在根上）。不要只在对话里打印 JSON，也不要自己写 result.json：
                     {
+                      "status": "SUCCESS|FAILED|NEED_INFO|UNSAFE；按 decision 映射：APPROVED→SUCCESS、NEED_INFO→NEED_INFO、REJECTED→FAILED，缺失或非法整个结果会被拒绝",
                       "decision": "APPROVED|NEED_INFO|REJECTED",
                       "feasibility": "CAN_DO|NEED_INFO|UNSAFE",
                       "missingInformation": [],
@@ -4520,6 +4521,7 @@ public class RequirementDeliveryEngine {
             case SOLUTION_ARCHITECT -> """
                     必须调用 rd_submit_result 恰好一次，提交下面这个完整 JSON 对象（字段都在根上）。不要只在对话里打印 JSON，也不要自己写 result.json：
                     {
+                      "status": "SUCCESS|FAILED|NEED_INFO|UNSAFE；方案可执行→SUCCESS，缺关键信息→NEED_INFO，不可行/高风险→UNSAFE，缺失或非法整个结果会被拒绝",
                       "summary": "开发方案摘要",
                       "affectedFiles": ["预计影响文件"],
                       "implementationSteps": ["可执行开发步骤"],

@@ -932,6 +932,7 @@ function hostAssertionContracts() {
 
 test("requires LOW budget confidence without historical samples for the reviewer", () => {
   const review = {
+    status: "SUCCESS",
     decision: "APPROVED",
     feasibility: "CAN_DO",
     missingInformation: [],
@@ -954,6 +955,7 @@ test("requires LOW budget confidence without historical samples for the reviewer
 
 function completeReviewerResult() {
   return {
+    status: "SUCCESS",
     decision: "APPROVED",
     feasibility: "CAN_DO",
     missingInformation: [],
@@ -1013,7 +1015,7 @@ test("accepts a double-encoded reviewer result string from the same provider pat
   assert.equal(accepted(), true);
 });
 
-test("accepts a reviewer role object that has decision but no coding status/summary", async () => {
+test("accepts a reviewer role object that carries its own role status", async () => {
   const root = await mkdtemp(join(tmpdir(), "rd-pi-reviewer-object-"));
   const { tool, accepted } = await reviewerSubmitTool(root);
   await tool.execute("call-1", { result: completeReviewerResult() });

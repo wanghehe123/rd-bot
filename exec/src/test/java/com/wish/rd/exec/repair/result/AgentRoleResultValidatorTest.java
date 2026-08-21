@@ -56,6 +56,7 @@ class AgentRoleResultValidatorTest {
     void shouldAcceptRequirementReviewResultWithFeasibilityAndCoverage() {
         AgentRoleResultValidation validation = validator.validate("REQUIREMENT_REVIEWER", """
                 {
+                  "status": "SUCCESS",
                   "decision": "APPROVED",
                   "feasibility": "CAN_DO",
                   "missingInformation": [],
@@ -81,6 +82,7 @@ class AgentRoleResultValidatorTest {
     void shouldRejectRequirementReviewResultWithoutFeasibility() {
         AgentRoleResultValidation validation = validator.validate("REQUIREMENT_REVIEWER", """
                 {
+                  "status": "SUCCESS",
                   "decision": "APPROVED",
                   "missingInformation": [],
                   "risks": [],
@@ -96,6 +98,7 @@ class AgentRoleResultValidatorTest {
     void shouldRejectRequirementReviewResultWithoutBudgetEstimate() {
         AgentRoleResultValidation validation = validator.validate("REQUIREMENT_REVIEWER", """
                 {
+                  "status": "SUCCESS",
                   "decision": "APPROVED",
                   "feasibility": "CAN_DO",
                   "missingInformation": [],
@@ -112,6 +115,7 @@ class AgentRoleResultValidatorTest {
     void shouldRejectSolutionPlanWithoutAcceptanceMapping() {
         AgentRoleResultValidation validation = validator.validate("SOLUTION_ARCHITECT", """
                 {
+                  "status": "SUCCESS",
                   "summary": "实现订单催单",
                   "affectedFiles": ["src/main/java/OrderController.java"],
                   "implementationSteps": ["增加接口"],
@@ -456,5 +460,65 @@ class AgentRoleResultValidatorTest {
                 """);
 
         assertTrue(validation.valid(), () -> String.join(", ", validation.errors()));
+    }
+
+
+    @Test
+    void shouldRejectReviewerAndArchitectResultsWithoutTopLevelStatus() {
+        AgentRoleResultValidation reviewer = validator.validate("REQUIREMENT_REVIEWER", """
+                {
+                  "decision": "APPROVED",
+                  "feasibility": "CAN_DO",
+                  "missingInformation": [],
+                  "risks": [],
+                  "acceptanceCoverage": ["接口测试通过"],
+                  "budgetEstimate": {
+                    "initialTokens": 80000,
+                    "retryReserveTokens": 20000,
+                    "estimatedTotalTokens": 100000,
+                    "confidence": "MEDIUM",
+                    "basis": "基于历史实际样本",
+                    "historicalSamples": []
+                  }
+                }
+                """);
+        assertFalse(reviewer.valid());
+        assertTrue(reviewer.errors().contains("status must not be blank"));
+
+        AgentRoleResultValidation architect = validator.validate("SOLUTION_ARCHITECT", """
+                {
+                  "summary": "实现订单催单",
+                  "affectedFiles": ["src/main/java/OrderController.java"],
+                  "implementationSteps": ["增加接口"],
+                  "acceptanceMapping": [{"criteria": "催单", "validation": "npm test"}],
+                  "testPlan": [{"criteria": "催单", "command": "./mvnw test"}]
+                }
+                """);
+        assertFalse(architect.valid());
+        assertTrue(architect.errors().contains("status must not be blank"));
+    }
+
+    @Test
+    void shouldRejectReviewerAndArchitectResultsWithUnknownStatus() {
+        AgentRoleResultValidation reviewer = validator.validate("REQUIREMENT_REVIEWER", """
+                {
+                  "status": "PASSED",
+                  "decision": "APPROVED",
+                  "feasibility": "CAN_DO",
+                  "missingInformation": [],
+                  "risks": [],
+                  "acceptanceCoverage": ["接口测试通过"],
+                  "budgetEstimate": {
+                    "initialTokens": 80000,
+                    "retryReserveTokens": 20000,
+                    "estimatedTotalTokens": 100000,
+                    "confidence": "MEDIUM",
+                    "basis": "基于历史实际样本",
+                    "historicalSamples": []
+                  }
+                }
+                """);
+        assertFalse(reviewer.valid());
+        assertTrue(reviewer.errors().contains("status must be one of SUCCESS, FAILED, NEED_INFO, UNSAFE"));
     }
 }

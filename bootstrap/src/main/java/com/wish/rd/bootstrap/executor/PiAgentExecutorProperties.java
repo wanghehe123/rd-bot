@@ -19,6 +19,8 @@ public class PiAgentExecutorProperties {
             "http://host.docker.internal:18080/internal/pi/credential-relay/proxy";
     public static final String DEFAULT_CONTAINER_MEMORY_LIMIT =
             DockerPiAgentExecutor.DEFAULT_CONTAINER_MEMORY_LIMIT;
+    public static final String DEFAULT_CONTAINER_CPU_LIMIT =
+            DockerPiAgentExecutor.DEFAULT_CONTAINER_CPU_LIMIT;
     public static final long DEFAULT_EXECUTION_TIMEOUT_MILLIS = 60L * 60L * 1000L;
     public static final long DEFAULT_BASH_COMMAND_TIMEOUT_MILLIS = 15L * 60L * 1000L;
 
@@ -44,6 +46,8 @@ public class PiAgentExecutorProperties {
     private String credentialRelayUrl = DEFAULT_CREDENTIAL_RELAY_URL;
     /** Pi/QA 容器 docker --memory 上限；小内存宿主应收口（如 1100m），默认保持历史 8g。 */
     private String containerMemoryLimit = DEFAULT_CONTAINER_MEMORY_LIMIT;
+    /** Pi/QA 容器 docker --cpus 上限；不得超过宿主 CPU 数，否则 docker run exit 125。 */
+    private String containerCpuLimit = DEFAULT_CONTAINER_CPU_LIMIT;
 
     public String getContextProtocolVersion() {
         return contextProtocolVersion;
@@ -108,6 +112,14 @@ public class PiAgentExecutorProperties {
     public void setContainerMemoryLimit(String containerMemoryLimit) {
         // 空白回落默认值；格式校验统一在 Configuration 紧凑构造器中失败关闭。
         this.containerMemoryLimit = textOrDefault(containerMemoryLimit, DEFAULT_CONTAINER_MEMORY_LIMIT);
+    }
+
+    public String getContainerCpuLimit() {
+        return containerCpuLimit;
+    }
+
+    public void setContainerCpuLimit(String containerCpuLimit) {
+        this.containerCpuLimit = textOrDefault(containerCpuLimit, DEFAULT_CONTAINER_CPU_LIMIT);
     }
 
     public String getImage() {
@@ -197,7 +209,8 @@ public class PiAgentExecutorProperties {
                 requestProtocolVersion,
                 credentialRelayEnabled,
                 credentialRelayUrl,
-                containerMemoryLimit
+                containerMemoryLimit,
+                containerCpuLimit
         );
     }
 
