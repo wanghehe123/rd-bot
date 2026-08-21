@@ -35,6 +35,8 @@ public class PostgresTaskRetryAttemptBindingStore implements TaskRetryAttemptBin
         validateParent(binding);
         mapper.insertIfAbsent(toRow(binding));
         TaskRetryAttemptBinding effective = findById(binding.bindingId())
+                .or(() -> binding.kind() == TaskRetryAttemptKind.AGENT_STAGE
+                        ? findByStageRunId(binding.attemptId()) : Optional.empty())
                 .orElseThrow(() -> new IllegalStateException("retry attempt binding insert did not return a row"));
         if (!same(binding, effective)) {
             throw new IllegalStateException("retry attempt binding immutable conflict: " + binding.bindingId());
@@ -76,6 +78,20 @@ public class PostgresTaskRetryAttemptBindingStore implements TaskRetryAttemptBin
                 .stream().map(this::toBinding).toList();
         if (rows.size() > 1) {
             throw new IllegalStateException("retry child binding is ambiguous for checkpoint: " + checkpointId);
+        }
+        return rows.stream().findFirst();
+    }
+
+    @Override
+    public Optional<TaskRetryAttemptBinding> findByStageRunId(String stageRunId) {
+        String normalized = stageRunId == null ? "" : stageRunId.strip();
+        if (normalized.isBlank()) {
+            return Optional.empty();
+        }
+        List<TaskRetryAttemptBinding> rows = mapper.findByStageRunId(PostgresPersistenceSupport.parseId(normalized))
+                .stream().map(this::toBinding).toList();
+        if (rows.size() > 1) {
+            throw new IllegalStateException("retry stage-run binding is ambiguous: " + normalized);
         }
         return rows.stream().findFirst();
     }

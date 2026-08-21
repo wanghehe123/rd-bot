@@ -12,6 +12,7 @@ import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -19,6 +20,7 @@ import java.util.HexFormat;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -70,11 +72,13 @@ public class ProcessGitRepairWorkspaceRepository implements RepairWorkspaceRepos
             // 候选补丁由附件重放，因此 reset + clean 不会丢失任何需要保留的数据。
             runGit(List.of(GIT_BINARY, "-C", repoDirectory.toString(), "reset", "--hard"));
             runGit(List.of(GIT_BINARY, "-C", repoDirectory.toString(), "clean", "-fd"));
-            runGit(List.of(GIT_BINARY, "-C", repoDirectory.toString(), "fetch", "origin", command.baseBranch()));
+            runGitRetryingTransientNetwork(List.of(
+                    GIT_BINARY, "-C", repoDirectory.toString(), "fetch", "origin", command.baseBranch()));
             workBranchFetched = !localOnly && fetchRemoteWorkBranch(repoDirectory, command.workBranch());
         } else {
             requireEmptyDirectory(repoDirectory);
-            runGit(List.of(GIT_BINARY, "clone", "--branch", command.baseBranch(), "--single-branch",
+            runGitRetryingTransientNetwork(List.of(
+                    GIT_BINARY, "clone", "--branch", command.baseBranch(), "--single-branch",
                     command.repositoryUrl(), repoDirectory.toString()));
             workBranchFetched = !localOnly && fetchRemoteWorkBranch(repoDirectory, command.workBranch());
         }
@@ -278,6 +282,83 @@ public class ProcessGitRepairWorkspaceRepository implements RepairWorkspaceRepos
                     + " stderr=" + limit(result.stderr()));
         }
         return result;
+    }
+
+    /**
+     * Retries clone/fetch a bounded number of times when the host TLS stack drops GitHub
+     * ({@code SSL_ERROR_SYSCALL} / {@code unable to access}). Clash/TUN blips must not
+     * fail a whole Agent role on the first handshake. Failed clones empty the destination
+     * so the next attempt (or operator retry) is not blocked by leftover files.
+     */
+    private CommandResult runGitRetryingTransientNetwork(List<String> argv) throws IOException {
+        Path cloneDestination = cloneDestination(argv);
+        IOException last = null;
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            try {
+                if (attempt > 1 && cloneDestination != null) {
+                    emptyDirectoryContents(cloneDestination);
+                }
+                return runGit(argv);
+            } catch (IOException exception) {
+                last = exception;
+                if (cloneDestination != null) {
+                    emptyDirectoryContents(cloneDestination);
+                }
+                if (attempt == 3 || !isTransientNetworkFailure(exception.getMessage())) {
+                    throw exception;
+                }
+                try {
+                    TimeUnit.SECONDS.sleep(attempt);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw exception;
+                }
+            }
+        }
+        throw last;
+    }
+
+    public static boolean isTransientNetworkFailure(String message) {
+        String normalized = message == null ? "" : message;
+        if (normalized.contains("Authentication failed")
+                || normalized.contains("Repository not found")
+                || normalized.contains("returned error: 401")
+                || normalized.contains("returned error: 403")
+                || normalized.contains("returned error: 404")) {
+            return false;
+        }
+        return normalized.contains("SSL_ERROR_SYSCALL")
+                || normalized.contains("unable to access")
+                || normalized.contains("Could not resolve host")
+                || normalized.contains("The remote end hung up")
+                || normalized.contains("RPC failed")
+                || normalized.contains("Connection reset by peer");
+    }
+
+    private static Path cloneDestination(List<String> argv) {
+        if (!argv.contains("clone") || argv.size() < 2) {
+            return null;
+        }
+        return Path.of(argv.get(argv.size() - 1));
+    }
+
+    private static void emptyDirectoryContents(Path directory) throws IOException {
+        if (!Files.isDirectory(directory)) {
+            return;
+        }
+        try (var paths = Files.walk(directory)) {
+            paths.sorted(Comparator.reverseOrder())
+                    .filter(path -> !path.equals(directory))
+                    .forEach(path -> {
+                        try {
+                            Files.deleteIfExists(path);
+                        } catch (IOException exception) {
+                            throw new UncheckedIOException(exception);
+                        }
+                    });
+        } catch (UncheckedIOException exception) {
+            throw exception.getCause();
+        }
     }
 
     private CommandResult tryRunGit(List<String> argv) throws IOException {

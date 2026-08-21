@@ -92,13 +92,22 @@ public interface RdTaskStore {
      * @param taskId 任务 ID
      * @return 任务快照
      */
-    default Optional<RdTask> findTask(String taskId) {
+        default Optional<RdTask> findTask(String taskId) {
         Optional<? extends RdTask> bugFix = findBugFixTask(taskId);
         if (bugFix.isPresent()) {
             return Optional.of(bugFix.get());
         }
         Optional<? extends RdTask> requirement = findRequirementTask(taskId);
         return requirement.map(task -> task);
+    }
+
+    /**
+     * Admin workbench shell: same identity/status fields as {@link #findTask(String)}
+     * without selecting {@code prompt_snapshot} or {@code execution_result_json}.
+     * Engine paths must keep using {@link #findTask(String)}.
+     */
+    default Optional<RdTask> findAdminShell(String taskId) {
+        return findTask(taskId);
     }
 
     /**

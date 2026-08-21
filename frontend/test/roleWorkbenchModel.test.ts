@@ -4,10 +4,16 @@ import test from "node:test";
 import {
   buildRoleWorkbench,
   canSubmitRequirementTask,
+  deriveInjectionBadge,
+  deriveSourceLabel,
+  evaluateRolePromptsFreshness,
+  isEffectiveContextStale,
   isRetryableRequirementTaskStatus,
   projectRoleResult,
   roleStageSignature,
   selectRoleAttempt,
+  shortHash,
+  sortAgentTodos,
   taskStatusNotice
 } from "../src/pages/admin/rdtask/roleWorkbenchModel.ts";
 
@@ -298,3 +304,248 @@ test("projects only failed QA checks and missing browser validation as problems"
     viewports: ["390x844"]
   });
 });
+
+test("keeps two attempts of the same role strictly isolated without leaking state or prompt", () => {
+  const roles = buildRoleWorkbench([
+    stage("CODING_AGENT", 1, "FAILED_RETRYABLE", {
+      agentStateSequence: 5,
+      agentStateContentHash: "hash-state-1"
+    }),
+    stage("CODING_AGENT", 2, "RUNNING", {
+      agentStateSequence: 12,
+      agentStateContentHash: "hash-state-2"
+    })
+  ], [
+    {
+      stageRunId: "CODING_AGENT-1",
+      role: "CODING_AGENT",
+      status: "FAILED_RETRYABLE",
+      attemptNo: 1,
+      latestState: {
+        available: true,
+        sequence: 5,
+        contentHash: "hash-state-1"
+      } as any
+    },
+    {
+      stageRunId: "CODING_AGENT-2",
+      role: "CODING_AGENT",
+      status: "RUNNING",
+      attemptNo: 2,
+      latestState: {
+        available: true,
+        sequence: 12,
+        contentHash: "hash-state-2"
+      } as any
+    }
+  ], [
+    { artifactId: "qa-attempt-1", stageRunId: "CODING_AGENT-1" },
+    { artifactId: "qa-attempt-2", stageRunId: "CODING_AGENT-2" }
+  ]);
+
+  const codingRole = roles.find((item) => item.role === "CODING_AGENT")!;
+  assert.equal(codingRole.attempts.length, 2);
+
+  const attempt2 = codingRole.attempts[0];
+  const attempt1 = codingRole.attempts[1];
+
+  assert.equal(attempt2.attemptNo, 2);
+  assert.equal(attempt2.promptStage?.latestState?.sequence, 12);
+  assert.deepEqual(attempt2.qaEvidenceIds, ["qa-attempt-2"]);
+
+  assert.equal(attempt1.attemptNo, 1);
+  assert.equal(attempt1.promptStage?.latestState?.sequence, 5);
+  assert.deepEqual(attempt1.qaEvidenceIds, ["qa-attempt-1"]);
+});
+
+test("derives injection badges properly and distinguishes latest available vs injected available", () => {
+  // Case 1: effectiveContext is available -> 动态状态已注入
+  const injected = deriveInjectionBadge(
+    { available: true, sequence: 10 } as any,
+    { available: true, sequence: 12 } as any,
+    "PI"
+  );
+  assert.equal(injected.label, "动态状态已注入");
+  assert.equal(injected.tone, "success");
+
+  // Case 2: effectiveContext unavailable, but latestState available (e.g. latest seq 12, injected seq 10) -> 最新状态未注入
+  const uninjected = deriveInjectionBadge(
+    { available: false, unavailableReason: "尚无可证明的注入上下文" } as any,
+    { available: true, sequence: 12 } as any,
+    "PI"
+  );
+  assert.equal(uninjected.label, "最新状态未注入");
+  assert.equal(uninjected.tone, "warning");
+
+  // Case 3: non-PI runtime -> 当前 Attempt 不是 PI，状态栏不适用
+  const nonPi = deriveInjectionBadge(
+    { available: false } as any,
+    { available: false } as any,
+    "CLAUDE_CODE"
+  );
+  assert.equal(nonPi.label, "当前 Attempt 不是 PI，状态栏不适用");
+  assert.equal(nonPi.tone, "neutral");
+
+  // Case 4: disabled dynamic state
+  const disabled = deriveInjectionBadge(
+    { available: false, unavailableReason: "动态状态未启用" } as any,
+    undefined,
+    "PI"
+  );
+  assert.equal(disabled.label, "动态状态未启用");
+  assert.equal(disabled.tone, "neutral");
+});
+
+test("sorts agent todos according to lifecycle priority and preserves stability", () => {
+  const todos = [
+    { title: "Task D", status: "DONE" },
+    { title: "Task B", status: "BLOCKED" },
+    { title: "Task C", status: "PENDING" },
+    { title: "Task A", status: "IN_PROGRESS" },
+    { title: "Task E", status: "CANCELLED" }
+  ];
+
+  const sorted = sortAgentTodos(todos);
+  assert.deepEqual(
+    sorted.map((t) => t.status),
+    ["IN_PROGRESS", "BLOCKED", "PENDING", "DONE", "CANCELLED"]
+  );
+});
+
+test("updates roleStageSignature when state sequence or injection identity changes", () => {
+  const base = roleStageSignature([
+    stage("CODING_AGENT", 1, "RUNNING", {
+      agentStateSequence: 1,
+      agentStateContentHash: "hash-state-1",
+      agentLastInjectionSequence: 1,
+      agentLastInjectedBlockHash: "hash-block-1"
+    })
+  ]);
+
+  const stateAdvance = roleStageSignature([
+    stage("CODING_AGENT", 1, "RUNNING", {
+      agentStateSequence: 2,
+      agentStateContentHash: "hash-state-2",
+      agentLastInjectionSequence: 1,
+      agentLastInjectedBlockHash: "hash-block-1"
+    })
+  ]);
+
+  const injectionOnlyAdvance = roleStageSignature([
+    stage("CODING_AGENT", 1, "RUNNING", {
+      agentStateSequence: 1,
+      agentStateContentHash: "hash-state-1",
+      agentLastInjectionSequence: 2,
+      agentLastInjectedBlockHash: "hash-block-2"
+    })
+  ]);
+
+  assert.notEqual(base, stateAdvance);
+  assert.notEqual(base, injectionOnlyAdvance);
+  assert.notEqual(stateAdvance, injectionOnlyAdvance);
+});
+
+test("evaluates role prompt freshness against overview expected identity", () => {
+  const expectedMap = {
+    "CODING_AGENT-1": {
+      stateSequence: 12,
+      stateHash: "state-hash-12",
+      injectionSequence: 4,
+      injectedStateSequence: 3,
+      injectedBlockHash: "block-hash-4",
+      promptHash: "prompt-hash-1"
+    }
+  };
+
+  // Case 1: response state sequence is behind expected (10 vs 12) -> STALE_DISCARD
+  assert.equal(
+    evaluateRolePromptsFreshness([{
+      stageRunId: "CODING_AGENT-1",
+      role: "CODING_AGENT",
+      status: "RUNNING",
+      attemptNo: 1,
+      latestState: { sequence: 10, contentHash: "state-hash-10" } as any,
+      effectiveContext: { injectionSequence: 4, injectedBlockHash: "block-hash-4", promptContentHash: "prompt-hash-1" } as any
+    }], expectedMap),
+    "STALE_DISCARD"
+  );
+
+  // Case 2: response injection sequence is behind expected (3 vs 4) -> STALE_DISCARD
+  assert.equal(
+    evaluateRolePromptsFreshness([{
+      stageRunId: "CODING_AGENT-1",
+      role: "CODING_AGENT",
+      status: "RUNNING",
+      attemptNo: 1,
+      latestState: { sequence: 12, contentHash: "state-hash-12" } as any,
+      effectiveContext: { injectionSequence: 3, injectedBlockHash: "block-hash-3", promptContentHash: "prompt-hash-1" } as any
+    }], expectedMap),
+    "STALE_DISCARD"
+  );
+
+  // Case 3: sequence matches but hash differs -> CONSISTENCY_ERROR
+  assert.equal(
+    evaluateRolePromptsFreshness([{
+      stageRunId: "CODING_AGENT-1",
+      role: "CODING_AGENT",
+      status: "RUNNING",
+      attemptNo: 1,
+      latestState: { sequence: 12, contentHash: "corrupted-hash" } as any,
+      effectiveContext: { injectionSequence: 4, injectedBlockHash: "block-hash-4", promptContentHash: "prompt-hash-1" } as any
+    }], expectedMap),
+    "CONSISTENCY_ERROR"
+  );
+
+  // Case 4: sequences and hashes match perfectly -> ACCEPT
+  assert.equal(
+    evaluateRolePromptsFreshness([{
+      stageRunId: "CODING_AGENT-1",
+      role: "CODING_AGENT",
+      status: "RUNNING",
+      attemptNo: 1,
+      latestState: { sequence: 12, contentHash: "state-hash-12" } as any,
+      effectiveContext: { injectionSequence: 4, injectedBlockHash: "block-hash-4", promptContentHash: "prompt-hash-1" } as any
+    }], expectedMap),
+    "ACCEPT"
+  );
+
+  // Case 5: response state sequence is ahead of expected (13 vs 12) -> ACCEPT_AND_RECONCILE
+  assert.equal(
+    evaluateRolePromptsFreshness([{
+      stageRunId: "CODING_AGENT-1",
+      role: "CODING_AGENT",
+      status: "RUNNING",
+      attemptNo: 1,
+      latestState: { sequence: 13, contentHash: "state-hash-13" } as any,
+      effectiveContext: { injectionSequence: 4, injectedBlockHash: "block-hash-4", promptContentHash: "prompt-hash-1" } as any
+    }], expectedMap),
+    "ACCEPT_AND_RECONCILE"
+  );
+
+  // Case 6: response injection sequence is ahead of expected (5 vs 4) -> ACCEPT_AND_RECONCILE
+  assert.equal(
+    evaluateRolePromptsFreshness([{
+      stageRunId: "CODING_AGENT-1",
+      role: "CODING_AGENT",
+      status: "RUNNING",
+      attemptNo: 1,
+      latestState: { sequence: 12, contentHash: "state-hash-12" } as any,
+      effectiveContext: { injectionSequence: 5, injectedBlockHash: "block-hash-5", promptContentHash: "prompt-hash-1" } as any
+    }], expectedMap),
+    "ACCEPT_AND_RECONCILE"
+  );
+});
+
+test("reads stale provenance strictly from backend fields without clock inference", () => {
+  assert.equal(isEffectiveContextStale({ stale: true, staleReason: "threshold exceeded" }), true);
+  assert.equal(isEffectiveContextStale({ stale: false }), false);
+  assert.equal(isEffectiveContextStale(undefined), false);
+
+  assert.equal(deriveSourceLabel("LIVE_PROJECTION", false), "运行中投影");
+  assert.equal(deriveSourceLabel("LIVE_PROJECTION", true), "运行中投影（终态）");
+  assert.equal(deriveSourceLabel("ARCHIVED_ARTIFACT", true), "已归档终态");
+  assert.equal(deriveSourceLabel("", false), "");
+
+  assert.equal(shortHash("7480495920010891264", 8), "74804959");
+});
+

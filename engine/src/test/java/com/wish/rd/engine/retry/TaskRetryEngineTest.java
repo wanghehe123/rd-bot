@@ -17,6 +17,9 @@ import com.wish.rd.engine.retry.impl.InMemoryTaskRetryAttemptBindingStore;
 import com.wish.rd.engine.retry.impl.InMemoryTaskRetryCheckpointStore;
 import com.wish.rd.engine.retry.impl.InMemoryTaskRetryFailureProvenanceStore;
 import com.wish.rd.engine.retry.model.TaskFailurePhase;
+import com.wish.rd.engine.retry.model.TaskRetryAttemptBinding;
+import com.wish.rd.engine.retry.model.TaskRetryAttemptKind;
+import com.wish.rd.engine.retry.model.TaskRetryCheckpoint;
 import com.wish.rd.engine.retry.model.TaskRetryCommand;
 import com.wish.rd.engine.retry.model.TaskRetryCheckpointStatus;
 import com.wish.rd.engine.retry.model.TaskRetryFailureProvenance;
@@ -187,6 +190,131 @@ class TaskRetryEngineTest {
         assertEquals(List.of(1, 2), attempts(stages, AgentRole.CODING_AGENT));
         assertEquals(List.of(1), attempts(stages, AgentRole.QA_AGENT));
         assertEquals(RdTaskStatus.RECOVERING, tasks.task.status());
+    }
+
+    @Test
+    void reviewerRetryBindsExistingPendingDownstreamAttemptsWithoutCreatingFreshOnes() {
+        InMemoryAgentStageRunStore stages = new InMemoryAgentStageRunStore();
+        stages.save(stage("reviewer-1", AgentRole.REQUIREMENT_REVIEWER, 1, AgentStageStatus.FAILED_NEEDS_HUMAN));
+        stages.save(stage("architect-1", AgentRole.SOLUTION_ARCHITECT, 1, AgentStageStatus.PENDING));
+        stages.save(stage("coding-1", AgentRole.CODING_AGENT, 1, AgentStageStatus.PENDING));
+        stages.save(stage("qa-1", AgentRole.QA_AGENT, 1, AgentStageStatus.PENDING));
+        FakeTaskPort tasks = new FakeTaskPort(task(RdTaskStatus.FAILED_NEEDS_HUMAN, "{}"));
+        List<String> dispatched = new ArrayList<>();
+        AtomicInteger ids = new AtomicInteger();
+        InMemoryTaskRetryCheckpointStore checkpoints = new InMemoryTaskRetryCheckpointStore();
+        InMemoryTaskRetryAttemptBindingStore bindings = new InMemoryTaskRetryAttemptBindingStore();
+        TaskRetryEngine engine = checkpointBoundEngine(
+                tasks, stages, new InMemoryRetrievalRunStore(), new InMemoryAiReviewRunStore(),
+                checkpoints, dispatched, ids, inferredAgentRoleProvenance(tasks.task, stages),
+                dispatched::add, bindings);
+
+        var checkpoint = engine.retry("task-1", "USER");
+
+        assertEquals(TaskRetryCheckpointStatus.DISPATCHED, checkpoint.status());
+        assertEquals(List.of(1, 2), attempts(stages, AgentRole.REQUIREMENT_REVIEWER));
+        assertEquals(List.of(1), attempts(stages, AgentRole.SOLUTION_ARCHITECT));
+        assertEquals(List.of(1), attempts(stages, AgentRole.CODING_AGENT));
+        assertEquals(List.of(1), attempts(stages, AgentRole.QA_AGENT));
+        assertEquals("architect-1", bindings.findPrimary(
+                checkpoint.checkpointId(), TaskRetryAttemptKind.AGENT_STAGE, AgentRole.SOLUTION_ARCHITECT)
+                .orElseThrow().attemptId());
+        assertEquals("coding-1", bindings.findPrimary(
+                checkpoint.checkpointId(), TaskRetryAttemptKind.AGENT_STAGE, AgentRole.CODING_AGENT)
+                .orElseThrow().attemptId());
+        assertEquals("qa-1", bindings.findPrimary(
+                checkpoint.checkpointId(), TaskRetryAttemptKind.AGENT_STAGE, AgentRole.QA_AGENT)
+                .orElseThrow().attemptId());
+        assertEquals(2, bindings.findPrimary(
+                checkpoint.checkpointId(), TaskRetryAttemptKind.AGENT_STAGE, AgentRole.REQUIREMENT_REVIEWER)
+                .orElseThrow().attemptNo());
+    }
+
+    @Test
+    void architectRetryAfterEarlierCheckpointMintsFreshDownstreamAttempts() {
+        InMemoryAgentStageRunStore stages = new InMemoryAgentStageRunStore();
+        stages.save(stage("reviewer-1", AgentRole.REQUIREMENT_REVIEWER, 1, AgentStageStatus.FAILED_NEEDS_HUMAN));
+        stages.save(stage("reviewer-2", AgentRole.REQUIREMENT_REVIEWER, 2, AgentStageStatus.SUCCEEDED));
+        stages.save(stage("architect-1", AgentRole.SOLUTION_ARCHITECT, 1, AgentStageStatus.FAILED_NEEDS_HUMAN));
+        stages.save(stage("coding-1", AgentRole.CODING_AGENT, 1, AgentStageStatus.PENDING));
+        stages.save(stage("qa-1", AgentRole.QA_AGENT, 1, AgentStageStatus.PENDING));
+        FakeTaskPort tasks = new FakeTaskPort(task(RdTaskStatus.FAILED_NEEDS_HUMAN, "{}"));
+        InMemoryTaskRetryCheckpointStore checkpoints = new InMemoryTaskRetryCheckpointStore();
+        InMemoryTaskRetryAttemptBindingStore bindings = new InMemoryTaskRetryAttemptBindingStore();
+        checkpoints.createOrGet(new TaskRetryCheckpoint(
+                "checkpoint-reviewer", "task-1", TaskFailurePhase.AGENT_ROLE, AgentRole.REQUIREMENT_REVIEWER,
+                "reviewer-1", "", "", 1, "task-1:300:AGENT_ROLE:REQUIREMENT_REVIEWER",
+                RdTaskStatus.FAILED_NEEDS_HUMAN, 300L, "", List.of(),
+                TaskRetryCheckpointStatus.FAILED_NEEDS_HUMAN, "architect failed", "", 100L, 120L));
+        bindings.save(new TaskRetryAttemptBinding(
+                "bind-reviewer-2", "checkpoint-reviewer", TaskRetryAttemptKind.AGENT_STAGE,
+                AgentRole.REQUIREMENT_REVIEWER, "reviewer-2", "", 2, 0));
+        bindings.save(new TaskRetryAttemptBinding(
+                "bind-architect-1", "checkpoint-reviewer", TaskRetryAttemptKind.AGENT_STAGE,
+                AgentRole.SOLUTION_ARCHITECT, "architect-1", "", 1, 0));
+        bindings.save(new TaskRetryAttemptBinding(
+                "bind-coding-1", "checkpoint-reviewer", TaskRetryAttemptKind.AGENT_STAGE,
+                AgentRole.CODING_AGENT, "coding-1", "", 1, 0));
+        bindings.save(new TaskRetryAttemptBinding(
+                "bind-qa-1", "checkpoint-reviewer", TaskRetryAttemptKind.AGENT_STAGE,
+                AgentRole.QA_AGENT, "qa-1", "", 1, 0));
+        List<String> dispatched = new ArrayList<>();
+        TaskRetryEngine engine = checkpointBoundEngine(
+                tasks, stages, new InMemoryRetrievalRunStore(), new InMemoryAiReviewRunStore(),
+                checkpoints, dispatched, new AtomicInteger(),
+                agentRoleProvenance(tasks.task, "architect-1", AgentRole.SOLUTION_ARCHITECT),
+                dispatched::add, bindings);
+
+        var checkpoint = engine.retry("task-1", "USER");
+
+        assertEquals(TaskRetryCheckpointStatus.DISPATCHED, checkpoint.status());
+        assertEquals(List.of(1, 2), attempts(stages, AgentRole.SOLUTION_ARCHITECT));
+        assertEquals(List.of(1, 2), attempts(stages, AgentRole.CODING_AGENT));
+        assertEquals(List.of(1, 2), attempts(stages, AgentRole.QA_AGENT));
+        assertEquals(AgentStageStatus.CANCELLED, stages.findById("coding-1").orElseThrow().status());
+        assertEquals(AgentStageStatus.CANCELLED, stages.findById("qa-1").orElseThrow().status());
+        assertEquals("RETRY_CHECKPOINT_SUPERSEDED", stages.findById("coding-1").orElseThrow().errorCategory());
+        assertEquals("coding-1", bindings.findByStageRunId("coding-1").orElseThrow().attemptId());
+        assertEquals("checkpoint-reviewer", bindings.findByStageRunId("coding-1").orElseThrow().checkpointId());
+        assertEquals(latestStage(stages, AgentRole.CODING_AGENT).stageRunId(), bindings.findPrimary(
+                checkpoint.checkpointId(), TaskRetryAttemptKind.AGENT_STAGE, AgentRole.CODING_AGENT)
+                .orElseThrow().attemptId());
+        assertEquals(latestStage(stages, AgentRole.QA_AGENT).stageRunId(), bindings.findPrimary(
+                checkpoint.checkpointId(), TaskRetryAttemptKind.AGENT_STAGE, AgentRole.QA_AGENT)
+                .orElseThrow().attemptId());
+        assertEquals(latestStage(stages, AgentRole.SOLUTION_ARCHITECT).stageRunId(), bindings.findPrimary(
+                checkpoint.checkpointId(), TaskRetryAttemptKind.AGENT_STAGE, AgentRole.SOLUTION_ARCHITECT)
+                .orElseThrow().attemptId());
+    }
+
+    @Test
+    void failedPreparationCheckpointDoesNotBlockLaterRetryOfSameRoleAndVersion() {
+        InMemoryAgentStageRunStore stages = new InMemoryAgentStageRunStore();
+        stages.save(stage("reviewer-1", AgentRole.REQUIREMENT_REVIEWER, 1, AgentStageStatus.SUCCEEDED));
+        stages.save(stage("architect-1", AgentRole.SOLUTION_ARCHITECT, 1, AgentStageStatus.FAILED_NEEDS_HUMAN));
+        stages.save(stage("architect-2", AgentRole.SOLUTION_ARCHITECT, 2, AgentStageStatus.FAILED_RETRYABLE));
+        stages.save(stage("coding-1", AgentRole.CODING_AGENT, 1, AgentStageStatus.PENDING));
+        stages.save(stage("qa-1", AgentRole.QA_AGENT, 1, AgentStageStatus.PENDING));
+        FakeTaskPort tasks = new FakeTaskPort(task(RdTaskStatus.FAILED_NEEDS_HUMAN, "{}"));
+        InMemoryTaskRetryCheckpointStore checkpoints = new InMemoryTaskRetryCheckpointStore();
+        checkpoints.createOrGet(new TaskRetryCheckpoint(
+                "checkpoint-failed-prep", "task-1", TaskFailurePhase.AGENT_ROLE, AgentRole.SOLUTION_ARCHITECT,
+                "architect-1", "", "", 2, "task-1:300:AGENT_ROLE:SOLUTION_ARCHITECT",
+                RdTaskStatus.FAILED_NEEDS_HUMAN, 300L, "", List.of(),
+                TaskRetryCheckpointStatus.FAILED_RETRYABLE, "binding insert failed",
+                "retry attempt binding insert did not return a row", 100L, 120L));
+        List<String> dispatched = new ArrayList<>();
+        TaskRetryEngine engine = checkpointBoundEngine(
+                tasks, stages, new InMemoryRetrievalRunStore(), new InMemoryAiReviewRunStore(),
+                checkpoints, dispatched, new AtomicInteger(),
+                agentRoleProvenance(tasks.task, "architect-1", AgentRole.SOLUTION_ARCHITECT));
+
+        var checkpoint = engine.retry("task-1", "USER");
+
+        assertEquals(TaskRetryCheckpointStatus.DISPATCHED, checkpoint.status());
+        assertEquals(3, checkpoint.attemptNo());
+        assertEquals("task-1:300:AGENT_ROLE:SOLUTION_ARCHITECT:3", checkpoint.idempotencyKey());
+        assertEquals(2, checkpoints.listByTask("task-1").size());
     }
 
     @Test
@@ -602,7 +730,7 @@ class TaskRetryEngineTest {
             TaskRetryFailureProvenance provenance
     ) {
         return checkpointBoundEngine(tasks, stages, retrievals, reviews, checkpoints, dispatched, ids,
-                provenance, dispatched::add);
+                provenance, dispatched::add, new InMemoryTaskRetryAttemptBindingStore());
     }
 
     private TaskRetryEngine checkpointBoundEngine(
@@ -616,12 +744,27 @@ class TaskRetryEngineTest {
             TaskRetryFailureProvenance provenance,
             Consumer<String> onDispatchCheckpoint
     ) {
+        return checkpointBoundEngine(tasks, stages, retrievals, reviews, checkpoints, dispatched, ids,
+                provenance, onDispatchCheckpoint, new InMemoryTaskRetryAttemptBindingStore());
+    }
+
+    private TaskRetryEngine checkpointBoundEngine(
+            FakeTaskPort tasks,
+            InMemoryAgentStageRunStore stages,
+            InMemoryRetrievalRunStore retrievals,
+            InMemoryAiReviewRunStore reviews,
+            InMemoryTaskRetryCheckpointStore checkpoints,
+            List<String> dispatched,
+            AtomicInteger ids,
+            TaskRetryFailureProvenance provenance,
+            Consumer<String> onDispatchCheckpoint,
+            InMemoryTaskRetryAttemptBindingStore bindings
+    ) {
         InMemoryTaskRetryFailureProvenanceStore provenanceStore = new InMemoryTaskRetryFailureProvenanceStore();
         provenanceStore.save(provenance);
         TaskFailureRecoveryService recovery = new TaskFailureRecoveryService(
                 tasks, stages, new InMemoryAgentStageArtifactStore(), retrievals, reviews, checkpoints,
                 provenanceStore, new TaskRetryPointResolver(), new TaskFailureDiagnosticParser());
-        InMemoryTaskRetryAttemptBindingStore bindings = new InMemoryTaskRetryAttemptBindingStore();
         TaskRetryEngine engine = new TaskRetryEngine(
                 tasks, stages, retrievals, reviews, checkpoints, new InMemoryTaskMaterialStore(), recovery,
                 new TaskRetryPointResolver(), new TaskRetryDispatcherPort() {

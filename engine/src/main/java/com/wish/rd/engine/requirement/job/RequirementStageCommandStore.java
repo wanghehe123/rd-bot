@@ -26,6 +26,13 @@ public interface RequirementStageCommandStore {
         return find(taskId, role, stage);
     }
 
+    /** Returns one command under its remediation-round generation identity. */
+    default Optional<RequirementStageCommand> findByRemediation(
+            String taskId, String role, String stage, String remediationRoundId
+    ) {
+        return Optional.empty();
+    }
+
     /** Returns the durable command for one command identity, when present. */
     Optional<RequirementStageCommand> findById(String commandId);
 

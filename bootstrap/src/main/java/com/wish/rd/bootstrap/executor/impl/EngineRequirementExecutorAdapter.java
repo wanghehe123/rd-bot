@@ -31,6 +31,8 @@ import com.wish.rd.rag.qa.model.QaValidationProfile;
 import com.wish.rd.rag.project.runtime.ProjectRuntimeProfileService;
 import com.wish.rd.rag.project.agent.AgentExecutionProfileSnapshotStore;
 import com.wish.rd.rag.project.agent.model.AgentExecutionProfileSnapshot;
+import com.wish.rd.rag.project.agent.model.AgentRuntimeCapability;
+import com.wish.rd.rag.project.agent.model.AgentRuntimeType;
 import org.springframework.core.task.AsyncTaskExecutor;
 import org.springframework.core.task.TaskRejectedException;
 
@@ -443,6 +445,21 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
         if (handoffAttachmentResolver != null) {
             attachments.addAll(handoffAttachmentResolver.resolve(request.role().name(), request.upstreamResultJson()));
         }
+        for (RequirementExecutionRequest.InitialAgentStateAttachment attachment
+                : request.initialAgentStateAttachments()) {
+            String filename = "attachments/qa-remediation/request.json".equals(attachment.path())
+                    ? "qa-remediation/request.json"
+                    : java.nio.file.Path.of(attachment.path()).getFileName().toString();
+            boolean duplicate = attachments.stream().anyMatch(existing -> existing.filename().equals(filename));
+            if (duplicate) {
+                throw new IllegalStateException("duplicate initial state attachment filename: " + filename);
+            }
+            attachments.add(new com.wish.rd.exec.repair.execution.model.RepairInputAttachment(
+                    filename,
+                    "text/plain; charset=utf-8",
+                    attachment.content().getBytes(java.nio.charset.StandardCharsets.UTF_8)
+            ));
+        }
         return List.copyOf(attachments);
     }
 
@@ -546,6 +563,11 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
         }
         if (!request.contextPolicyJson().isBlank()) {
             context.put("contextPolicyJson", request.contextPolicyJson());
+        }
+        if (!request.initialAgentStateProtocol().isBlank()) {
+            context.put("initialAgentStateProtocol", request.initialAgentStateProtocol());
+            context.put("initialAgentStateJson", request.initialAgentStateJson());
+            context.put("initialAgentStateHash", request.initialAgentStateHash());
         }
         if (handoffPublisher != null) {
             context.put("roleHandoffMaxTokens", String.valueOf(handoffPublisher.maxTokens()));
@@ -1086,7 +1108,10 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
         }
         try {
             String json = OBJECT_MAPPER.writeValueAsString(expandedAgentResult(repairResult.rawResultJson()));
-            AgentRoleResultValidation validation = AGENT_ROLE_RESULT_VALIDATOR.validate("QA_AGENT", json);
+            boolean remediationV2Enabled = qaRemediationV2Enabled(request);
+            AgentRoleResultValidation validation = AGENT_ROLE_RESULT_VALIDATOR.validate(
+                    "QA_AGENT", json, remediationV2Enabled
+            );
             if (!validation.valid()) {
                 return "QA evidence protocol invalid: " + String.join("; ", validation.errors());
             }
@@ -1094,7 +1119,8 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
                     json,
                     repairResult.artifacts(),
                     acceptanceCriteria(request.task()),
-                    candidateChangedFilesFromMetadata(repairResult.dockerMetadataJson())
+                    candidateChangedFilesFromMetadata(repairResult.dockerMetadataJson()),
+                    remediationV2Enabled
             );
             if (!evidenceValidation.valid()) {
                 return "QA evidence bundle invalid: " + String.join("; ", evidenceValidation.errors());
@@ -1110,6 +1136,28 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
                     : "Host-owned assertion failed: " + String.join("; ", hostAssertionErrors);
         } catch (JsonProcessingException exception) {
             return "QA evidence protocol invalid: result cannot be serialized";
+        }
+    }
+
+    private boolean qaRemediationV2Enabled(RequirementExecutionRequest request) {
+        if (!agentRuntimeConfiguration.enabled()
+                || agentRuntimeConfiguration.snapshotStore() == null
+                || request == null
+                || request.executionProfileSnapshotId().isBlank()) {
+            return false;
+        }
+        try {
+            return agentRuntimeConfiguration.snapshotStore()
+                    .findBySnapshotId(request.executionProfileSnapshotId())
+                    .filter(AgentExecutionProfileSnapshot::hasValidIntegrityHash)
+                    .filter(snapshot -> snapshot.runtimeType() == AgentRuntimeType.PI)
+                    .filter(snapshot -> snapshot.stageRunId().equals(request.stageRunId()))
+                    .filter(snapshot -> snapshot.taskId().equals(request.taskId()))
+                    .filter(snapshot -> snapshot.role().equals(request.role().name()))
+                    .filter(snapshot -> snapshot.hasCapability(AgentRuntimeCapability.PI_QA_REMEDIATION_V2))
+                    .isPresent();
+        } catch (RuntimeException invalidSnapshot) {
+            return false;
         }
     }
 

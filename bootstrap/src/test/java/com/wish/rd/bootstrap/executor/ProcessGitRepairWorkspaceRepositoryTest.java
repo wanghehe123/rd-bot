@@ -25,6 +25,20 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 class ProcessGitRepairWorkspaceRepositoryTest {
 
+    @Test
+    void shouldClassifyLibreSslGithubDropsAsTransient() {
+        assertTrue(ProcessGitRepairWorkspaceRepository.isTransientNetworkFailure(
+                "git command failed exitCode=128 command=git clone --branch main --single-branch "
+                        + "https://github.com/example/repo /tmp/repo "
+                        + "stderr=fatal: unable to access 'https://github.com/example/repo/': "
+                        + "LibreSSL SSL_connect: SSL_ERROR_SYSCALL in connection to github.com:443"));
+        assertFalse(ProcessGitRepairWorkspaceRepository.isTransientNetworkFailure(
+                "git command failed exitCode=128 stderr=fatal: Authentication failed"));
+        assertFalse(ProcessGitRepairWorkspaceRepository.isTransientNetworkFailure(
+                "fatal: unable to access 'https://github.com/example/repo/': "
+                        + "The requested URL returned error: 401"));
+    }
+
     @TempDir
     Path temporaryDirectory;
 

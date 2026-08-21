@@ -31,6 +31,8 @@ import com.wish.rd.rag.retrieval.run.model.RetrievalRunStatus;
 import com.wish.rd.rag.project.agent.model.ContextProtocolVersion;
 import com.wish.rd.rag.project.agent.model.AgentManifestCanonicalJson;
 import com.wish.rd.rag.project.agent.model.RoleExecutionInputManifest;
+import com.wish.rd.rag.project.agent.model.RoleExecutionBudget;
+import com.wish.rd.rag.project.agent.model.AgentRuntimeType;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -220,7 +222,28 @@ public class RequirementAgentStageOrchestrator {
             throw new IllegalArgumentException("AgentWorkflowPlan must not be null");
         }
         enforceBudgetLedger(plan, task);
-        return runInternal(plan, task, materials, context, planSnapshot, policyDecision, activeRetry, "", "", 0, 0);
+        return runInternal(plan, task, materials, context, planSnapshot, policyDecision, activeRetry,
+                "", "", "", "", 0, 0);
+    }
+
+    /** Executes a durable remediation command with Host-controlled context only. */
+    public RequirementExecutionResult runRemediationRole(
+            AgentWorkflowPlan plan,
+            RdRequirementTask task,
+            List<TaskMaterial> materials,
+            RequirementContextPackage context,
+            RequirementPlan planSnapshot,
+            RequirementPolicyDecision policyDecision,
+            TaskRetryCheckpoint activeRetry,
+            String qaProductRemediationRequestJson,
+            String qaProductRemediationRequestHash,
+            String qaProtocolRetryPrompt
+    ) {
+        if (plan == null) throw new IllegalArgumentException("AgentWorkflowPlan must not be null");
+        enforceBudgetLedger(plan, task);
+        return runInternal(plan, task, materials, context, planSnapshot, policyDecision, activeRetry,
+                safe(qaProductRemediationRequestJson), safe(qaProductRemediationRequestHash),
+                safe(qaProtocolRetryPrompt), "", 0, 0);
     }
 
     /**
@@ -235,6 +258,8 @@ public class RequirementAgentStageOrchestrator {
             RequirementPolicyDecision policyDecision,
             TaskRetryCheckpoint activeRetry,
             String qaRemediationResultJson,
+            String qaRemediationRequestHash,
+            String qaProtocolRetryPrompt,
             String hostVerifyFailureFeedback,
             int hostVerifyRemediationCount,
             int qaRemediationCount
@@ -347,9 +372,21 @@ public class RequirementAgentStageOrchestrator {
             if (role == AgentRole.CODING_AGENT && !safe(hostVerifyFailureFeedback).isBlank()) {
                 previousFailure = joinPromptSections(hostVerifyFailureFeedback, previousFailure);
             }
+            if (role == AgentRole.QA_AGENT && !safe(qaProtocolRetryPrompt).isBlank()) {
+                previousFailure = joinPromptSections(qaProtocolRetryPrompt, previousFailure);
+            }
+            QaRemediationPackageBuilder.Package remediationPackage = null;
+            if (role == AgentRole.CODING_AGENT && !qaRemediationResultJson.isBlank()
+                    && executionProfileResolution.piQaRemediationV2Enabled()) {
+                if (qaRemediationRequestHash.isBlank()) {
+                    throw new IllegalStateException("PI QA remediation package hash is required");
+                }
+                remediationPackage = new QaRemediationPackageBuilder().fromFrozen(
+                        qaRemediationResultJson, qaRemediationRequestHash);
+            }
             String recoverySection = joinPromptSections(
-                    recoveryPromptSection(activeRetry, role, roleContext),
-                    previousFailure
+                    joinPromptSections(recoveryPromptSection(activeRetry, role, roleContext), previousFailure),
+                    remediationPackage == null ? "" : remediationPackage.promptSection()
             );
             String rolePrompt = buildAgentPrompt(
                     role,
@@ -379,6 +416,36 @@ public class RequirementAgentStageOrchestrator {
                     activeRetry
             );
             stage = manifestCapture.stage();
+            InitialAgentStateDispatch initialAgentState;
+            try {
+                initialAgentState = prepareInitialAgentState(
+                        task,
+                        role,
+                        roleContext,
+                        stage,
+                        executionProfileResolution,
+                        manifestCapture.manifest(),
+                        remediationPackage
+                );
+            } catch (RuntimeException exception) {
+                String reason = firstNonBlank(exception.getMessage(), "PI initial agent state is invalid");
+                AgentStageRun failedStage = transitionStage(
+                        stage,
+                        AgentStageStatus.FAILED_NEEDS_HUMAN,
+                        "PI_AGENT_STATE_V2_INVALID",
+                        reason
+                );
+                publishStageAlert(
+                        failedStage,
+                        AgentWorkflowAlertType.STAGE_FAILED_NEEDS_HUMAN,
+                        reason
+                );
+                return RequirementExecutionResult.failure(
+                        task.taskId(),
+                        reason,
+                        aggregateAgentResultsJson("NEEDS_HUMAN", pullRequestUrl, stageResults)
+                );
+            }
             stage = transitionStage(stage, AgentStageStatus.RUNNING, "", "");
             RequirementExecutionResult roleResult;
             try {
@@ -391,7 +458,8 @@ public class RequirementAgentStageOrchestrator {
                         upstreamResultJson,
                         stage,
                         executionProfileResolution.snapshotId(),
-                        manifestCapture.manifest()
+                        manifestCapture.manifest(),
+                        initialAgentState
                 );
             } catch (RuntimeException exception) {
                 // RUNNING -> FAILED_RETRYABLE：执行器抛出异常，先记录可重试失败并返回全链路失败。
@@ -487,10 +555,20 @@ public class RequirementAgentStageOrchestrator {
                 if (role == AgentRole.QA_AGENT
                         && plan.qaRemediationAllowed()
                         && qaRemediationCount < plan.qaMaxRemediationPasses()
-                        && isCodingRemediationRequested(roleResult.resultJson())) {
+                        && isCodingRemediationRequested(
+                                roleResult.resultJson(), executionProfileResolution
+                        )) {
                     List<AgentStageRun> remediationStages = createQaRemediationAttempts(task.taskId());
                     if (!remediationStages.isEmpty()) {
                         publishQaRemediationStarted(failedStage, remediationStages, roleResult.resultJson());
+                        String frozenRequestJson = roleResult.resultJson();
+                        String frozenRequestHash = "";
+                        if (executionProfileResolution.piQaRemediationV2Enabled()) {
+                            QaRemediationPackageBuilder.Package frozen = new QaRemediationPackageBuilder().build(
+                                    failedStage.stageRunId(), qaRemediationCount + 1, roleResult.resultJson());
+                            frozenRequestJson = frozen.attachment().content();
+                            frozenRequestHash = frozen.requestHash();
+                        }
                         // spec §5.2：一次性修复回路。深度上限由 plan.qaMaxRemediationPasses 守门（默认 1）。
                         return runInternal(
                                 plan,
@@ -500,7 +578,9 @@ public class RequirementAgentStageOrchestrator {
                                 planSnapshot,
                                 policyDecision,
                                 activeRetry,
-                                roleResult.resultJson(),
+                                frozenRequestJson,
+                                frozenRequestHash,
+                                qaProtocolRetryPrompt,
                                 hostVerifyFailureFeedback,
                                 hostVerifyRemediationCount,
                                 qaRemediationCount + 1
@@ -509,10 +589,14 @@ public class RequirementAgentStageOrchestrator {
                 }
                 // 任意角色 FAILED_NEEDS_HUMAN 都必须聚合为 NEEDS_HUMAN，
                 // 否则上层会把任务误标成 REJECTED（CP-06）。
+                String aggregate = aggregateAgentResultsJson("NEEDS_HUMAN", pullRequestUrl, stageResults);
+                if (role == AgentRole.QA_AGENT) {
+                    aggregate = attachAuthoritativeQaRoleResult(aggregate, roleResult.resultJson());
+                }
                 return RequirementExecutionResult.failure(
                         task.taskId(),
                         role + " failed: " + reason,
-                        aggregateAgentResultsJson("NEEDS_HUMAN", pullRequestUrl, stageResults)
+                        aggregate
                 );
             }
             if (role == AgentRole.REQUIREMENT_REVIEWER) {
@@ -596,6 +680,8 @@ public class RequirementAgentStageOrchestrator {
                         policyDecision,
                         activeRetry,
                         qaRemediationResultJson,
+                        qaRemediationRequestHash,
+                        qaProtocolRetryPrompt,
                         hostVerifyRemediationCount,
                         qaRemediationCount,
                         stage,
@@ -1436,7 +1522,8 @@ public class RequirementAgentStageOrchestrator {
             String upstreamResultJson,
             AgentStageRun stage,
             String executionProfileSnapshotId,
-            RoleExecutionInputManifest inputManifest
+            RoleExecutionInputManifest inputManifest,
+            InitialAgentStateDispatch initialAgentState
     ) {
         String inputManifestHash = inputManifest == null ? "" : inputManifest.manifestHash();
         String contextPolicyHash = inputManifest == null
@@ -1462,9 +1549,97 @@ public class RequirementAgentStageOrchestrator {
                         inputManifestHash,
                         contextPolicyHash,
                         inputManifestJson,
-                        contextPolicyJson
+                        contextPolicyJson,
+                        initialAgentState.protocol(),
+                        initialAgentState.json(),
+                        initialAgentState.hash(),
+                        initialAgentState.attachments()
                 ))
         );
+    }
+
+    private InitialAgentStateDispatch prepareInitialAgentState(
+            RdRequirementTask task,
+            AgentRole role,
+            RoleContextPackage roleContext,
+            AgentStageRun stage,
+            RequirementExecutionProfileResolution resolution,
+            RoleExecutionInputManifest inputManifest,
+            QaRemediationPackageBuilder.Package remediationPackage
+    ) {
+        if (resolution == null || !resolution.piStateV2Enabled()) {
+            return remediationPackage == null
+                    ? InitialAgentStateDispatch.empty()
+                    : InitialAgentStateDispatch.remediationOnly(remediationPackage.attachment());
+        }
+        RoleExecutionBudget budget = inputManifest == null
+                ? new RoleExecutionBudget(
+                        RoleExecutionBudget.UNAVAILABLE_MODEL,
+                        RoleExecutionBudget.UNAVAILABLE_TOKENS,
+                        RoleExecutionBudget.UNAVAILABLE_TOKENS,
+                        0L,
+                        "chars/4-v1"
+                )
+                : inputManifest.budget();
+        long now = System.currentTimeMillis();
+        PiAgentContextStateManager.InitialStateBundle bundle = new PiAgentContextStateManager()
+                .prepareInitialState(new PiAgentContextStateManager.InitialStateRequest(
+                        task.taskId(),
+                        stage.stageRunId(),
+                        role,
+                        stage.attemptNo(),
+                        AgentRuntimeType.PI,
+                        resolution.snapshotId(),
+                        "",
+                        task.createTimeEpochMillis() > 0L
+                                ? task.createTimeEpochMillis()
+                                : stage.createTimeEpochMillis(),
+                        now,
+                        role.name() + "_EXECUTION",
+                        budget,
+                        roleContext == null ? List.of() : roleContext.acceptanceCriteria(),
+                        remediationPackage == null ? List.of() : remediationPackage.todos(),
+                        now,
+                        resolution.maxInjectedStateBytes()
+                ));
+        List<RequirementExecutionRequest.InitialAgentStateAttachment> attachments = new ArrayList<>(bundle.attachments().stream()
+                .map(attachment -> new RequirementExecutionRequest.InitialAgentStateAttachment(
+                        attachment.path(), attachment.content(), attachment.hash(), attachment.bytes()
+                ))
+                .toList());
+        if (remediationPackage != null) {
+            attachments.add(remediationPackage.attachment());
+        }
+        return new InitialAgentStateDispatch(
+                bundle.state().protocol(),
+                bundle.state().canonicalJson(),
+                bundle.state().canonicalHash(),
+                List.copyOf(attachments)
+        );
+    }
+
+    private record InitialAgentStateDispatch(
+            String protocol,
+            String json,
+            String hash,
+            List<RequirementExecutionRequest.InitialAgentStateAttachment> attachments
+    ) {
+        private InitialAgentStateDispatch {
+            protocol = safe(protocol);
+            json = json == null ? "" : json;
+            hash = safe(hash);
+            attachments = attachments == null ? List.of() : List.copyOf(attachments);
+        }
+
+        private static InitialAgentStateDispatch empty() {
+            return new InitialAgentStateDispatch("", "", "", List.of());
+        }
+
+        private static InitialAgentStateDispatch remediationOnly(
+                RequirementExecutionRequest.InitialAgentStateAttachment attachment
+        ) {
+            return new InitialAgentStateDispatch("", "", "", List.of(attachment));
+        }
     }
 
     private RequirementExecutionResult normalizeResult(String taskId, RequirementExecutionResult result) {
@@ -1952,13 +2127,19 @@ public class RequirementAgentStageOrchestrator {
         return normalized.length() <= 1_200 ? normalized : normalized.substring(0, 1_200) + "...";
     }
 
-    private boolean isCodingRemediationRequested(String qaResultJson) {
+    private boolean isCodingRemediationRequested(
+            String qaResultJson,
+            RequirementExecutionProfileResolution profileResolution
+    ) {
         try {
             JsonNode root = OBJECT_MAPPER.readTree(safe(qaResultJson));
             if (root == null || !root.isObject()) {
                 return false;
             }
             String status = root.path("status").asText("").strip().toUpperCase(Locale.ROOT);
+            if (profileResolution != null && profileResolution.piQaRemediationV2Enabled()) {
+                return isVerifiedPiV2CodingRemediationRequest(root, status);
+            }
             String category = root.path("failureCategory").asText("").strip().toUpperCase(Locale.ROOT);
             String recommendation = root.path("retryRecommendation").asText("").strip().toUpperCase(Locale.ROOT);
             return "FAILED".equals(status)
@@ -1967,6 +2148,43 @@ public class RequirementAgentStageOrchestrator {
         } catch (JsonProcessingException exception) {
             return false;
         }
+    }
+
+    private static boolean isVerifiedPiV2CodingRemediationRequest(JsonNode root, String status) {
+        JsonNode request = root.path("remediationRequest");
+        JsonNode findings = root.path("bugFindings");
+        if (!"FAILED".equals(status)
+                || !request.isObject()
+                || !request.path("requested").asBoolean(false)
+                || !AgentRole.CODING_AGENT.name().equals(
+                        request.path("targetRole").asText("").strip().toUpperCase(Locale.ROOT)
+                )
+                || request.path("reason").asText("").isBlank()
+                || !request.path("bugFindingIds").isArray()
+                || request.path("bugFindingIds").isEmpty()
+                || !findings.isArray()
+                || findings.isEmpty()) {
+            return false;
+        }
+        Map<String, JsonNode> findingsById = new LinkedHashMap<>();
+        for (JsonNode finding : findings) {
+            if (!finding.isObject()) return false;
+            String id = finding.path("id").asText("").strip();
+            JsonNode evidence = finding.path("evidenceArtifactIds");
+            if (id.isBlank() || !evidence.isArray() || evidence.isEmpty()
+                    || findingsById.putIfAbsent(id, finding) != null) {
+                return false;
+            }
+            for (JsonNode evidenceId : evidence) {
+                if (!evidenceId.isTextual() || evidenceId.asText("").isBlank()) return false;
+            }
+        }
+        Set<String> selectedIds = new LinkedHashSet<>();
+        for (JsonNode idNode : request.path("bugFindingIds")) {
+            String id = idNode.asText("").strip();
+            if (id.isBlank() || !selectedIds.add(id) || !findingsById.containsKey(id)) return false;
+        }
+        return selectedIds.equals(findingsById.keySet());
     }
 
     private String reusedStageResultJson(AgentStageRun stage) {
@@ -2175,6 +2393,37 @@ public class RequirementAgentStageOrchestrator {
                 json(pullRequestUrl),
                 stageResultsJson(stageResults)
         ).strip();
+    }
+
+    /**
+     * Command-scoped QA failure keeps CP-06 aggregate {@code status=NEEDS_HUMAN}, but Host
+     * bounce must read the inner FAILED object as JSON. Prefer the {@code qaRoleResult}
+     * sibling; {@code stages[].resultJson} is only a fallback string.
+     */
+    private String attachAuthoritativeQaRoleResult(String aggregateJson, String qaRoleResultJson) {
+        try {
+            JsonNode qa = OBJECT_MAPPER.readTree(qaRoleResultJson == null ? "{}" : qaRoleResultJson);
+            if (qa == null || !qa.isObject()) {
+                return aggregateJson;
+            }
+            JsonNode root;
+            try {
+                root = OBJECT_MAPPER.readTree(aggregateJson == null ? "{}" : aggregateJson);
+            } catch (JsonProcessingException invalidAggregate) {
+                root = OBJECT_MAPPER.createObjectNode();
+                ((ObjectNode) root).put("status", "NEEDS_HUMAN");
+            }
+            if (root == null || !root.isObject()) {
+                ObjectNode envelope = OBJECT_MAPPER.createObjectNode();
+                envelope.put("status", "NEEDS_HUMAN");
+                envelope.set("qaRoleResult", qa);
+                return OBJECT_MAPPER.writeValueAsString(envelope);
+            }
+            ((ObjectNode) root).set("qaRoleResult", qa);
+            return OBJECT_MAPPER.writeValueAsString(root);
+        } catch (JsonProcessingException ignored) {
+            return aggregateJson;
+        }
     }
 
     private String mergeDeliveryResultJson(String deliveryResultJson, String pullRequestUrl, List<String> stageResults) {
@@ -2678,6 +2927,8 @@ public class RequirementAgentStageOrchestrator {
             RequirementPolicyDecision policyDecision,
             TaskRetryCheckpoint activeRetry,
             String qaRemediationResultJson,
+            String qaRemediationRequestHash,
+            String qaProtocolRetryPrompt,
             int hostVerifyRemediationCount,
             int qaRemediationCount,
             AgentStageRun codingStage,
@@ -2733,6 +2984,8 @@ public class RequirementAgentStageOrchestrator {
                         policyDecision,
                         activeRetry,
                         qaRemediationResultJson,
+                        qaRemediationRequestHash,
+                        qaProtocolRetryPrompt,
                         hostVerifyFailureFeedbackSection(verification),
                         hostVerifyRemediationCount + 1,
                         qaRemediationCount
@@ -3112,10 +3365,15 @@ public class RequirementAgentStageOrchestrator {
     }
 
     private String roleInstruction(AgentRole role, RequirementExecutionProfileResolution resolution) {
-        if (resolution != null && resolution.protocolVersion() == ContextProtocolVersion.FACTS_V1) {
-            return roleInstructionFactsV1(role, resolution.dynamicStateEnabled());
+        String instruction = resolution != null && resolution.protocolVersion() == ContextProtocolVersion.FACTS_V1
+                ? roleInstructionFactsV1(role, resolution.dynamicStateEnabled())
+                : roleInstructionLegacy(role);
+        if (role == AgentRole.QA_AGENT
+                && resolution != null
+                && resolution.piQaRemediationV2Enabled()) {
+            return instruction + "\n- 当前 Attempt 启用 PI_QA_REMEDIATION_V2：是否打回 Coding 只由 remediationRequest.requested 显式决定，不受 failureCategory 白名单限制；每个请求修复的 finding 必须绑定失败验收和真实文件证据。";
         }
-        return roleInstructionLegacy(role);
+        return instruction;
     }
 
     private String roleInstructionLegacy(AgentRole role) {
@@ -3217,10 +3475,22 @@ public class RequirementAgentStageOrchestrator {
     }
 
     private String roleOutputContract(AgentRole role, RequirementExecutionProfileResolution resolution) {
-        if (resolution != null && resolution.protocolVersion() == ContextProtocolVersion.FACTS_V1) {
-            return roleOutputContractFactsV1(role);
+        String contract = resolution != null && resolution.protocolVersion() == ContextProtocolVersion.FACTS_V1
+                ? roleOutputContractFactsV1(role)
+                : roleOutputContractLegacy(role);
+        if (role == AgentRole.QA_AGENT
+                && resolution != null
+                && resolution.piQaRemediationV2Enabled()) {
+            return contract + """
+
+                    当前 Attempt 额外强制 PI_QA_REMEDIATION_V2 字段：
+                    - acceptanceResults 每项增加唯一 criteriaId。
+                    - remediationRequest={requested:boolean,targetRole:"CODING_AGENT 或空字符串",reason:"明确原因",bugFindingIds:["finding id"]}。
+                    - bugFindings 每项包含 id、severity(LOW|MEDIUM|HIGH|CRITICAL)、acceptanceCriteriaId、reproductionSteps、expected、actual、evidenceArtifactIds、suspectedFiles。
+                    - requested=true 仅用于确实需要 CODING_AGENT 修复的 FAILED 结果；finding 必须引用 FAILED acceptanceResults.criteriaId 及该验收已引用的真实证据。其他失败 requested=false 且 bugFindings/bugFindingIds 为空。PASSED/SKIPPED 不得请求修复。
+                    """.strip();
         }
-        return roleOutputContractLegacy(role);
+        return contract;
     }
 
     private String roleOutputContractLegacy(AgentRole role) {
@@ -3476,12 +3746,11 @@ public class RequirementAgentStageOrchestrator {
     }
 
     private String json(String value) {
-        return "\"" + safe(value)
-                .replace("\\", "\\\\")
-                .replace("\"", "\\\"")
-                .replace("\n", "\\n")
-                .replace("\r", "\\r")
-                .replace("\t", "\\t") + "\"";
+        try {
+            return OBJECT_MAPPER.writeValueAsString(safe(value));
+        } catch (JsonProcessingException invalid) {
+            return "\"\"";
+        }
     }
 
     private static String safe(String value) {

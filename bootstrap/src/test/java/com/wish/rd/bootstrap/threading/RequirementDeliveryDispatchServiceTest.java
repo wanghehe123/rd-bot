@@ -1618,6 +1618,7 @@ class RequirementDeliveryDispatchServiceTest {
         when(finalizer.findLatestPrepared(claimed.commandId())).thenReturn(Optional.empty());
         when(finalizer.prepare(any(), any(), any(), anyLong())).thenReturn(marker);
         when(finalizer.recordOutcome(any(), any(), any(), any(), anyLong())).thenReturn(marker);
+        when(finalizer.decodeOutcomePlan(any())).thenReturn(plan);
         ArgumentCaptor<RequirementStageFinalizationPort.FinalizationCommand> finalization =
                 ArgumentCaptor.forClass(RequirementStageFinalizationPort.FinalizationCommand.class);
         when(finalizer.finalize(finalization.capture())).thenAnswer(invocation -> {

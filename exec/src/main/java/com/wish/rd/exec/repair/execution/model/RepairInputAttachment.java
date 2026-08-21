@@ -10,6 +10,7 @@ public record RepairInputAttachment(String filename, String mimeType, byte[] con
         if (filename.isBlank()) {
             throw new IllegalArgumentException("attachment filename must not be blank");
         }
+        filename = filename.replace('\\', '/');
         mimeType = mimeType == null || mimeType.isBlank() ? "application/octet-stream" : mimeType.strip();
         content = content == null ? new byte[0] : content.clone();
         if (content.length == 0) {

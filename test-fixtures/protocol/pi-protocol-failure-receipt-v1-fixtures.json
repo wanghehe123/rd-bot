@@ -1,0 +1,102 @@
+{
+  "valid": [
+    {
+      "name": "result missing after bounded recovery",
+      "input": {
+        "protocol": "PiProtocolFailureReceipt/v1",
+        "kind": "RESULT_MISSING_AFTER_RECOVERY",
+        "missingFacts": ["AGENT_RESULT_SUBMITTED"],
+        "resultSubmitted": true,
+        "resultSubmissionSource": "BRIDGE_SYNTHETIC",
+        "roleSchemaAccepted": false,
+        "acceptedResultDigest": "",
+        "agentSettled": true,
+        "eventStreamTrusted": true,
+        "containerTerminated": true,
+        "recoveryApplicable": true,
+        "recoveryIssued": true,
+        "recoveryExhausted": true,
+        "lastRejectionKind": "NONE",
+        "lastRejectionDigest": "",
+        "diagnosticArtifactIds": ["agent-events.jsonl", "runtime-meta.json"],
+        "taskId": "task-协议",
+        "stageRunId": "stage-1",
+        "role": "QA_AGENT",
+        "attemptNo": 1,
+        "generatedAt": "2026-08-18T00:00:00Z"
+      },
+      "canonical": "{\"acceptedResultDigest\":\"\",\"agentSettled\":true,\"attemptNo\":1,\"containerTerminated\":true,\"diagnosticArtifactIds\":[\"agent-events.jsonl\",\"runtime-meta.json\"],\"eventStreamTrusted\":true,\"generatedAt\":\"2026-08-18T00:00:00Z\",\"kind\":\"RESULT_MISSING_AFTER_RECOVERY\",\"lastRejectionDigest\":\"\",\"lastRejectionKind\":\"NONE\",\"missingFacts\":[\"AGENT_RESULT_SUBMITTED\"],\"protocol\":\"PiProtocolFailureReceipt/v1\",\"recoveryApplicable\":true,\"recoveryExhausted\":true,\"recoveryIssued\":true,\"resultSubmissionSource\":\"BRIDGE_SYNTHETIC\",\"resultSubmitted\":true,\"role\":\"QA_AGENT\",\"roleSchemaAccepted\":false,\"stageRunId\":\"stage-1\",\"taskId\":\"task-协议\"}",
+      "hash": "sha256:22611355256f6da69d770d78ea378953a7f7678a3a078385f59bb2d8b7b16aba"
+    },
+    {
+      "name": "accepted agent result missing settled",
+      "input": {
+        "protocol": "PiProtocolFailureReceipt/v1",
+        "kind": "AGENT_SETTLED_MISSING",
+        "missingFacts": ["AGENT_SETTLED"],
+        "resultSubmitted": true,
+        "resultSubmissionSource": "AGENT_RD_SUBMIT_RESULT",
+        "roleSchemaAccepted": true,
+        "acceptedResultDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "agentSettled": false,
+        "eventStreamTrusted": true,
+        "containerTerminated": true,
+        "recoveryApplicable": false,
+        "recoveryIssued": false,
+        "recoveryExhausted": false,
+        "lastRejectionKind": "NONE",
+        "lastRejectionDigest": "",
+        "diagnosticArtifactIds": ["agent-events.jsonl", "result.json"],
+        "taskId": "task-2",
+        "stageRunId": "stage-2",
+        "role": "QA_AGENT",
+        "attemptNo": 2,
+        "generatedAt": "2026-08-18T00:01:00Z"
+      },
+      "canonical": "{\"acceptedResultDigest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"agentSettled\":false,\"attemptNo\":2,\"containerTerminated\":true,\"diagnosticArtifactIds\":[\"agent-events.jsonl\",\"result.json\"],\"eventStreamTrusted\":true,\"generatedAt\":\"2026-08-18T00:01:00Z\",\"kind\":\"AGENT_SETTLED_MISSING\",\"lastRejectionDigest\":\"\",\"lastRejectionKind\":\"NONE\",\"missingFacts\":[\"AGENT_SETTLED\"],\"protocol\":\"PiProtocolFailureReceipt/v1\",\"recoveryApplicable\":false,\"recoveryExhausted\":false,\"recoveryIssued\":false,\"resultSubmissionSource\":\"AGENT_RD_SUBMIT_RESULT\",\"resultSubmitted\":true,\"role\":\"QA_AGENT\",\"roleSchemaAccepted\":true,\"stageRunId\":\"stage-2\",\"taskId\":\"task-2\"}",
+      "hash": "sha256:51995212ee6abcb38c5bed0d8b7b8c19baf98dad90d532f6190c75228c3be276"
+    },
+    {
+      "name": "role schema rejection exhausted",
+      "input": {
+        "protocol": "PiProtocolFailureReceipt/v1",
+        "kind": "ROLE_SCHEMA_REJECTED_AFTER_RECOVERY",
+        "missingFacts": ["AGENT_RESULT_SUBMITTED", "ROLE_SCHEMA_ACCEPTED_RESULT"],
+        "resultSubmitted": true,
+        "resultSubmissionSource": "BRIDGE_SYNTHETIC",
+        "roleSchemaAccepted": false,
+        "acceptedResultDigest": "",
+        "agentSettled": true,
+        "eventStreamTrusted": true,
+        "containerTerminated": true,
+        "recoveryApplicable": true,
+        "recoveryIssued": true,
+        "recoveryExhausted": true,
+        "lastRejectionKind": "ROLE_SCHEMA",
+        "lastRejectionDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "diagnosticArtifactIds": ["agent-events.jsonl", "runtime-meta.json"],
+        "taskId": "task-3",
+        "stageRunId": "stage-3",
+        "role": "QA_AGENT",
+        "attemptNo": 3,
+        "generatedAt": "2026-08-18T00:02:00Z"
+      },
+      "canonical": "{\"acceptedResultDigest\":\"\",\"agentSettled\":true,\"attemptNo\":3,\"containerTerminated\":true,\"diagnosticArtifactIds\":[\"agent-events.jsonl\",\"runtime-meta.json\"],\"eventStreamTrusted\":true,\"generatedAt\":\"2026-08-18T00:02:00Z\",\"kind\":\"ROLE_SCHEMA_REJECTED_AFTER_RECOVERY\",\"lastRejectionDigest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"lastRejectionKind\":\"ROLE_SCHEMA\",\"missingFacts\":[\"AGENT_RESULT_SUBMITTED\",\"ROLE_SCHEMA_ACCEPTED_RESULT\"],\"protocol\":\"PiProtocolFailureReceipt/v1\",\"recoveryApplicable\":true,\"recoveryExhausted\":true,\"recoveryIssued\":true,\"resultSubmissionSource\":\"BRIDGE_SYNTHETIC\",\"resultSubmitted\":true,\"role\":\"QA_AGENT\",\"roleSchemaAccepted\":false,\"stageRunId\":\"stage-3\",\"taskId\":\"task-3\"}",
+      "hash": "sha256:0b3a2bdc3a8b6a0dd3822f6dcf3099fe6dbc97b665b3e958d9cad2e899ac3f52"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "contradictory accepted source",
+      "json": "{\"acceptedResultDigest\":\"\",\"agentSettled\":true,\"attemptNo\":1,\"containerTerminated\":true,\"diagnosticArtifactIds\":[\"agent-events.jsonl\"],\"eventStreamTrusted\":true,\"generatedAt\":\"2026-08-18T00:00:00Z\",\"kind\":\"RESULT_MISSING_AFTER_RECOVERY\",\"lastRejectionDigest\":\"\",\"lastRejectionKind\":\"NONE\",\"missingFacts\":[\"AGENT_RESULT_SUBMITTED\"],\"protocol\":\"PiProtocolFailureReceipt/v1\",\"recoveryApplicable\":true,\"recoveryExhausted\":true,\"recoveryIssued\":true,\"resultSubmissionSource\":\"AGENT_RD_SUBMIT_RESULT\",\"resultSubmitted\":true,\"role\":\"QA_AGENT\",\"roleSchemaAccepted\":false,\"stageRunId\":\"stage-1\",\"taskId\":\"task-1\"}",
+      "hash": "sha256:f11d2595a0c1c0f72b90796bc9c4b53deef1ced4ea604b4eb2199d60ce3b6b61",
+      "error": "contradicts"
+    },
+    {
+      "name": "hash mismatch",
+      "json": "{\"acceptedResultDigest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"agentSettled\":false,\"attemptNo\":2,\"containerTerminated\":true,\"diagnosticArtifactIds\":[\"agent-events.jsonl\",\"result.json\"],\"eventStreamTrusted\":true,\"generatedAt\":\"2026-08-18T00:01:00Z\",\"kind\":\"AGENT_SETTLED_MISSING\",\"lastRejectionDigest\":\"\",\"lastRejectionKind\":\"NONE\",\"missingFacts\":[\"AGENT_SETTLED\"],\"protocol\":\"PiProtocolFailureReceipt/v1\",\"recoveryApplicable\":false,\"recoveryExhausted\":false,\"recoveryIssued\":false,\"resultSubmissionSource\":\"AGENT_RD_SUBMIT_RESULT\",\"resultSubmitted\":true,\"role\":\"QA_AGENT\",\"roleSchemaAccepted\":true,\"stageRunId\":\"stage-2\",\"taskId\":\"task-2\"}",
+      "hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "error": "hash mismatch"
+    }
+  ]
+}

@@ -42,6 +42,39 @@ class QaEvidenceBundleValidatorTest {
     }
 
     @Test
+    void shouldAcceptPiV2FindingOnlyWhenFailedAcceptanceAndManifestShareRealEvidence() {
+        AgentRoleResultValidation validation = validator.validate(
+                remediationQaResult("ac-current-1", "qa-evidence/commands/current.log"),
+                remediationArtifacts(),
+                List.of(),
+                List.of("src/checkout.ts"),
+                true
+        );
+
+        assertTrue(validation.valid(), () -> String.join(", ", validation.errors()));
+    }
+
+    @Test
+    void shouldRejectPiV2FindingWithBrokenAcceptanceOrEvidenceLink() {
+        AgentRoleResultValidation wrongAcceptance = validator.validate(
+                remediationQaResult("ac-regression-1", "qa-evidence/commands/current.log"),
+                remediationArtifacts(), List.of(), List.of("src/checkout.ts"), true
+        );
+        AgentRoleResultValidation wrongEvidence = validator.validate(
+                remediationQaResult("ac-current-1", "qa-evidence/commands/regression.log"),
+                remediationArtifacts(), List.of(), List.of("src/checkout.ts"), true
+        );
+
+        assertFalse(wrongAcceptance.valid());
+        assertTrue(wrongAcceptance.errors().stream().anyMatch(error ->
+                error.contains("acceptanceCriteriaId") && error.contains("FAILED")));
+        assertFalse(wrongEvidence.valid());
+        assertTrue(wrongEvidence.errors().stream().anyMatch(error ->
+                error.contains("bugFindings[0].evidenceArtifactIds[0]")
+                        && error.contains("FAILED acceptance")));
+    }
+
+    @Test
     void shouldAcceptDocsOnlyQaWithoutBrowserEvidenceWhenChangedFilesAreDocsOnly() {
         AgentRoleResultValidation validation = validator.validate(
                 docsOnlyQaResult(),
@@ -193,6 +226,16 @@ class QaEvidenceBundleValidatorTest {
 
     private static List<RepairArtifact> browserArtifacts() {
         List<RepairArtifact> evidence = browserEvidenceArtifacts();
+        List<RepairArtifact> artifacts = new ArrayList<>(evidence);
+        artifacts.add(0, manifestArtifact(evidence));
+        return List.copyOf(artifacts);
+    }
+
+    private static List<RepairArtifact> remediationArtifacts() {
+        List<RepairArtifact> evidence = List.of(
+                artifact(RepairArtifactType.QA_COMMAND_LOG, "qa-evidence/commands/current.log", "failed current log"),
+                artifact(RepairArtifactType.QA_COMMAND_LOG, "qa-evidence/commands/regression.log", "passed regression log")
+        );
         List<RepairArtifact> artifacts = new ArrayList<>(evidence);
         artifacts.add(0, manifestArtifact(evidence));
         return List.copyOf(artifacts);
@@ -363,6 +406,22 @@ class QaEvidenceBundleValidatorTest {
                   "evidenceManifestArtifactId": "qa-evidence/manifest.json"
                 }
                 """;
+    }
+
+    private static String remediationQaResult(String acceptanceCriteriaId, String findingEvidenceId) {
+        return """
+                {
+                  "status":"FAILED","summary":"checkout regression","failureCategory":"QA_INFRASTRUCTURE","retryRecommendation":"CODING_AGENT",
+                  "browserValidation":{"required":false,"performed":false,"decisionSource":"NOT_APPLICABLE","baseUrl":"","browser":"chromium","viewports":[]},
+                  "acceptanceResults":[
+                    {"criteriaId":"ac-current-1","criteria":"checkout succeeds","scope":"CURRENT","command":"npm test","status":"FAILED","exitCode":1,"durationMillis":10,"logArtifactId":"qa-evidence/commands/current.log","evidenceArtifactIds":["qa-evidence/commands/current.log"]},
+                    {"criteriaId":"ac-regression-1","criteria":"regression","scope":"REGRESSION","command":"npm test","status":"PASSED","exitCode":0,"durationMillis":10,"logArtifactId":"qa-evidence/commands/regression.log","evidenceArtifactIds":["qa-evidence/commands/regression.log"]}
+                  ],
+                  "evidenceManifestArtifactId":"qa-evidence/manifest.json",
+                  "remediationRequest":{"requested":true,"targetRole":"CODING_AGENT","reason":"Fix checkout","bugFindingIds":["bug-1"]},
+                  "bugFindings":[{"id":"bug-1","severity":"HIGH","acceptanceCriteriaId":"%s","reproductionSteps":["run npm test"],"expected":"checkout succeeds","actual":"checkout fails","evidenceArtifactIds":["%s"],"suspectedFiles":["src/checkout.ts"]}]
+                }
+                """.formatted(acceptanceCriteriaId, findingEvidenceId);
     }
 
     private static List<RepairArtifact> docsOnlyArtifacts() {

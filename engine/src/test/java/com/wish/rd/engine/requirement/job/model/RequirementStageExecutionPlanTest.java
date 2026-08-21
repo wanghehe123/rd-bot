@@ -113,9 +113,9 @@ class RequirementStageExecutionPlanTest {
 
     @Test
     void rejectsUnsupportedSchemasNegativeConcurrencyAndNonterminalFailureContinuations() {
-        assertEquals(1, RequirementStageExecutionPlan.CURRENT_SCHEMA_VERSION);
+        assertEquals(2, RequirementStageExecutionPlan.CURRENT_SCHEMA_VERSION);
         assertThrows(IllegalArgumentException.class, () -> new RequirementStageExecutionPlan(
-                2, "task", 0L, 1L, RdTaskStatus.CREATED, List.of(),
+                3, "task", 0L, 1L, RdTaskStatus.CREATED, List.of(),
                 CommandDisposition.SUCCEEDED, ContinuationSpec.terminal(), ExternalEffectReceipt.none()));
         assertThrows(IllegalArgumentException.class, () -> new RequirementStageExecutionPlan(
                 RequirementStageExecutionPlan.CURRENT_SCHEMA_VERSION, "task", -1L, 1L,

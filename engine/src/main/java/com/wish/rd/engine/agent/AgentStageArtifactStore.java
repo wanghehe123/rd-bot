@@ -35,6 +35,21 @@ public interface AgentStageArtifactStore {
     List<AgentStageArtifact> listByTask(String taskId);
 
     /**
+     * 按任务、阶段和产物类型查询。默认扫描 {@link #listByTask(String)}；
+     * PostgreSQL 适配器应按这三项过滤，避免归档轨迹把整任务产物从远端库拉回来。
+     */
+    default List<AgentStageArtifact> listByTaskStageAndType(String taskId, String stageRunId, String artifactType) {
+        String stage = stageRunId == null ? "" : stageRunId.strip();
+        String type = artifactType == null ? "" : artifactType.strip();
+        if (stage.isBlank() || type.isBlank()) {
+            return List.of();
+        }
+        return listByTask(taskId).stream()
+                .filter(artifact -> stage.equals(artifact.stageRunId()) && type.equals(artifact.artifactType()))
+                .toList();
+    }
+
+    /**
      * Delete selected artifact types for one task. Storage adapters may override this for retention cleanup.
      */
     default int deleteByTaskAndTypes(String taskId, Set<String> artifactTypes) {

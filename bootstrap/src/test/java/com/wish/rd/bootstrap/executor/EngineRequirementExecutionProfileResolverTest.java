@@ -10,6 +10,8 @@ import com.wish.rd.rag.project.agent.impl.InMemoryAgentExecutionProfileSnapshotS
 import com.wish.rd.rag.project.agent.impl.InMemoryAgentExecutionProfileStore;
 import com.wish.rd.rag.project.agent.impl.InMemoryAgentToolPolicyStore;
 import com.wish.rd.rag.project.agent.model.AgentExecutionProfile;
+import com.wish.rd.rag.project.agent.model.AgentExecutionProfileSnapshot;
+import com.wish.rd.rag.project.agent.model.AgentRuntimeCapability;
 import com.wish.rd.rag.project.agent.model.AgentToolPolicy;
 import com.wish.rd.rag.project.agent.model.AgentRuntimeType;
 import com.wish.rd.rag.runtime.model.CreateRequirementTaskCommand;
@@ -20,9 +22,141 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class EngineRequirementExecutionProfileResolverTest {
+
+    @Test
+    void shouldPrepareEligiblePiTargetSnapshotWithoutPersistingIt() {
+        InMemoryAgentExecutionProfileStore profiles = new InMemoryAgentExecutionProfileStore();
+        AgentExecutionProfileService profileService = new AgentExecutionProfileService(profiles);
+        AgentExecutionProfile profile = new AgentExecutionProfile(
+                "pi-remediation", "project-1", "CODING_AGENT", "Pi remediation", AgentRuntimeType.PI,
+                "provider-1", "", "", 0L, "tool-v1", 1L, true, 8L,
+                List.of(AgentRuntimeCapability.PI_QA_REMEDIATION_V2));
+        profileService.register(profile);
+        profileService.bindProjectDefault("project-1", "CODING_AGENT", profile.profileId());
+        InMemoryAgentExecutionProfileSnapshotStore snapshots = new InMemoryAgentExecutionProfileSnapshotStore();
+
+        AgentExecutionProfileSnapshot prepared = resolver(profileService, snapshots, false).prepareSnapshot(
+                task(), AgentRole.CODING_AGENT, "future-coding-stage", 2,
+                AgentRuntimeCapability.PI_QA_REMEDIATION_V2);
+
+        assertEquals("future-coding-stage", prepared.stageRunId());
+        assertEquals(2, prepared.attemptNo());
+        assertEquals(AgentRuntimeType.PI, prepared.runtimeType());
+        assertTrue(prepared.hasCapability(AgentRuntimeCapability.PI_QA_REMEDIATION_V2));
+        assertTrue(prepared.hasValidIntegrityHash());
+        assertTrue(snapshots.findByStageRunId("future-coding-stage").isEmpty(),
+                "prepareSnapshot must not create a snapshot row");
+    }
+
+    @Test
+    void shouldFailClosedWhenPreparedTargetIsNotEligiblePiV2() {
+        InMemoryAgentExecutionProfileStore profiles = new InMemoryAgentExecutionProfileStore();
+        AgentExecutionProfileService profileService = new AgentExecutionProfileService(profiles);
+        AgentExecutionProfile claude = profile("claude", AgentRuntimeType.CLAUDE_CODE);
+        profileService.register(claude);
+        profileService.bindProjectDefault("project-1", "CODING_AGENT", claude.profileId());
+        InMemoryAgentExecutionProfileSnapshotStore snapshots = new InMemoryAgentExecutionProfileSnapshotStore();
+        EngineRequirementExecutionProfileResolver resolver = resolver(profileService, snapshots, false);
+
+        assertThrows(IllegalStateException.class, () -> resolver.prepareSnapshot(
+                task(), AgentRole.CODING_AGENT, "future-claude", 2,
+                AgentRuntimeCapability.PI_QA_REMEDIATION_V2));
+
+        AgentExecutionProfile piWithoutCapability = new AgentExecutionProfile(
+                "pi-legacy", "project-1", "CODING_AGENT", "Pi legacy", AgentRuntimeType.PI,
+                "provider-1", "", "", 0L, "tool-v1", 1L, true, 1L, List.of());
+        profileService.register(piWithoutCapability);
+        profileService.bindProjectDefault("project-1", "CODING_AGENT", piWithoutCapability.profileId());
+        assertThrows(IllegalStateException.class, () -> resolver.prepareSnapshot(
+                task(), AgentRole.CODING_AGENT, "future-pi-legacy", 2,
+                AgentRuntimeCapability.PI_QA_REMEDIATION_V2));
+        assertTrue(snapshots.findByStageRunId("future-claude").isEmpty());
+        assertTrue(snapshots.findByStageRunId("future-pi-legacy").isEmpty());
+    }
+
+    @Test
+    void shouldFreezeSortedCapabilitiesAndProfileVersionInCanonicalSnapshot() {
+        InMemoryAgentExecutionProfileStore profiles = new InMemoryAgentExecutionProfileStore();
+        AgentExecutionProfileService profileService = new AgentExecutionProfileService(profiles);
+        AgentExecutionProfile profile = new AgentExecutionProfile(
+                "pi-v2", "project-1", "CODING_AGENT", "Pi v2", AgentRuntimeType.PI,
+                "provider-1", "", "", 0L, "tool-v1", 1L, true, 7L,
+                List.of(
+                        AgentRuntimeCapability.PI_QA_REMEDIATION_V2,
+                        AgentRuntimeCapability.PI_AGENT_STATE_V2
+                )
+        );
+        profileService.register(profile);
+        profileService.bindProjectDefault("project-1", "CODING_AGENT", profile.profileId());
+        InMemoryAgentExecutionProfileSnapshotStore snapshots = new InMemoryAgentExecutionProfileSnapshotStore();
+
+        resolver(profileService, snapshots, false)
+                .resolve(task(), AgentRole.CODING_AGENT, "stage-capabilities", 1);
+
+        AgentExecutionProfileSnapshot snapshot = snapshots.findByStageRunId("stage-capabilities")
+                .orElseThrow();
+        assertEquals(7L, snapshot.profileVersion());
+        assertEquals(
+                List.of(
+                        AgentRuntimeCapability.PI_AGENT_STATE_V2,
+                        AgentRuntimeCapability.PI_QA_REMEDIATION_V2
+                ),
+                snapshot.capabilities()
+        );
+        assertTrue(snapshot.snapshotJson().contains(
+                "\"capabilities\":[\"PI_AGENT_STATE_V2\",\"PI_QA_REMEDIATION_V2\"]"
+        ));
+        assertTrue(snapshot.hasValidIntegrityHash());
+    }
+
+    @Test
+    void shouldFreezeAgentStateV2SchemaWhenCapabilityAndKillSwitchAreOn() {
+        InMemoryAgentExecutionProfileStore profiles = new InMemoryAgentExecutionProfileStore();
+        AgentExecutionProfileService profileService = new AgentExecutionProfileService(profiles);
+        AgentExecutionProfile profile = new AgentExecutionProfile(
+                "pi-state-v2", "project-1", "CODING_AGENT", "Pi state v2", AgentRuntimeType.PI,
+                "provider-1", "", "", 0L, "tool-v1", 1L, true, 3L,
+                List.of(AgentRuntimeCapability.PI_AGENT_STATE_V2)
+        );
+        profileService.register(profile);
+        profileService.bindProjectDefault("project-1", "CODING_AGENT", profile.profileId());
+        InMemoryAgentExecutionProfileSnapshotStore snapshots = new InMemoryAgentExecutionProfileSnapshotStore();
+        EngineRequirementExecutionProfileResolver resolver = new EngineRequirementExecutionProfileResolver(
+                profileService,
+                new AgentExecutionProfileSnapshotService(snapshots),
+                snapshots,
+                false,
+                null,
+                null,
+                "FACTS_V1",
+                true,
+                8192
+        );
+
+        resolver.resolve(task(), AgentRole.CODING_AGENT, "stage-state-v2", 1);
+        String snapshotJson = snapshots.findByStageRunId("stage-state-v2").orElseThrow().snapshotJson();
+
+        assertTrue(snapshotJson.contains("\"agentStateSchemaVersion\":\"rd-agent-state/v2\""));
+        assertTrue(snapshotJson.contains("\"dynamicStateEnabled\":true"));
+        assertTrue(snapshotJson.contains("\"capabilities\":[\"PI_AGENT_STATE_V2\"]"));
+    }
+
+    @Test
+    void shouldDecodeLegacySnapshotWithoutCapabilitiesAsDisabled() {
+        String legacyJson = "{\"snapshotVersion\":1,\"runtimeType\":\"PI\"}";
+        AgentExecutionProfileSnapshot legacy = new AgentExecutionProfileSnapshot(
+                "snapshot-legacy", "stage-legacy", "task-legacy", "QA_AGENT", 1,
+                AgentRuntimeType.PI, legacyJson, AgentExecutionProfileSnapshot.sha256(legacyJson), 1L
+        );
+
+        assertEquals(0L, legacy.profileVersion());
+        assertEquals(List.of(), legacy.capabilities());
+        assertFalse(legacy.hasCapability(AgentRuntimeCapability.PI_AGENT_STATE_V2));
+    }
 
     @Test
     void shouldFreezeTheAuthorizedTaskOverrideAndReuseItAfterBindingChanges() {

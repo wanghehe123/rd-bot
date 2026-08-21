@@ -1,5 +1,7 @@
 package com.wish.rd.engine.requirement;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wish.rd.engine.agent.model.AgentRole;
 import com.wish.rd.engine.agent.model.AgentStageRun;
 import com.wish.rd.engine.agent.model.AgentStageStatus;
@@ -29,6 +31,7 @@ import com.wish.rd.rag.context.impl.InMemoryRoleContextPackageStore;
 import com.wish.rd.rag.context.model.RoleContextPackage;
 import com.wish.rd.rag.context.model.RoleContextEvidence;
 import com.wish.rd.rag.project.agent.model.RoleExecutionInputManifest;
+import com.wish.rd.rag.project.agent.model.AgentStateV2Codec;
 import com.wish.rd.rag.project.budget.RdProjectTokenBudgetService;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
 import com.wish.rd.rag.runtime.model.RdRequirementTask;
@@ -62,6 +65,47 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * </ul>
  */
 class RequirementAgentStageOrchestratorTest {
+
+    @Test
+    void capabilityGatedPiDispatchCarriesJavaOwnedInitialStateWhileLegacyDoesNot() throws Exception {
+        AgentWorkflowPlan codingOnly = new AgentWorkflowPlan(
+                List.of(AgentRole.CODING_AGENT), false, false, 1, false, 2,
+                Map.of(AgentRole.CODING_AGENT, 1.0d), "TEST_PI_STATE_V2"
+        );
+        OrchestratorTestHarness enabled = new OrchestratorTestHarness()
+                .prestageRoles(codingOnly.roles())
+                .prestageRoleContexts(codingOnly.roles());
+        enabled.orchestrator.setExecutionProfileResolver(new StateV2ProfileResolver());
+
+        RequirementExecutionResult enabledResult = enabled.orchestrator.run(
+                codingOnly, enabled.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION, null
+        );
+
+        assertTrue(enabledResult.success(), enabledResult.errorMessage());
+        RequirementExecutionRequest request = enabled.executor.lastRequestByRole.get(AgentRole.CODING_AGENT);
+        assertEquals("rd-agent-state/v2", request.initialAgentStateProtocol());
+        assertFalse(request.initialAgentStateJson().isBlank());
+        assertFalse(request.initialAgentStateHash().isBlank());
+        JsonNode state = AgentStateV2Codec.decodeAndVerify(
+                request.initialAgentStateJson(), request.initialAgentStateHash()
+        );
+        assertEquals("task-1", state.path("taskId").asText());
+        assertEquals("coding_agent-1", state.path("stageRunId").asText());
+        assertEquals("CODING_AGENT", state.path("role").asText());
+        assertEquals("snap-state-coding_agent-1", state.path("profileSnapshotId").asText());
+
+        OrchestratorTestHarness legacy = new OrchestratorTestHarness()
+                .prestageRoles(codingOnly.roles())
+                .prestageRoleContexts(codingOnly.roles());
+        RequirementExecutionResult legacyResult = legacy.orchestrator.run(
+                codingOnly, legacy.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION, null
+        );
+        assertTrue(legacyResult.success(), legacyResult.errorMessage());
+        RequirementExecutionRequest legacyRequest = legacy.executor.lastRequestByRole.get(AgentRole.CODING_AGENT);
+        assertTrue(legacyRequest.initialAgentStateProtocol().isBlank());
+        assertTrue(legacyRequest.initialAgentStateJson().isBlank());
+        assertTrue(legacyRequest.initialAgentStateHash().isBlank());
+    }
 
     private static final RequirementContextPackage EMPTY_CONTEXT =
             new RequirementContextPackage(
@@ -460,6 +504,119 @@ class RequirementAgentStageOrchestratorTest {
         assertFalse(result.success());
         assertTrue(result.errorMessage().contains("QA_AGENT"),
                 "error message should mention QA_AGENT: " + result.errorMessage());
+    }
+
+    @Test
+    void piV2ExplicitRequestRoutesToCodingForAnyFailureCategory() {
+        AgentWorkflowPlan plan = AgentWorkflowPlan.codingBenchmark(CodingBenchmarkArm.D);
+        OrchestratorTestHarness harness = new OrchestratorTestHarness()
+                .prestageRoles(plan.roles())
+                .prestageRoleContexts(plan.roles());
+        harness.orchestrator.setExecutionProfileResolver(new QaRemediationV2ProfileResolver());
+        harness.executor.qaFailureResultJson = qaRemediationResult(true, "ENVIRONMENT", true);
+
+        RequirementExecutionResult result = harness.orchestrator.run(
+                plan, harness.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION, null);
+
+        assertFalse(result.success());
+        assertEquals(2, harness.executor.executedRoleCount(AgentRole.CODING_AGENT));
+        assertEquals(2, harness.executor.executedRoleCount(AgentRole.QA_AGENT));
+        RequirementExecutionRequest codingRetry = harness.executor.lastRequestByRole.get(AgentRole.CODING_AGENT);
+        assertTrue(codingRetry.prompt().contains("/work/input/attachments/qa-remediation/request.json"));
+        assertEquals("attachments/qa-remediation/request.json",
+                codingRetry.initialAgentStateAttachments().getFirst().path());
+        assertTrue(codingRetry.initialAgentStateAttachments().getFirst().content().contains("bug-1"));
+    }
+
+    @Test
+    void piV2DeclinedOrForgedRequestDoesNotRouteToCoding() {
+        AgentWorkflowPlan plan = AgentWorkflowPlan.codingBenchmark(CodingBenchmarkArm.D);
+        OrchestratorTestHarness declined = new OrchestratorTestHarness()
+                .prestageRoles(plan.roles())
+                .prestageRoleContexts(plan.roles());
+        declined.orchestrator.setExecutionProfileResolver(new QaRemediationV2ProfileResolver());
+        declined.executor.qaFailureResultJson = qaRemediationResult(false, "FLAKY", true);
+
+        declined.orchestrator.run(
+                plan, declined.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION, null);
+
+        OrchestratorTestHarness forged = new OrchestratorTestHarness()
+                .prestageRoles(plan.roles())
+                .prestageRoleContexts(plan.roles());
+        forged.orchestrator.setExecutionProfileResolver(new QaRemediationV2ProfileResolver());
+        forged.executor.qaFailureResultJson = qaRemediationResult(true, "PRODUCT_DEFECT", false);
+        forged.orchestrator.run(
+                plan, forged.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION, null);
+
+        assertEquals(1, declined.executor.executedRoleCount(AgentRole.CODING_AGENT));
+        assertEquals(1, forged.executor.executedRoleCount(AgentRole.CODING_AGENT));
+    }
+
+    @Test
+    void commandScopedQaFailureAttachesQaRoleResultAndKeepsParseableAggregate() throws Exception {
+        AgentWorkflowPlan plan = new AgentWorkflowPlan(
+                List.of(AgentRole.QA_AGENT), false, false, 1, false, 2,
+                Map.of(AgentRole.QA_AGENT, 0.08d), "TEST_BOUNDED_QA");
+        OrchestratorTestHarness harness = new OrchestratorTestHarness()
+                .prestageRoles(plan.roles())
+                .prestageRoleContexts(plan.roles());
+        JsonNode qaPayload = new ObjectMapper().readTree(qaRemediationResult(true, "PRODUCT_DEFECT", true));
+        ((com.fasterxml.jackson.databind.node.ObjectNode) qaPayload.path("remediationRequest"))
+                .put("reason", "Fix the reproducible bug \u001b[31mHTTP 500\u001b[0m");
+        harness.executor.qaFailureResultJson = new ObjectMapper().writeValueAsString(qaPayload);
+
+        RequirementExecutionResult result = harness.orchestrator.run(
+                plan, harness.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION, null);
+
+        assertFalse(result.success());
+        assertEquals(0, harness.executor.executedRoleCount(AgentRole.CODING_AGENT));
+        assertEquals(1, harness.executor.executedRoleCount(AgentRole.QA_AGENT));
+        JsonNode root = new ObjectMapper().readTree(result.resultJson());
+        assertEquals("NEEDS_HUMAN", root.path("status").asText());
+        JsonNode qa = root.path("qaRoleResult");
+        assertEquals("FAILED", qa.path("status").asText());
+        assertTrue(qa.path("remediationRequest").path("requested").asBoolean());
+        assertEquals("CODING_AGENT", qa.path("remediationRequest").path("targetRole").asText());
+        assertTrue(qa.path("remediationRequest").path("reason").asText().contains("HTTP 500"));
+    }
+
+    @Test
+    void durableProtocolRetryInjectsOnlyControlledQaPrompt() {
+        AgentWorkflowPlan plan = new AgentWorkflowPlan(
+                List.of(AgentRole.QA_AGENT), false, false, 1, false, 2,
+                Map.of(AgentRole.QA_AGENT, 0.08d), "TEST_PROTOCOL_RETRY"
+        );
+        OrchestratorTestHarness harness = new OrchestratorTestHarness()
+                .prestageRoles(plan.roles())
+                .prestageRoleContexts(plan.roles());
+        String controlled = "PI QA 协议重试：仅完成 rd_submit_result，禁止请求 Coding 修复。";
+
+        RequirementExecutionResult result = harness.orchestrator.runRemediationRole(
+                plan, harness.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION,
+                null, "", "", controlled
+        );
+
+        assertTrue(result.success(), result.errorMessage());
+        RequirementExecutionRequest request = harness.executor.lastRequestByRole.get(AgentRole.QA_AGENT);
+        assertTrue(request.prompt().contains(controlled));
+        assertFalse(request.prompt().contains("qa-remediation/request.json"));
+    }
+
+    @Test
+    void legacyQaPredicateRemainsCompatibleWithoutCapability() {
+        AgentWorkflowPlan plan = AgentWorkflowPlan.codingBenchmark(CodingBenchmarkArm.D);
+        OrchestratorTestHarness harness = new OrchestratorTestHarness()
+                .prestageRoles(plan.roles())
+                .prestageRoleContexts(plan.roles());
+        harness.executor.qaFailureResultJson = """
+                {"status":"FAILED","failureCategory":"REGRESSION","retryRecommendation":"CODING_AGENT"}
+                """;
+
+        harness.orchestrator.run(
+                plan, harness.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION, null);
+
+        assertEquals(2, harness.executor.executedRoleCount(AgentRole.CODING_AGENT));
+        assertEquals(2, harness.executor.executedRoleCount(AgentRole.QA_AGENT));
     }
 
     // ---------- 预算账本配置越限在构造期拒绝 ----------
@@ -1025,7 +1182,9 @@ class RequirementAgentStageOrchestratorTest {
         final List<AgentRole> executedRoles = new CopyOnWriteArrayList<>();
         final Map<AgentRole, AtomicInteger> executedRoleCounts = new LinkedHashMap<>();
         final Map<AgentRole, String> lastPromptByRole = new LinkedHashMap<>();
+        final Map<AgentRole, RequirementExecutionRequest> lastRequestByRole = new LinkedHashMap<>();
         boolean qaAgentFailsWithRemediation = false;
+        String qaFailureResultJson = "";
         String codingResultOverride = null;
 
         @Override
@@ -1033,11 +1192,15 @@ class RequirementAgentStageOrchestratorTest {
             executedRoles.add(request.role());
             executedRoleCounts.computeIfAbsent(request.role(), ignored -> new AtomicInteger()).incrementAndGet();
             lastPromptByRole.put(request.role(), request.prompt());
-            if (request.role() == AgentRole.QA_AGENT && qaAgentFailsWithRemediation) {
+            lastRequestByRole.put(request.role(), request);
+            if (request.role() == AgentRole.QA_AGENT
+                    && (qaAgentFailsWithRemediation || !qaFailureResultJson.isBlank())) {
                 return RequirementExecutionResult.failure(
                         request.taskId(),
                         "QA agent failure",
-                        "{\"status\":\"FAILED\",\"retryRecommendation\":\"CODING_REMEDIATION\"}"
+                        qaFailureResultJson.isBlank()
+                                ? "{\"status\":\"FAILED\",\"retryRecommendation\":\"CODING_REMEDIATION\"}"
+                                : qaFailureResultJson
                 );
             }
             if (request.role() == AgentRole.CODING_AGENT && codingResultOverride != null && !codingResultOverride.isBlank()) {
@@ -1119,6 +1282,63 @@ class RequirementAgentStageOrchestratorTest {
                     }""";
             return RequirementExecutionProfileResolution.of("snap-facts-" + stageRunId, snapshotJson);
         }
+    }
+
+    static final class StateV2ProfileResolver implements RequirementExecutionProfileResolverPort {
+        @Override
+        public RequirementExecutionProfileResolution resolve(
+                RdRequirementTask task, AgentRole role, String stageRunId, int attemptNo) {
+            String snapshotJson = """
+                    {
+                      "runtimeType":"PI",
+                      "capabilities":["PI_AGENT_STATE_V2"],
+                      "dynamicStateEnabled":true,
+                      "maxInjectedStateBytes":16384,
+                      "contextProtocolVersion":"FACTS_V1",
+                      "agentStateSchemaVersion":"rd-agent-state/v2"
+                    }""";
+            return RequirementExecutionProfileResolution.of("snap-state-" + stageRunId, snapshotJson);
+        }
+    }
+
+    static final class QaRemediationV2ProfileResolver implements RequirementExecutionProfileResolverPort {
+        @Override
+        public RequirementExecutionProfileResolution resolve(
+                RdRequirementTask task, AgentRole role, String stageRunId, int attemptNo) {
+            String snapshotJson = """
+                    {
+                      "runtimeType":"PI",
+                      "capabilities":["PI_QA_REMEDIATION_V2"],
+                      "dynamicStateEnabled":false,
+                      "contextProtocolVersion":"LEGACY_ENVIRONMENT_NOTES"
+                    }""";
+            return RequirementExecutionProfileResolution.of("snap-remediation-" + stageRunId, snapshotJson);
+        }
+    }
+
+    private static String qaRemediationResult(boolean requested, String failureCategory, boolean validIds) {
+        String findingId = validIds ? "bug-1" : "bug-unselected";
+        return """
+                {
+                  "status":"FAILED","failureCategory":"%s","retryRecommendation":"%s",
+                  "remediationRequest":{"requested":%s,"targetRole":"%s","reason":"%s","bugFindingIds":%s},
+                  "bugFindings":%s
+                }
+                """.formatted(
+                failureCategory,
+                requested ? "CODING_AGENT" : "HUMAN",
+                requested,
+                requested ? "CODING_AGENT" : "",
+                requested ? "Fix the reproducible bug" : "No code fix is justified",
+                requested ? "[\"bug-1\"]" : "[]",
+                requested
+                        ? "[{\"id\":\"" + findingId + "\",\"severity\":\"HIGH\","
+                        + "\"acceptanceCriteriaId\":\"AC-1\",\"reproductionSteps\":[\"run acceptance\"],"
+                        + "\"expected\":\"acceptance passes\",\"actual\":\"acceptance fails\","
+                        + "\"evidenceArtifactIds\":[\"qa-evidence/commands/current.log\"],"
+                        + "\"suspectedFiles\":[\"src/main/App.java\"]}]"
+                        : "[]"
+        );
     }
 
     private static void assertCodingPromptOwnsHostVerifyAndQaDoesNot(String codingPrompt, String qaPrompt) {

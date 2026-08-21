@@ -51,7 +51,9 @@ public class AgentRuntimeExecutorConfiguration {
             ObjectProvider<AgentExecutionEventSink> eventSinkProvider,
             ObjectProvider<AgentPrivateArtifactPublisher> privateArtifactPublisherProvider,
             ExecutionAllowlistPolicy executionAllowlistPolicy,
-            ObjectProvider<PiCredentialLeaseIssuer> credentialLeaseIssuerProvider
+            ObjectProvider<PiCredentialLeaseIssuer> credentialLeaseIssuerProvider,
+            ObjectProvider<com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor.AuthEnvironmentResolver>
+                    authEnvironmentResolverProvider
     ) {
         return new DockerPiAgentExecutor(
                 workspaceFactory,
@@ -64,7 +66,8 @@ public class AgentRuntimeExecutorConfiguration {
                 skillMaterializerProvider.getIfAvailable(PiSkillMaterializerPort::emptyOnly),
                 eventSinkProvider.getIfAvailable(AgentExecutionEventSink::noop),
                 privateArtifactPublisherProvider.getIfAvailable(AgentPrivateArtifactPublisher::noop),
-                com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor.AuthEnvironmentResolver.system(),
+                authEnvironmentResolverProvider.getIfAvailable(
+                        com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor.AuthEnvironmentResolver::system),
                 credentialLeaseIssuerProvider.getIfAvailable()
         );
     }

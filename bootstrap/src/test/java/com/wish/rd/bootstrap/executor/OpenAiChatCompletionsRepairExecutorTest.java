@@ -205,6 +205,71 @@ class OpenAiChatCompletionsRepairExecutorTest {
         assertEquals(0, callCount.get());
     }
 
+    @Test
+    void missingKeyMessagePointsAtProviderConsoleWithoutLeakingTheSecret() {
+        OpenAiChatCompletionsRepairExecutor executor = new OpenAiChatCompletionsRepairExecutor(
+                new OpenAiChatCompletionsRepairExecutor.Configuration(
+                        "opencode",
+                        "deepseek-v4-flash",
+                        "http://127.0.0.1:9/v1",
+                        "OPENCODE_API_KEY",
+                        Duration.ofSeconds(1)
+                ),
+                HttpClient.newHttpClient(),
+                () -> ""
+        );
+
+        RepairExecutionResult result = executor.execute(command("REQUIREMENT_REVIEWER"));
+
+        assertEquals(RepairExecutionStatus.FAILED, result.status());
+        assertTrue(result.errorMessage().contains("OPENCODE_API_KEY"));
+        assertTrue(result.errorMessage().contains("供应商配置"));
+        assertFalse(result.errorMessage().contains("sk-"));
+        assertEquals(
+                "missing API key for OPENCODE_API_KEY; set it under 供应商配置 or export the environment variable",
+                result.errorMessage()
+        );
+    }
+
+    @Test
+    void storedSupplierPreventsTheMissingKeyFailure() throws Exception {
+        AtomicReference<String> authorization = new AtomicReference<>("");
+        startServer(exchange -> {
+            authorization.set(exchange.getRequestHeaders().getFirst("Authorization"));
+            writeJson(exchange, 200, """
+                    {
+                      "choices": [
+                        {
+                          "message": {
+                            "content": "{\\"decision\\":\\"APPROVED\\",\\"feasibility\\":\\"CAN_DO\\",\\"missingInformation\\":[],\\"risks\\":[],\\"acceptanceCoverage\\":[\\"ok\\"],\\"budgetEstimate\\":{\\"initialTokens\\":1,\\"retryReserveTokens\\":0,\\"estimatedTotalTokens\\":1,\\"confidence\\":\\"HIGH\\",\\"basis\\":\\"fixture\\",\\"historicalSamples\\":[]}}"
+                          }
+                        }
+                      ],
+                      "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+                    }
+                    """);
+        });
+        OpenAiChatCompletionsRepairExecutor executor = new OpenAiChatCompletionsRepairExecutor(
+                new OpenAiChatCompletionsRepairExecutor.Configuration(
+                        "opencode",
+                        "MiniMax-M3",
+                        "http://127.0.0.1:" + server.getAddress().getPort() + "/v1",
+                        "OPENCODE_API_KEY",
+                        Duration.ofSeconds(5)
+                ),
+                HttpClient.newHttpClient(),
+                () -> "from-ui"
+        );
+
+        RepairExecutionResult result = executor.execute(command("REQUIREMENT_REVIEWER"));
+
+        assertEquals(RepairExecutionStatus.SUCCESS, result.status());
+        assertEquals("Bearer from-ui", authorization.get());
+        assertFalse(result.errorMessage() != null && result.errorMessage().contains("missing API key"));
+        assertFalse(result.rawResultJson().containsKey("Authorization"));
+        assertFalse(result.rawResultJson().values().stream().anyMatch(value -> value != null && value.contains("from-ui")));
+    }
+
     private OpenAiChatCompletionsRepairExecutor executor() {
         return new OpenAiChatCompletionsRepairExecutor(
                 new OpenAiChatCompletionsRepairExecutor.Configuration(

@@ -24,6 +24,17 @@ public final class AgentExecutionEventParser {
             long afterSequence,
             int requestedLimit
     ) {
+        return parseJsonl(jsonl, taskId, stageRunId, afterSequence, requestedLimit, false);
+    }
+
+    public static AgentExecutionTraceSnapshot parseJsonl(
+            String jsonl,
+            String taskId,
+            String stageRunId,
+            long afterSequence,
+            int requestedLimit,
+            boolean latest
+    ) {
         String expectedTaskId = normalize(taskId);
         String expectedStageRunId = normalize(stageRunId);
         if (expectedTaskId.isBlank() || expectedStageRunId.isBlank()) {
@@ -31,10 +42,11 @@ public final class AgentExecutionEventParser {
         }
         int limit = Math.max(1, Math.min(200, requestedLimit <= 0 ? 100 : requestedLimit));
         long cursor = Math.max(0L, afterSequence);
+        boolean alignLatest = latest && cursor == 0L;
         List<JsonNode> accepted = new ArrayList<>();
         long lastSequence = 0L;
         boolean finalized = false;
-        boolean truncated = false;
+        boolean truncated = jsonl != null && jsonl.contains("[truncated]");
         String[] lines = (jsonl == null ? "" : jsonl).split("\\R");
         for (String line : lines) {
             if (line == null || line.isBlank()) continue;
@@ -58,18 +70,20 @@ public final class AgentExecutionEventParser {
             if ("AGENT_SETTLED".equals(type) || "RUNTIME_STOPPED".equals(type)) {
                 finalized = true;
             }
-            if (sourceSequence <= cursor || accepted.size() >= limit) continue;
+            if (!alignLatest && (sourceSequence <= cursor || accepted.size() >= limit)) {
+                continue;
+            }
             ObjectNode copy = (ObjectNode) parsed.deepCopy();
             copy.put("sequence", sourceSequence);
             accepted.add(copy);
         }
+        if (alignLatest && accepted.size() > limit) {
+            accepted = new ArrayList<>(accepted.subList(accepted.size() - limit, accepted.size()));
+        }
         long nextSequence = accepted.isEmpty()
                 ? cursor
                 : accepted.getLast().path("sequence").asLong(cursor);
-        boolean hasMore = lastSequence > nextSequence;
-        if (jsonl != null && jsonl.contains("[truncated]")) {
-            truncated = true;
-        }
+        boolean hasMore = !alignLatest && lastSequence > nextSequence;
         return new AgentExecutionTraceSnapshot(
                 AgentExecutionTraceSnapshot.VERSION,
                 "ARCHIVED",

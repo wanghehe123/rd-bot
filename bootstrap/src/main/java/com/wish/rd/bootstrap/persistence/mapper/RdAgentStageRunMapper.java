@@ -14,6 +14,19 @@ import org.apache.ibatis.annotations.Update;
 @Mapper
 public interface RdAgentStageRunMapper extends BaseMapper<RdAgentStageRunRow> {
 
+    @Insert("""
+            INSERT INTO rd_agent_stage_runs (
+                id, task_id, role, status, attempt_no, idempotency_key,
+                provider_name, provider_attempts_json, review_result_json,
+                error_category, error_message, created_at, updated_at
+            ) VALUES (
+                #{id}, #{taskId}, #{role}, #{status}, #{attemptNo}, #{idempotencyKey},
+                #{providerName}, CAST(#{providerAttemptsJson} AS jsonb), CAST(#{reviewResultJson} AS jsonb),
+                #{errorCategory}, #{errorMessage}, #{createdAt}, #{updatedAt}
+            ) ON CONFLICT DO NOTHING
+            """)
+    int insertIfAbsent(RdAgentStageRunRow row);
+
     /**
      * 插入或更新阶段运行。
      *

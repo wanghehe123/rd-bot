@@ -6,10 +6,11 @@ import com.wish.rd.engine.requirement.job.RequirementDeliveryJobStore;
 import com.wish.rd.engine.requirement.job.RequirementStageCommandStore;
 import com.wish.rd.engine.requirement.job.RequirementStageFinalizationPort;
 import com.wish.rd.engine.requirement.job.model.ExternalEffectReceipt;
+import com.wish.rd.engine.requirement.job.model.PiQaRemediationIntent;
 import com.wish.rd.engine.requirement.job.model.RequirementDeliveryJob;
 import com.wish.rd.engine.requirement.job.model.RequirementStageCommand;
-import com.wish.rd.engine.requirement.job.model.RequirementStageFinalization;
 import com.wish.rd.engine.requirement.job.model.RequirementStageExecutionPlan;
+import com.wish.rd.engine.requirement.job.model.RequirementStageFinalization;
 import com.wish.rd.engine.requirement.job.model.RequirementTaskMutation;
 import com.wish.rd.engine.agent.AgentStageRunStore;
 import com.wish.rd.engine.agent.model.AgentStageRun;
@@ -261,10 +262,40 @@ public final class InMemoryRequirementStageFinalizationPort implements Requireme
         if (persisted == null || !persisted.equals(marker)) {
             throw new IllegalStateException("stage finalization marker is stale: " + marker.commandId());
         }
+        plan = assignRemediationRound(plan);
         RequirementStageFinalization recorded = marker.outcomeRecorded(plan.postStatus(), "{}", "memory", nowEpochMillis);
         finalizations.put(key, recorded);
         outcomePlans.put(key, plan);
         return recorded;
+    }
+
+    private RequirementStageExecutionPlan assignRemediationRound(RequirementStageExecutionPlan plan) {
+        PiQaRemediationIntent intent = plan.piQaRemediationIntent();
+        if (intent == null) {
+            return plan;
+        }
+        java.util.Set<Integer> occupied = new java.util.TreeSet<>();
+        for (RequirementStageExecutionPlan recorded : outcomePlans.values()) {
+            if (recorded == null || !intent.sourceTaskId().equals(recorded.taskId())) {
+                continue;
+            }
+            PiQaRemediationIntent recordedIntent = recorded.piQaRemediationIntent();
+            if (recordedIntent != null && recordedIntent.kind() == intent.kind()) {
+                occupied.add(recordedIntent.remediationNo());
+            }
+        }
+        int proposed = intent.remediationNo();
+        if (!occupied.contains(proposed)) {
+            return plan;
+        }
+        int maximum = intent.kind().maximumRounds();
+        for (int candidate = 1; candidate <= maximum; candidate++) {
+            if (!occupied.contains(candidate)) {
+                return plan.withRemediationIntent(intent.withAssignedRemediationNo(candidate));
+            }
+        }
+        throw new IllegalStateException(intent.kind() + " remediation limit has been reached for task "
+                + intent.sourceTaskId());
     }
 
     @Override

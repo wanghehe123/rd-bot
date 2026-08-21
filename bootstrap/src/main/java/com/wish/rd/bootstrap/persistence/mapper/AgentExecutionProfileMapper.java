@@ -6,6 +6,7 @@ import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
 
 import java.util.List;
 
@@ -17,41 +18,62 @@ public interface AgentExecutionProfileMapper {
             INSERT INTO rd_agent_execution_profiles (
               profile_id, project_id, role, name, runtime_type, provider_profile_id,
               model_override, extension_set_id, extension_set_version, tool_policy_id, tool_policy_version,
-              enabled, version
+              enabled, version, capabilities_json
             ) VALUES (
               #{profileId}, #{projectId}, #{role}, #{name}, #{runtimeType}, #{providerProfileId},
               #{modelOverride}, #{extensionSetId}, #{extensionSetVersion}, #{toolPolicyId}, #{toolPolicyVersion},
-              #{enabled}, #{version}
-            ) ON CONFLICT (profile_id) DO UPDATE SET
-              project_id=EXCLUDED.project_id,
-              role=EXCLUDED.role,
-              name=EXCLUDED.name,
-              runtime_type=EXCLUDED.runtime_type,
-              provider_profile_id=EXCLUDED.provider_profile_id,
-              model_override=EXCLUDED.model_override,
-              extension_set_id=EXCLUDED.extension_set_id,
-              extension_set_version=EXCLUDED.extension_set_version,
-              tool_policy_id=EXCLUDED.tool_policy_id,
-              tool_policy_version=EXCLUDED.tool_policy_version,
-              enabled=EXCLUDED.enabled,
-              version=EXCLUDED.version,
-              updated_at=now()
+              #{enabled}, #{version}, CAST(#{capabilitiesJson} AS jsonb)
+            )
             """)
-    int upsert(AgentExecutionProfileRow row);
+    int insert(AgentExecutionProfileRow row);
+
+    @Update("""
+            UPDATE rd_agent_execution_profiles SET
+              project_id=#{row.projectId},
+              role=#{row.role},
+              name=#{row.name},
+              runtime_type=#{row.runtimeType},
+              provider_profile_id=#{row.providerProfileId},
+              model_override=#{row.modelOverride},
+              extension_set_id=#{row.extensionSetId},
+              extension_set_version=#{row.extensionSetVersion},
+              tool_policy_id=#{row.toolPolicyId},
+              tool_policy_version=#{row.toolPolicyVersion},
+              enabled=#{row.enabled},
+              version=#{row.version},
+              capabilities_json=CAST(#{row.capabilitiesJson} AS jsonb),
+              updated_at=now()
+            WHERE profile_id=#{row.profileId} AND version=#{expectedVersion}
+            """)
+    int update(
+            @Param("row") AgentExecutionProfileRow row,
+            @Param("expectedVersion") long expectedVersion
+    );
 
     @Select("""
             SELECT profile_id, project_id, role, name, runtime_type, provider_profile_id,
                    model_override, extension_set_id, extension_set_version, tool_policy_id, tool_policy_version,
-                   enabled, version
+                   enabled, version, capabilities_json
             FROM rd_agent_execution_profiles
             WHERE profile_id=#{profileId}
             """)
     AgentExecutionProfileRow find(@Param("profileId") String profileId);
 
+    /** Linearization lock used before a PI remediation intent becomes OUTCOME_RECORDED. */
     @Select("""
             SELECT profile_id, project_id, role, name, runtime_type, provider_profile_id,
                    model_override, extension_set_id, extension_set_version, tool_policy_id, tool_policy_version,
-                   enabled, version
+                   enabled, version, capabilities_json
+            FROM rd_agent_execution_profiles
+            WHERE profile_id=#{profileId}
+            FOR UPDATE
+            """)
+    AgentExecutionProfileRow findForUpdate(@Param("profileId") String profileId);
+
+    @Select("""
+            SELECT profile_id, project_id, role, name, runtime_type, provider_profile_id,
+                   model_override, extension_set_id, extension_set_version, tool_policy_id, tool_policy_version,
+                   enabled, version, capabilities_json
             FROM rd_agent_execution_profiles
             WHERE project_id=#{projectId}
             ORDER BY role, name, profile_id

@@ -728,6 +728,7 @@ public class RequirementDeliveryDispatchService {
                 }
                 marker = stageFinalizationPort.recordOutcome(
                         marker, stageCommand, workerId, plan, System.currentTimeMillis());
+                plan = stageFinalizationPort.decodeOutcomePlan(marker);
                 mutationDisposition = RequirementStageFinalizationPort.TaskMutationDisposition.APPLY;
             }
             RequirementDeliveryResult result = resultForPlan(plan);
@@ -1136,6 +1137,14 @@ public class RequirementDeliveryDispatchService {
         }
         String role = plan.continuation().role();
         String stage = plan.continuation().stage();
+        if (!previous.remediationRoundId().isBlank()) {
+            return stageCommandFactory.createRemediationPendingCommand(
+                    "", previous.taskId(), plan.postVersion(), plan.postFencingToken(), role, stage,
+                    previous.projectId(), priorityName(previous.priorityRank()), previous.providerId(),
+                    previous.policyRunId(), previous.remediationRoundId(), previous.remediationKind(),
+                    previous.remediationNo(), previous.remediationSourceStageRunId(),
+                    previous.remediationRequestJson(), previous.remediationRequestHash(), nowEpochMillis);
+        }
         if (previous.retryCheckpointId().isBlank()) {
             return stageCommandFactory.createPendingCommand(
                     previous.taskId(),

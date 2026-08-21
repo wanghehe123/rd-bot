@@ -33,6 +33,7 @@ export const EVENT_TYPES = Object.freeze([
   "RESULT_REJECTED",
   "ARTIFACT_WRITTEN",
   "STATE_ACTION_RECORDED",
+  "STATE_SNAPSHOT_UPDATED",
   "STATE_CONTEXT_INJECTED",
   "TOOL_FINGERPRINT_RECORDED",
   "PROTOCOL_ERROR",
@@ -142,6 +143,10 @@ function validateRequestForProtocol(request, expectedProtocol) {
       throw new Error("maxTotalTokens must be a positive integer");
     }
   }
+  if (request.qaRemediationV2Enabled !== undefined
+      && typeof request.qaRemediationV2Enabled !== "boolean") {
+    throw new Error("qaRemediationV2Enabled must be a boolean");
+  }
   if (request.baseUrl !== undefined) {
     requireString(request.baseUrl, "baseUrl");
     let url;
@@ -173,7 +178,50 @@ function validateRequestForProtocol(request, expectedProtocol) {
       throw new Error("attemptNo must be a positive integer");
     }
   }
+  if (request.agentStateSchemaVersion === AGENT_STATE_V2_PROTOCOL
+      || request.initialAgentStateProtocol === AGENT_STATE_V2_PROTOCOL) {
+    if (request.dynamicStateEnabled !== true) {
+      throw new Error("rd-agent-state/v2 requires dynamicStateEnabled");
+    }
+    validatedInitialAgentStateV2(request);
+  }
   return request;
+}
+
+/** Decode and bind the Host-owned initial v2 state to the immutable Pi request identity. */
+export function validatedInitialAgentStateV2(request) {
+  const schemaV2 = request?.agentStateSchemaVersion === AGENT_STATE_V2_PROTOCOL;
+  const hostV2 = request?.initialAgentStateProtocol === AGENT_STATE_V2_PROTOCOL;
+  if (!schemaV2 && !hostV2) return null;
+  if (request?.dynamicStateEnabled !== true) {
+    throw new Error("rd-agent-state/v2 requires dynamicStateEnabled");
+  }
+  for (const field of [
+    "initialAgentStateProtocol",
+    "initialAgentStateJson",
+    "initialAgentStateHash",
+  ]) {
+    if (typeof request[field] !== "string" || request[field].length === 0) {
+      throw new Error(`initial agent state ${field} is required`);
+    }
+  }
+  if (request.initialAgentStateProtocol !== AGENT_STATE_V2_PROTOCOL) {
+    throw new Error(`initial agent state protocol must be ${AGENT_STATE_V2_PROTOCOL}`);
+  }
+  requireSha256Hash(request.initialAgentStateHash, "initialAgentStateHash");
+  const state = decodeAndVerifyStateV2(
+    request.initialAgentStateJson,
+    request.initialAgentStateHash,
+  );
+  if (state.taskId !== request.taskId
+      || state.stageRunId !== request.stageRunId
+      || state.role !== request.role
+      || state.attemptNo !== request.attemptNo
+      || state.runtimeType !== "PI"
+      || state.profileSnapshotId !== request.snapshotId) {
+    throw new Error("initial agent state identity does not match request");
+  }
+  return state;
 }
 
 /** Validates the opaque Host-frozen QA assertion contract carried into Pi. */
@@ -361,7 +409,7 @@ function toolDisplaySummary(rawEvent) {
   return boundedText(rawEvent?.toolName, 256);
 }
 
-function redactDisplayText(value) {
+export function redactDisplayText(value) {
   return boundedText(value, 2 * 1024)
     .replace(/\b([A-Z][A-Z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD|COOKIE|CREDENTIAL)[A-Z0-9_]*)\s*=\s*(?:"[^"]*"|'[^']*'|\S+)/gi, "$1=[REDACTED]")
     .replace(/((?:authorization|api[_-]?key|token|secret|password|cookie|credential)\s*[:=]\s*(?:bearer\s+)?)(?:"[^"]*"|'[^']*'|[^\s'"]+)/gi, "$1[REDACTED]")
@@ -376,13 +424,24 @@ export function redact(value) {
   if (!isObject(value)) return boundedText(value);
   const output = {};
   for (const [key, raw] of Object.entries(value)) {
-    if (/(api.?key|token|secret|password|authorization|cookie|credential)/i.test(key)) {
+    if (isRedactedKey(key)) {
       output[key] = "[REDACTED]";
     } else {
       output[key] = redact(raw);
     }
   }
   return output;
+}
+
+function isRedactedKey(key) {
+  if (/(api.?key|secret|password|authorization|cookie|credential)/i.test(key)) {
+    return true;
+  }
+  // Budget counters such as estimatedInputTokens must remain canonical integers.
+  if (/tokens$/i.test(key)) {
+    return false;
+  }
+  return /token/i.test(key);
 }
 
 function usagePayload(usage) {
@@ -417,3 +476,4 @@ export function requireString(value, field) {
 function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
+import { AGENT_STATE_V2_PROTOCOL, decodeAndVerifyStateV2 } from "./agent-state-v2-codec.mjs";

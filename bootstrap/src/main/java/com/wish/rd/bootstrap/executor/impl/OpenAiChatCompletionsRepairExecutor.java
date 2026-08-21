@@ -65,7 +65,11 @@ public final class OpenAiChatCompletionsRepairExecutor implements RepairExecutor
         }
         String apiKey = safe(apiKeySupplier.get());
         if (apiKey.isBlank()) {
-            return failed("missing API key env: " + configuration.apiKeyEnv(), Map.of());
+            return failed(
+                    "missing API key for " + configuration.apiKeyEnv()
+                            + "; set it under 供应商配置 or export the environment variable",
+                    Map.of()
+            );
         }
         try {
             HttpResponse<String> response = httpClient.send(

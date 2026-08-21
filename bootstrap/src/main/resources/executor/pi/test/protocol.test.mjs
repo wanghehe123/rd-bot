@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 
 import { EventNormalizer } from "../src/event-normalizer.mjs";
 import {
+  EVENT_TYPES,
   INPUT_MANIFEST_PATH,
   REQUEST_PROTOCOL,
   REQUEST_PROTOCOL_V2,
@@ -14,7 +15,14 @@ import {
   validateContextPolicy,
   validateRequest,
   validateRequestV2,
+  validatedInitialAgentStateV2,
 } from "../src/protocol.mjs";
+
+test("normalized protocol exposes v2 snapshot and injection events", () => {
+  assert.ok(EVENT_TYPES.includes("STATE_SNAPSHOT_UPDATED"));
+  assert.ok(EVENT_TYPES.includes("STATE_CONTEXT_INJECTED"));
+});
+import { canonicalizeStateV2, hashStateV2 } from "../src/agent-state-v2-codec.mjs";
 import { validateResult, validateRoleResult } from "../src/result-tool.mjs";
 import * as resultTool from "../src/result-tool.mjs";
 import { classifyDocsOnlyChange, DOCS_ONLY_DECISION } from "../src/docs-only.mjs";
@@ -60,6 +68,30 @@ const requestV2 = {
   },
 };
 
+const initialState = {
+  protocol: "rd-agent-state/v2",
+  sequence: 0,
+  taskId: "task-1",
+  stageRunId: "stage-1",
+  role: "CODING_AGENT",
+  attemptNo: 1,
+  runtimeType: "PI",
+  profileSnapshotId: "snapshot-1",
+  currentGoal: "implement and verify",
+  budget: { availability: "UNKNOWN" },
+  todos: [],
+};
+const initialStateJson = canonicalizeStateV2(initialState);
+const stateV2Request = {
+  ...requestV2,
+  dynamicStateEnabled: true,
+  agentStateSchemaVersion: "rd-agent-state/v2",
+  attemptNo: 1,
+  initialAgentStateProtocol: "rd-agent-state/v2",
+  initialAgentStateJson: initialStateJson,
+  initialAgentStateHash: hashStateV2(initialState),
+};
+
 test("keeps v1 as the default request protocol constant", () => {
   assert.equal(REQUEST_PROTOCOL, "rd-pi-request/v1");
   assert.equal(REQUEST_PROTOCOL_V2, "rd-pi-request/v2");
@@ -91,6 +123,54 @@ test("validates request v2 fixed manifest path, hashes, and context policy", () 
     ...requestV2,
     contextPolicy: { ...requestV2.contextPolicy, policyHash: "not-a-hash" },
   }));
+});
+
+test("binds Host initial v2 state on request v1 when kill switch and initial bytes are present", () => {
+  const v1WithState = {
+    ...request,
+    dynamicStateEnabled: true,
+    agentStateSchemaVersion: "rd-agent-state/v2",
+    attemptNo: 1,
+    initialAgentStateProtocol: "rd-agent-state/v2",
+    initialAgentStateJson: initialStateJson,
+    initialAgentStateHash: hashStateV2(initialState),
+  };
+  assert.equal(validateRequest(v1WithState), v1WithState);
+  assert.deepEqual(validatedInitialAgentStateV2(v1WithState), initialState);
+});
+
+test("binds Host initial v2 state even if snapshot schema version stayed on v1", () => {
+  const staleSchema = {
+    ...request,
+    dynamicStateEnabled: true,
+    agentStateSchemaVersion: "rd-agent-state/v1",
+    attemptNo: 1,
+    initialAgentStateProtocol: "rd-agent-state/v2",
+    initialAgentStateJson: initialStateJson,
+    initialAgentStateHash: hashStateV2(initialState),
+  };
+  assert.deepEqual(validatedInitialAgentStateV2(staleSchema), initialState);
+});
+
+test("requires and verifies Host initial state for enabled state v2 requests", () => {
+  assert.equal(validateRequestV2(stateV2Request), stateV2Request);
+  assert.deepEqual(validatedInitialAgentStateV2(stateV2Request), initialState);
+  const missing = { ...stateV2Request };
+  delete missing.initialAgentStateJson;
+  assert.throws(() => validateRequestV2(missing), /initial agent state.*required/i);
+  assert.throws(() => validateRequestV2({
+    ...stateV2Request,
+    initialAgentStateHash: "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  }), /hash mismatch/i);
+  const mismatched = {
+    ...initialState,
+    stageRunId: "stage-other",
+  };
+  assert.throws(() => validateRequestV2({
+    ...stateV2Request,
+    initialAgentStateJson: canonicalizeStateV2(mismatched),
+    initialAgentStateHash: hashStateV2(mismatched),
+  }), /identity/i);
 });
 
 test("validates runtime context policy objects independently", () => {
@@ -262,6 +342,56 @@ test("normalizes text and tool events without exposing thinking or secrets", () 
   });
 });
 
+test("keeps v2 budget token counters when redacting STATE_SNAPSHOT_UPDATED", () => {
+  const snapshot = {
+    protocol: "rd-agent-state/v2",
+    sequence: 0,
+    taskId: "task-1",
+    stageRunId: "stage-1",
+    role: "REQUIREMENT_REVIEWER",
+    attemptNo: 1,
+    runtimeType: "PI",
+    profileSnapshotId: "snapshot-1",
+    currentGoal: "审查并澄清需求",
+    generatedAtEpochMillis: 1787157846103,
+    phase: "REQUIREMENT_REVIEWER_EXECUTION",
+    taskStartedAtEpochMillis: 1787157845320,
+    stageStartedAtEpochMillis: 1787157846103,
+    budget: {
+      availability: "UNKNOWN",
+      estimatedInputTokens: 1613,
+      maxContextTokens: 128000,
+      reservedOutputTokens: 4096,
+      estimatorVersion: "chars/4-v1",
+      model: "LongCat-2.0",
+    },
+    todos: [],
+  };
+  const stateHash = hashStateV2(snapshot);
+  const redacted = redact({
+    stateSequence: 0,
+    stateHash,
+    snapshot,
+  });
+  assert.equal(redacted.snapshot.budget.estimatedInputTokens, 1613);
+  assert.equal(redacted.snapshot.budget.maxContextTokens, 128000);
+  assert.equal(redacted.snapshot.budget.reservedOutputTokens, 4096);
+  assert.equal(hashStateV2(redacted.snapshot), stateHash);
+  const normalized = new EventNormalizer().lifecycle("STATE_SNAPSHOT_UPDATED", {
+    stageRunId: "stage-1",
+    taskId: "task-1",
+    role: "REQUIREMENT_REVIEWER",
+    runtimeType: "PI",
+    snapshotId: "snapshot-1",
+  }, {
+    stateSequence: 0,
+    stateHash,
+    snapshot,
+  });
+  assert.equal(hashStateV2(normalized.payload.snapshot), stateHash);
+  assert.equal(normalized.payload.snapshot.budget.estimatedInputTokens, 1613);
+});
+
 test("keeps a tool call correlated while exposing only a redacted invocation summary", () => {
   const context = {
     stageRunId: "stage-1",
@@ -373,6 +503,82 @@ test("accepts a complete QA report and enforces cross-field consistency", () => 
   const inconsistent = { ...report, status: "PASSED" };
   assert.ok(validateRoleResult("QA_AGENT", inconsistent)
       .some((error) => error.includes("requires all acceptanceResults")));
+});
+
+test("accepts an explicit PI-v2 QA remediation request independent of failureCategory", () => {
+  const report = completeQaReport("qa-evidence/commands/current.log");
+  report.status = "FAILED";
+  report.summary = "runtime failure reveals a product bug";
+  report.failureCategory = "ENVIRONMENT";
+  report.retryRecommendation = "CODING_AGENT";
+  report.acceptanceResults[0] = {
+    ...report.acceptanceResults[0],
+    criteriaId: "ac-current-1",
+    status: "FAILED",
+    exitCode: 1,
+  };
+  report.acceptanceResults[1].criteriaId = "ac-regression-1";
+  report.remediationRequest = {
+    requested: true,
+    targetRole: "CODING_AGENT",
+    reason: "The coding agent must fix the reproducible checkout bug.",
+    bugFindingIds: ["bug-1"],
+  };
+  report.bugFindings = [{
+    id: "bug-1",
+    severity: "HIGH",
+    acceptanceCriteriaId: "ac-current-1",
+    reproductionSteps: ["run npm test", "observe checkout failure"],
+    expected: "checkout succeeds",
+    actual: "checkout exits with code 1",
+    evidenceArtifactIds: ["qa-evidence/commands/current.log"],
+    suspectedFiles: ["src/checkout.ts"],
+  }];
+
+  assert.deepEqual(validateRoleResult(
+    "QA_AGENT", report, undefined, {}, [], undefined, true,
+  ), []);
+});
+
+test("rejects malformed or contradictory PI-v2 QA remediation requests", () => {
+  const passed = completeQaReport("qa-evidence/commands/current.log");
+  passed.acceptanceResults[0].criteriaId = "ac-current-1";
+  passed.acceptanceResults[1].criteriaId = "ac-regression-1";
+  passed.remediationRequest = {
+    requested: true,
+    targetRole: "CODING_AGENT",
+    reason: "should not be allowed on PASSED",
+    bugFindingIds: ["bug-missing"],
+  };
+  passed.bugFindings = [];
+  const passedErrors = validateRoleResult(
+    "QA_AGENT", passed, undefined, {}, [], undefined, true,
+  );
+  assert.ok(passedErrors.some((error) => error.includes("status FAILED")));
+  assert.ok(passedErrors.some((error) => error.includes("unknown bug finding")));
+
+  const declined = completeQaReport("qa-evidence/commands/current.log");
+  declined.status = "FAILED";
+  declined.failureCategory = "FLAKY";
+  declined.retryRecommendation = "HUMAN";
+  declined.acceptanceResults[0] = {
+    ...declined.acceptanceResults[0], criteriaId: "ac-current-1", status: "FAILED", exitCode: 1,
+  };
+  declined.acceptanceResults[1].criteriaId = "ac-regression-1";
+  declined.remediationRequest = {
+    requested: false, targetRole: "", reason: "flaky environment", bugFindingIds: [],
+  };
+  declined.bugFindings = [{
+    id: "bug-forged", severity: "LOW", acceptanceCriteriaId: "ac-current-1",
+    reproductionSteps: ["retry"], expected: "stable", actual: "flaky",
+    evidenceArtifactIds: ["qa-evidence/commands/current.log"], suspectedFiles: [],
+  }];
+  const declinedErrors = validateRoleResult(
+    "QA_AGENT", declined, undefined, {}, [], undefined, true,
+  );
+  assert.ok(declinedErrors.some((error) => error.includes("requested=false requires bugFindings to be empty")));
+
+  assert.deepEqual(validateRoleResult("QA_AGENT", completeQaReport("qa-evidence/commands/current.log")), []);
 });
 
 test("accepts Host assertion contracts only for QA requests", () => {

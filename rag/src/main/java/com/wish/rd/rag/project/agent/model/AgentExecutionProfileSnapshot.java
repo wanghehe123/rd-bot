@@ -1,9 +1,14 @@
 package com.wish.rd.rag.project.agent.model;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Locale;
 
 /** Immutable, hash-addressed runtime configuration resolved for one stage attempt. */
@@ -18,6 +23,8 @@ public record AgentExecutionProfileSnapshot(
         String snapshotHash,
         long resolvedAtEpochMillis
 ) {
+
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     public AgentExecutionProfileSnapshot {
         snapshotId = requireText(snapshotId, "snapshotId");
@@ -39,6 +46,57 @@ public record AgentExecutionProfileSnapshot(
 
     public boolean hasValidIntegrityHash() {
         return snapshotHash.equals(sha256(snapshotJson));
+    }
+
+    /** Frozen profile version; legacy snapshots without the field resolve to zero. */
+    public long profileVersion() {
+        JsonNode node = snapshotPayload().get("profileVersion");
+        if (node == null || node.isNull()) {
+            return 0L;
+        }
+        if (!node.canConvertToLong() || node.longValue() < 0L) {
+            throw new IllegalStateException("execution profile snapshot has invalid profileVersion");
+        }
+        return node.longValue();
+    }
+
+    /** Frozen, closed-set runtime capabilities; legacy snapshots default to disabled. */
+    public List<AgentRuntimeCapability> capabilities() {
+        JsonNode node = snapshotPayload().get("capabilities");
+        if (node == null || node.isNull()) {
+            return List.of();
+        }
+        if (!node.isArray()) {
+            throw new IllegalStateException("execution profile snapshot capabilities must be an array");
+        }
+        return java.util.stream.StreamSupport.stream(node.spliterator(), false)
+                .map(item -> {
+                    if (!item.isTextual()) {
+                        throw new IllegalStateException(
+                                "execution profile snapshot capability must be a string"
+                        );
+                    }
+                    return AgentRuntimeCapability.parse(item.textValue());
+                })
+                .distinct()
+                .sorted(java.util.Comparator.comparing(AgentRuntimeCapability::name))
+                .toList();
+    }
+
+    public boolean hasCapability(AgentRuntimeCapability capability) {
+        return capability != null && capabilities().contains(capability);
+    }
+
+    private JsonNode snapshotPayload() {
+        try {
+            JsonNode node = OBJECT_MAPPER.readTree(snapshotJson);
+            if (node == null || !node.isObject()) {
+                throw new IllegalStateException("execution profile snapshot payload must be an object");
+            }
+            return node;
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("invalid execution profile snapshot JSON", exception);
+        }
     }
 
     public static String sha256(String value) {

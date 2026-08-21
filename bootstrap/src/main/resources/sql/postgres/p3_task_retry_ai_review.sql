@@ -419,15 +419,15 @@ ON CONFLICT DO NOTHING;
 -- Backfilled provenance carries checkpoint policy; stranded pre-fix retry commands often left
 -- policy_run_id NULL. Restore the authorization identity so current and relaxed corroboration both
 -- accept the row without rewriting task version/fence.
-UPDATE rd_requirement_stage_commands command
+UPDATE rd_requirement_stage_commands AS command
    SET policy_run_id = checkpoint.source_policy_run_id,
        updated_at = now()
-  FROM rd_task_retry_checkpoints checkpoint
-  JOIN rd_task_failure_provenance provenance
-    ON provenance.failed_stage_command_id = command.id
+  FROM rd_task_retry_checkpoints AS checkpoint,
+       rd_task_failure_provenance AS provenance
+ WHERE command.retry_checkpoint_id = checkpoint.id
+   AND provenance.failed_stage_command_id = command.id
    AND provenance.failed_command_attempt_no = command.attempt_no
    AND provenance.failure_kind = 'TECHNICAL_EXHAUSTION_BACKFILL'
- WHERE command.retry_checkpoint_id = checkpoint.id
    AND command.policy_run_id IS NULL
    AND checkpoint.source_policy_run_id IS NOT NULL
    AND command.status = 'DEAD_LETTERED';

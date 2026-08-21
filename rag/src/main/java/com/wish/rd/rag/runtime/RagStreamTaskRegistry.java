@@ -601,6 +601,15 @@ public final class RagStreamTaskRegistry {
     }
 
     /**
+     * Admin workbench identity/status without prompt or execution-result blobs.
+     */
+    public RdTask getAdminShell(String taskId) {
+        String safeTaskId = requireTaskId(taskId);
+        return taskStore.findAdminShell(safeTaskId)
+                .orElseThrow(() -> new NoSuchElementException("rd task not found: " + safeTaskId));
+    }
+
+    /**
      * 按 ID 查询需求交付任务。
      *
      * @param taskId 任务 ID

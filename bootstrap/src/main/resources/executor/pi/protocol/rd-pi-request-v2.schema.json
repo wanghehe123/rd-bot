@@ -64,6 +64,31 @@
     "attemptNo": { "type": "integer", "minimum": 1 },
     "contextProtocolVersion": { "type": "string" },
     "agentStateSchemaVersion": { "type": "string" },
-    "toolRetryPolicyVersion": { "type": "string" }
-  }
+    "toolRetryPolicyVersion": { "type": "string" },
+    "qaRemediationV2Enabled": { "type": "boolean" },
+    "initialAgentStateProtocol": { "type": "string", "const": "rd-agent-state/v2" },
+    "initialAgentStateJson": { "type": "string", "minLength": 1 },
+    "initialAgentStateHash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-fA-F]{64}$"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "agentStateSchemaVersion": { "const": "rd-agent-state/v2" },
+          "dynamicStateEnabled": { "const": true }
+        },
+        "required": ["agentStateSchemaVersion", "dynamicStateEnabled"]
+      },
+      "then": {
+        "required": [
+          "initialAgentStateProtocol",
+          "initialAgentStateJson",
+          "initialAgentStateHash"
+        ]
+      }
+    }
+  ]
 }

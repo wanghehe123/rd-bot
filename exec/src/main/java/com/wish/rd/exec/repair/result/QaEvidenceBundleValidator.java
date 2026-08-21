@@ -87,7 +87,20 @@ public final class QaEvidenceBundleValidator {
             List<String> requiredAcceptanceCriteria,
             List<String> candidateChangedFiles
     ) {
-        List<String> errors = new ArrayList<>(roleResultValidator.validate("QA_AGENT", resultJson).errors());
+        return validate(resultJson, artifacts, requiredAcceptanceCriteria, candidateChangedFiles, false);
+    }
+
+    /** Validates authoritative finding-to-acceptance-to-file evidence for PI remediation v2. */
+    public AgentRoleResultValidation validate(
+            String resultJson,
+            List<RepairArtifact> artifacts,
+            List<String> requiredAcceptanceCriteria,
+            List<String> candidateChangedFiles,
+            boolean qaRemediationV2Enabled
+    ) {
+        List<String> errors = new ArrayList<>(
+                roleResultValidator.validate("QA_AGENT", resultJson, qaRemediationV2Enabled).errors()
+        );
         JsonNode root = parseObject(resultJson);
         if (root == null) {
             return new AgentRoleResultValidation(false, List.copyOf(errors));
@@ -173,6 +186,10 @@ public final class QaEvidenceBundleValidator {
             }
         }
 
+        if (qaRemediationV2Enabled) {
+            validateRemediationEvidence(root, artifactsByName, referencedArtifacts, errors);
+        }
+
         JsonNode browserValidation = root.path("browserValidation");
         boolean browserRequired = browserValidation.path("required").asBoolean(false);
         boolean browserPerformed = browserValidation.path("performed").asBoolean(false);
@@ -196,6 +213,63 @@ public final class QaEvidenceBundleValidator {
             requireReferencedScreenshot("mobile", "mobile-390x844", referencedArtifacts, artifactsByName, errors);
         }
         return new AgentRoleResultValidation(errors.isEmpty(), List.copyOf(errors));
+    }
+
+    private static void validateRemediationEvidence(
+            JsonNode root,
+            Map<String, RepairArtifact> artifactsByName,
+            Set<String> referencedArtifacts,
+            List<String> errors
+    ) {
+        JsonNode request = root.path("remediationRequest");
+        if (!request.path("requested").asBoolean(false)) return;
+
+        Map<String, JsonNode> failedAcceptanceById = new LinkedHashMap<>();
+        JsonNode acceptanceResults = root.path("acceptanceResults");
+        if (acceptanceResults.isArray()) {
+            for (JsonNode acceptance : acceptanceResults) {
+                if (!"FAILED".equals(acceptance.path("status").asText("").strip())) continue;
+                String criteriaId = acceptance.path("criteriaId").asText("").strip();
+                if (criteriaId.isBlank()) continue;
+                if (failedAcceptanceById.putIfAbsent(criteriaId, acceptance) != null) {
+                    errors.add("acceptanceResults contains duplicate FAILED criteriaId: " + criteriaId);
+                }
+            }
+        }
+
+        Set<String> selectedIds = new LinkedHashSet<>();
+        request.path("bugFindingIds").forEach(id -> selectedIds.add(id.asText("").strip()));
+        JsonNode findings = root.path("bugFindings");
+        if (!findings.isArray()) return;
+        for (int findingIndex = 0; findingIndex < findings.size(); findingIndex++) {
+            JsonNode finding = findings.get(findingIndex);
+            String findingId = finding.path("id").asText("").strip();
+            if (!selectedIds.contains(findingId)) continue;
+            String criteriaId = finding.path("acceptanceCriteriaId").asText("").strip();
+            JsonNode failedAcceptance = failedAcceptanceById.get(criteriaId);
+            if (failedAcceptance == null) {
+                errors.add("bugFindings[" + findingIndex
+                        + "].acceptanceCriteriaId must reference a FAILED acceptanceResults.criteriaId");
+                continue;
+            }
+            Set<String> acceptanceEvidence = new LinkedHashSet<>();
+            String logArtifactId = normalizeReference(
+                    failedAcceptance.path("logArtifactId").asText("").strip()
+            );
+            if (!logArtifactId.isBlank()) acceptanceEvidence.add(logArtifactId);
+            failedAcceptance.path("evidenceArtifactIds").forEach(
+                    evidence -> acceptanceEvidence.add(normalizeReference(evidence.asText("").strip()))
+            );
+            JsonNode evidenceIds = finding.path("evidenceArtifactIds");
+            for (int evidenceIndex = 0; evidenceIndex < evidenceIds.size(); evidenceIndex++) {
+                String evidenceId = evidenceIds.get(evidenceIndex).asText("").strip();
+                String field = "bugFindings[" + findingIndex + "].evidenceArtifactIds[" + evidenceIndex + "]";
+                validateReference(field, evidenceId, artifactsByName, referencedArtifacts, errors);
+                if (!acceptanceEvidence.contains(normalizeReference(evidenceId))) {
+                    errors.add(field + " must also be referenced by its FAILED acceptance");
+                }
+            }
+        }
     }
 
     /**
@@ -359,7 +433,7 @@ public final class QaEvidenceBundleValidator {
         if (!positiveLong(bytes)) {
             errors.add(field + " references an empty artifact: " + reference);
         }
-        if (artifact.metadataJson().getOrDefault("sha256", "").isBlank()) {
+        if (!validSha256(artifact.metadataJson().getOrDefault("sha256", "").strip())) {
             errors.add(field + " references an artifact without sha256: " + reference);
         }
     }

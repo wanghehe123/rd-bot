@@ -4,8 +4,13 @@ import com.wish.rd.bootstrap.persistence.PostgresPersistenceSupport;
 import com.wish.rd.bootstrap.persistence.entity.AgentExecutionProfileRow;
 import com.wish.rd.bootstrap.persistence.mapper.AgentExecutionProfileMapper;
 import com.wish.rd.rag.project.agent.AgentExecutionProfileStore;
+import com.wish.rd.rag.project.agent.model.AgentManifestCanonicalJson;
 import com.wish.rd.rag.project.agent.model.AgentExecutionProfile;
+import com.wish.rd.rag.project.agent.model.AgentRuntimeCapability;
 import com.wish.rd.rag.project.agent.model.AgentRuntimeType;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
@@ -17,6 +22,8 @@ import java.util.List;
 @ConditionalOnProperty(name = "rd.knowledge.store", havingValue = "postgres")
 public final class PostgresAgentExecutionProfileStore implements AgentExecutionProfileStore {
 
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+
     private final AgentExecutionProfileMapper mapper;
 
     public PostgresAgentExecutionProfileStore(AgentExecutionProfileMapper mapper) {
@@ -25,8 +32,30 @@ public final class PostgresAgentExecutionProfileStore implements AgentExecutionP
 
     @Override
     public AgentExecutionProfile save(AgentExecutionProfile profile) {
-        mapper.upsert(toRow(profile));
+        AgentExecutionProfileRow existing = mapper.find(profile.profileId());
+        if (existing == null) {
+            return insert(profile);
+        }
+        long expectedVersion = existing.version == null ? 1L : existing.version;
+        if (mapper.update(toRow(profile), expectedVersion) != 1) {
+            throw new IllegalStateException("execution profile version conflict: " + profile.profileId());
+        }
         return profile;
+    }
+
+    @Override
+    public AgentExecutionProfile insert(AgentExecutionProfile profile) {
+        if (mapper.insert(toRow(profile)) != 1) {
+            throw new IllegalStateException("execution profile insert failed: " + profile.profileId());
+        }
+        return profile;
+    }
+
+    @Override
+    public Optional<AgentExecutionProfile> update(AgentExecutionProfile profile, long expectedVersion) {
+        return mapper.update(toRow(profile), expectedVersion) == 1
+                ? Optional.of(profile)
+                : Optional.empty();
     }
 
     @Override
@@ -92,6 +121,9 @@ public final class PostgresAgentExecutionProfileStore implements AgentExecutionP
         row.toolPolicyVersion = profile.toolPolicyVersion();
         row.enabled = profile.enabled();
         row.version = profile.version();
+        row.capabilitiesJson = AgentManifestCanonicalJson.canonicalJson(
+                profile.capabilities().stream().map(Enum::name).toList()
+        );
         return row;
     }
 
@@ -109,7 +141,30 @@ public final class PostgresAgentExecutionProfileStore implements AgentExecutionP
                 row.toolPolicyId,
                 row.toolPolicyVersion == null ? 1L : row.toolPolicyVersion,
                 Boolean.TRUE.equals(row.enabled),
-                row.version == null ? 1L : row.version
+                row.version == null ? 1L : row.version,
+                capabilities(row.capabilitiesJson)
         );
+    }
+
+    private static List<AgentRuntimeCapability> capabilities(String json) {
+        if (json == null || json.isBlank()) {
+            return List.of();
+        }
+        try {
+            JsonNode node = OBJECT_MAPPER.readTree(json);
+            if (!node.isArray()) {
+                throw new IllegalStateException("execution profile capabilities must be a JSON array");
+            }
+            return java.util.stream.StreamSupport.stream(node.spliterator(), false)
+                    .map(item -> {
+                        if (!item.isTextual()) {
+                            throw new IllegalStateException("execution profile capability must be a string");
+                        }
+                        return AgentRuntimeCapability.parse(item.textValue());
+                    })
+                    .toList();
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("invalid execution profile capabilities JSON", exception);
+        }
     }
 }

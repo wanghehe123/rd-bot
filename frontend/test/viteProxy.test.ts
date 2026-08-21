@@ -121,6 +121,8 @@ test("only bypasses real task SPA routes while proxying nested task content APIs
     "/admin/rd-tasks/7480495920010891264/qa-evidence/artifact-1/content",
     "/admin/rd-tasks/7480495920010891264/materials/material-1/content",
     "/admin/rd-tasks/7480495920010891264/execution-overview",
+    "/admin/rd-tasks/7480495920010891264/audit-content",
+    "/admin/rd-tasks/7480495920010891264/role-prompts",
     "/admin/rd-tasks/7480495920010891264/host-verifications",
     "/admin/rd-tasks/7480495920010891264/host-verifications/2/evidence/9/content"
   ]) {

@@ -6,16 +6,49 @@ const roleWorkbench = readFileSync(
   new URL("../src/components/admin/rdtask/TaskRoleWorkbench.tsx", import.meta.url),
   "utf8"
 );
-const detailPage = readFileSync(new URL("../src/pages/admin/rdtask/RdTaskDetailPage.tsx", import.meta.url), "utf8");
-const taskService = readFileSync(new URL("../src/services/rdTaskService.ts", import.meta.url), "utf8");
+const roleContextCard = readFileSync(
+  new URL("../src/components/admin/rdtask/RoleEffectiveContextCard.tsx", import.meta.url),
+  "utf8"
+);
+const detailPage = readFileSync(
+  new URL("../src/pages/admin/rdtask/RdTaskDetailPage.tsx", import.meta.url),
+  "utf8"
+);
+const taskService = readFileSync(
+  new URL("../src/services/rdTaskService.ts", import.meta.url),
+  "utf8"
+);
 
-test("loads stage-bound role prompts and renders their Markdown and RAG evidence", () => {
+test("loads stage-bound role prompts and renders effective context, static prompt, and latest state", () => {
+  // Service contract
   assert.match(taskService, /getRdTaskRolePrompts/);
   assert.match(taskService, /\/admin\/rd-tasks\/\$\{taskId\}\/role-prompts/);
+  assert.match(taskService, /interface RdTaskEffectiveContext/);
+  assert.match(taskService, /interface RdTaskLatestAgentState/);
+  assert.match(taskService, /interface RdTaskAgentTodo/);
+  assert.match(taskService, /interface RdTaskAgentStateBudget/);
+
+  // Detail page renders workbench with freshness evaluation
   assert.match(detailPage, /TaskRoleWorkbench/);
-  assert.match(roleWorkbench, /MarkdownRenderer/);
-  assert.match(roleWorkbench, /实际角色 Prompt/);
+  assert.match(detailPage, /evaluateRolePromptsFreshness/);
+  assert.match(detailPage, /任务执行基线 Prompt/);
+
+  // Workbench renders RoleEffectiveContextCard and evidence sections
+  assert.match(roleWorkbench, /RoleEffectiveContextCard/);
   assert.match(roleWorkbench, /上下文证据/);
   assert.match(roleWorkbench, /RetrievalRun/);
-  assert.match(detailPage, /任务执行基线 Prompt/);
+
+  // RoleEffectiveContextCard renders 3 tabs and safe views
+  assert.match(roleContextCard, /角色有效上下文/);
+  assert.match(roleContextCard, /有效上下文/);
+  assert.match(roleContextCard, /静态 Prompt/);
+  assert.match(roleContextCard, /最新状态/);
+  assert.match(roleContextCard, /MarkdownRenderer/);
+  assert.match(roleContextCard, /这是派发时静态指令，不含运行中最新状态/);
+  assert.match(roleContextCard, /安全预览已截断/);
+  assert.match(roleContextCard, /PROMPT_SNAPSHOT → AGENT_STATE/);
+  assert.match(roleContextCard, /AgentLatestStatePanel/);
+  assert.match(roleContextCard, /AgentTodoList/);
+  assert.match(roleContextCard, /查看安全原始状态/);
+  assert.doesNotMatch(roleContextCard, /promptSnapshot/);
 });

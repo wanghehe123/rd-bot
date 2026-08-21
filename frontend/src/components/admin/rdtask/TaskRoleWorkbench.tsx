@@ -20,6 +20,7 @@ import {
   type CaptureTaskActionGuard
 } from "@/components/admin/rdtask/TaskFailureRecoveryWorkbench";
 import { ReadableAgentTrace } from "@/components/admin/rdtask/ReadableAgentTrace";
+import { RoleEffectiveContextCard } from "@/components/admin/rdtask/RoleEffectiveContextCard";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -364,6 +365,7 @@ export function TaskRoleWorkbench({
               </TabsContent>
               <TabsContent value="evidence" className="m-0">
                 <RoleEvidencePanel
+                  stage={selectedStage}
                   promptStage={selectedPrompt}
                   promptLoading={promptLoading}
                   promptError={promptError}
@@ -541,6 +543,7 @@ function RoleResultPanel({
 }
 
 function RoleEvidencePanel({
+  stage,
   promptStage,
   promptLoading,
   promptError,
@@ -551,6 +554,7 @@ function RoleEvidencePanel({
   retrievalError,
   onInspectRetrievalRun
 }: {
+  stage?: RdTaskStageRun;
   promptStage?: RdTaskRolePromptStage;
   promptLoading: boolean;
   promptError: string;
@@ -563,36 +567,12 @@ function RoleEvidencePanel({
 }) {
   return (
     <div className="space-y-6 px-4 py-5 sm:px-5">
-      <section>
-        <SectionHeading title="实际角色 Prompt" description="仅展示当前 stageRunId 精确绑定的安全预览。" />
-        {promptLoading ? <LoadingLine label="正在加载角色 Prompt" /> : null}
-        {!promptLoading && promptError ? <PanelError message={promptError} /> : null}
-        {!promptLoading && !promptError && !promptStage ? (
-          <EmptyLine label="当前 Attempt 尚无已绑定的 Prompt 读模型。" />
-        ) : null}
-        {!promptLoading && !promptError && promptStage ? (
-          promptStage.prompt.available ? (
-            <div className="mt-3">
-              <div className="grid gap-3 border-y border-slate-200 py-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
-                <Metric label="Provider" value={promptStage.providerName || "-"} mono />
-                <Metric label="Prompt 产物" value={promptStage.prompt.artifactId || "-"} mono />
-                <Metric label="上下文包" value={promptStage.context.packageId || "-"} mono />
-                <Metric label="预览长度" value={`${promptStage.prompt.previewLength.toLocaleString()} chars`} />
-              </div>
-              <div className="mt-3 max-h-[420px] overflow-auto border border-slate-200 bg-slate-50/60 p-4 text-sm leading-relaxed text-slate-700">
-                <Suspense fallback={<LoadingLine label="正在渲染 Markdown" />}>
-                  <MarkdownRenderer content={promptStage.prompt.contentPreview} />
-                </Suspense>
-              </div>
-              {promptStage.prompt.truncated ? (
-                <p className="mt-2 text-xs text-amber-700">安全预览已截断，原始长度 {promptStage.prompt.contentLength.toLocaleString()} 字符。</p>
-              ) : null}
-            </div>
-          ) : (
-            <EmptyLine label={promptStage.prompt.unavailableReason || "当前 Attempt 暂无可审计 Prompt。"} />
-          )
-        ) : null}
-      </section>
+      <RoleEffectiveContextCard
+        stage={stage}
+        promptStage={promptStage}
+        promptLoading={promptLoading}
+        promptError={promptError}
+      />
 
       <section>
         <SectionHeading title="上下文证据" description="验收约束、风险和 RAG 证据均来自当前 Attempt 的 RoleContextPackage。" />
@@ -1052,13 +1032,14 @@ function RuntimeExecutionEventsPanel({
       }, 1_500);
     };
 
-    const poll = async (): Promise<AgentRuntimeEventSnapshot | null> => {
+    const poll = async (options?: { latest?: boolean }): Promise<AgentRuntimeEventSnapshot | null> => {
       if (cancelled || polling) return null;
       polling = true;
       try {
         const next = await getAgentRuntimeEvents(taskId, stage.stageRunId, {
           after: cursorRef.current,
-          limit: 100
+          limit: 100,
+          latest: Boolean(options?.latest && cursorRef.current === 0)
         });
         if (cancelled) return null;
         cursorRef.current = Math.max(cursorRef.current, next.nextSequence);
@@ -1124,8 +1105,8 @@ function RuntimeExecutionEventsPanel({
     };
 
     void (async () => {
-      let next = await poll();
-      while (next?.hasMore && !cancelled) {
+      let next = await poll({ latest: true });
+      while (next?.hasMore && next.source !== "ARCHIVED" && !cancelled) {
         next = await poll();
       }
       if (!cancelled) setLoadingHistory(false);

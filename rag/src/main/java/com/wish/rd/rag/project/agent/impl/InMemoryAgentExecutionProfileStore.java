@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicReference;
 
 /** In-memory profile store for focused tests and local configurations. */
 public final class InMemoryAgentExecutionProfileStore implements AgentExecutionProfileStore {
@@ -20,6 +21,31 @@ public final class InMemoryAgentExecutionProfileStore implements AgentExecutionP
     public AgentExecutionProfile save(AgentExecutionProfile profile) {
         profiles.put(profile.profileId(), profile);
         return profile;
+    }
+
+    @Override
+    public AgentExecutionProfile insert(AgentExecutionProfile profile) {
+        AgentExecutionProfile existing = profiles.putIfAbsent(profile.profileId(), profile);
+        if (existing != null) {
+            throw new IllegalStateException("execution profile already exists: " + profile.profileId());
+        }
+        return profile;
+    }
+
+    @Override
+    public Optional<AgentExecutionProfile> update(
+            AgentExecutionProfile profile,
+            long expectedVersion
+    ) {
+        AtomicReference<AgentExecutionProfile> updated = new AtomicReference<>();
+        profiles.computeIfPresent(profile.profileId(), (ignored, current) -> {
+            if (current.version() != expectedVersion) {
+                return current;
+            }
+            updated.set(profile);
+            return profile;
+        });
+        return Optional.ofNullable(updated.get());
     }
 
     @Override

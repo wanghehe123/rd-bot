@@ -58,6 +58,7 @@ test("projects runtime events into the readable trace instead of rendering every
 });
 
 test("loads the retained trace before attaching live updates so the newest record is the default view", () => {
-  assert.match(workbench, /while \(next\?\.hasMore/);
+  assert.match(workbench, /poll\(\{ latest: true \}\)/);
+  assert.match(workbench, /while \(next\?\.hasMore && next\.source !== "ARCHIVED"/);
   assert.match(workbench, /await poll\(\)/);
 });

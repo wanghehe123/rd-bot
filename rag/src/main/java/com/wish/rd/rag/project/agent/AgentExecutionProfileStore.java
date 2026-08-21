@@ -10,6 +10,24 @@ public interface AgentExecutionProfileStore {
 
     AgentExecutionProfile save(AgentExecutionProfile profile);
 
+    default AgentExecutionProfile insert(AgentExecutionProfile profile) {
+        if (find(profile.profileId()).isPresent()) {
+            throw new IllegalStateException("execution profile already exists: " + profile.profileId());
+        }
+        return save(profile);
+    }
+
+    default Optional<AgentExecutionProfile> update(
+            AgentExecutionProfile profile,
+            long expectedVersion
+    ) {
+        Optional<AgentExecutionProfile> current = find(profile.profileId());
+        if (current.isEmpty() || current.get().version() != expectedVersion) {
+            return Optional.empty();
+        }
+        return Optional.of(save(profile));
+    }
+
     Optional<AgentExecutionProfile> find(String profileId);
 
     default List<AgentExecutionProfile> listByProject(String projectId) {

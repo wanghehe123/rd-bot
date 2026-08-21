@@ -1,0 +1,59 @@
+{
+  "valid": [
+    {
+      "name": "unicode-escaping-unknown-budget",
+      "input": {
+        "stageRunId": "阶段-\"A\"",
+        "protocol": "rd-agent-state/v2",
+        "budget": {
+          "availability": "UNKNOWN"
+        },
+        "note": "你好\nslash\\quote\" emoji😀",
+        "attemptNo": 1
+      },
+      "canonical": "{\"attemptNo\":1,\"budget\":{\"availability\":\"UNKNOWN\"},\"note\":\"你好\\nslash\\\\quote\\\" emoji😀\",\"protocol\":\"rd-agent-state/v2\",\"stageRunId\":\"阶段-\\\"A\\\"\"}",
+      "hash": "sha256:634baa7d284ad853ce92761e142e72203afdb0f504cb5205c996b71acd8f2507"
+    },
+    {
+      "name": "maximum-safe-integer",
+      "input": {
+        "protocol": "rd-agent-state/v2",
+        "sequence": 9007199254740991,
+        "budget": {
+          "availability": "AVAILABLE",
+          "inputBudgetTokens": 9007199254740991,
+          "reservedOutputTokens": 1,
+          "consumedInputTokens": 0
+        }
+      },
+      "canonical": "{\"budget\":{\"availability\":\"AVAILABLE\",\"consumedInputTokens\":0,\"inputBudgetTokens\":9007199254740991,\"reservedOutputTokens\":1},\"protocol\":\"rd-agent-state/v2\",\"sequence\":9007199254740991}",
+      "hash": "sha256:6ceb79f76a3d8f6da9f0dd7c9c68f5a056c880d0866a601cf0ceaecc05e22571"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "over-safe-integer",
+      "json": "{\"protocol\":\"rd-agent-state/v2\",\"sequence\":9007199254740992}",
+      "hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "error": "safe integer"
+    },
+    {
+      "name": "illegal-surrogate",
+      "json": "{\"protocol\":\"rd-agent-state/v2\",\"note\":\"\\ud800\"}",
+      "hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "error": "surrogate"
+    },
+    {
+      "name": "hash-mismatch",
+      "json": "{\"protocol\":\"rd-agent-state/v2\",\"budget\":{\"availability\":\"UNKNOWN\"}}",
+      "hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "error": "hash mismatch"
+    },
+    {
+      "name": "unsupported-budget-availability",
+      "json": "{\"protocol\":\"rd-agent-state/v2\",\"budget\":{\"availability\":\"MAYBE\"}}",
+      "hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "error": "budget availability"
+    }
+  ]
+}

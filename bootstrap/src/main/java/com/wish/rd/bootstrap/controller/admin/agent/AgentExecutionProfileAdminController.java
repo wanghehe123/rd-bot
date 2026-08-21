@@ -2,11 +2,10 @@ package com.wish.rd.bootstrap.controller.admin.agent;
 
 import com.wish.rd.rag.project.agent.AgentExecutionProfileService;
 import com.wish.rd.rag.project.agent.AgentExecutionProfileSnapshotStore;
-import com.wish.rd.rag.project.agent.ModelProviderProfileService;
 import com.wish.rd.rag.project.agent.model.AgentExecutionProfile;
 import com.wish.rd.rag.project.agent.model.AgentExecutionProfileSnapshot;
 import com.wish.rd.rag.project.agent.model.AgentRuntimeType;
-import com.wish.rd.rag.project.agent.model.ModelProviderProfile;
+import com.wish.rd.rag.project.agent.model.AgentRuntimeCapability;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
 import com.wish.rd.rag.runtime.model.RdRequirementTask;
 import com.wish.rd.rag.runtime.model.RdTask;
@@ -35,28 +34,20 @@ import java.util.NoSuchElementException;
 public final class AgentExecutionProfileAdminController {
 
     private final AgentExecutionProfileService profileService;
-    private final ModelProviderProfileService providerProfileService;
     private final AgentExecutionProfileSnapshotStore snapshotStore;
     private final RagStreamTaskRegistry taskRegistry;
     private final AgentRuntimeMutationAccessPolicy mutationAccessPolicy;
 
     public AgentExecutionProfileAdminController(
             AgentExecutionProfileService profileService,
-            ModelProviderProfileService providerProfileService,
             AgentExecutionProfileSnapshotStore snapshotStore,
             RagStreamTaskRegistry taskRegistry,
             AgentRuntimeMutationAccessPolicy mutationAccessPolicy
     ) {
         this.profileService = profileService;
-        this.providerProfileService = providerProfileService;
         this.snapshotStore = snapshotStore;
         this.taskRegistry = taskRegistry;
         this.mutationAccessPolicy = mutationAccessPolicy;
-    }
-
-    @GetMapping("/admin/model-provider-profiles")
-    public List<ModelProviderProfile> listProviderProfiles() {
-        return providerProfileService.list();
     }
 
     @GetMapping("/admin/projects/{projectId}/agent-execution-profiles")
@@ -75,7 +66,7 @@ public final class AgentExecutionProfileAdminController {
             @RequestBody AgentExecutionProfileRequest request
     ) {
         mutationAccessPolicy.requireAuthorized(mutationToken);
-        return profileService.register(request.toProfile(projectId, request.profileId()));
+        return profileService.create(request.toProfile(projectId, request.profileId()));
     }
 
     @PutMapping(
@@ -90,7 +81,7 @@ public final class AgentExecutionProfileAdminController {
             @RequestBody AgentExecutionProfileRequest request
     ) {
         mutationAccessPolicy.requireAuthorized(mutationToken);
-        return profileService.register(request.toProfile(projectId, profileId));
+        return profileService.update(request.toProfile(projectId, profileId), request.version());
     }
 
     @PutMapping(
@@ -187,6 +178,12 @@ public final class AgentExecutionProfileAdminController {
                 .body(Map.of("message", safeMessage(exception)));
     }
 
+    @ExceptionHandler(IllegalStateException.class)
+    public ResponseEntity<Map<String, String>> conflict(IllegalStateException exception) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(Map.of("message", safeMessage(exception)));
+    }
+
     private static String safeMessage(Throwable exception) {
         return exception == null || exception.getMessage() == null
                 ? "request failed"
@@ -214,8 +211,30 @@ public final class AgentExecutionProfileAdminController {
             String toolPolicyId,
             long toolPolicyVersion,
             boolean enabled,
-            long version
+            long version,
+            List<AgentRuntimeCapability> capabilities
     ) {
+        public AgentExecutionProfileRequest(
+                String profileId,
+                String role,
+                String name,
+                AgentRuntimeType runtimeType,
+                String providerProfileId,
+                String modelOverride,
+                String extensionSetId,
+                long extensionSetVersion,
+                String toolPolicyId,
+                long toolPolicyVersion,
+                boolean enabled,
+                long version
+        ) {
+            this(
+                    profileId, role, name, runtimeType, providerProfileId, modelOverride,
+                    extensionSetId, extensionSetVersion, toolPolicyId, toolPolicyVersion,
+                    enabled, version, List.of()
+            );
+        }
+
         private AgentExecutionProfile toProfile(String projectId, String id) {
             if (id == null || id.isBlank()) {
                 throw new IllegalArgumentException("profileId must not be blank");
@@ -233,7 +252,8 @@ public final class AgentExecutionProfileAdminController {
                     toolPolicyId,
                     toolPolicyVersion,
                     enabled,
-                    version
+                    version,
+                    capabilities
             );
         }
     }

@@ -117,6 +117,24 @@ class RdTaskControllerTest {
     }
 
     @Test
+    void workbenchGetOmitsPromptAndExecutionBlobsUntilAuditContentIsRequested() throws Exception {
+        String promptSnapshot = "工作台不得预拉的超长任务基线 Prompt ".repeat(20);
+        String taskId = createTask("FS-shell-1", "按需加载详情", "P1", promptSnapshot);
+
+        mockMvc.perform(get("/admin/rd-tasks/{taskId}", taskId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.taskId", is(taskId)))
+                .andExpect(jsonPath("$.promptSnapshot", is("")))
+                .andExpect(jsonPath("$.executionResultJson", is("")))
+                .andExpect(jsonPath("$.executionEvidence.summary", is("")));
+
+        mockMvc.perform(get("/admin/rd-tasks/{taskId}/audit-content", taskId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.taskId", is(taskId)))
+                .andExpect(jsonPath("$.promptSnapshot", is(promptSnapshot)));
+    }
+
+    @Test
     void shouldUpdateTaskEditableFields() throws Exception {
         String taskId = createTask("FS-3002", "旧标题", "P2");
         mockMvc.perform(put("/admin/rd-tasks/{taskId}", taskId)

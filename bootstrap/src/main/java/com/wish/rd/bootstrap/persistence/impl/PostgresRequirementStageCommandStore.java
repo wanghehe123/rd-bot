@@ -33,7 +33,9 @@ public class PostgresRequirementStageCommandStore implements RequirementStageCom
     @Override
     public RequirementStageCommand enqueue(RequirementStageCommand command) {
         mapper.enqueue(toRow(command));
-        RequirementStageCommand effective = find(command.taskId(), command.role(), command.stage(), command.retryCheckpointId())
+        RequirementStageCommand effective = (command.remediationRoundId().isBlank()
+                ? find(command.taskId(), command.role(), command.stage(), command.retryCheckpointId())
+                : findByRemediation(command.taskId(), command.role(), command.stage(), command.remediationRoundId()))
                 .orElseThrow(() -> new IllegalStateException("stage command enqueue did not return an effective row"));
         requireExactEnqueueIdentity(command, effective);
         return effective;
@@ -60,6 +62,16 @@ public class PostgresRequirementStageCommandStore implements RequirementStageCom
     @Override
     public Optional<RequirementStageCommand> findById(String commandId) {
         RequirementStageCommandRow row = mapper.findById(PostgresPersistenceSupport.parseId(commandId));
+        return Optional.ofNullable(row).map(this::toCommand);
+    }
+
+    @Override
+    public Optional<RequirementStageCommand> findByRemediation(
+            String taskId, String role, String stage, String remediationRoundId
+    ) {
+        RequirementStageCommandRow row = mapper.findByRemediationIdentity(
+                PostgresPersistenceSupport.parseId(taskId), role == null ? "" : role,
+                stage == null ? "" : stage, PostgresPersistenceSupport.parseId(remediationRoundId));
         return Optional.ofNullable(row).map(this::toCommand);
     }
 
@@ -276,6 +288,16 @@ public class PostgresRequirementStageCommandStore implements RequirementStageCom
         row.businessGeneration = command.businessGeneration();
         row.targetRetryBindingId = command.targetRetryBindingId().isBlank()
                 ? null : PostgresPersistenceSupport.parseId(command.targetRetryBindingId());
+        row.remediationRoundId = command.remediationRoundId().isBlank()
+                ? null : PostgresPersistenceSupport.parseId(command.remediationRoundId());
+        row.remediationKind = command.remediationKind() == null ? null : command.remediationKind().name();
+        row.remediationNo = command.remediationNo() == 0 ? null : command.remediationNo();
+        row.remediationSourceStageRunId = command.remediationSourceStageRunId().isBlank()
+                ? null : PostgresPersistenceSupport.parseId(command.remediationSourceStageRunId());
+        row.remediationRequestJson = command.remediationRequestJson().isBlank()
+                ? null : command.remediationRequestJson();
+        row.remediationRequestHash = command.remediationRequestHash().isBlank()
+                ? null : command.remediationRequestHash();
         row.attemptNo = command.attemptNo();
         row.maxAttempts = command.maxAttempts();
         row.deadlineAt = command.deadlineEpochMillis() <= 0L
@@ -329,8 +351,31 @@ public class PostgresRequirementStageCommandStore implements RequirementStageCom
                 row.policyRunId == null ? "" : PostgresPersistenceSupport.idString(row.policyRunId),
                 row.retryCheckpointId == null ? "" : PostgresPersistenceSupport.idString(row.retryCheckpointId),
                 row.businessGeneration == null ? 0L : row.businessGeneration,
-                row.targetRetryBindingId == null ? "" : PostgresPersistenceSupport.idString(row.targetRetryBindingId)
+                row.targetRetryBindingId == null ? "" : PostgresPersistenceSupport.idString(row.targetRetryBindingId),
+                row.remediationRoundId == null ? "" : PostgresPersistenceSupport.idString(row.remediationRoundId),
+                row.remediationKind == null ? null
+                        : com.wish.rd.engine.requirement.remediation.model.AgentRemediationKind.valueOf(row.remediationKind),
+                row.remediationNo == null ? 0 : row.remediationNo,
+                row.remediationSourceStageRunId == null ? ""
+                        : PostgresPersistenceSupport.idString(row.remediationSourceStageRunId),
+                durableRemediationRequestJson(row.remediationRequestJson, row.remediationRequestHash),
+                row.remediationRequestHash == null ? "" : row.remediationRequestHash
         );
+    }
+
+    private static String durableRemediationRequestJson(String raw, String expectedHash) {
+        if (raw == null || raw.isBlank()) {
+            return "";
+        }
+        String hash = expectedHash == null ? "" : expectedHash.strip();
+        if (hash.isBlank()) {
+            throw new IllegalStateException("durable remediation request is missing its identity hash");
+        }
+        try {
+            return com.wish.rd.engine.requirement.policy.CanonicalJsonSha256.requireCanonicalMatchingHash(raw, hash);
+        } catch (IllegalArgumentException invalid) {
+            throw new IllegalStateException("durable remediation request hash mismatch", invalid);
+        }
     }
 
     private RequirementStageCommand required(RequirementStageCommandRow row, String commandId) {
@@ -370,7 +415,13 @@ public class PostgresRequirementStageCommandStore implements RequirementStageCom
                 || !requested.policyRunId().equals(effective.policyRunId())
                 || !requested.retryCheckpointId().equals(effective.retryCheckpointId())
                 || requested.businessGeneration() != effective.businessGeneration()
-                || !requested.targetRetryBindingId().equals(effective.targetRetryBindingId())) {
+                || !requested.targetRetryBindingId().equals(effective.targetRetryBindingId())
+                || !requested.remediationRoundId().equals(effective.remediationRoundId())
+                || requested.remediationKind() != effective.remediationKind()
+                || requested.remediationNo() != effective.remediationNo()
+                || !requested.remediationSourceStageRunId().equals(effective.remediationSourceStageRunId())
+                || !requested.remediationRequestJson().equals(effective.remediationRequestJson())
+                || !requested.remediationRequestHash().equals(effective.remediationRequestHash())) {
             throw new IllegalStateException("stage command enqueue conflict has a different durable identity");
         }
     }
