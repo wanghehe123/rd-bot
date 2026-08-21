@@ -237,3 +237,28 @@ agent 容器一次只跑一个（见 9.2）：coding 类 ~300–600MB 可全内�
 - QA 时长显著变长（swap 辅助），个人项目可接受。
 - 单机同时承载 JVM+PG+Chromium，CPU 争抢使交互（管理台）偶发卡顿。
 - 若未来要恢复并行或 QA 提速，出路仍是 §3 方案 A-full 升配。
+
+## 10. 切换执行实录（2026-08-21 真机门控发现，追加式记录）
+
+A-lite 切换当日，G1 一次通过；G2 端到端任务连续暴露 5 个 Mac 从不暴露的平台耦合差异。
+全部修复后 agent 容器已在 ECS 上完整跑通（10 轮对话、relay 出网、RESULT_SUBMITTED+AGENT_SETTLED）。
+
+| # | 现象 | 根因 | 修复 | 锚点 |
+| --- | --- | --- | --- | --- |
+| 1 | git clone exit 128 `could not read Username` | systemd 服务默认无 HOME，git 找不到凭据 store | unit 加 `Environment=HOME=/root` | `/etc/systemd/system/rd-bot.service` |
+| 2 | Pi 容器 EACCES mkdir `/work/output/private` 秒退 | Linux bind mount 强制宿主侧权限：root 建 0755 目录，uid 1000 容器不可写（Mac virtiofs 不校验） | `RepairWorkspaceFactory.makeContainerWritable` 对 repo/output/cache 设 0777 | commit `b688c16a` |
+| 3 | docker exit 125（30ms 秒退、零事件），聚合为 missing-lifecycle 报错 | 安全策略硬编码 `--cpus 4` > 宿主 2 vCPU，daemon 拒绝启动 | `RD_EXECUTOR_PI_CPU_LIMIT` 可配（默认 4 兼容），ECS 设 2 | commit `e1dc3c1e` |
+| 4 | git fetch 443 连接超时 35s | 大陆访问 GitHub 间歇性闪断（探活 3×200 后仍发生） | 重试通过；agent 自行记录环境事实并基于本地仓库工作 | 运维层，暂不改代码 |
+| 5 | 结果校验 FAILED_VALIDATION：budgetEstimate 数字字段变字符串 `"[REDACTED]"` | ECS 上两个 Pi 镜像是 8/19 旧版：旧 `protocol.mjs` 的 `isRedactedKey` 无 `/tokens$/i` 豁免，把含 "Token" 的键值脱敏。RULE.md「改 bridge 必须重建双镜像」的真机实证 | 按 RULE.md 重建 rd-bot/pi-agent:local 与 rd-bot/pi-agent-qa:local，镜像内 md5 与仓库核对一致 | 镜像重建于 `/opt/rd-bot/pi-build/` |
+
+### 10.1 门控状态
+
+- **G1 通过**：管理台 200、JVM RSS 344MB（目标 ≤550MB）、relay 双网络可达（401=鉴权正常）、18080 公网不可达、日志零错误。
+- **G2/G3**：基础设施链路全通（clone/凭据/bind-mount/CPU/内存/relay/出网）；待 QA 镜像重建完成后重试任务走完全链路。
+- **流量目标达成**：Mac launchd backend 已 bootout + 脚本改名 `.migration-disabled`，跨网 SSH 隧道不再承载后端数据面流量（隧道保留至观察期结束作回滚路径）。
+
+### 10.2 回滚窗口约定
+
+回滚 = 恢复 Mac launchd（脚本/plist 改回原名后 `launchctl bootstrap gui/501`）+
+安全组重新放行隧道所需端口。ECS 侧数据（PG/redis/rustfs 卷）在切换后以 ECS 为权威，
+回滚前必须先同步增量，否则丢失切换后的任务数据。
