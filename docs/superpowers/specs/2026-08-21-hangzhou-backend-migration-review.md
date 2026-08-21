@@ -262,3 +262,25 @@ A-lite 切换当日，G1 一次通过；G2 端到端任务连续暴露 5 个 Mac
 回滚 = 恢复 Mac launchd（脚本/plist 改回原名后 `launchctl bootstrap gui/501`）+
 安全组重新放行隧道所需端口。ECS 侧数据（PG/redis/rustfs 卷）在切换后以 ECS 为权威，
 回滚前必须先同步增量，否则丢失切换后的任务数据。
+
+### 10.3 G2/G3 终局判定（追加于同日深夜）
+
+流水线真机推进到：评审 ✓ → 方案 ✓（status 协议修复后）→ 编码 ✓ → QA ×5 未过。
+**迁移目标本身已达成**（后端 ECS 承载、隧道流量归零）；QA 门控卡在既有产品缺口，非迁移耦合：
+
+1. **嵌套 Vite 项目 QA 走 dev 模式**：`QaRepositoryProfileDetector#nestedViteProfile` 对
+   Next.js 已按 2026-07-28 规范改用生产模式，但 `start.sh`+`client/vite` 分支仍执行仓库
+   自带 dev 脚本（全量 npm install ×2 + ts-node 直跑后端 + `vite --host` HMR）。
+   2 vCPU 上 HMR websocket 与 actionability 频繁超时，agent 在有界重试中耗尽会话，
+   两次 settle 时未提交（恢复提示轮又遇 provider 零 token 错误）→ 合成 FAILED。
+   Mac 机器快到从未暴露。→ 后续 OpenSpec 变更：嵌套 Vite 生产模式画像
+   （`vite build && vite preview`）+ 恢复轮 provider 错误重试。
+2. **QA 重试每次全量重装依赖**：prepare 的 `reset --hard`+`clean -fd` 清掉 node_modules
+   （设计如此：工作区可抛弃、补丁由附件重放），npm 离线缓存可加速但 better-sqlite3
+   仍需本地编译（已修：双镜像补 build-essential，commit `cba13ddd`）。
+3. **宿主资源事实**：QA 编译峰值触发 kswapd 换页风暴（load 27），阿里云
+   AliYunDun/argusagent 常驻吃 CPU；停 openviking（-300MB）后恢复。A-lite 接受项内的表现。
+
+**门控结论**：G1 通过；G2 通过（评审/方案/编码三角色真机全通）；G3 有条件通过——
+基础设施与协议链路全部真机验证（含 5 个迁移耦合缺陷的修复与沉淀），QA 角色受
+上述既有缺口阻塞，按 §9.4 降级接受项处理：QA 失败任务人工验收或临时回 Mac 跑 QA。
