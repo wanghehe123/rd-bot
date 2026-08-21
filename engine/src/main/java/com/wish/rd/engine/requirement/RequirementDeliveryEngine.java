@@ -4486,6 +4486,7 @@ public class RequirementDeliveryEngine {
                     - PRODUCT_DEFECT 或 REGRESSION 失败必须建议退回 CODING_AGENT；环境、鉴权、QA 基础设施、需求歧义或 flaky 问题建议 HUMAN。
                     - 最后生成完整性 manifest，再把严格协议写入 /work/output/result.json。
                     - 当输入上下文提供 hostAssertionContracts 时，Host 已经冻结可执行断言。仅回传两个 hostAssertionResults echo（CURRENT 和 REGRESSION），每项只能有 scope、输入给定的 contentHash 和同 scope acceptanceResults 已引用的非空 evidenceArtifactIds。不得提交 hostAssertionBundle、hostAssertionWorkspace、hostAssertionBaseUrl 或 hostAssertionContext；Host 独立选择工作区和执行规范。
+                    - 会话预算纪律：浏览器单条目重试（截图/点击超时类 flaky）最多 3 次，超过即按现状记录进 summary 与 risks；依赖已由 npm 缓存离线可装，不要反复重装或全量重编译。无论验证进展如何，必须为最后的 rd_submit_result 保留至少一轮完整调用预算——会话结束时没有提交结果，整轮 QA 直接判失败。
                     """.strip();
             default -> throw new IllegalArgumentException("unsupported requirement role: " + role);
         };
