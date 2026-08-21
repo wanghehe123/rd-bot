@@ -106,6 +106,44 @@ class RepairWorkspaceFactoryTest {
     }
 
     @Test
+    void shouldWidenPreparedRepoTreeForTheUnprivilegedContainerUser() throws IOException {
+        RepairWorkspaceFactory factory = new RepairWorkspaceFactory(temporaryDirectory, RESULT_SCHEMA_JSON);
+        RepairWorkspace workspace = factory.create(command("task-tree-perm"));
+        Path repo = workspace.repoDirectory();
+        // Simulate a root-owned git prepare result: nested dirs 0755, plain file 0644, script 0755.
+        Path server = Files.createDirectories(repo.resolve("server"));
+        Files.setPosixFilePermissions(server, java.util.EnumSet.of(
+                java.nio.file.attribute.PosixFilePermission.OWNER_READ,
+                java.nio.file.attribute.PosixFilePermission.OWNER_WRITE,
+                java.nio.file.attribute.PosixFilePermission.OWNER_EXECUTE));
+        Path packageJson = Files.writeString(repo.resolve("server").resolve("package.json"), "{}\n");
+        Files.setPosixFilePermissions(packageJson, java.util.EnumSet.of(
+                java.nio.file.attribute.PosixFilePermission.OWNER_READ,
+                java.nio.file.attribute.PosixFilePermission.OWNER_WRITE));
+        Path startScript = Files.writeString(repo.resolve("server").resolve("start.sh"), "#!/bin/sh\n");
+        Files.setPosixFilePermissions(startScript, java.util.EnumSet.of(
+                java.nio.file.attribute.PosixFilePermission.OWNER_READ,
+                java.nio.file.attribute.PosixFilePermission.OWNER_WRITE,
+                java.nio.file.attribute.PosixFilePermission.OWNER_EXECUTE));
+
+        RepairWorkspaceFactory.makeContainerTreeWritable(repo);
+
+        java.util.Set<java.nio.file.attribute.PosixFilePermission> serverPermissions =
+                Files.getPosixFilePermissions(server);
+        assertTrue(serverPermissions.contains(java.nio.file.attribute.PosixFilePermission.OTHERS_WRITE),
+                "npm install must be able to create node_modules under prepared dirs");
+        java.util.Set<java.nio.file.attribute.PosixFilePermission> jsonPermissions =
+                Files.getPosixFilePermissions(packageJson);
+        assertTrue(jsonPermissions.contains(java.nio.file.attribute.PosixFilePermission.OTHERS_WRITE));
+        assertFalse(jsonPermissions.contains(java.nio.file.attribute.PosixFilePermission.OTHERS_EXECUTE),
+                "plain files must not gain exec bits");
+        java.util.Set<java.nio.file.attribute.PosixFilePermission> scriptPermissions =
+                Files.getPosixFilePermissions(startScript);
+        assertTrue(scriptPermissions.contains(java.nio.file.attribute.PosixFilePermission.OTHERS_EXECUTE),
+                "exec bits must be preserved for all users");
+    }
+
+    @Test
     void shouldCreatePersistentCacheDirectoryBesideRepo() throws IOException {
         RepairWorkspaceFactory factory = new RepairWorkspaceFactory(temporaryDirectory, RESULT_SCHEMA_JSON);
 

@@ -395,6 +395,9 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                 workspace = workspaceFactory.create(command);
                 cleanOutputDirectory(workspace.outputDirectory());
                 repositoryMetadata.putAll(workspaceRepository.prepare(command, workspace).metadataJson());
+                // git prepare 以宿主 root 身份写入 repo 树；容器（uid 1000）需要读写全部内容
+                // （npm install 写 node_modules、git commit 写 .git），必须在启动前递归放权。
+                RepairWorkspaceFactory.makeContainerTreeWritable(workspace.repoDirectory());
                 materializeResources(snapshot, workspace.inputDirectory());
                 materializeSkills(snapshot.role(), workspace.inputDirectory());
                 QaProvision qaProvision = provisionQaInputs(command, snapshot, workspace);

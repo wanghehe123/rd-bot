@@ -507,6 +507,59 @@ public class RepairWorkspaceFactory {
      * 目录是任务作用域且位于 root 独占的 workspace-root 之下，0777 不扩大实际攻击面；
      * 非 POSIX 文件系统上静默跳过。</p>
      */
+    /**
+     * 在 git prepare（clone/fetch/checkout，宿主 root 身份）之后、容器启动之前调用：
+     * 递归放开 repo 树的 POSIX 权限，使 uid 1000 的 agent/QA 容器可读写全部内容。
+     *
+     * <p>仅放开顶层目录不够：clone 出的子目录/文件仍是 root 属主 0755/0644，
+     * 容器内 npm install（写 node_modules）、git commit（写 .git）都会 EACCES——
+     * 2026-08-21 杭州真机 QA npm provision 即死于此。目录设 rwxrwxrwx；文件在
+     * 保留属主执行位的前提下补齐 group/other 读写（属主可执行则全员可执行）。
+     * 符号链接不跟随。非 POSIX 文件系统不适用（调用方环境已保证 POSIX）。</p>
+     *
+     * @param repoDirectory 已完成 prepare 的 repo 目录
+     * @throws IOException 遍历或改权限失败
+     */
+    public static void makeContainerTreeWritable(Path repoDirectory) throws IOException {
+        if (!Files.isDirectory(repoDirectory)) {
+            return;
+        }
+        java.util.Set<java.nio.file.attribute.PosixFilePermission> allReadWriteExec =
+                java.util.EnumSet.allOf(java.nio.file.attribute.PosixFilePermission.class);
+        Files.walkFileTree(repoDirectory, new java.nio.file.SimpleFileVisitor<>() {
+            @Override
+            public java.nio.file.FileVisitResult preVisitDirectory(Path dir, java.nio.file.attribute.BasicFileAttributes attrs)
+                    throws IOException {
+                Files.setPosixFilePermissions(dir, allReadWriteExec);
+                return java.nio.file.FileVisitResult.CONTINUE;
+            }
+
+            @Override
+            public java.nio.file.FileVisitResult visitFile(Path file, java.nio.file.attribute.BasicFileAttributes attrs)
+                    throws IOException {
+                if (Files.isSymbolicLink(file)) {
+                    return java.nio.file.FileVisitResult.CONTINUE;
+                }
+                java.util.Set<java.nio.file.attribute.PosixFilePermission> permissions =
+                        Files.getPosixFilePermissions(file);
+                boolean ownerExecutable = permissions.contains(
+                        java.nio.file.attribute.PosixFilePermission.OWNER_EXECUTE);
+                java.util.EnumSet<java.nio.file.attribute.PosixFilePermission> widened =
+                        java.util.EnumSet.copyOf(permissions);
+                widened.add(java.nio.file.attribute.PosixFilePermission.GROUP_READ);
+                widened.add(java.nio.file.attribute.PosixFilePermission.GROUP_WRITE);
+                widened.add(java.nio.file.attribute.PosixFilePermission.OTHERS_READ);
+                widened.add(java.nio.file.attribute.PosixFilePermission.OTHERS_WRITE);
+                if (ownerExecutable) {
+                    widened.add(java.nio.file.attribute.PosixFilePermission.GROUP_EXECUTE);
+                    widened.add(java.nio.file.attribute.PosixFilePermission.OTHERS_EXECUTE);
+                }
+                Files.setPosixFilePermissions(file, widened);
+                return java.nio.file.FileVisitResult.CONTINUE;
+            }
+        });
+    }
+
     private static void makeContainerWritable(Path directory) {
         try {
             Files.setPosixFilePermissions(
