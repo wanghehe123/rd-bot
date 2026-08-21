@@ -102,6 +102,9 @@
 - 【强制】Pi/QA agent 与 QA npm 预安装容器的 docker `--memory` 上限必须经 `rd.executor.pi.container-memory-limit` / `RD_EXECUTOR_PI_MEMORY_LIMIT` 下发（默认 `8g` 保持历史行为），不得回退为源码硬编码；空白回落默认值，非正 Docker 内存格式（如 `8 tb`、`0m`）必须在 `DockerPiAgentExecutor.Configuration` 装配期失败关闭。小内存宿主（如 2G ECS）必须收口该值（如 `1100m`），依赖 docker 默认 `--memory-swap=2x` 让 QA 突发在容器内受控颠簸而不是 OOM 宿主数据容器。
   - 代码：`DockerPiAgentExecutor.Configuration#normalizeMemoryLimit`、`DockerPiAgentExecutor#piSecurityPolicy`、`PiAgentExecutorProperties.containerMemoryLimit`
   - 验证：`./mvnw -pl exec -am -Dtest=DockerPiAgentExecutorTest#shouldHonorConfiguredContainerMemoryLimitInThePiSecurityPolicy,DockerPiAgentExecutorTest#shouldDefaultBlankContainerMemoryLimitAndRejectInvalidValues -Dsurefire.failIfNoSpecifiedTests=false test`
+- 【强制】工作区中会被容器 rw 挂载的目录（`repo/`、`output/`、`cache/`）创建时必须放开 POSIX 权限使容器内非特权用户（Pi 为 1000:1000）可写。Linux bind mount 强制宿主侧权限，root 创建的 0755 目录会让 agent 以 EACCES 秒退且零事件（macOS virtiofs 不强制宿主权限，本地不会暴露此缺陷——2026-08-21 杭州迁移真机实测）。不得用"容器改跑 root"替代本约束。
+  - 代码：`RepairWorkspaceFactory.makeContainerWritable`
+  - 验证：`./mvnw -pl exec -am -Dtest=RepairWorkspaceFactoryTest#shouldMakeContainerMountedDirectoriesWorldWritableForLinuxBindMounts -Dsurefire.failIfNoSpecifiedTests=false test`
 - 【强制】宿主 `git clone` / `git fetch origin <base>` 对 GitHub TLS 闪断（`SSL_ERROR_SYSCALL`、`unable to access`、连接重置）最多重试 3 次，失败 clone 必须清空目标 `repo/`，避免残留文件挡住下一次 prepare。禁止设 `GIT_SSL_NO_VERIFY`。认证失败、401/403/404、仓库不存在不得当闪断重试。
   - 代码：`ProcessGitRepairWorkspaceRepository.runGitRetryingTransientNetwork`
   - 验证：`./mvnw -pl bootstrap -Dtest=ProcessGitRepairWorkspaceRepositoryTest#shouldClassifyLibreSslGithubDropsAsTransient -Dsurefire.failIfNoSpecifiedTests=false test`

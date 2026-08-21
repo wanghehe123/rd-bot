@@ -87,6 +87,25 @@ class RepairWorkspaceFactoryTest {
     }
 
     @Test
+    void shouldMakeContainerMountedDirectoriesWorldWritableForLinuxBindMounts() throws IOException {
+        RepairWorkspaceFactory factory = new RepairWorkspaceFactory(temporaryDirectory, RESULT_SCHEMA_JSON);
+
+        RepairWorkspace workspace = factory.create(command("task-perm"));
+
+        // Linux bind mounts enforce host-side permissions: the Pi agent runs as an
+        // unprivileged container user and must be able to write these directories.
+        for (Path directory : java.util.List.of(
+                workspace.repoDirectory(), workspace.outputDirectory(), workspace.cacheDirectory())) {
+            java.util.Set<java.nio.file.attribute.PosixFilePermission> permissions =
+                    Files.getPosixFilePermissions(directory);
+            assertTrue(permissions.contains(java.nio.file.attribute.PosixFilePermission.OTHERS_WRITE),
+                    () -> directory + " must be container-writable");
+            assertTrue(permissions.contains(java.nio.file.attribute.PosixFilePermission.OTHERS_EXECUTE),
+                    () -> directory + " must be traversable by the container user");
+        }
+    }
+
+    @Test
     void shouldCreatePersistentCacheDirectoryBesideRepo() throws IOException {
         RepairWorkspaceFactory factory = new RepairWorkspaceFactory(temporaryDirectory, RESULT_SCHEMA_JSON);
 

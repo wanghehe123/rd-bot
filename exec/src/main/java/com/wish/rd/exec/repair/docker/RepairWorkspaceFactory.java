@@ -96,6 +96,9 @@ public class RepairWorkspaceFactory {
         Files.createDirectories(repoDirectory);
         Files.createDirectories(outputDirectory);
         Files.createDirectories(cacheDirectory);
+        makeContainerWritable(repoDirectory);
+        makeContainerWritable(outputDirectory);
+        makeContainerWritable(cacheDirectory);
         ensureRealPathInsideWorkspaceRoot(root);
         ensureRealPathInsideWorkspaceRoot(inputDirectory);
         ensureRealPathInsideWorkspaceRoot(repoDirectory);
@@ -486,6 +489,35 @@ public class RepairWorkspaceFactory {
     private void ensureInsideWorkspaceRoot(Path taskRoot) {
         if (!taskRoot.startsWith(workspaceRoot)) {
             throw new IllegalArgumentException("workspace path escapes root: " + taskRoot);
+        }
+    }
+
+    /**
+     * 放开容器 rw 挂载目录的 POSIX 权限，使容器内非特权用户（如 Pi 的 1000:1000）可写。
+     *
+     * <p>Linux bind mount 强制宿主侧权限：工作区由宿主进程（root）创建为 0755 时，
+     * 容器用户在 {@code repo/}、{@code output/}、{@code cache/} 内的任何写入都会
+     * EACCES 秒退（macOS Docker Desktop virtiofs 不强制宿主权限，因此本地从未暴露）。
+     * 目录是任务作用域且位于 root 独占的 workspace-root 之下，0777 不扩大实际攻击面；
+     * 非 POSIX 文件系统上静默跳过。</p>
+     */
+    private static void makeContainerWritable(Path directory) {
+        try {
+            Files.setPosixFilePermissions(
+                    directory,
+                    java.util.EnumSet.of(
+                            java.nio.file.attribute.PosixFilePermission.OWNER_READ,
+                            java.nio.file.attribute.PosixFilePermission.OWNER_WRITE,
+                            java.nio.file.attribute.PosixFilePermission.OWNER_EXECUTE,
+                            java.nio.file.attribute.PosixFilePermission.GROUP_READ,
+                            java.nio.file.attribute.PosixFilePermission.GROUP_WRITE,
+                            java.nio.file.attribute.PosixFilePermission.GROUP_EXECUTE,
+                            java.nio.file.attribute.PosixFilePermission.OTHERS_READ,
+                            java.nio.file.attribute.PosixFilePermission.OTHERS_WRITE,
+                            java.nio.file.attribute.PosixFilePermission.OTHERS_EXECUTE
+                    ));
+        } catch (UnsupportedOperationException | IOException ignored) {
+            // 非 POSIX 文件系统（如 Windows 默认挂载）：容器运行时本就不走宿主权限校验。
         }
     }
 
