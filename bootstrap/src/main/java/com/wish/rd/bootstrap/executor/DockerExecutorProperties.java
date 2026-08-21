@@ -1,7 +1,5 @@
 package com.wish.rd.bootstrap.executor;
 
-import com.wish.rd.exec.repair.docker.model.ClaudeCodeModelProvider;
-import com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor;
 import com.wish.rd.exec.repair.model.ModelCircuitBreakerPolicy;
 import com.wish.rd.exec.repair.security.model.ExecutionAllowlistPolicy;
 import org.springframework.boot.context.properties.ConfigurationProperties;
@@ -10,15 +8,19 @@ import org.springframework.stereotype.Component;
 import java.math.BigDecimal;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 
 /**
- * Docker Claude Code 执行器配置属性。
+ * 容器执行基础设施配置属性。
  *
  * <p>键前缀为 {@code rd.executor.docker.*}。默认关闭真实 Docker 执行，只有显式
  * {@code enabled=true} 时才装配进程级 Docker runner。
+ *
+ * <p>该前缀是**所有容器执行运行时共享**的基础设施门，不专属于任何一个执行器：
+ * {@code enabled} 同时控制 {@code ProcessContainerRunner}、
+ * {@code DockerRuntimeProfileImageBuilder}、{@code PiInterruptedStageWorkspaceRecovery}
+ * 与 Pi agent 执行器 bean。移除某个具体执行器实现时不得连带删除该命名空间，
+ * 否则容器运行器不再注册，Pi 路径会静默失去执行能力。
  */
 @Component
 @ConfigurationProperties(prefix = "rd.executor.docker")
@@ -30,12 +32,6 @@ public class DockerExecutorProperties {
     public static final String DEFAULT_QA_IMAGE = "rd-bot/claude-code-qa:local";
     /** 默认修复工作区根目录。 */
     public static final Path DEFAULT_WORKSPACE_ROOT = Path.of("/tmp/rd-bot/repair-workspaces");
-    /** 默认 Claude Code 命令。 */
-    public static final String DEFAULT_COMMAND = "claude";
-    /** 默认容器内 yolo 模式参数。 */
-    public static final String DEFAULT_YOLO_FLAG = "--dangerously-skip-permissions";
-    /** 默认 Claude Code 输出格式。 */
-    public static final String DEFAULT_OUTPUT_FORMAT = "stream-json";
     /** 默认 Docker 网络模式。 */
     public static final String DEFAULT_NETWORK_MODE = "bridge";
     /** 默认超时告警阈值，单位毫秒。 */
@@ -51,9 +47,6 @@ public class DockerExecutorProperties {
     private String image = DEFAULT_IMAGE;
     private String qaImage = DEFAULT_QA_IMAGE;
     private Path workspaceRoot = DEFAULT_WORKSPACE_ROOT;
-    private String command = DEFAULT_COMMAND;
-    private String yoloFlag = DEFAULT_YOLO_FLAG;
-    private String outputFormat = DEFAULT_OUTPUT_FORMAT;
     private String networkMode = DEFAULT_NETWORK_MODE;
     private boolean removeAfterExit = true;
     private long timeoutAlertMillis = DEFAULT_TIMEOUT_ALERT_MILLIS;
@@ -61,7 +54,6 @@ public class DockerExecutorProperties {
     private GitProperties git = new GitProperties();
     private CircuitBreakerProperties circuitBreaker = new CircuitBreakerProperties();
     private SecurityProperties security = new SecurityProperties();
-    private List<ModelProviderProperties> providers = new ArrayList<>();
 
     public boolean isEnabled() {
         return enabled;
@@ -93,30 +85,6 @@ public class DockerExecutorProperties {
 
     public void setWorkspaceRoot(Path workspaceRoot) {
         this.workspaceRoot = workspaceRoot == null ? DEFAULT_WORKSPACE_ROOT : workspaceRoot.toAbsolutePath().normalize();
-    }
-
-    public String getCommand() {
-        return command;
-    }
-
-    public void setCommand(String command) {
-        this.command = defaultWhenBlank(command, DEFAULT_COMMAND);
-    }
-
-    public String getYoloFlag() {
-        return yoloFlag;
-    }
-
-    public void setYoloFlag(String yoloFlag) {
-        this.yoloFlag = normalize(yoloFlag);
-    }
-
-    public String getOutputFormat() {
-        return outputFormat;
-    }
-
-    public void setOutputFormat(String outputFormat) {
-        this.outputFormat = defaultWhenBlank(outputFormat, DEFAULT_OUTPUT_FORMAT);
     }
 
     public String getNetworkMode() {
@@ -175,31 +143,6 @@ public class DockerExecutorProperties {
         this.security = security == null ? new SecurityProperties() : security;
     }
 
-    public List<ModelProviderProperties> getProviders() {
-        return providers;
-    }
-
-    public void setProviders(List<ModelProviderProperties> providers) {
-        this.providers = providers == null ? new ArrayList<>() : new ArrayList<>(providers);
-    }
-
-    /**
-     * 生成 exec 模块 Docker Claude Code 执行器需要的容器配置。
-     *
-     * @return Docker Claude Code 执行配置
-     */
-    public DockerClaudeCodeExecutor.Configuration toExecutorConfiguration() {
-        return new DockerClaudeCodeExecutor.Configuration(
-                image,
-                qaImage,
-                claudeCommand(),
-                networkMode,
-                removeAfterExit,
-                false,
-                modelProviders()
-        );
-    }
-
     /**
      * 生成执行目标安全 allowlist 策略。
      *
@@ -207,44 +150,6 @@ public class DockerExecutorProperties {
      */
     public ExecutionAllowlistPolicy toExecutionAllowlistPolicy() {
         return security.toPolicy();
-    }
-
-    /**
-     * 生成容器内 Claude Code argv。提示词由执行器写入工作区输入文件，后续入口脚本读取。
-     *
-     * @return Claude Code argv
-     */
-    public List<String> claudeCommand() {
-        List<String> argv = new ArrayList<>();
-        argv.add(command);
-        argv.add("-p");
-        if (!yoloFlag.isBlank()) {
-            argv.add(yoloFlag);
-        }
-        argv.add("--output-format");
-        argv.add(outputFormat);
-        argv.add("--verbose");
-        return List.copyOf(argv);
-    }
-
-    private List<ClaudeCodeModelProvider> modelProviders() {
-        if (providers == null || providers.isEmpty()) {
-            return List.of(ClaudeCodeModelProvider.defaultAnthropic());
-        }
-        List<ClaudeCodeModelProvider> compatibleProviders = providers.stream()
-                .filter(ModelProviderProperties::isDockerClaudeCodeCompatible)
-                .map(ModelProviderProperties::toModelProvider)
-                .toList();
-        if (compatibleProviders.isEmpty()) {
-            String configuredProviders = providers.stream()
-                    .map(ModelProviderProperties::providerLabel)
-                    .toList()
-                    .toString();
-            throw new IllegalStateException(
-                    "Docker Claude Code requires at least one anthropic-compatible provider; configured providers="
-                            + configuredProviders);
-        }
-        return compatibleProviders;
     }
 
     private static String defaultWhenBlank(String value, String defaultValue) {
@@ -422,177 +327,4 @@ public class DockerExecutorProperties {
         }
     }
 
-    /**
-     * Claude Code 第三方模型供应商配置。
-     */
-    public static class ModelProviderProperties {
-
-        private static final String DEFAULT_PROTOCOL = "anthropic-compatible";
-
-        private String name = "";
-        private String protocol = DEFAULT_PROTOCOL;
-        private String baseUrl = "";
-        private String apiKeyEnv = "";
-        private String authTokenEnv = "";
-        private String model = "";
-        private String defaultOpusModel = "";
-        private String defaultSonnetModel = "";
-        private String defaultHaikuModel = "";
-        private String subagentModel = "";
-        private String effortLevel = "";
-        private Map<String, String> extraEnv = new LinkedHashMap<>();
-
-        public String getName() {
-            return name;
-        }
-
-        public void setName(String name) {
-            this.name = normalize(name);
-        }
-
-        public String getProtocol() {
-            return protocol;
-        }
-
-        public void setProtocol(String protocol) {
-            this.protocol = defaultWhenBlank(protocol, DEFAULT_PROTOCOL);
-        }
-
-        public String getBaseUrl() {
-            return baseUrl;
-        }
-
-        public void setBaseUrl(String baseUrl) {
-            this.baseUrl = normalize(baseUrl);
-        }
-
-        public String getApiKeyEnv() {
-            return apiKeyEnv;
-        }
-
-        public void setApiKeyEnv(String apiKeyEnv) {
-            this.apiKeyEnv = normalize(apiKeyEnv);
-        }
-
-        public String getAuthTokenEnv() {
-            return authTokenEnv;
-        }
-
-        public void setAuthTokenEnv(String authTokenEnv) {
-            this.authTokenEnv = normalize(authTokenEnv);
-        }
-
-        public String getModel() {
-            return model;
-        }
-
-        public void setModel(String model) {
-            this.model = normalize(model);
-        }
-
-        public String getDefaultOpusModel() {
-            return defaultOpusModel;
-        }
-
-        public void setDefaultOpusModel(String defaultOpusModel) {
-            this.defaultOpusModel = normalize(defaultOpusModel);
-        }
-
-        public String getDefaultSonnetModel() {
-            return defaultSonnetModel;
-        }
-
-        public void setDefaultSonnetModel(String defaultSonnetModel) {
-            this.defaultSonnetModel = normalize(defaultSonnetModel);
-        }
-
-        public String getDefaultHaikuModel() {
-            return defaultHaikuModel;
-        }
-
-        public void setDefaultHaikuModel(String defaultHaikuModel) {
-            this.defaultHaikuModel = normalize(defaultHaikuModel);
-        }
-
-        public String getSubagentModel() {
-            return subagentModel;
-        }
-
-        public void setSubagentModel(String subagentModel) {
-            this.subagentModel = normalize(subagentModel);
-        }
-
-        public String getEffortLevel() {
-            return effortLevel;
-        }
-
-        public void setEffortLevel(String effortLevel) {
-            this.effortLevel = normalize(effortLevel);
-        }
-
-        public Map<String, String> getExtraEnv() {
-            return extraEnv;
-        }
-
-        public void setExtraEnv(Map<String, String> extraEnv) {
-            this.extraEnv = extraEnv == null ? new LinkedHashMap<>() : new LinkedHashMap<>(extraEnv);
-        }
-
-        private boolean isDockerClaudeCodeCompatible() {
-            String normalized = normalizeProtocol(protocol);
-            return "anthropic-compatible".equals(normalized)
-                    || "anthropic-claude-code".equals(normalized)
-                    || "claude-code".equals(normalized)
-                    || "anthropic".equals(normalized);
-        }
-
-        private String providerLabel() {
-            return defaultWhenBlank(name, "anthropic") + ":" + normalizeProtocol(protocol);
-        }
-
-        private ClaudeCodeModelProvider toModelProvider() {
-            String providerName = defaultWhenBlank(name, "anthropic");
-            Map<String, String> env = new LinkedHashMap<>();
-            env.put("RD_CLAUDE_PROVIDER_PROTOCOL", normalizeProtocol(protocol));
-            putIfNotBlank(env, "ANTHROPIC_BASE_URL", baseUrl);
-            putIfNotBlank(env, "ANTHROPIC_MODEL", model);
-            putIfNotBlank(env, "ANTHROPIC_DEFAULT_OPUS_MODEL", defaultOpusModel);
-            putIfNotBlank(env, "ANTHROPIC_DEFAULT_SONNET_MODEL", defaultSonnetModel);
-            putIfNotBlank(env, "ANTHROPIC_DEFAULT_HAIKU_MODEL", defaultHaikuModel);
-            putIfNotBlank(env, "CLAUDE_CODE_SUBAGENT_MODEL", subagentModel);
-            putIfNotBlank(env, "CLAUDE_CODE_EFFORT_LEVEL", effortLevel);
-            putIfNotBlank(env, "RD_CLAUDE_AUTH_TOKEN_ENV", authTokenEnv);
-            putIfNotBlank(env, "RD_CLAUDE_API_KEY_ENV", apiKeyEnv);
-            if (!authTokenEnv.isBlank()) {
-                env.put(authTokenEnv, "");
-            }
-            if (!apiKeyEnv.isBlank()) {
-                env.put(apiKeyEnv, "");
-            }
-            if (env.isEmpty()) {
-                env.put("ANTHROPIC_API_KEY", "");
-            }
-            extraEnv.forEach((key, value) -> {
-                String normalizedKey = normalize(key);
-                if (!normalizedKey.isBlank()) {
-                    env.put(normalizedKey, normalize(value));
-                }
-            });
-            return new ClaudeCodeModelProvider(providerName, env);
-        }
-
-        private static void putIfNotBlank(Map<String, String> target, String key, String value) {
-            String normalized = normalize(value);
-            if (!normalized.isBlank()) {
-                target.put(key, normalized);
-            }
-        }
-
-        private static String normalizeProtocol(String value) {
-            String normalized = defaultWhenBlank(value, DEFAULT_PROTOCOL)
-                    .replace('_', '-')
-                    .toLowerCase();
-            return normalized.isBlank() ? DEFAULT_PROTOCOL : normalized;
-        }
-    }
 }

@@ -1,57 +1,22 @@
 package com.wish.rd.bootstrap.controller.admin.operation;
 
-import com.wish.rd.bootstrap.queue.impl.InMemoryRepairQueueDeadLetterRepository;
 import com.wish.rd.engine.audit.RepairAuditQueryPort;
 import com.wish.rd.engine.audit.model.RepairAuditEvent;
 import com.wish.rd.engine.audit.model.RepairAuditEventType;
-import com.wish.rd.engine.ticket.model.RepairQueueDeadLetter;
-import com.wish.rd.engine.ticket.model.RepairQueuePublishResult;
-import com.wish.rd.engine.ticket.RepairQueuePublisher;
-import com.wish.rd.engine.ticket.model.RepairTicketMessage;
-import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.ObjectProvider;
 
-import java.time.Instant;
 import java.util.Iterator;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class RepairOperationControllerTest {
-
-    @Test
-    void shouldNotMarkDeadLetterReplayedWhenPublishFails() {
-        InMemoryRepairQueueDeadLetterRepository repository = new InMemoryRepairQueueDeadLetterRepository();
-        RepairQueueDeadLetter deadLetter = repository.save(message(), "retry exceeded");
-        RepairOperationController controller = controller(repository, message ->
-                RepairQueuePublishResult.failure("rd-bot:repair:tickets", message.tag(), "stream unavailable"));
-
-        RepairOperationController.DeadLetterReplayView result = controller.replayDeadLetter(deadLetter.id());
-
-        assertFalse(result.publishSuccess());
-        assertFalse(repository.findById(deadLetter.id()).orElseThrow().replayed());
-    }
-
-    @Test
-    void shouldMarkDeadLetterReplayedOnlyOnceAfterSuccessfulPublish() {
-        InMemoryRepairQueueDeadLetterRepository repository = new InMemoryRepairQueueDeadLetterRepository();
-        RepairQueueDeadLetter deadLetter = repository.save(message(), "retry exceeded");
-        RepairOperationController controller = controller(repository, message ->
-                RepairQueuePublishResult.success("stream-1", "rd-bot:repair:tickets", message.tag()));
-
-        RepairOperationController.DeadLetterReplayView result = controller.replayDeadLetter(deadLetter.id());
-
-        assertTrue(result.publishSuccess());
-        assertTrue(repository.findById(deadLetter.id()).orElseThrow().replayed());
-        assertThrows(IllegalStateException.class, () -> controller.replayDeadLetter(deadLetter.id()));
-    }
 
     @Test
     void shouldQueryAuditEventsByTaskIdWithoutLoadingOtherTasks() {
@@ -74,51 +39,52 @@ class RepairOperationControllerTest {
                 return "task-1".equals(taskId) ? List.of(matching) : List.of();
             }
         };
-        RepairOperationController controller = controller(
-                new InMemoryRepairQueueDeadLetterRepository(),
-                message -> RepairQueuePublishResult.success("stream-1", "rd-bot:repair:tickets", message.tag()),
-                queryPort);
 
-        List<RepairOperationController.RepairAuditEventView> events = controller.auditEvents(null, "task-1");
+        List<RepairOperationController.RepairAuditEventView> events =
+                controller(queryPort).auditEvents(null, "task-1");
 
         assertEquals(1, events.size());
         assertEquals("task-1", events.getFirst().taskId());
     }
 
-    private static RepairOperationController controller(
-            InMemoryRepairQueueDeadLetterRepository repository,
-            RepairQueuePublisher publisher
-    ) {
-        return controller(repository, publisher, null);
+    @Test
+    void shouldRejectCombiningRepairRecordIdAndTaskIdFilters() {
+        RepairOperationController controller = controller(new RepairAuditQueryPort() {
+            @Override
+            public List<RepairAuditEvent> events() {
+                return List.of();
+            }
+
+            @Override
+            public List<RepairAuditEvent> eventsByRepairRecordId(String repairRecordId) {
+                return List.of();
+            }
+
+            @Override
+            public List<RepairAuditEvent> eventsByTaskId(String taskId) {
+                return List.of();
+            }
+        });
+
+        assertThrows(IllegalArgumentException.class, () -> controller.auditEvents("repair-1", "task-1"));
     }
 
-    private static RepairOperationController controller(
-            InMemoryRepairQueueDeadLetterRepository repository,
-            RepairQueuePublisher publisher,
-            RepairAuditQueryPort queryPort
-    ) {
+    @Test
+    void shouldReturnEmptyViewsWhenOptionalPortsAreMissing() {
+        RepairOperationController controller = controller(null);
+
+        assertTrue(controller.alerts().isEmpty());
+        assertTrue(controller.auditEvents(null, null).isEmpty());
+        assertTrue(controller.runningExecutions().isEmpty());
+        assertEquals(0L, controller.knowledgeRefresh().latestDelayMillis());
+    }
+
+    private static RepairOperationController controller(RepairAuditQueryPort queryPort) {
         return new RepairOperationController(
-                RagStreamTaskRegistry.inMemory(),
                 provider(null),
                 provider(queryPort),
                 provider(null),
-                provider(repository),
-                provider(publisher),
-                provider(null),
                 provider(null)
-        );
-    }
-
-    private static RepairTicketMessage message() {
-        return new RepairTicketMessage(
-                "FS-9001",
-                "P1",
-                "trace-9001",
-                4,
-                "feishu",
-                "evt-9001",
-                "helpdesk.ticket.created_v1",
-                Instant.parse("2026-06-21T00:00:00Z")
         );
     }
 

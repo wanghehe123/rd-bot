@@ -24,7 +24,6 @@ class FeishuImRepairAlertSinkBeanWiringTest {
     void shouldWireFeishuAlertSinkIndependentlyFromTicketProvider() {
         contextRunner
                 .withPropertyValues(
-                        "rd.repair.ticket.provider=mock",
                         "rd.feishu.im.enabled=true",
                         "rd.feishu.im.app-id=cli-test",
                         "rd.feishu.im.app-secret=secret",

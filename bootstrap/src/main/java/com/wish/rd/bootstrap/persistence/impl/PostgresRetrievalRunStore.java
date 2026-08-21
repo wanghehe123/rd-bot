@@ -222,6 +222,9 @@ public class PostgresRetrievalRunStore implements RetrievalRunStore {
     }
 
     private RetrievalRun toRun(RdRagRetrievalRunRow row) {
+        // Legacy rows predate consumer_type and can be NULL. BUG_FIX is the historically correct
+        // label for them because the ticket pipeline was the only writer back then; the record
+        // itself now rejects a null consumer so new writes cannot inherit this fallback.
         return new RetrievalRun(
                 PostgresPersistenceSupport.idString(row.id), PostgresPersistenceSupport.idString(row.taskId),
                 enumValue(RetrievalConsumerType.class, row.consumerType, RetrievalConsumerType.BUG_FIX), row.role,

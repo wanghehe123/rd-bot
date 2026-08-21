@@ -1,8 +1,6 @@
 package com.wish.rd.engine.merge;
 
 import com.wish.rd.engine.merge.model.PullRequestMergeStatus;
-import com.wish.rd.engine.ticket.RepairRecordRepository;
-import com.wish.rd.engine.ticket.model.RepairRecordStatus;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
 import com.wish.rd.rag.runtime.model.RdBugFixTask;
 import com.wish.rd.rag.runtime.model.RdRequirementTask;
@@ -10,8 +8,6 @@ import com.wish.rd.rag.runtime.model.RdTask;
 import com.wish.rd.rag.runtime.model.RdTaskStatus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -31,7 +27,6 @@ public class RepairTaskMergeSyncEngine {
 
     private final RagStreamTaskRegistry taskRegistry;
     private final PullRequestMergeStatusPort pullRequestStatusPort;
-    private final RepairRecordRepository repairRecordRepository;
 
     /**
      * 创建 PR 合并状态同步引擎。
@@ -39,33 +34,15 @@ public class RepairTaskMergeSyncEngine {
      * @param taskRegistry          RD 任务状态机
      * @param pullRequestStatusPort PR 状态查询端口
      */
-    @Autowired
-    public RepairTaskMergeSyncEngine(
-            RagStreamTaskRegistry taskRegistry,
-            PullRequestMergeStatusPort pullRequestStatusPort,
-            ObjectProvider<RepairRecordRepository> repairRecordRepository
-    ) {
-        this(taskRegistry, pullRequestStatusPort, repairRecordRepository.getIfAvailable());
-    }
-
     public RepairTaskMergeSyncEngine(
             RagStreamTaskRegistry taskRegistry,
             PullRequestMergeStatusPort pullRequestStatusPort
-    ) {
-        this(taskRegistry, pullRequestStatusPort, (RepairRecordRepository) null);
-    }
-
-    public RepairTaskMergeSyncEngine(
-            RagStreamTaskRegistry taskRegistry,
-            PullRequestMergeStatusPort pullRequestStatusPort,
-            RepairRecordRepository repairRecordRepository
     ) {
         this.taskRegistry = Objects.requireNonNull(taskRegistry, "taskRegistry must not be null");
         this.pullRequestStatusPort = Objects.requireNonNull(
                 pullRequestStatusPort,
                 "pullRequestStatusPort must not be null"
         );
-        this.repairRecordRepository = repairRecordRepository;
     }
 
     /**
@@ -77,25 +54,20 @@ public class RepairTaskMergeSyncEngine {
     public RdTask syncTask(String taskId) {
         RdTask task = taskRegistry.getTask(taskId);
         if (task.status() == RdTaskStatus.MERGED) {
-            syncRepairRecord(task, RepairRecordStatus.MERGED, "pull request merged: " + pullRequestUrl(task));
             return task;
         }
         if (!shouldCheckPullRequest(task)) {
             return task;
         }
-        String pullRequestUrl = pullRequestUrl(task);
-        syncRepairRecord(task, RepairRecordStatus.COMMITTED, "auto repair committed: " + pullRequestUrl);
-        PullRequestMergeStatus status = pullRequestStatusPort.findByUrl(pullRequestUrl);
+        PullRequestMergeStatus status = pullRequestStatusPort.findByUrl(pullRequestUrl(task));
         if (!status.merged()) {
             return task;
         }
-        RdTask merged = markMerged(task);
-        syncRepairRecord(merged, RepairRecordStatus.MERGED, "pull request merged: " + status.pullRequestUrl());
-        return merged;
+        return markMerged(task);
     }
 
     /**
-     * 同步所有已发布 PR 的任务，并修复已 MERGED 任务对应 repair record 的滞后状态。
+     * 同步所有已发布 PR 的任务。
      *
      * @return 被检查并返回的任务快照列表
      */
@@ -140,15 +112,5 @@ public class RepairTaskMergeSyncEngine {
             return requirementTask.pullRequestUrl();
         }
         return "";
-    }
-
-    private void syncRepairRecord(RdTask task, RepairRecordStatus status, String summary) {
-        if (repairRecordRepository == null
-                || !(task instanceof RdBugFixTask bugFixTask)
-                || bugFixTask.ticketId().isBlank()) {
-            return;
-        }
-        repairRecordRepository.findByTicketId(bugFixTask.ticketId())
-                .ifPresent(record -> repairRecordRepository.updateStatus(record.id(), status, summary));
     }
 }

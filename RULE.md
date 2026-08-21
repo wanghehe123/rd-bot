@@ -57,12 +57,18 @@
   @Value("${rag.rate-limit.global.max-concurrent:4}") int maxConcurrent
   ```
 - 【推荐】可切换实现的基础设施 Bean（如 `ObjectStorageService` 的 memory/S3）用配置开关选择实现，业务代码只依赖端口接口。
-- 【强制】`rd.executor.openai-chat.timeout` / `RD_EXECUTOR_OPENAI_CHAT_TIMEOUT` 是 **OpenAI 兼容 HTTP 单次请求** 的等待上限，不是 Pi 容器执行时限。`0s` 表示不设 HTTP 请求超时；缺省为 `0s`。正值仍按 `HttpRequest.timeout` 失败并写成 `openai chat completions request failed: request timed out`。Pi 容器时限仍是 `RD_EXECUTOR_PI_EXECUTION_TIMEOUT_MILLIS`（默认 1h）。
-  - 代码：`OpenAiChatCompletionsProperties`、`OpenAiChatCompletionsRepairExecutor.Configuration`、`OpenAiChatCompletionsRepairExecutor.request`
-  - 验证：`./mvnw -pl bootstrap -Dtest=OpenAiChatCompletionsRepairExecutorTest -Dsurefire.failIfNoSpecifiedTests=false test`
-- 【强制】`REQUIREMENT_REVIEWER` 与 `SOLUTION_ARCHITECT` 必须走 Agent 容器，不得因 `rd.executor.openai-chat.enabled=true` 被分流到仅模型 HTTP。项目已保存 Pi 策略时，必须打开 `rd.executor.agent-runtime.enabled=true`，否则 `AgentRuntimeRouter` 不会生效，任务仍走旧 Claude / 仅模型路径。无注册 Profile 时的兼容默认是 `CLAUDE_CODE`，不是 `MODEL_ONLY`。
-  - 代码：`RoleAwareRepairExecutor`、`EngineRequirementExecutionProfileResolver.compatibilityRuntime`、`application-local.yaml` 的 `rd.executor.agent-runtime.enabled`
-  - 验证：`./mvnw -pl bootstrap -Dtest=RoleAwareRepairExecutorTest,EngineRequirementExecutionProfileResolverTest -Dsurefire.failIfNoSpecifiedTests=false test`
+- 【强制】仅模型 HTTP 执行路径（`rd.executor.openai-chat.*` / `RD_EXECUTOR_OPENAI_CHAT_*`、`OpenAiChatCompletionsRepairExecutor`、`OpenAiChatCompletionsProperties`、`RoleAwareRepairExecutor`）已移除，不得重新引入。所有角色一律走 Agent 容器；模型访问只经 Pi credential-relay，不再有绕过容器的宿主直连 HTTP 分支。需要新增模型供应商时，扩展 relay 上游而不是新开仅模型执行器。
+  - 注意：供应商协议标识符 `openai-chat-completions`（MiniMax 等 OpenAI 兼容端点用）是**另一回事**，仍在使用，不得按本条清理。它现在只活在数据库支撑的 `ModelProviderProfile.protocol`（管理端「模型供应商」控制台）里；静态 YAML 树 `rd.executor.docker.providers[]` 曾是 Claude 执行器专属的模型链配置，已随 Claude 一同删除，不得重新引入。
+  - 代码：`AgentRuntimeExecutorConfiguration`、`EngineRequirementExecutionProfileResolver`、`PiCredentialRelayService`
+  - 验证：`rg -n 'OpenAiChatCompletions(RepairExecutor|Properties|ExecutorConfiguration)|RoleAwareRepairExecutor|rd\.executor\.openai-chat|RD_EXECUTOR_OPENAI_CHAT' --glob '!**/target/**' --glob '!openspec/changes/**' --glob '!docs/superpowers/**' --glob '!RULE.md'` 必须无命中
+  - 验证：`rg -n 'ModelProviderProperties|rd\.executor\.docker\.providers' --glob '!**/target/**' --glob '!openspec/changes/**' --glob '!docs/superpowers/**' --glob '!RULE.md'` 必须无命中
+- 【强制】`REQUIREMENT_REVIEWER` 与 `SOLUTION_ARCHITECT` 必须走 Agent 容器。`rd.executor.agent-runtime.enabled` 默认 `true`，`compatibilityRuntime()` 默认返回 `PI`：项目未保存策略时也必须落到 Pi，不得回退到 `CLAUDE_CODE`（该运行时已删除，只剩枚举值）。`AgentRuntimeRouter` 必须能在没有 `RepairExecutorPort` 的情况下装配成功——缺少某运行时的执行器只允许在真正被请求时抛 `UnsupportedAgentRuntimeException`，不得让上下文启动失败。
+  - 代码：`EngineRequirementExecutionProfileResolver.compatibilityRuntime`、`AgentRuntimeProperties.enabled`、`AgentRuntimeExecutorConfiguration.agentRuntimeRouter`、`EngineRequirementExecutorConfiguration.requirementExecutor`
+  - 验证：`./mvnw -pl bootstrap -am -Dtest=EngineRequirementExecutionProfileResolverTest,AgentRuntimeExecutorConfigurationTest -Dsurefire.failIfNoSpecifiedTests=false test`
+- 【强制】BugFix / 工单修复链已下线，不得重新引入。`RdTaskType.BUG_FIX` 与 `RetrievalConsumerType.BUG_FIX` 只为读取历史行保留；非法枚举值失败关闭，空值落 `REQUIREMENT`。HTTP 写入面只接受需求任务（`POST /admin/rd-tasks/requirements`）；提交非需求任务必须拒绝。非需求飞书 IM 消息直接 `ignored`，不得再解析成工单。不得恢复 `RdBotFixEngine`、`TicketRepairEngine`、`RagBugFixEngine`、`RepairRagPipeline`、`createRdTask` / `POST /admin/rd-tasks` 的 BugFix 创建，或 `repair_records` 写入路径。
+  - 代码：`RdTaskType.parse`、`RdTaskController.submit`、`FeishuImMessageController`
+  - 验证：`rg -n 'RdBotFixEngine|TicketRepairEngine|RagBugFixEngine|RepairRagPipeline|createRdTask\\(' --glob '!**/target/**' --glob '!openspec/changes/**' --glob '!docs/superpowers/**' --glob '!RULE.md'` 必须无命中
+  - 验证：`./mvnw -pl rag -Dtest=RdTaskTypeTest -Dsurefire.failIfNoSpecifiedTests=false test`；`./mvnw -pl bootstrap -am -Dtest=RdTaskControllerTest,FeishuImMessageControllerTest -Dsurefire.failIfNoSpecifiedTests=false test`
 - 【强制】`rd_agent_tool_policies.policy_hash` 必须是 `SHA-256(policy_json)` 的 64 位 hex，不能用 `legacy-host-bound-v1` 这类占位标签。读到非 hex 种子哈希时，store 可回写真实 checksum；hex 不匹配必须失败关闭。Profile 解析失败写入任务 `errorMessage` 时必须带上底层原因，不能只写角色名。
   - 代码：`PostgresAgentToolPolicyStore.toPolicy`、`p8_pi_agent_runtime.sql`、`p17_fix_tool_policy_seed_hashes.sql`、`RequirementAgentStageOrchestrator`
   - 验证：`./mvnw -pl bootstrap -Dtest=PostgresAgentToolPolicyStoreTest -Dsurefire.failIfNoSpecifiedTests=false test` 与 `./mvnw -pl engine -Dtest=RequirementExecutionProfileFailureTest -Dsurefire.failIfNoSpecifiedTests=false test`
@@ -90,7 +96,7 @@
 - 【强制】checkpoint-bound 重试首条 `rd_requirement_stage_commands` 的 `deadline_at` 必须使用 `rd.requirement-delivery.scheduling.command-deadline-millis`（默认 1h），与 `RequirementStageCommandFactory` 相同。禁止把 `lease-millis`（默认 10min）当成命令寿命；否则 QA 等长角色会在 agent 仍运行时被 `stage command deadline exceeded` 打成 `DEAD_LETTERED`。
   - 代码：`TaskRetryEngine.initializeCheckpointBoundRetry`、`RequirementStageCommandFactory.deadlineEpochMillis`
   - 验证：`./mvnw -pl engine -Dtest=TaskRetryEngineCheckpointInitializationTest#checkpointBoundRetryCommandUsesSchedulingCommandDeadlineNotLeaseWindow,TaskRetryEngineCheckpointInitializationTest#checkpointBoundRetryCommandHonorsConfiguredCommandDeadlineMillis -Dsurefire.failIfNoSpecifiedTests=false test`
-- 【强制】Pi credential-relay 单次上游等待必须与 `rd.executor.pi.execution-timeout-millis` / `RD_EXECUTOR_PI_EXECUTION_TIMEOUT_MILLIS`（默认 1h）对齐：sidecar `RD_PI_RELAY_TIMEOUT_MILLIS` 与 lease `RelayPolicy.requestTimeout` 都取该值。禁止再硬编码 60s；否则长上下文 QA 补全会被 sidecar/Host abort 成 502，Pi 会 `AGENT_SETTLED` 却没有 `rd_submit_result`。`RD_EXECUTOR_OPENAI_CHAT_TIMEOUT` 只管 MODEL_ONLY HTTP，不是这条路径。改 Java 注入即可，不必为改超时重建 Pi 镜像。
+- 【强制】Pi credential-relay 单次上游等待必须与 `rd.executor.pi.execution-timeout-millis` / `RD_EXECUTOR_PI_EXECUTION_TIMEOUT_MILLIS`（默认 1h）对齐：sidecar `RD_PI_RELAY_TIMEOUT_MILLIS` 与 lease `RelayPolicy.requestTimeout` 都取该值。禁止再硬编码 60s；否则长上下文 QA 补全会被 sidecar/Host abort 成 502，Pi 会 `AGENT_SETTLED` 却没有 `rd_submit_result`。改 Java 注入即可，不必为改超时重建 Pi 镜像。
   - 代码：`DockerPiAgentExecutor.relayNetworkPlan`、`DockerPiAgentExecutor.relayPolicy`、`PiCredentialRelayService.JdkUpstreamClient`
   - 验证：`./mvnw -pl exec -am -Dtest=DockerPiAgentExecutorTest#shouldAlignCredentialRelayTimeoutWithPiExecutionTimeout -Dsurefire.failIfNoSpecifiedTests=false test`
 - 【强制】宿主 `git clone` / `git fetch origin <base>` 对 GitHub TLS 闪断（`SSL_ERROR_SYSCALL`、`unable to access`、连接重置）最多重试 3 次，失败 clone 必须清空目标 `repo/`，避免残留文件挡住下一次 prepare。禁止设 `GIT_SSL_NO_VERIFY`。认证失败、401/403/404、仓库不存在不得当闪断重试。
@@ -103,7 +109,7 @@
 
 ### 2.1 通用【强制】
 
-- **类名 UpperCamelCase**：`RepairRagPipeline`、`KnowledgeWorkspace`。
+- **类名 UpperCamelCase**：`RequirementDeliveryEngine`、`KnowledgeWorkspace`。
 - **方法名/变量 lowerCamelCase**：`prepareContext`、`vectorStore`。
 - **常量全大写下划线**：`MAX_CHUNK_LENGTH`、`DEFAULT_USER_ID`。
 - **包名全小写单数**：`retrieval`（非 `retrievals`）、`ingestion`。
@@ -114,16 +120,16 @@
 
 | 角色 | 后缀 / 命名 | 示例 |
 |------|------------|------|
-| REST 控制器 | `*Controller` | `RagV3ChatController` |
-| 业务编排 | `*Engine` | `KnowledgeAdminEngine` |
+| REST 控制器 | `*Controller` | `RdTaskController` |
+| 业务编排 | `*Engine` | `RequirementDeliveryEngine`、`KnowledgeAdminEngine` |
 | 内存仓储/聚合 | `*Registry` / `*Workspace` / `*Store` | `QueryTermMappingRegistry`、`KnowledgeWorkspace`、`RagTraceStore` |
 | 领域模型 | 名词（无后缀） | `KnowledgeBase`、`IntentNode` |
-| 不可变值对象 | `record`，无后缀 | `RetrievedChunk`、`RepairRagRequest` |
+| 不可变值对象 | `record`，无后缀 | `RetrievedChunk`、`RoleContextPackage` |
 | 命令对象（写操作入参） | `*Command` | `CreateKnowledgeBaseCommand` |
 | 端口（外部系统抽象） | `*Port` | `LogCenterPort` |
 | 策略 | `*Strategy` | `ChunkingStrategy` |
 | 工厂 | `*Factory` | `RagRuntimeFactory`、`ChunkingStrategyFactory` |
-| 测试结果 | `*Result` | `RagFullFlowTestResult` |
+| 测试结果 | `*Result` | `RequirementDeliveryResult`、`IngestionPipelineTestResult` |
 | 选择器 | `*Selector` | `DocumentParserSelector` |
 
 ### 2.3 方法命名【强制】
@@ -143,7 +149,7 @@
   (left, right) -> left.score() >= right.score() ? left : right
   ```
 - 【强制】注释与代码同步更新；过时注释比没有注释更糟。
-- 【参考】参考已注释的核心文件（`RepairRagPipeline`、`RagBugFixEngine`、`KnowledgeWorkspace`）的密度与风格。
+- 【参考】参考已注释的核心文件（`RequirementDeliveryEngine`、`TaskIngestionEngine`、`KnowledgeWorkspace`）的密度与风格。
 
 ---
 
@@ -153,7 +159,7 @@
 
 ### 3.1 分层架构 + 端口适配器（Hexagonal）【强制】
 
-- 外部系统（日志中心、代码仓库、工单、对象存储、LLM）一律抽象为 **Port 接口**，定义在 `rag`/`adapter` 层，实现在 `bootstrap` 或测试 mock：
+- 外部系统（飞书 IM、代码仓库、对象存储、LLM、GitHub PR）一律抽象为 **Port 接口**，定义在 `rag`/`adapter` 层，实现在 `bootstrap` 或测试 mock：
   ```java
   // rag 层只定义契约
   public interface LogCenterPort {
@@ -176,7 +182,7 @@
 
 ### 3.3 工厂模式（Factory）【推荐用于"复杂对象组装"】
 
-- **已落地**：`RagRuntimeFactory` 集中装配 `RepairRagPipeline`（基础版/完整版两个重载），避免调用方逐个 `new` 组件。
+- **已落地**：`RagRuntimeFactory` 集中装配 `IngestionPipeline`（`ingestionPipeline(VectorStore)`），避免调用方逐个 `new` 组件。不得把已删除的 `RepairRagPipeline` 重载加回来。
 - 【推荐】当某个对象的构造依赖 4 个以上组件时，提取静态工厂方法，命名 `xxx(...)` / `inMemory(...)` / `withDefaults(...)`。
 
 ### 3.4 模板方法 / 流程编排【强制用于"多步骤链路"】
@@ -184,9 +190,9 @@
 固定步骤的链路用**显式编排方法** + **`@RagTraceNode` 标记**，步骤间用不可变上下文对象传递：
 
 ```java
-@RagTraceNode(value = "repair-rag-pipeline", category = "rag")
-public RepairContextPackage prepareContext(RepairRagRequest request) {
-    // 1. 合并查询文本 → 2. 意图分类 → 3. 歧义引导 → 4. 多通道检索 → 5. 上下文打包
+@RagTraceNode(value = "multi-channel-retrieval", category = "rag")
+public RetrievalBundle retrieve(RetrievalRequest request) {
+    // 1. 按意图筛选通道 → 2. 虚拟线程并行检索 → 3. 按 chunkId 去重合并
 }
 ```
 
@@ -215,14 +221,14 @@ public RepairContextPackage prepareContext(RepairRagRequest request) {
 
 ### 3.5.3 任务状态与持久化派发【强制】
 
-- 【强制】`RdTaskStatus` 虽为共享枚举，合法边必须按 `RdTaskType` 分图校验；需求任务不得走 BugFix 的 `SEARCHING` 捷径。
+- 【强制】`RdTaskStatus` 虽为共享枚举，合法边必须按 `RdTaskType` 分图校验；需求任务不得走历史 BugFix 图上的 `SEARCHING` 捷径。`BUG_FIX` 状态图只为读取已有行保留，不得再有新的写入方。
 - 【强制】任务快照与对应状态事件必须通过同一个事务端口写入；PostgreSQL 实现必须使用 `@Transactional`，禁止先改快照、后补事件。
 - 【强制】声明 `@Transactional` 的 Spring Bean 类不得是 `final`：Boot 默认 CGLIB 子类代理，
   final 类会在真机启动时抛 `Cannot subclass final class` 并放弃整个上下文，而单测不加载
   Spring 上下文暴露不了（2026-08-13 两个 Postgres 投影适配器就这样把后端打挂）。
   由 `TransactionalProxyPolicyTest` 扫描 bootstrap 源码钉住；验证：
   `./mvnw -pl bootstrap -am -Dtest=TransactionalProxyPolicyTest -Dsurefire.failIfNoSpecifiedTests=false test`。
-- 【强制】任务写锁使用 task ID 粒度；工单幂等创建使用 ticket ID 粒度。禁止用全局注册表锁串行化不同任务。
+- 【强制】任务写锁使用 task ID 粒度。禁止用全局注册表锁串行化不同任务。已删除的工单 ticket-ID 幂等锁不得重新引入到需求交付路径。
 - 【强制】普通需求交付（含 umbrella 提交）先写 `rd_requirement_delivery_jobs`，再提交线程池。Worker 必须通过条件更新获得租约；进程重启后恢复 PENDING、FAILED_RETRYABLE 与租约过期的 RUNNING 作业。**窄化例外**：checkpoint-bound 阶段重试以初始化事务同写的 `rd_requirement_stage_commands` 为唯一派发真值，不得为该重试凭空创建第二个 umbrella job，除非既有运行时路径明确需要它；提交后的调度器只能按 checkpoint 记录的 command ID 唤醒该行。
 - 【强制】阶段重试必须创建新的 `attemptNo`；`FAILED_RETRYABLE` 是旧 attempt 的终态，不得把旧记录改写为 `RECOVERING`。
 - 【强制】达到派发重试上限时，作业与主任务都进入 `DEAD_LETTERED` 并保留失败原因。
@@ -604,18 +610,17 @@ public RepairContextPackage prepareContext(RepairRagRequest request) {
   运行用户的数字 id。Docker 只对 `/tmp` 默认给 1777，其他路径一律落成 root 拥有的 0755，
   容器内非 root 进程连 `mkdir` 都做不了。`DockerPiAgentExecutor.PI_TMPFS_MOUNTS` 三条挂载
   都带 `uid=1000,gid=1000`，是正确样板。
-- 【强制】`DockerClaudeCodeExecutor.CLAUDE_TMPFS_MOUNTS` 的 `/home/rdbot/.claude/session-env`
-  必须带 `uid=999,gid=999`（镜像 `rd-bot/claude-code:local` 里 `rdbot` 的 uid/gid）。缺失时
-  Agent harness 在跑第一条命令之前就以
-  `EACCES: mkdir /home/rdbot/.claude/session-env/<session-id>` 死掉，而模型仍会把代码改完并
-  提交一份 `status=FAILED` 的结果——症状看着像"模型不听话"，实为容器权限。
-- 【强制】改这两个常量必须同时更新对应断言，不得只改主代码：
-  `DockerClaudeCodeExecutorTest#shouldApplyContainerSecurityPolicyAndRoleNetworkIsolation`
-  断言 session-env 的 uid/gid，`DockerPiAgentExecutorTest` 断言 Pi 侧挂载存在。
-- 【强制】验证：`./mvnw -q -pl exec -am -Dtest=DockerClaudeCodeExecutorTest -Dsurefire.failIfNoSpecifiedTests=false test`；
+- 【强制】新增 tmpfs 常量必须同时更新对应断言，不得只改主代码：`DockerPiAgentExecutorTest`
+  断言 Pi 侧挂载存在且带 uid/gid。
+- 【强制】验证：`./mvnw -q -pl exec -am -Dtest=DockerPiAgentExecutorTest -Dsurefire.failIfNoSpecifiedTests=false test`；
   快速复现可用
-  `docker run --rm --user 999:999 --tmpfs '/home/rdbot/.claude/session-env:rw,noexec,nosuid,size=64m' --entrypoint sh rd-bot/claude-code:local -c 'mkdir -p /home/rdbot/.claude/session-env/probe'`
-  （修复前必然 `Permission denied`）。
+  `docker run --rm --user 1000:1000 --tmpfs '/home/rdbot/.cache:rw,noexec,nosuid,size=64m' --entrypoint sh rd-bot/pi-agent:local -c 'mkdir -p /home/rdbot/.cache/probe'`
+  （缺 uid/gid 时必然 `Permission denied`）。
+- 本条的来源案例是已删除的 Claude 运行时：它的 `/home/rdbot/.claude/session-env` 漏了
+  `uid=999,gid=999`，Agent harness 在跑第一条命令之前就以
+  `EACCES: mkdir /home/rdbot/.claude/session-env/<session-id>` 死掉，而模型仍会把代码改完并
+  提交一份 `status=FAILED` 的结果——症状看着像"模型不听话"，实为容器权限。运行时已随
+  Claude 栈移除，但这条挂载纪律对 Pi 及任何后续运行时同等有效。
 - 实测记录：`docs/superpowers/specs/2026-08-13-waimai-corpus-rag-comparison-report.md` §6.6。
 
 ### 3.6 聚合根（Aggregate Root）【强制用于"强一致实体群"】
@@ -633,9 +638,9 @@ public RepairContextPackage prepareContext(RepairRagRequest request) {
 
 - 纯数据载体一律用 `record`，并在紧凑构造器里做**防御性归一**：
   ```java
-  public record RepairContextPackage(...) {
-      public RepairContextPackage {
-          retrievedChunks = retrievedChunks == null ? List.of() : List.copyOf(retrievedChunks);
+  public record RetrievedChunk(...) {
+      public RetrievedChunk {
+          metadata = metadata == null ? Map.of() : Map.copyOf(metadata);
       }
   }
   ```
@@ -648,7 +653,7 @@ public RepairContextPackage prepareContext(RepairRagRequest request) {
 
 ### 3.9 函数式接口作为回调【推荐】
 
-- 端口/钩子优先用 `@FunctionalInterface`（如 `RepairTaskContextPort`），而非定义带单个方法的抽象类。
+- 端口/钩子优先用 `@FunctionalInterface`（如 `AgentRuntimeExecutorPort`、`RequirementStageExecutor`），而非定义带单个方法的抽象类。
 
 ---
 
@@ -754,7 +759,7 @@ public RepairContextPackage prepareContext(RepairRagRequest request) {
 ### 6.1 覆盖要求【强制】
 
 - 【强制】每个公开能力必须有对应测试（本项目 README "Verification" 列出的覆盖范围须持续维护）。
-- 【强制】核心链路（BugFix Chat、兼容聊天入口、修复主流程、检索、改写、Prompt、摄取）必须有端到端冒烟测试（`/test/*` 通道 + JUnit 断言）。
+- 【强制】核心链路（需求交付、检索、摄取、知识管理、Pi 桥接协议）必须有端到端冒烟测试（现存 `/test/ingestion` 通道 + JUnit 断言）。不得把已删除的 BugFix Chat / 兼容聊天入口 / 修复主流程冒烟通道加回来。
 - 【推荐】单测覆盖边界：空入参、空集合、并发、限流命中、歧义引导。
 
 ### 6.2 测试编写【强制】
@@ -805,14 +810,14 @@ public RepairContextPackage prepareContext(RepairRagRequest request) {
 | 分层单向依赖 | `bootstrap -> engine/exec/skill/rag`，`engine/exec/skill -> rag`，见各级 `pom.xml` |
 | 端口适配器 | `LogCenterPort` / `CodeRepositorySearchPort` / `ObjectStorageService` |
 | 策略 + 工厂 | `ChunkingStrategy` + `ChunkingStrategyFactory` |
-| 模板方法/编排 | `RepairRagPipeline.prepareContext`、`TaskIngestionEngine.execute` |
+| 模板方法/编排 | `MultiChannelRetrievalEngine.retrieve`、`TaskIngestionEngine.execute` |
 | 注册表 | `QueryTermMappingRegistry`、`IntentTreeRegistry`、`RagStreamTaskRegistry` |
 | 聚合根 | `KnowledgeWorkspace`（级联一致性） |
-| 值对象 | `RetrievedChunk`、`RepairContextPackage`（record + 防御性归一） |
+| 值对象 | `RetrievedChunk`、`RoleContextPackage`（record + 防御性归一） |
 | Builder | `IntentNode.builder()` |
-| 函数式端口 | `RepairTaskContextPort`（`@FunctionalInterface`） |
-| 虚拟线程并发 | `MultiChannelRetrievalEngine.retrieve`、`DefaultConversationMemoryService` |
-| Redis 队列限流 | `ChatQueueLimiter` + `RedisChatQueueLimiter` + `FairDistributedRateLimiter` |
+| 函数式端口 | `AgentRuntimeExecutorPort`、`RequirementStageExecutor`（`@FunctionalInterface`） |
+| 虚拟线程并发 | `MultiChannelRetrievalEngine.retrieve` |
+| 队列限流 | 对话队列限流（`ChatQueueLimiter` / `RedisChatQueueLimiter`）已随聊天栈删除，不得重新引入；需求交付用任务级调度与 checkpoint |
 | 链路追踪 | `@RagTraceNode` + `RagTraceStore` |
 
 ---

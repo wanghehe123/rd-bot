@@ -11,9 +11,23 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class RetrievalRunLifecycleTest {
+
+    @Test
+    void refusesToStartARunWithoutAConsumerInsteadOfLabellingItBugFix() {
+        InMemoryRetrievalRunStore store = new InMemoryRetrievalRunStore();
+        RetrievalRunLifecycle lifecycle = new RetrievalRunLifecycle(store, () -> "run-1", () -> 100L);
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> lifecycle.start("task-1", null, "", "", "q", List.of()));
+
+        assertTrue(failure.getMessage().contains("consumerType is required"));
+        assertTrue(store.listByTask("task-1").isEmpty());
+    }
 
     @Test
     void recordsACompleteSuccessfulEvidenceLifecycle() {
@@ -23,7 +37,7 @@ class RetrievalRunLifecycleTest {
                 store, () -> "run-" + ids.incrementAndGet(), () -> 100L
         );
 
-        RetrievalRun started = lifecycle.start("task-1", RetrievalConsumerType.BUG_FIX, "", "",
+        RetrievalRun started = lifecycle.start("task-1", RetrievalConsumerType.AGENT_ROLE, "CODING_AGENT", "",
                 "payment service timeout", List.of("kb-1"));
         RetrievalRun completed = lifecycle.complete(started.runId(), 12, 4, false, "");
 

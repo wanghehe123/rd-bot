@@ -31,7 +31,6 @@ public final class EngineRequirementExecutionProfileResolver
     private final AgentExecutionProfileService profileService;
     private final AgentExecutionProfileSnapshotService snapshotService;
     private final AgentExecutionProfileSnapshotStore snapshotStore;
-    private final boolean openAiChatEnabled;
     private final ModelProviderProfileService providerProfileService;
     private final AgentToolPolicyService toolPolicyService;
     private final String contextProtocolVersion;
@@ -42,14 +41,12 @@ public final class EngineRequirementExecutionProfileResolver
     public EngineRequirementExecutionProfileResolver(
             AgentExecutionProfileService profileService,
             AgentExecutionProfileSnapshotService snapshotService,
-            AgentExecutionProfileSnapshotStore snapshotStore,
-            boolean openAiChatEnabled
+            AgentExecutionProfileSnapshotStore snapshotStore
     ) {
         this(
                 profileService,
                 snapshotService,
                 snapshotStore,
-                openAiChatEnabled,
                 null,
                 null,
                 "LEGACY_ENVIRONMENT_NOTES",
@@ -62,7 +59,6 @@ public final class EngineRequirementExecutionProfileResolver
             AgentExecutionProfileService profileService,
             AgentExecutionProfileSnapshotService snapshotService,
             AgentExecutionProfileSnapshotStore snapshotStore,
-            boolean openAiChatEnabled,
             ModelProviderProfileService providerProfileService,
             AgentToolPolicyService toolPolicyService
     ) {
@@ -70,7 +66,6 @@ public final class EngineRequirementExecutionProfileResolver
                 profileService,
                 snapshotService,
                 snapshotStore,
-                openAiChatEnabled,
                 providerProfileService,
                 toolPolicyService,
                 "LEGACY_ENVIRONMENT_NOTES",
@@ -84,7 +79,6 @@ public final class EngineRequirementExecutionProfileResolver
             AgentExecutionProfileService profileService,
             AgentExecutionProfileSnapshotService snapshotService,
             AgentExecutionProfileSnapshotStore snapshotStore,
-            boolean openAiChatEnabled,
             ModelProviderProfileService providerProfileService,
             AgentToolPolicyService toolPolicyService,
             String contextProtocolVersion,
@@ -95,7 +89,6 @@ public final class EngineRequirementExecutionProfileResolver
                 profileService,
                 snapshotService,
                 snapshotStore,
-                openAiChatEnabled,
                 providerProfileService,
                 toolPolicyService,
                 contextProtocolVersion,
@@ -109,7 +102,6 @@ public final class EngineRequirementExecutionProfileResolver
             AgentExecutionProfileService profileService,
             AgentExecutionProfileSnapshotService snapshotService,
             AgentExecutionProfileSnapshotStore snapshotStore,
-            boolean openAiChatEnabled,
             ModelProviderProfileService providerProfileService,
             AgentToolPolicyService toolPolicyService,
             String contextProtocolVersion,
@@ -120,7 +112,6 @@ public final class EngineRequirementExecutionProfileResolver
         this.profileService = Objects.requireNonNull(profileService, "profileService must not be null");
         this.snapshotService = Objects.requireNonNull(snapshotService, "snapshotService must not be null");
         this.snapshotStore = Objects.requireNonNull(snapshotStore, "snapshotStore must not be null");
-        this.openAiChatEnabled = openAiChatEnabled;
         this.providerProfileService = providerProfileService;
         this.toolPolicyService = toolPolicyService;
         this.contextProtocolVersion = normalizeProtocolVersion(contextProtocolVersion);
@@ -187,7 +178,7 @@ public final class EngineRequirementExecutionProfileResolver
         if (attemptNo <= 0) throw new IllegalArgumentException("attemptNo must be positive");
         AgentExecutionProfile profile = profileService.resolve(task.projectId(), task.taskId(), role.name())
                 .orElse(null);
-        AgentRuntimeType runtimeType = profile == null ? compatibilityRuntime(role) : profile.runtimeType();
+        AgentRuntimeType runtimeType = profile == null ? compatibilityRuntime() : profile.runtimeType();
         String snapshotJson = snapshotJson(task, role, stageRunId, attemptNo, runtimeType, profile);
         return new AgentExecutionProfileSnapshot(
                 snapshotId(stageRunId), stageRunId, task.taskId(), role.name(), attemptNo,
@@ -355,8 +346,15 @@ public final class EngineRequirementExecutionProfileResolver
         return value;
     }
 
-    private AgentRuntimeType compatibilityRuntime(AgentRole role) {
-        return AgentRuntimeType.CLAUDE_CODE;
+    /**
+     * Runtime for a task whose project has no registered profile. Pi is the only
+     * runtime the platform still builds images for and executes, so an unconfigured
+     * project must land there rather than on the retired Claude path.
+     *
+     * @return the compatibility default runtime
+     */
+    private static AgentRuntimeType compatibilityRuntime() {
+        return AgentRuntimeType.PI;
     }
 
     private static String snapshotId(String stageRunId) {

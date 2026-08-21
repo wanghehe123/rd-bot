@@ -2,13 +2,8 @@ package com.wish.rd.bootstrap.feishu.im;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.wish.rd.bootstrap.feishu.im.model.FeishuImTicketDraft;
 import com.wish.rd.bootstrap.threading.RequirementDeliveryDispatchService;
-import com.wish.rd.adapter.model.TicketSnapshot;
 import com.wish.rd.engine.requirement.RequirementDeliveryEngine;
-import com.wish.rd.engine.ticket.model.RepairQueuePublishResult;
-import com.wish.rd.engine.ticket.TicketEventIngestionEngine;
-import com.wish.rd.engine.ticket.model.TicketEventInput;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
 import com.wish.rd.rag.runtime.model.CreateRequirementTaskCommand;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
@@ -21,7 +16,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -30,22 +25,21 @@ import org.springframework.web.bind.annotation.RestController;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 
 /**
  * 飞书 IM 消息事件控制器。
  *
- * <p>接收飞书 IM 事件回调，将文本消息转换成本地工单并交给
- * {@link TicketEventIngestionEngine} 入队。控制器只做外部事件适配，不直接调用 RAG 或执行器。
+ * <p>接收飞书 IM 事件回调，把符合需求格式的文本消息转成需求交付任务并派发。控制器只做外部
+ * 事件适配，不直接调用 RAG 或执行器。不符合需求格式的消息一律忽略——工单链已下线，不存在
+ * 别的消费者可以接手它们。
  */
 @RestController
-@ConditionalOnExpression("'${rd.repair.ticket.provider:mock}' == 'feishu-im' && '${rd.feishu.im.enabled:false}' == 'true'")
+@ConditionalOnProperty(prefix = "rd.feishu.im", name = "enabled", havingValue = "true")
 public class FeishuImMessageController {
 
     private static final Logger log = LoggerFactory.getLogger(FeishuImMessageController.class);
@@ -53,33 +47,16 @@ public class FeishuImMessageController {
 
     private final ObjectMapper objectMapper;
     private final FeishuImProperties properties;
-    private final FeishuImTicketParser parser;
-    private final FeishuImTicketStore store;
-    private final TicketEventIngestionEngine ingestionEngine;
     private final RagStreamTaskRegistry taskRegistry;
     private final TaskMaterialStore materialStore;
     private final RequirementDeliveryEngine requirementDeliveryEngine;
     private final RequirementDeliveryDispatchService requirementDeliveryDispatchService;
     private final SnowflakeIdGenerator idGenerator;
 
-    public FeishuImMessageController(
-            ObjectMapper objectMapper,
-            FeishuImProperties properties,
-            FeishuImTicketParser parser,
-            FeishuImTicketStore store,
-            TicketEventIngestionEngine ingestionEngine
-    ) {
-        this(objectMapper, properties, parser, store, ingestionEngine, null, null, null, null,
-                SnowflakeIdGenerator.defaultGenerator());
-    }
-
     @Autowired
     public FeishuImMessageController(
             ObjectMapper objectMapper,
             FeishuImProperties properties,
-            FeishuImTicketParser parser,
-            FeishuImTicketStore store,
-            TicketEventIngestionEngine ingestionEngine,
             ObjectProvider<RagStreamTaskRegistry> taskRegistryProvider,
             ObjectProvider<TaskMaterialStore> materialStoreProvider,
             ObjectProvider<RequirementDeliveryEngine> requirementDeliveryEngineProvider,
@@ -89,9 +66,6 @@ public class FeishuImMessageController {
         this(
                 objectMapper,
                 properties,
-                parser,
-                store,
-                ingestionEngine,
                 taskRegistryProvider.getIfAvailable(),
                 materialStoreProvider.getIfAvailable(),
                 requirementDeliveryEngineProvider.getIfAvailable(),
@@ -103,9 +77,6 @@ public class FeishuImMessageController {
     FeishuImMessageController(
             ObjectMapper objectMapper,
             FeishuImProperties properties,
-            FeishuImTicketParser parser,
-            FeishuImTicketStore store,
-            TicketEventIngestionEngine ingestionEngine,
             RagStreamTaskRegistry taskRegistry,
             TaskMaterialStore materialStore,
             RequirementDeliveryEngine requirementDeliveryEngine,
@@ -114,9 +85,6 @@ public class FeishuImMessageController {
     ) {
         this.objectMapper = objectMapper;
         this.properties = properties;
-        this.parser = parser;
-        this.store = store;
-        this.ingestionEngine = ingestionEngine;
         this.taskRegistry = taskRegistry;
         this.materialStore = materialStore;
         this.requirementDeliveryEngine = requirementDeliveryEngine;
@@ -171,33 +139,15 @@ public class FeishuImMessageController {
 
         String messageId = message.path("message_id").asText("");
         RequirementDraft requirementDraft = parseRequirement(text);
-        if (requirementDraft.requirement()) {
-            return handleRequirement(requirementDraft, messageId);
+        if (!requirementDraft.requirement()) {
+            return ResponseEntity.ok(Map.of(
+                    "accepted", true,
+                    "ignored", true,
+                    "reason", "not a requirement message",
+                    "messageId", messageId
+            ));
         }
-        String ticketId = toTicketId(messageId);
-        String chatId = message.path("chat_id").asText("");
-        String senderOpenId = event.path("sender").path("sender_id").path("open_id").asText("");
-        Instant createdAt = toInstant(envelope.path("header").path("create_time"));
-        FeishuImTicketDraft draft = parser.parse(text);
-        TicketSnapshot snapshot = store.registerFromMessage(ticketId, chatId, senderOpenId, messageId, text, draft, createdAt);
-
-        TicketEventInput input = new TicketEventInput(
-                snapshot.ticketId(),
-                envelope.path("header").path("event_id").asText(""),
-                TicketEventInput.TYPE_FEISHU_IM_MESSAGE_CREATED,
-                FeishuImTicketStore.SOURCE,
-                snapshot.priority(),
-                "",
-                createdAt,
-                metadata(chatId, messageId)
-        );
-        RepairQueuePublishResult result = ingestionEngine.ingest(input);
-        return ResponseEntity.ok(Map.of(
-                "accepted", true,
-                "success", result.success(),
-                "messageId", result.messageId(),
-                "ticketId", snapshot.ticketId()
-        ));
+        return handleRequirement(requirementDraft, messageId);
     }
 
     private ResponseEntity<Object> handleRequirement(RequirementDraft draft, String messageId) {
@@ -259,81 +209,6 @@ public class FeishuImMessageController {
         response.put("pullRequestUrl", latest.pullRequestUrl());
         response.put("dispatched", true);
         return ResponseEntity.ok(response);
-    }
-
-    private Map<String, Object> executionEvidence(String resultJson) {
-        JsonNode root = readExecutionResult(resultJson);
-        Map<String, Object> evidence = new LinkedHashMap<>();
-        evidence.put("summary", text(root, "summary"));
-        evidence.put("prBody", text(root, "prBody"));
-        evidence.put("changedFiles", list(root.path("changedFiles")));
-        evidence.put("testCommands", list(firstNode(root, "testCommands", "testMetadata", "testCommands")));
-        evidence.put("testStatus", firstText(root, "testStatus", "testMetadata", "testStatus"));
-        evidence.put("riskLevel", firstText(root, "riskLevel", "riskMetadata", "riskLevel"));
-        return evidence;
-    }
-
-    private JsonNode readExecutionResult(String resultJson) {
-        if (resultJson == null || resultJson.isBlank()) {
-            return objectMapper.createObjectNode();
-        }
-        try {
-            return objectMapper.readTree(resultJson);
-        } catch (Exception ignored) {
-            return objectMapper.createObjectNode();
-        }
-    }
-
-    private static String text(JsonNode node, String fieldName) {
-        if (node == null || node.isMissingNode() || node.isNull()) {
-            return "";
-        }
-        JsonNode value = node.path(fieldName);
-        return value.isTextual() ? value.asText("").strip() : "";
-    }
-
-    private static String firstText(JsonNode root, String directField, String objectField, String nestedField) {
-        String direct = text(root, directField);
-        if (!direct.isBlank()) {
-            return direct;
-        }
-        JsonNode nested = root == null ? null : root.path(objectField).path(nestedField);
-        return nested != null && nested.isTextual() ? nested.asText("").strip() : "";
-    }
-
-    private static JsonNode firstNode(JsonNode root, String directField, String objectField, String nestedField) {
-        JsonNode direct = root == null ? null : root.path(directField);
-        if (direct != null && !direct.isMissingNode() && !direct.isNull()) {
-            return direct;
-        }
-        return root == null ? null : root.path(objectField).path(nestedField);
-    }
-
-    private static List<String> list(JsonNode node) {
-        if (node == null || node.isMissingNode() || node.isNull()) {
-            return List.of();
-        }
-        if (node.isArray()) {
-            List<String> values = new java.util.ArrayList<>();
-            node.forEach(item -> {
-                String value = item.isTextual() ? item.asText("").strip() : item.toString().strip();
-                if (!value.isBlank()) {
-                    values.add(value);
-                }
-            });
-            return List.copyOf(values);
-        }
-        if (node.isTextual()) {
-            String value = node.asText("").strip();
-            if (value.isBlank()) {
-                return List.of();
-            }
-            return java.util.Arrays.stream(value.split("[,\\n]"))
-                    .map(String::strip)
-                    .filter(item -> !item.isBlank())
-                    .toList();
-        }
-        return List.of();
     }
 
     private String extractText(JsonNode contentNode) {
@@ -399,38 +274,6 @@ public class FeishuImMessageController {
             }
         }
         return result.strip();
-    }
-
-    private static String toTicketId(String messageId) {
-        String safe = messageId == null ? "" : messageId.trim().replaceAll("[^A-Za-z0-9]+", "-");
-        safe = safe.replaceAll("^-+", "").replaceAll("-+$", "");
-        if (safe.isBlank()) {
-            safe = UUID.randomUUID().toString().substring(0, 8);
-        }
-        return "FI-" + safe;
-    }
-
-    private static Instant toInstant(JsonNode node) {
-        if (node == null || node.isMissingNode() || node.isNull()) {
-            return Instant.now();
-        }
-        String text = node.asText("");
-        try {
-            long value = Long.parseLong(text);
-            if (value > 1_000_000_000_000L) {
-                return Instant.ofEpochMilli(value);
-            }
-            return Instant.ofEpochSecond(value);
-        } catch (Exception ignored) {
-            return Instant.now();
-        }
-    }
-
-    private static Map<String, String> metadata(String chatId, String messageId) {
-        Map<String, String> metadata = new LinkedHashMap<>();
-        metadata.put("chatId", chatId == null ? "" : chatId);
-        metadata.put("messageId", messageId == null ? "" : messageId);
-        return Map.copyOf(metadata);
     }
 
     private static RequirementDraft parseRequirement(String text) {

@@ -1,7 +1,6 @@
 package com.wish.rd.engine.requirement.model;
 
 import com.wish.rd.engine.agent.model.AgentRole;
-import com.wish.rd.engine.evaluation.model.CodingBenchmarkArm;
 
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -12,14 +11,13 @@ import java.util.Objects;
 /**
  * 需求交付 Agent 工作流计划。
  *
- * <p>定义一次需求交付（或编码基准评测）所执行的 Agent 角色序列，以及检索、QA 修复回路、
- * 宿主 BUILD/STATIC 廉价返工、Token 预算账本等受 governance 约束的开关。固定为不可变 record，
- * 所有构造路径都要经过防御性校验，避免运行时出现"无名角色异构比例"或"误开 QA/宿主验证修复回路"
- * 这类 spec §4.3/§5.2 明确禁止的配置漂移。
+ * <p>定义一次需求交付所执行的 Agent 角色序列，以及检索、QA 修复回路、宿主 BUILD/STATIC 廉价返工、
+ * Token 预算账本等受 governance 约束的开关。固定为不可变 record，所有构造路径都要经过防御性校验，
+ * 避免运行时出现"无名角色异构比例"或"误开 QA/宿主验证修复回路"这类 spec §4.3/§5.2 明确禁止的
+ * 配置漂移。
  *
- * <p>生产路径使用的 {@link #production()} 计划严格等价于 {@link CodingBenchmarkArm#D} 的 plan，
- * 其余三个 arm（A/B/C）由 {@link #codingBenchmark(CodingBenchmarkArm)} 工厂给出，主要用于编码
- * 消融评测。
+ * <p>生产路径使用 {@link #production()}。构造器仍然公开，以便按需组合非默认角色序列，
+ * 但任何组合都必须通过同一套 {@link #validate} 校验。
  */
 public record AgentWorkflowPlan(
         List<AgentRole> roles,
@@ -61,81 +59,25 @@ public record AgentWorkflowPlan(
     }
 
     /**
-     * 生产路径默认计划：四角色全开 + 检索 + QA 一次性修复 + 两次宿主验证廉价返工，等价于 {@code codingBenchmark(D)}。
+     * 生产路径默认计划：四角色全开 + 检索 + QA 一次性修复 + 两次宿主验证廉价返工。
      */
     public static AgentWorkflowPlan production() {
-        return codingBenchmark(CodingBenchmarkArm.D);
-    }
-
-    /**
-     * 按编码基准评测 arm 返回对应的 workflow plan。
-     *
-     * <ul>
-     *     <li>A: 仅 CODING_AGENT，无检索、无 QA、无宿主验证廉价返工</li>
-     *     <li>B/C: REVIEWER + ARCHITECT + CODING_AGENT；B 无检索，C 开启检索；均无 QA / 宿主验证廉价返工</li>
-     *     <li>D: REVIEWER + ARCHITECT + CODING_AGENT + QA_AGENT；开启检索 + 一次性 QA 修复 + 两次宿主验证廉价返工</li>
-     * </ul>
-     *
-     * @param arm 评测 arm
-     * @return 该 arm 对应的 plan
-     */
-    public static AgentWorkflowPlan codingBenchmark(CodingBenchmarkArm arm) {
-        Objects.requireNonNull(arm, "arm");
-        return switch (arm) {
-            case A -> new AgentWorkflowPlan(
-                    List.of(AgentRole.CODING_AGENT),
-                    false,
-                    false,
-                    DEFAULT_QA_REMEDIATION_PASSES,
-                    false,
-                    DEFAULT_HOST_VERIFY_REMEDIATION_PASSES,
-                    ledgerOf(Map.of(AgentRole.CODING_AGENT, 0.56d)),
-                    "CODING_BENCHMARK_ARM_A");
-            case B -> new AgentWorkflowPlan(
-                    List.of(AgentRole.REQUIREMENT_REVIEWER, AgentRole.SOLUTION_ARCHITECT, AgentRole.CODING_AGENT),
-                    false,
-                    false,
-                    DEFAULT_QA_REMEDIATION_PASSES,
-                    false,
-                    DEFAULT_HOST_VERIFY_REMEDIATION_PASSES,
-                    ledgerOf(Map.of(
-                            AgentRole.REQUIREMENT_REVIEWER, 0.08d,
-                            AgentRole.SOLUTION_ARCHITECT, 0.16d,
-                            AgentRole.CODING_AGENT, 0.56d)),
-                    "CODING_BENCHMARK_ARM_B");
-            case C -> new AgentWorkflowPlan(
-                    List.of(AgentRole.REQUIREMENT_REVIEWER, AgentRole.SOLUTION_ARCHITECT, AgentRole.CODING_AGENT),
-                    true,
-                    false,
-                    DEFAULT_QA_REMEDIATION_PASSES,
-                    false,
-                    DEFAULT_HOST_VERIFY_REMEDIATION_PASSES,
-                    ledgerOf(Map.of(
-                            AgentRole.REQUIREMENT_REVIEWER, 0.08d,
-                            AgentRole.SOLUTION_ARCHITECT, 0.16d,
-                            AgentRole.CODING_AGENT, 0.56d)),
-                    "CODING_BENCHMARK_ARM_C");
-            case D -> new AgentWorkflowPlan(
-                    List.of(AgentRole.REQUIREMENT_REVIEWER,
-                            AgentRole.SOLUTION_ARCHITECT,
-                            AgentRole.CODING_AGENT,
-                            AgentRole.QA_AGENT),
-                    true,
-                    true,
-                    DEFAULT_QA_REMEDIATION_PASSES,
-                    true,
-                    DEFAULT_HOST_VERIFY_REMEDIATION_PASSES,
-                    ledgerOf(Map.of(
-                            AgentRole.REQUIREMENT_REVIEWER, 0.08d,
-                            AgentRole.SOLUTION_ARCHITECT, 0.16d,
-                            AgentRole.CODING_AGENT, 0.56d,
-                            AgentRole.QA_AGENT, 0.08d)),
-                    "CODING_BENCHMARK_ARM_D");
-        };
-    }
-
-    private static Map<AgentRole, Double> ledgerOf(Map<AgentRole, Double> ledger) {
-        return new LinkedHashMap<>(ledger);
+        return new AgentWorkflowPlan(
+                List.of(AgentRole.REQUIREMENT_REVIEWER,
+                        AgentRole.SOLUTION_ARCHITECT,
+                        AgentRole.CODING_AGENT,
+                        AgentRole.QA_AGENT),
+                true,
+                true,
+                DEFAULT_QA_REMEDIATION_PASSES,
+                true,
+                DEFAULT_HOST_VERIFY_REMEDIATION_PASSES,
+                new LinkedHashMap<>(Map.of(
+                        AgentRole.REQUIREMENT_REVIEWER, 0.08d,
+                        AgentRole.SOLUTION_ARCHITECT, 0.16d,
+                        AgentRole.CODING_AGENT, 0.56d,
+                        AgentRole.QA_AGENT, 0.08d)),
+                "PRODUCTION");
     }
 
     private static void validate(

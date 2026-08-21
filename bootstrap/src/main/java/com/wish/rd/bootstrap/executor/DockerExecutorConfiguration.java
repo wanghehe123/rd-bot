@@ -1,7 +1,6 @@
 package com.wish.rd.bootstrap.executor;
 
 import com.wish.rd.bootstrap.executor.impl.InMemoryRepairAlertSink;
-import com.wish.rd.bootstrap.financial.FinancialProperties;
 import com.wish.rd.bootstrap.skill.impl.QaPlaywrightSkillProvisioner;
 import com.wish.rd.bootstrap.skill.impl.RoleHandoffDocumentSkillProvisioner;
 
@@ -10,15 +9,11 @@ import com.wish.rd.exec.repair.alert.RepairExecutionWatchdog;
 import com.wish.rd.exec.repair.docker.ContainerRunnerPort;
 import com.wish.rd.exec.repair.docker.ContainerControlPort;
 import com.wish.rd.exec.repair.docker.impl.DockerExecutionRegistry;
-import com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor;
 import com.wish.rd.exec.repair.docker.RepairWorkspaceFactory;
-import com.wish.rd.exec.repair.docker.RepairWorkspaceRepositoryPort;
 import com.wish.rd.exec.repair.execution.RepairExecutionControlPort;
-import com.wish.rd.exec.repair.execution.RepairExecutorPort;
 import com.wish.rd.exec.repair.health.ModelHealthStore;
 import com.wish.rd.exec.repair.health.ModelHealthStateStore;
 import com.wish.rd.exec.repair.health.impl.InMemoryModelHealthStateStore;
-import com.wish.rd.exec.repair.provider.ProviderFallbackPreflightPort;
 import com.wish.rd.exec.repair.result.StructuredResultValidator;
 import com.wish.rd.exec.repair.security.RegisteredRepositoryCatalog;
 import com.wish.rd.exec.repair.security.model.ExecutionAllowlistPolicy;
@@ -39,7 +34,9 @@ import java.nio.charset.StandardCharsets;
 @Configuration(proxyBeanMethods = false)
 public class DockerExecutorConfiguration {
 
-    private static final String RESULT_SCHEMA_RESOURCE = "executor/claude/result.schema.json";
+    // Runtime-neutral: every workspace writes this contract to input/result.schema.json, and
+    // the in-container QA skill reads it regardless of which runtime produced the workspace.
+    private static final String RESULT_SCHEMA_RESOURCE = "executor/result.schema.json";
 
     /**
      * Provides the pure structured-result validator used by the Docker executor.
@@ -178,71 +175,6 @@ public class DockerExecutorConfiguration {
             throw new IllegalStateException("failed to provision role handoff skill: " + provision.message());
         }
         return provision;
-    }
-
-    /**
-     * Exposes Docker Claude Code execution as the exec repair executor port.
-     *
-     * @param workspaceFactory workspace factory
-     * @param containerRunner  container runner
-     * @param resultValidator  structured result validator
-     * @param properties       docker executor properties
-     * @param watchdog         timeout and budget watchdog
-     * @param modelHealthStore model provider health store
-     * @param executionRegistry running execution registry
-     * @param repositoryPortProvider workspace repository port provider
-     * @return repair executor port
-     */
-    @Bean
-    @ConditionalOnBean({RepairWorkspaceFactory.class, ContainerRunnerPort.class, RepairExecutionWatchdog.class})
-    @ConditionalOnMissingBean(RepairExecutorPort.class)
-    public DockerClaudeCodeExecutor repairExecutorPort(
-            RepairWorkspaceFactory workspaceFactory,
-            ContainerRunnerPort containerRunner,
-            StructuredResultValidator resultValidator,
-            DockerExecutorProperties properties,
-            RepairExecutionWatchdog watchdog,
-            ModelHealthStore modelHealthStore,
-            DockerExecutionRegistry executionRegistry,
-            ExecutionAllowlistPolicy executionAllowlistPolicy,
-            QaPlaywrightSkillProvisioner.Provision qaSkillProvision,
-            RoleHandoffDocumentSkillProvisioner.Provision handoffSkillProvision,
-            ObjectProvider<RepairWorkspaceRepositoryPort> repositoryPortProvider,
-            ObjectProvider<FinancialProperties> financialPropertiesProvider,
-            ObjectProvider<ProviderFallbackPreflightPort> providerFallbackPreflightProvider,
-            ObjectProvider<DockerClaudeCodeExecutor.AuthEnvironmentResolver> authEnvironmentResolverProvider
-    ) {
-        DockerClaudeCodeExecutor.Configuration configuration = properties.toExecutorConfiguration()
-                .withQaSkill(new DockerClaudeCodeExecutor.QaSkillConfiguration(
-                        qaSkillProvision.installPath(),
-                        qaSkillProvision.skillId(),
-                        qaSkillProvision.version(),
-                        qaSkillProvision.checksum(),
-                        qaSkillProvision.policyJson()
-                ))
-                .withHandoffSkill(new DockerClaudeCodeExecutor.HandoffSkillConfiguration(
-                        handoffSkillProvision.installPath(),
-                        handoffSkillProvision.skillId(),
-                        handoffSkillProvision.version(),
-                        handoffSkillProvision.checksum(),
-                        handoffSkillProvision.policyJson()
-                ));
-        return new DockerClaudeCodeExecutor(
-                workspaceFactory,
-                containerRunner,
-                resultValidator,
-                configuration,
-                repositoryPortProvider.getIfAvailable(RepairWorkspaceRepositoryPort::noop),
-                watchdog,
-                modelHealthStore,
-                executionRegistry,
-                executionAllowlistPolicy,
-                authEnvironmentResolverProvider.getIfAvailable(
-                        DockerClaudeCodeExecutor.AuthEnvironmentResolver::system),
-                financialPropertiesProvider.getIfAvailable(FinancialProperties::new).toBudgetCurrencyConverter(),
-                providerFallbackPreflightProvider.getIfAvailable(
-                        ProviderFallbackPreflightPort::unavailable)
-        );
     }
 
     private static String resultSchemaJson() throws IOException {

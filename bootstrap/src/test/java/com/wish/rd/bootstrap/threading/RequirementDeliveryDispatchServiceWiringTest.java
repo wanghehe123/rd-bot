@@ -200,11 +200,6 @@ class RequirementDeliveryDispatchServiceWiringTest {
         TaskScheduler taskScheduler() {
             return mock(TaskScheduler.class);
         }
-
-        @Bean(name = "redisStreamRepairQueueLeaseTaskScheduler")
-        TaskScheduler redisStreamRepairLeaseScheduler() {
-            return mock(TaskScheduler.class);
-        }
     }
 
     @TestConfiguration(proxyBeanMethods = false)

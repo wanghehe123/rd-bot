@@ -13,6 +13,7 @@ import com.wish.rd.rag.retrieval.run.RetrievalRunStore;
 import com.wish.rd.rag.retrieval.run.impl.InMemoryRetrievalRunStore;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.convert.DurationStyle;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
@@ -53,11 +54,11 @@ public class RetrievalRunConfiguration {
             @Value("${rd.rag.navigator.l2-expansions:3}") int l2Expansions,
             @Value("${rd.rag.navigator.max-remote-calls:15}") int maxRemoteCalls,
             @Value("${rd.rag.navigator.token-budget:8000}") int tokenBudget,
-            @Value("${rd.rag.navigator.time-budget:20s}") Duration timeBudget
+            @Value("${rd.rag.navigator.time-budget:20s}") String rawTimeBudget
     ) {
         return new NavigatorSettings(
                 maxRounds, l0Candidates, l1Expansions, l2Expansions,
-                maxRemoteCalls, tokenBudget, timeBudget);
+                maxRemoteCalls, tokenBudget, DurationStyle.detectAndParse(rawTimeBudget));
     }
 
     @Bean

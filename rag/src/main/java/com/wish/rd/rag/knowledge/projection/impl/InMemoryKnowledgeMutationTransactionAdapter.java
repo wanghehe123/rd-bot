@@ -20,6 +20,7 @@ import com.wish.rd.rag.knowledge.store.KnowledgeChunkStore;
 import com.wish.rd.rag.knowledge.store.KnowledgeDocumentRevisionStore;
 import com.wish.rd.rag.knowledge.store.KnowledgeDocumentStore;
 import com.wish.rd.rag.vector.VectorStore;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
@@ -55,6 +56,7 @@ public final class InMemoryKnowledgeMutationTransactionAdapter implements Knowle
         this(documentStore, revisionStore, chunkStore, vectorStore, bindingStore, outboxStore, null);
     }
 
+    @Autowired
     public InMemoryKnowledgeMutationTransactionAdapter(
             KnowledgeDocumentStore documentStore,
             KnowledgeDocumentRevisionStore revisionStore,

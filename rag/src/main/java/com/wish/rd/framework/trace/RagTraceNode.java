@@ -9,8 +9,7 @@ import java.lang.annotation.Target;
  * RAG 链路追踪节点标记注解。
  *
  * <p>标注在方法或类上，表示该方法/类应作为一个追踪节点被记录到 {@link com.wish.rd.rag.trace.RagTraceStore}。
- * 典型用法见 {@link com.wish.rd.rag.pipeline.RepairRagPipeline#prepareContext} 与
- * {@link com.wish.rd.rag.retrieval.MultiChannelRetrievalEngine#retrieve}。
+ * 典型用法见 {@link com.wish.rd.rag.retrieval.MultiChannelRetrievalEngine#retrieve}。
  *
  * <p>运行时保留（{@link RetentionPolicy#RUNTIME}），可被测试通道显式读取或由 AOP 织入。
  */

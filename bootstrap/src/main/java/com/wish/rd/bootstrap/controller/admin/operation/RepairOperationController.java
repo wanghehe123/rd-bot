@@ -2,32 +2,19 @@ package com.wish.rd.bootstrap.controller.admin.operation;
 
 import com.wish.rd.bootstrap.executor.impl.InMemoryRepairAlertSink;
 import com.wish.rd.engine.audit.model.RepairAuditEvent;
-import com.wish.rd.engine.audit.model.RepairAuditEventType;
 import com.wish.rd.engine.audit.RepairAuditQueryPort;
-import com.wish.rd.engine.audit.RepairAuditSinkPort;
-import com.wish.rd.engine.ticket.model.RepairQueueDeadLetter;
-import com.wish.rd.engine.ticket.RepairQueueDeadLetterRepository;
-import com.wish.rd.engine.ticket.model.RepairQueuePublishResult;
-import com.wish.rd.engine.ticket.RepairQueuePublisher;
-import com.wish.rd.engine.ticket.model.RepairTicketMessage;
 import com.wish.rd.exec.repair.alert.model.RepairAlert;
 import com.wish.rd.exec.repair.docker.impl.DockerExecutionRegistry;
 import com.wish.rd.rag.knowledge.model.KnowledgeRefreshMetric;
 import com.wish.rd.rag.knowledge.KnowledgeRefreshMetricQueryPort;
-import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
-import com.wish.rd.rag.runtime.model.RdBugFixTask;
-import com.wish.rd.rag.runtime.model.RdTaskStatus;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.time.Instant;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -36,59 +23,26 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
- * 生产运维 REST 控制器，聚合 P3 所需的任务、告警、审计、死信和执行运行态视图。
+ * 生产运维 REST 控制器，聚合告警、审计、执行运行态与知识刷新健康视图。
  */
 @RestController
 public class RepairOperationController {
 
-    private final RagStreamTaskRegistry taskRegistry;
     private final InMemoryRepairAlertSink alertSink;
     private final RepairAuditQueryPort auditQueryPort;
-    private final RepairAuditSinkPort auditSink;
-    private final RepairQueueDeadLetterRepository deadLetterRepository;
-    private final RepairQueuePublisher queuePublisher;
     private final DockerExecutionRegistry executionRegistry;
     private final KnowledgeRefreshMetricQueryPort knowledgeRefreshMetricQueryPort;
 
     public RepairOperationController(
-            RagStreamTaskRegistry taskRegistry,
             ObjectProvider<InMemoryRepairAlertSink> alertSinkProvider,
             ObjectProvider<RepairAuditQueryPort> auditQueryProvider,
-            ObjectProvider<RepairAuditSinkPort> auditSinkProvider,
-            ObjectProvider<RepairQueueDeadLetterRepository> deadLetterRepositoryProvider,
-            ObjectProvider<RepairQueuePublisher> queuePublisherProvider,
             ObjectProvider<DockerExecutionRegistry> executionRegistryProvider,
             ObjectProvider<KnowledgeRefreshMetricQueryPort> knowledgeRefreshMetricQueryProvider
     ) {
-        this.taskRegistry = taskRegistry;
         this.alertSink = alertSinkProvider.getIfAvailable();
         this.auditQueryPort = auditQueryProvider.getIfAvailable();
-        this.auditSink = auditSinkProvider.getIfAvailable(() -> event -> {
-        });
-        this.deadLetterRepository = deadLetterRepositoryProvider.getIfAvailable(RepairQueueDeadLetterRepository::noop);
-        this.queuePublisher = queuePublisherProvider.getIfAvailable(() -> message ->
-                RepairQueuePublishResult.failure("", message == null ? "" : message.tag(), "queue publisher unavailable"));
         this.executionRegistry = executionRegistryProvider.getIfAvailable(DockerExecutionRegistry::noop);
         this.knowledgeRefreshMetricQueryPort = knowledgeRefreshMetricQueryProvider.getIfAvailable();
-    }
-
-    /**
-     * 查询运维总览。
-     *
-     * @return 运维总览
-     */
-    @GetMapping("/admin/operations/overview")
-    public OperationOverviewView overview() {
-        List<RdBugFixTask> tasks = taskRegistry.listBugFixTasks();
-        return new OperationOverviewView(
-                count(tasks, RdTaskStatus.CREATED),
-                count(tasks, RdTaskStatus.SEARCHING) + count(tasks, RdTaskStatus.EXECUTING),
-                count(tasks, RdTaskStatus.REJECTED),
-                count(tasks, RdTaskStatus.COMMITTED),
-                deadLetterRepository.list().stream().filter(deadLetter -> !deadLetter.replayed()).count(),
-                alerts().size(),
-                executionRegistry.runningExecutions().size()
-        );
     }
 
     /**
@@ -133,54 +87,6 @@ public class RepairOperationController {
         return events.stream()
                 .map(RepairOperationController::toAuditView)
                 .toList();
-    }
-
-    /**
-     * 查询死信列表。
-     *
-     * @return 死信列表
-     */
-    @GetMapping("/admin/operations/dead-letters")
-    public List<RepairQueueDeadLetterView> deadLetters() {
-        return deadLetterRepository.list().stream()
-                .map(RepairOperationController::toDeadLetterView)
-                .toList();
-    }
-
-    /**
-     * 人工重投死信。
-     *
-     * @param id 死信 ID
-     * @return 重投结果
-     */
-    @PostMapping("/admin/operations/dead-letters/{id}/replay")
-    public DeadLetterReplayView replayDeadLetter(@PathVariable("id") String id) {
-        RepairQueueDeadLetter deadLetter = deadLetterRepository.findById(id)
-                .orElseThrow(() -> new NoSuchElementException("dead letter not found: " + id));
-        if (deadLetter.replayed()) {
-            throw new IllegalStateException("dead letter already replayed: " + id);
-        }
-        RepairTicketMessage message = toReplayMessage(deadLetter);
-        RepairQueuePublishResult publishResult = queuePublisher.publish(message);
-        if (!publishResult.success()) {
-            return new DeadLetterReplayView(
-                    toDeadLetterView(deadLetter),
-                    false,
-                    publishResult.messageId(),
-                    publishResult.errorMessage()
-            );
-        }
-        RepairQueueDeadLetter updated = deadLetterRepository.markReplayed(id);
-        auditSink.publish(RepairAuditEvent.now(
-                "",
-                "",
-                deadLetter.ticketId(),
-                RepairAuditEventType.MANUAL_RECOVERY_REQUESTED,
-                "Redis Stream",
-                "dead letter replay requested",
-                Map.of("deadLetterId", id, "publishSuccess", String.valueOf(publishResult.success()))
-        ));
-        return new DeadLetterReplayView(toDeadLetterView(updated), publishResult.success(), publishResult.messageId(), publishResult.errorMessage());
     }
 
     @ExceptionHandler(IllegalStateException.class)
@@ -248,10 +154,6 @@ public class RepairOperationController {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("message", exception.getMessage()));
     }
 
-    private static long count(List<RdBugFixTask> tasks, RdTaskStatus status) {
-        return tasks.stream().filter(task -> task.status() == status).count();
-    }
-
     private static RepairAlertView toAlertView(RepairAlert alert) {
         return new RepairAlertView(
                 alert.repairRecordId(),
@@ -276,22 +178,6 @@ public class RepairOperationController {
         );
     }
 
-    private static RepairQueueDeadLetterView toDeadLetterView(RepairQueueDeadLetter deadLetter) {
-        return new RepairQueueDeadLetterView(
-                deadLetter.id(),
-                deadLetter.ticketId(),
-                deadLetter.traceId(),
-                deadLetter.source(),
-                deadLetter.eventId(),
-                deadLetter.eventType(),
-                deadLetter.originalAttempt(),
-                preview(deadLetter.reason(), 200),
-                deadLetter.replayed(),
-                deadLetter.createdAtEpochMillis(),
-                deadLetter.replayedAtEpochMillis()
-        );
-    }
-
     private static RunningExecutionView toRunningExecutionView(DockerExecutionRegistry.RunningExecution execution) {
         return new RunningExecutionView(
                 execution.repairRecordId(),
@@ -305,35 +191,11 @@ public class RepairOperationController {
         );
     }
 
-    private static RepairTicketMessage toReplayMessage(RepairQueueDeadLetter deadLetter) {
-        return new RepairTicketMessage(
-                deadLetter.ticketId(),
-                deadLetter.messageJson().getOrDefault("priority", "P2"),
-                deadLetter.traceId(),
-                RepairTicketMessage.FIRST_ATTEMPT,
-                deadLetter.source(),
-                deadLetter.eventId(),
-                deadLetter.eventType(),
-                Instant.now()
-        );
-    }
-
     private static String preview(String value, int maxChars) {
         if (value == null) {
             return "";
         }
         return value.length() <= maxChars ? value : value.substring(0, maxChars) + "...";
-    }
-
-    public record OperationOverviewView(
-            long pending,
-            long running,
-            long failed,
-            long waitingCr,
-            long deadLettered,
-            long activeAlerts,
-            long runningExecutions
-    ) {
     }
 
     public record RepairAlertView(
@@ -355,29 +217,6 @@ public class RepairOperationController {
             String summary,
             Map<String, String> metadata,
             long createdAtEpochMillis
-    ) {
-    }
-
-    public record RepairQueueDeadLetterView(
-            String id,
-            String ticketId,
-            String traceId,
-            String source,
-            String eventId,
-            String eventType,
-            int originalAttempt,
-            String reason,
-            boolean replayed,
-            long createdAtEpochMillis,
-            long replayedAtEpochMillis
-    ) {
-    }
-
-    public record DeadLetterReplayView(
-            RepairQueueDeadLetterView deadLetter,
-            boolean publishSuccess,
-            String messageId,
-            String errorMessage
     ) {
     }
 

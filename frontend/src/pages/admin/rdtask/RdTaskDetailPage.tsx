@@ -1254,12 +1254,6 @@ export function RdTaskDetailPage() {
                   审批预算
                 </Button>
               ) : null}
-              {task.taskType === "BUG_FIX" && canSubmitBugFix(task) ? (
-                <Button size="sm" onClick={handleSubmitTask} disabled={submitting}>
-                  <Play className="mr-1.5 h-4 w-4 text-emerald-600" />
-                  {submitting ? "执行中..." : "执行修复"}
-                </Button>
-              ) : null}
             </div>
           </div>
 
@@ -2131,21 +2125,6 @@ function isTaskLevelRecovery(snapshot: TaskFailureRecoverySnapshot | null) {
 
 function canApproveRequirement(task: RdTask) {
   return !task.paused && task.status === "WAITING_APPROVAL";
-}
-
-function canSubmitBugFix(task: RdTask) {
-  return !task.paused && ![
-    "SEARCHING",
-    "EXECUTING",
-    "VALIDATING",
-    "PR_CREATING",
-    "COMMITTED",
-    "MERGED",
-    "COMPLETED",
-    "CANCELLED",
-    "DEAD_LETTERED",
-    "DELETED"
-  ].includes(task.status);
 }
 
 function InfoField({

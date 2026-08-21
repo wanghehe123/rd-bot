@@ -53,7 +53,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
         "rd.knowledge.store=postgres",
         "rd.storage.mode=memory",
         "rd.distributed-lock.mode=local",
-        "rd.repair.queue.mode=memory",
         "rd.executor.docker.circuit-breaker.state-store=memory"
 })
 @EnabledIfSystemProperty(named = "rd.integration.policy-transaction.enabled", matches = "true")

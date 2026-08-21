@@ -1,6 +1,7 @@
 package com.wish.rd.bootstrap.executor;
 
 import com.wish.rd.exec.repair.execution.RepairExecutorPort;
+import com.wish.rd.exec.repair.docker.AuthEnvironmentResolver;
 import com.wish.rd.exec.repair.docker.ContainerRunnerPort;
 import com.wish.rd.exec.repair.docker.RepairWorkspaceFactory;
 import com.wish.rd.exec.repair.docker.RepairWorkspaceRepositoryPort;
@@ -32,12 +33,19 @@ import java.util.Map;
 
 /** Requirement-delivery-only runtime routing and snapshot resolution wiring. */
 @Configuration(proxyBeanMethods = false)
-@ConditionalOnProperty(prefix = "rd.executor.agent-runtime", name = "enabled", havingValue = "true")
+@ConditionalOnProperty(
+        prefix = "rd.executor.agent-runtime",
+        name = "enabled",
+        havingValue = "true",
+        matchIfMissing = true
+)
 public class AgentRuntimeExecutorConfiguration {
 
     @Bean
     // Property-based gate: @ConditionalOnBean across plain @Configuration classes has
     // non-deterministic evaluation order and silently skipped this bean at startup.
+    // rd.executor.docker.enabled is the shared container-infrastructure gate (it also
+    // registers ProcessContainerRunner, which Pi requires), not a Claude-specific flag.
     @ConditionalOnProperty(prefix = "rd.executor.docker", name = "enabled", havingValue = "true")
     @ConditionalOnMissingBean(DockerPiAgentExecutor.class)
     public DockerPiAgentExecutor dockerPiAgentExecutor(
@@ -51,9 +59,7 @@ public class AgentRuntimeExecutorConfiguration {
             ObjectProvider<AgentExecutionEventSink> eventSinkProvider,
             ObjectProvider<AgentPrivateArtifactPublisher> privateArtifactPublisherProvider,
             ExecutionAllowlistPolicy executionAllowlistPolicy,
-            ObjectProvider<PiCredentialLeaseIssuer> credentialLeaseIssuerProvider,
-            ObjectProvider<com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor.AuthEnvironmentResolver>
-                    authEnvironmentResolverProvider
+            ObjectProvider<PiCredentialLeaseIssuer> credentialLeaseIssuerProvider
     ) {
         return new DockerPiAgentExecutor(
                 workspaceFactory,
@@ -66,29 +72,39 @@ public class AgentRuntimeExecutorConfiguration {
                 skillMaterializerProvider.getIfAvailable(PiSkillMaterializerPort::emptyOnly),
                 eventSinkProvider.getIfAvailable(AgentExecutionEventSink::noop),
                 privateArtifactPublisherProvider.getIfAvailable(AgentPrivateArtifactPublisher::noop),
-                authEnvironmentResolverProvider.getIfAvailable(
-                        com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor.AuthEnvironmentResolver::system),
+                AuthEnvironmentResolver.system(),
                 credentialLeaseIssuerProvider.getIfAvailable()
         );
     }
 
+    /**
+     * Registers one executor per runtime type that is actually present.
+     *
+     * <p>Every slot is optional. A runtime type with no executor fails at dispatch with
+     * {@code UnsupportedAgentRuntimeException}, naming the type that was requested, rather
+     * than preventing this bean from being created. Requiring an executor here instead would
+     * couple the Pi path to the legacy one: {@code RepairExecutorPort} has no implementation
+     * unless {@code rd.executor.docker.enabled} or {@code rd.executor.mock.enabled} is true,
+     * so demanding it aborted context startup for every deployment that runs Pi alone.
+     *
+     * @param legacyExecutorProvider legacy container executor, absent when not configured
+     * @param piExecutorProvider     Pi agent executor, absent when the container gate is closed
+     * @return router over the runtime types that have an executor
+     */
     @Bean
     @ConditionalOnMissingBean(AgentRuntimeRouter.class)
     public AgentRuntimeRouter agentRuntimeRouter(
             ObjectProvider<RepairExecutorPort> legacyExecutorProvider,
             ObjectProvider<DockerPiAgentExecutor> piExecutorProvider
     ) {
-        RepairExecutorPort legacyExecutor = legacyExecutorProvider.getIfAvailable();
-        if (legacyExecutor == null) {
-            throw new IllegalStateException(
-                    "agent runtime router requires the existing requirement executor for Claude compatibility"
-            );
-        }
         Map<com.wish.rd.rag.project.agent.model.AgentRuntimeType, AgentRuntimeExecutorPort> executors =
                 new EnumMap<>(com.wish.rd.rag.project.agent.model.AgentRuntimeType.class);
-        AgentRuntimeExecutorPort legacyAdapter = request -> legacyExecutor.execute(request.command());
-        executors.put(com.wish.rd.rag.project.agent.model.AgentRuntimeType.CLAUDE_CODE, legacyAdapter);
-        executors.put(com.wish.rd.rag.project.agent.model.AgentRuntimeType.MODEL_ONLY, legacyAdapter);
+        RepairExecutorPort legacyExecutor = legacyExecutorProvider.getIfAvailable();
+        if (legacyExecutor != null) {
+            AgentRuntimeExecutorPort legacyAdapter = request -> legacyExecutor.execute(request.command());
+            executors.put(com.wish.rd.rag.project.agent.model.AgentRuntimeType.CLAUDE_CODE, legacyAdapter);
+            executors.put(com.wish.rd.rag.project.agent.model.AgentRuntimeType.MODEL_ONLY, legacyAdapter);
+        }
         DockerPiAgentExecutor piExecutor = piExecutorProvider.getIfAvailable();
         if (piExecutor != null) {
             executors.put(com.wish.rd.rag.project.agent.model.AgentRuntimeType.PI, piExecutor);
@@ -102,7 +118,6 @@ public class AgentRuntimeExecutorConfiguration {
             AgentExecutionProfileService profileService,
             AgentExecutionProfileSnapshotService snapshotService,
             AgentExecutionProfileSnapshotStore snapshotStore,
-            com.wish.rd.bootstrap.executor.OpenAiChatCompletionsProperties openAiProperties,
             ModelProviderProfileService providerProfileService,
             AgentToolPolicyService toolPolicyService,
             PiAgentExecutorProperties piProperties
@@ -111,7 +126,6 @@ public class AgentRuntimeExecutorConfiguration {
                 profileService,
                 snapshotService,
                 snapshotStore,
-                openAiProperties.isEnabled(),
                 providerProfileService,
                 toolPolicyService,
                 piProperties.getContextProtocolVersion(),

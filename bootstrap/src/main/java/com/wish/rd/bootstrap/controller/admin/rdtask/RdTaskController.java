@@ -3,8 +3,6 @@ package com.wish.rd.bootstrap.controller.admin.rdtask;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.annotation.JsonAlias;
-import com.wish.rd.adapter.model.TicketSnapshot;
-import com.wish.rd.bootstrap.threading.BugFixExecutionDispatchService;
 import com.wish.rd.bootstrap.threading.RequirementDeliveryDispatchService;
 import com.wish.rd.bootstrap.executor.impl.HostVerificationRetentionService;
 import com.wish.rd.bootstrap.executor.impl.QaEvidenceRetentionService;
@@ -14,11 +12,8 @@ import com.wish.rd.engine.audit.model.RepairAuditEventType;
 import com.wish.rd.engine.audit.RepairAuditSinkPort;
 import com.wish.rd.engine.agent.AgentStageRunStore;
 import com.wish.rd.engine.agent.model.AgentStageRun;
-import com.wish.rd.engine.bugfix.RdBotFixEngine;
-import com.wish.rd.engine.bugfix.model.RdBotFixCommand;
 import com.wish.rd.engine.control.RdTaskExecutionControlEngine;
 import com.wish.rd.engine.control.model.RdTaskExecutionControlResult;
-import com.wish.rd.engine.ticket.RdTaskRestartEngine;
 import com.wish.rd.engine.requirement.RequirementDeliveryEngine;
 import com.wish.rd.engine.requirement.policy.RequirementPolicyTransactionPort;
 import com.wish.rd.engine.requirement.policy.model.ApproveRequirementPolicyCommand;
@@ -106,13 +101,10 @@ public class RdTaskController {
     private final RagStreamTaskRegistry registry;
     private final RepairExecutionControlPort executionControlPort;
     private final RepairAuditSinkPort auditSink;
-    private final RdTaskRestartEngine restartEngine;
     private final TaskMaterialStore materialStore;
     private final SnowflakeIdGenerator idGenerator;
     private final RequirementDeliveryEngine requirementDeliveryEngine;
     private final RequirementDeliveryDispatchService requirementDeliveryDispatchService;
-    private final RdBotFixEngine bugFixEngine;
-    private final BugFixExecutionDispatchService bugFixExecutionDispatchService;
     private final RdProjectService projectService;
     private RdTaskExecutionControlEngine taskExecutionControlEngine;
     private QaEvidenceRetentionService qaEvidenceRetentionService;
@@ -165,32 +157,8 @@ public class RdTaskController {
                         "execution control unavailable"
                 ),
                 NoopRepairAuditSink.instance(),
-                null,
                 new InMemoryTaskMaterialStore(),
                 SnowflakeIdGenerator.defaultGenerator(),
-                null,
-                null,
-                null,
-                null,
-                null
-        );
-    }
-
-    public RdTaskController(RagStreamTaskRegistry registry, RdTaskRestartEngine restartEngine) {
-        this(
-                registry,
-                command -> new RepairExecutionStopResult(
-                        command.taskId(),
-                        command.containerName(),
-                        false,
-                        "execution control unavailable"
-                ),
-                NoopRepairAuditSink.instance(),
-                restartEngine,
-                new InMemoryTaskMaterialStore(),
-                SnowflakeIdGenerator.defaultGenerator(),
-                null,
-                null,
                 null,
                 null,
                 null
@@ -207,11 +175,8 @@ public class RdTaskController {
                         "execution control unavailable"
                 ),
                 NoopRepairAuditSink.instance(),
-                null,
                 new InMemoryTaskMaterialStore(),
                 SnowflakeIdGenerator.defaultGenerator(),
-                null,
-                null,
                 null,
                 null,
                 projectService
@@ -223,13 +188,10 @@ public class RdTaskController {
             RagStreamTaskRegistry registry,
             ObjectProvider<RepairExecutionControlPort> executionControlPortProvider,
             ObjectProvider<RepairAuditSinkPort> auditSinkProvider,
-            ObjectProvider<RdTaskRestartEngine> restartEngineProvider,
             ObjectProvider<TaskMaterialStore> materialStoreProvider,
             ObjectProvider<SnowflakeIdGenerator> idGeneratorProvider,
             ObjectProvider<RequirementDeliveryEngine> requirementDeliveryEngineProvider,
             ObjectProvider<RequirementDeliveryDispatchService> requirementDeliveryDispatchServiceProvider,
-            ObjectProvider<RdBotFixEngine> bugFixEngineProvider,
-            ObjectProvider<BugFixExecutionDispatchService> bugFixExecutionDispatchServiceProvider,
             ObjectProvider<RdProjectService> projectServiceProvider
     ) {
         this(
@@ -241,13 +203,10 @@ public class RdTaskController {
                         "execution control unavailable"
                 )),
                 auditSinkProvider.getIfAvailable(NoopRepairAuditSink::instance),
-                restartEngineProvider.getIfAvailable(),
                 materialStoreProvider.getIfAvailable(InMemoryTaskMaterialStore::new),
                 idGeneratorProvider.getIfAvailable(SnowflakeIdGenerator::defaultGenerator),
                 requirementDeliveryEngineProvider.getIfAvailable(),
                 requirementDeliveryDispatchServiceProvider.getIfAvailable(),
-                bugFixEngineProvider.getIfAvailable(),
-                bugFixExecutionDispatchServiceProvider.getIfAvailable(),
                 projectServiceProvider.getIfAvailable()
         );
     }
@@ -256,25 +215,19 @@ public class RdTaskController {
             RagStreamTaskRegistry registry,
             RepairExecutionControlPort executionControlPort,
             RepairAuditSinkPort auditSink,
-            RdTaskRestartEngine restartEngine,
             TaskMaterialStore materialStore,
             SnowflakeIdGenerator idGenerator,
             RequirementDeliveryEngine requirementDeliveryEngine,
             RequirementDeliveryDispatchService requirementDeliveryDispatchService,
-            RdBotFixEngine bugFixEngine,
-            BugFixExecutionDispatchService bugFixExecutionDispatchService,
             RdProjectService projectService
     ) {
         this.registry = registry;
         this.executionControlPort = executionControlPort;
         this.auditSink = auditSink;
-        this.restartEngine = restartEngine;
         this.materialStore = materialStore == null ? new InMemoryTaskMaterialStore() : materialStore;
         this.idGenerator = idGenerator == null ? SnowflakeIdGenerator.defaultGenerator() : idGenerator;
         this.requirementDeliveryEngine = requirementDeliveryEngine;
         this.requirementDeliveryDispatchService = requirementDeliveryDispatchService;
-        this.bugFixEngine = bugFixEngine;
-        this.bugFixExecutionDispatchService = bugFixExecutionDispatchService;
         this.projectService = projectService;
     }
 
@@ -333,46 +286,6 @@ public class RdTaskController {
                 detail.executionResultJson(),
                 detail.executionEvidence()
         );
-    }
-
-    /**
-     * 新建任务（CREATED）。
-     *
-     * @param request 创建请求
-     * @return 新任务视图
-     */
-    @PostMapping("/admin/rd-tasks")
-    public RdTaskView create(@RequestBody CreateRdTaskRequest request) {
-        if (request == null || request.title() == null || request.title().isBlank()) {
-            throw new IllegalArgumentException("title must not be blank");
-        }
-        ProjectSnapshot project = resolveProject(request.projectId());
-        RdBugFixTask task = registry.createTaskManually(
-                generatedTicketId(request.ticketId()),
-                request.ticketTitle(),
-                request.title(),
-                request.priority(),
-                request.promptSnapshot(),
-                project.projectId(),
-                project.projectKey(),
-                project.projectName(),
-                project.repositoryUrl(),
-                project.repoOwner(),
-                project.repoName(),
-                project.baseBranch()
-        );
-        if (request.autoExecute()) {
-            submitBugFixTask(task);
-            return toDetailView(registry.getTask(task.taskId()));
-        }
-        return toDetailView(task);
-    }
-
-    private String generatedTicketId(String ticketId) {
-        if (ticketId != null && !ticketId.isBlank()) {
-            return ticketId.strip();
-        }
-        return "ticket-" + idGenerator.nextIdString();
     }
 
     /**
@@ -449,7 +362,7 @@ public class RdTaskController {
     }
 
     /**
-     * 恢复任务，并在装配了重启用例时重新发布修复队列消息。
+     * 恢复任务。
      *
      * @param taskId  任务 ID
      * @param request 动作请求（可选 message）
@@ -461,12 +374,6 @@ public class RdTaskController {
             @RequestBody(required = false) RdTaskActionRequest request
     ) {
         String message = request == null ? "管理台恢复" : request.message();
-        if (restartEngine != null) {
-            RdTask current = registry.getTask(taskId);
-            if (current instanceof RdBugFixTask) {
-                return toDetailView(restartEngine.resumeAndRestart(taskId, message));
-            }
-        }
         RdTask resumed = registry.resumeTask(taskId, message);
         if (resumed instanceof RdRequirementTask && isRecoverableRequirementStatus(resumed.status())) {
             submitRequirementTask(taskId);
@@ -615,11 +522,9 @@ public class RdTaskController {
             submitRequirementTask(taskId);
             return toDetailView(registry.getTask(taskId));
         }
-        if (task instanceof RdBugFixTask bugFixTask) {
-            submitBugFixTask(bugFixTask);
-            return toDetailView(registry.getTask(taskId));
-        }
-        throw new IllegalArgumentException("unsupported rd task type: " + task.taskType());
+        throw new IllegalArgumentException(
+                "only requirement tasks can be submitted; got rd task type: " + task.taskType()
+        );
     }
 
     /**
@@ -1340,95 +1245,6 @@ public class RdTaskController {
                 || status == RdTaskStatus.RECOVERING;
     }
 
-    private void submitBugFixTask(RdBugFixTask task) {
-        RdBotFixCommand command = toBugFixCommand(task);
-        if (bugFixExecutionDispatchService != null) {
-            bugFixExecutionDispatchService.submit(command);
-            return;
-        }
-        if (bugFixEngine == null) {
-            throw new IllegalStateException("bug-fix execution engine unavailable");
-        }
-        bugFixEngine.runBugFix(command);
-    }
-
-    private RdBotFixCommand toBugFixCommand(RdBugFixTask task) {
-        Instant now = Instant.now();
-        return new RdBotFixCommand(
-                new TicketSnapshot(
-                        task.ticketId(),
-                        firstNonBlank(task.ticketTitle(), task.title()),
-                        bugFixDescription(task),
-                        bugFixLabels(task),
-                        task.createTimeEpochMillis() > 0 ? Instant.ofEpochMilli(task.createTimeEpochMillis()) : now,
-                        task.priority(),
-                        task.status().name(),
-                        "",
-                        "admin-rd-task",
-                        "",
-                        bugFixCustomFields(task),
-                        task.updateTimeEpochMillis() > 0 ? Instant.ofEpochMilli(task.updateTimeEpochMillis()) : now,
-                        Instant.EPOCH
-                ),
-                bugFixLogs(task),
-                false,
-                task.priority()
-        );
-    }
-
-    private List<String> bugFixLogs(RdBugFixTask task) {
-        String prompt = task.promptSnapshot() == null ? "" : task.promptSnapshot().strip();
-        return prompt.isBlank() ? List.of() : List.of(prompt);
-    }
-
-    private List<String> bugFixLabels(RdBugFixTask task) {
-        if (task.projectKey() == null || task.projectKey().isBlank()) {
-            return List.of("admin", "bugfix");
-        }
-        return List.of("admin", "bugfix", task.projectKey().strip());
-    }
-
-    private Map<String, String> bugFixCustomFields(RdBugFixTask task) {
-        Map<String, String> fields = new LinkedHashMap<>();
-        putIfNotBlank(fields, "taskId", task.taskId());
-        putIfNotBlank(fields, "projectId", task.projectId());
-        putIfNotBlank(fields, "projectKey", task.projectKey());
-        putIfNotBlank(fields, "projectName", task.projectName());
-        putIfNotBlank(fields, "repositoryUrl", task.repositoryUrl());
-        putIfNotBlank(fields, "repoOwner", task.repoOwner());
-        putIfNotBlank(fields, "repoName", task.repoName());
-        putIfNotBlank(fields, "baseBranch", task.baseBranch());
-        return Map.copyOf(fields);
-    }
-
-    private void putIfNotBlank(Map<String, String> fields, String key, String value) {
-        if (value != null && !value.isBlank()) {
-            fields.put(key, value.strip());
-        }
-    }
-
-    private String bugFixDescription(RdBugFixTask task) {
-        StringBuilder description = new StringBuilder();
-        appendDescriptionLine(description, "任务标题", task.title());
-        appendDescriptionLine(description, "工单标题", task.ticketTitle());
-        appendDescriptionLine(description, "项目", firstNonBlank(task.projectName(), task.projectKey()));
-        appendDescriptionLine(description, "仓库", task.repositoryUrl());
-        appendDescriptionLine(description, "基准分支", task.baseBranch());
-        appendDescriptionLine(description, "Prompt 快照", task.promptSnapshot());
-        String value = description.toString().strip();
-        return value.isBlank() ? task.title() : value;
-    }
-
-    private void appendDescriptionLine(StringBuilder builder, String label, String value) {
-        if (value == null || value.isBlank()) {
-            return;
-        }
-        if (!builder.isEmpty()) {
-            builder.append('\n');
-        }
-        builder.append(label).append("：").append(value.strip());
-    }
-
     private static TaskMaterialType parseMaterialType(String value) {
         if (value == null || value.isBlank()) {
             return TaskMaterialType.REQUIREMENT_DOC;
@@ -1491,17 +1307,6 @@ public class RdTaskController {
     }
 
     /** 创建任务请求体。 */
-    public record CreateRdTaskRequest(
-            String ticketId,
-            String ticketTitle,
-            String title,
-            String priority,
-            String promptSnapshot,
-            String projectId,
-            boolean autoExecute
-    ) {
-    }
-
     /** 创建需求任务请求体。 */
     public record CreateRequirementTaskRequest(
             String title,

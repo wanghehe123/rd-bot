@@ -27,11 +27,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * <p>该组件通过 {@code lark-cli event consume im.message.receive_v1 --as bot}
  * 在本机主动消费事件流，不要求飞书公网回调到本地机器。读取到的 lark-cli
  * 扁平事件会被转换成现有 HTTP 回调 envelope，并复用 {@link FeishuImMessageController}
- * 的入队逻辑。
+ * 的需求解析逻辑。
  */
 @Component
-@ConditionalOnExpression("'${rd.repair.ticket.provider:mock}' == 'feishu-im' "
-        + "&& '${rd.feishu.im.enabled:false}' == 'true' "
+@ConditionalOnExpression("'${rd.feishu.im.enabled:false}' == 'true' "
         + "&& '${rd.feishu.im.local-listener.enabled:false}' == 'true'")
 public class FeishuImLocalEventListener implements SmartLifecycle {
 

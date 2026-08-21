@@ -3,45 +3,44 @@ package com.wish.rd.bootstrap.feishu.im;
 import com.wish.rd.bootstrap.feishu.im.impl.FeishuImLocalEventListener;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.wish.rd.engine.ticket.model.RepairQueuePublishResult;
-import com.wish.rd.engine.ticket.RepairQueuePublisher;
-import com.wish.rd.engine.ticket.model.RepairTicketMessage;
-import com.wish.rd.engine.ticket.TicketEventIngestionEngine;
+import com.wish.rd.bootstrap.threading.RequirementDeliveryDispatchService;
+import com.wish.rd.engine.requirement.RequirementDeliveryEngine;
+import com.wish.rd.framework.id.SnowflakeIdGenerator;
+import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
+import com.wish.rd.rag.runtime.impl.InMemoryRdTaskStatusEventStore;
+import com.wish.rd.rag.runtime.impl.InMemoryRdTaskStore;
+import com.wish.rd.rag.runtime.impl.InMemoryTaskMaterialStore;
+import com.wish.rd.rag.runtime.model.RdRequirementTask;
 import org.junit.jupiter.api.Test;
 
-import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
- * 验证本地 lark-cli 事件流可以复用现有飞书 IM 入队逻辑。
+ * 验证本地 lark-cli 事件流可以复用现有飞书 IM 需求解析逻辑。
  */
 class FeishuImLocalEventListenerTest {
 
     @Test
-    void shouldConvertFlatLarkCliMessageEventAndPublishRepairTicket() {
+    void shouldConvertFlatLarkCliMessageEventIntoARequirementTask() {
         ObjectMapper objectMapper = new ObjectMapper();
         FeishuImProperties properties = new FeishuImProperties();
         properties.setEnabled(true);
         properties.setRequireAtMention(false);
         properties.getLocalListener().setEnabled(true);
-        FeishuImTicketStore store = new FeishuImTicketStore();
-        CapturingPublisher publisher = new CapturingPublisher();
-        TicketEventIngestionEngine ingestionEngine = TicketEventIngestionEngine.forTesting(
-                publisher,
-                new TicketEventIngestionEngine.InMemoryDeduplicationStore(),
-                "feishu-im"
-        );
-        FeishuImMessageController controller = new FeishuImMessageController(
-                objectMapper,
-                properties,
-                new FeishuImTicketParser(),
-                store,
-                ingestionEngine
-        );
-        FeishuImLocalEventListener listener = new FeishuImLocalEventListener(objectMapper, properties, controller);
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(),
+                new InMemoryRdTaskStatusEventStore(),
+                generator());
+        FeishuImLocalEventListener listener = new FeishuImLocalEventListener(
+                objectMapper, properties, requirementController(objectMapper, properties, registry));
 
         listener.handleEventLine("""
                 {
@@ -53,41 +52,29 @@ class FeishuImLocalEventListenerTest {
                   "message_type": "text",
                   "sender_id": "ou_local",
                   "timestamp": "1782298004000",
-                  "content": "系统: waimai\\n仓库: github.com/example/waimai\\n分支: main\\n优先级: P1\\n问题: 下单接口 500\\n日志: missing address phone customer_name"
+                  "content": "做需求\\n标题: 增加订单催单功能\\n仓库: https://github.com/example/waimai.git\\n分支: main\\n优先级: P1\\n需求: 用户可以在订单详情页点击催单。\\n预期结果: 订单详情页可以催单"
                 }
                 """);
 
-        assertEquals(1, publisher.published.size());
-        RepairTicketMessage message = publisher.published.get(0);
-        assertEquals("FI-om-local", message.ticketId());
-        assertEquals("P1", message.priority());
-        assertEquals("feishu.im.message.created_v1", message.eventType());
-        assertTrue(store.findTicket("FI-om-local").isPresent());
-        assertEquals("oc_local", store.findTicket("FI-om-local").orElseThrow().chatId());
+        assertEquals(1, registry.listTasks().size());
+        RdRequirementTask created = registry.getRequirementTask(registry.listTasks().getFirst().taskId());
+        assertEquals("FEISHU_IM", created.sourceType());
+        assertEquals("om_local", created.sourceId());
     }
 
     @Test
-    void shouldConvertFlatLarkCliPostMessageEventAndPublishRepairTicket() {
+    void shouldConvertFlatLarkCliPostMessageEventIntoARequirementTask() {
         ObjectMapper objectMapper = new ObjectMapper();
         FeishuImProperties properties = new FeishuImProperties();
         properties.setEnabled(true);
         properties.setRequireAtMention(false);
         properties.getLocalListener().setEnabled(true);
-        FeishuImTicketStore store = new FeishuImTicketStore();
-        CapturingPublisher publisher = new CapturingPublisher();
-        TicketEventIngestionEngine ingestionEngine = TicketEventIngestionEngine.forTesting(
-                publisher,
-                new TicketEventIngestionEngine.InMemoryDeduplicationStore(),
-                "feishu-im"
-        );
-        FeishuImMessageController controller = new FeishuImMessageController(
-                objectMapper,
-                properties,
-                new FeishuImTicketParser(),
-                store,
-                ingestionEngine
-        );
-        FeishuImLocalEventListener listener = new FeishuImLocalEventListener(objectMapper, properties, controller);
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(),
+                new InMemoryRdTaskStatusEventStore(),
+                generator());
+        FeishuImLocalEventListener listener = new FeishuImLocalEventListener(
+                objectMapper, properties, requirementController(objectMapper, properties, registry));
 
         listener.handleEventLine("""
                 {
@@ -99,35 +86,52 @@ class FeishuImLocalEventListenerTest {
                   "message_type": "post",
                   "sender_id": "ou_local",
                   "timestamp": "1782298004000",
-                  "content": "问题: 外卖后端在 Node ESM 环境下启动失败\\n系统: waimai\\n优先级: P0\\n日志: ReferenceError: __dirname is not defined in ES module scope"
+                  "content": "做需求\\n标题: 支持 ESM 启动\\n仓库: https://github.com/example/waimai.git\\n分支: main\\n优先级: P0\\n需求: 后端需要在 Node ESM 环境下启动。\\n预期结果: 服务在 ESM 下正常启动"
                 }
                 """);
 
-        assertEquals(1, publisher.published.size());
-        RepairTicketMessage message = publisher.published.get(0);
-        assertEquals("FI-om-local-post", message.ticketId());
-        assertEquals("P0", message.priority());
-        assertEquals("feishu.im.message.created_v1", message.eventType());
-        assertTrue(store.findTicket("FI-om-local-post").isPresent());
+        assertEquals(1, registry.listTasks().size());
+        assertEquals("om_local_post",
+                registry.getRequirementTask(registry.listTasks().getFirst().taskId()).sourceId());
+    }
+
+    @Test
+    void shouldIgnoreFlatLarkCliMessageThatIsNotARequirement() {
+        ObjectMapper objectMapper = new ObjectMapper();
+        FeishuImProperties properties = new FeishuImProperties();
+        properties.setEnabled(true);
+        properties.setRequireAtMention(false);
+        properties.getLocalListener().setEnabled(true);
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(),
+                new InMemoryRdTaskStatusEventStore(),
+                generator());
+        FeishuImLocalEventListener listener = new FeishuImLocalEventListener(
+                objectMapper, properties, requirementController(objectMapper, properties, registry));
+
+        listener.handleEventLine("""
+                {
+                  "type": "im.message.receive_v1",
+                  "event_id": "evt-local-chatter",
+                  "message_id": "om_local_chatter",
+                  "chat_id": "oc_local",
+                  "chat_type": "group",
+                  "message_type": "text",
+                  "sender_id": "ou_local",
+                  "timestamp": "1782298004000",
+                  "content": "问题: 下单接口 500\\n日志: NPE"
+                }
+                """);
+
+        assertTrue(registry.listTasks().isEmpty(), "非需求消息不得再落成任何任务");
     }
 
     @Test
     void shouldBuildHttpEnvelopeFromLarkCliFlatEvent() throws Exception {
         ObjectMapper objectMapper = new ObjectMapper();
         FeishuImProperties properties = new FeishuImProperties();
-        CapturingPublisher publisher = new CapturingPublisher();
-        FeishuImMessageController controller = new FeishuImMessageController(
-                objectMapper,
-                properties,
-                new FeishuImTicketParser(),
-                new FeishuImTicketStore(),
-                TicketEventIngestionEngine.forTesting(
-                        publisher,
-                        new TicketEventIngestionEngine.InMemoryDeduplicationStore(),
-                        "feishu-im"
-                )
-        );
-        FeishuImLocalEventListener listener = new FeishuImLocalEventListener(objectMapper, properties, controller);
+        FeishuImLocalEventListener listener = new FeishuImLocalEventListener(
+                objectMapper, properties, inertController(objectMapper, properties));
 
         String envelope = listener.toHttpEnvelope("""
                 {"type":"im.message.receive_v1","event_id":"evt-1","message_id":"om_1","chat_id":"oc_1","chat_type":"p2p","message_type":"text","sender_id":"ou_1","content":"hello"}
@@ -145,18 +149,8 @@ class FeishuImLocalEventListenerTest {
         ObjectMapper objectMapper = new ObjectMapper();
         FeishuImProperties properties = new FeishuImProperties();
         properties.getLocalListener().setProfile("cli_test_app_id");
-        FeishuImMessageController controller = new FeishuImMessageController(
-                objectMapper,
-                properties,
-                new FeishuImTicketParser(),
-                new FeishuImTicketStore(),
-                TicketEventIngestionEngine.forTesting(
-                        new CapturingPublisher(),
-                        new TicketEventIngestionEngine.InMemoryDeduplicationStore(),
-                        "feishu-im"
-                )
-        );
-        FeishuImLocalEventListener listener = new FeishuImLocalEventListener(objectMapper, properties, controller);
+        FeishuImLocalEventListener listener = new FeishuImLocalEventListener(
+                objectMapper, properties, inertController(objectMapper, properties));
 
         assertEquals(List.of(
                 "lark-cli",
@@ -174,18 +168,8 @@ class FeishuImLocalEventListenerTest {
     void shouldStopRetryingWhenRemoteEventBusAlreadyOwnsTheApp() {
         ObjectMapper objectMapper = new ObjectMapper();
         FeishuImProperties properties = new FeishuImProperties();
-        FeishuImMessageController controller = new FeishuImMessageController(
-                objectMapper,
-                properties,
-                new FeishuImTicketParser(),
-                new FeishuImTicketStore(),
-                TicketEventIngestionEngine.forTesting(
-                        new CapturingPublisher(),
-                        new TicketEventIngestionEngine.InMemoryDeduplicationStore(),
-                        "feishu-im"
-                )
-        );
-        FeishuImLocalEventListener listener = new FeishuImLocalEventListener(objectMapper, properties, controller);
+        FeishuImLocalEventListener listener = new FeishuImLocalEventListener(
+                objectMapper, properties, inertController(objectMapper, properties));
 
         assertTrue(listener.shouldStopAfterExit(2, List.of(
                 "{",
@@ -199,13 +183,35 @@ class FeishuImLocalEventListenerTest {
         )));
     }
 
-    private static final class CapturingPublisher implements RepairQueuePublisher {
-        private final List<RepairTicketMessage> published = new ArrayList<>();
+    /** Accepts requirements into {@code registry} without running the delivery pipeline. */
+    private static FeishuImMessageController requirementController(
+            ObjectMapper objectMapper,
+            FeishuImProperties properties,
+            RagStreamTaskRegistry registry
+    ) {
+        RequirementDeliveryDispatchService dispatchService = mock(RequirementDeliveryDispatchService.class);
+        when(dispatchService.submit(anyString())).thenAnswer(invocation -> CompletableFuture.completedFuture(null));
+        return new FeishuImMessageController(
+                objectMapper,
+                properties,
+                registry,
+                new InMemoryTaskMaterialStore(),
+                mock(RequirementDeliveryEngine.class),
+                dispatchService,
+                generator()
+        );
+    }
 
-        @Override
-        public RepairQueuePublishResult publish(RepairTicketMessage message) {
-            published.add(message);
-            return RepairQueuePublishResult.success(message.ticketId(), "msg-" + published.size(), message.priority());
-        }
+    /** For cases that only exercise listener plumbing and never reach requirement handling. */
+    private static FeishuImMessageController inertController(
+            ObjectMapper objectMapper,
+            FeishuImProperties properties
+    ) {
+        return new FeishuImMessageController(objectMapper, properties, null, null, null, null, generator());
+    }
+
+    private static SnowflakeIdGenerator generator() {
+        AtomicLong now = new AtomicLong(1_784_000_000_000L);
+        return new SnowflakeIdGenerator(1, 1, now::getAndIncrement);
     }
 }

@@ -34,11 +34,27 @@ import org.springframework.core.task.AsyncTaskExecutor;
 @Configuration(proxyBeanMethods = false)
 public class EngineRequirementExecutorConfiguration {
 
+    /**
+     * Stands in for the legacy direct-execution path when only agent runtime is configured.
+     * Reaching it means dispatch bypassed the router, which is a wiring defect rather than a
+     * runtime condition worth absorbing silently.
+     */
+    private static final RepairExecutorPort ROUTED_BY_AGENT_RUNTIME = command -> {
+        throw new IllegalStateException(
+                "requirement execution must be dispatched by the agent runtime router: " + command.taskId()
+        );
+    };
+
     RequirementExecutorPort requirementExecutor(
             ObjectProvider<RepairExecutorPort> repairExecutorProvider,
             ObjectProvider<CodePlatformPort> codePlatformProvider,
             AsyncTaskExecutor executorIoTaskExecutor
     ) {
+        // This overload supplies neither a router nor a snapshot store, so direct dispatch is
+        // the only thing it can describe. State that, rather than inheriting the now-enabled
+        // default and failing the router precondition below.
+        AgentRuntimeProperties directDispatch = new AgentRuntimeProperties();
+        directDispatch.setEnabled(false);
         return requirementExecutor(
                 repairExecutorProvider,
                 codePlatformProvider,
@@ -60,7 +76,7 @@ public class EngineRequirementExecutorConfiguration {
                         .getBeanProvider(AgentExecutionProfileSnapshotStore.class),
                 new org.springframework.beans.factory.support.StaticListableBeanFactory()
                         .getBeanProvider(com.wish.rd.bootstrap.oracle.HostOwnedAssertionGate.class),
-                new AgentRuntimeProperties(),
+                directDispatch,
                 executorIoTaskExecutor
         );
     }
@@ -89,10 +105,6 @@ public class EngineRequirementExecutorConfiguration {
             @Qualifier(RdBotThreadPoolConfiguration.EXECUTOR_IO_EXECUTOR_BEAN)
             AsyncTaskExecutor executorIoTaskExecutor
     ) {
-        RepairExecutorPort repairExecutor = repairExecutorProvider.getIfAvailable();
-        if (repairExecutor == null) {
-            return RequirementExecutorPort.unavailable();
-        }
         EngineRequirementExecutorAdapter.AgentRuntimeConfiguration agentRuntimeConfiguration =
                 EngineRequirementExecutorAdapter.AgentRuntimeConfiguration.disabled();
         if (agentRuntimeProperties != null && agentRuntimeProperties.isEnabled()) {
@@ -106,6 +118,16 @@ public class EngineRequirementExecutorConfiguration {
             agentRuntimeConfiguration = new EngineRequirementExecutorAdapter.AgentRuntimeConfiguration(
                     true, router, snapshotStore
             );
+        }
+        RepairExecutorPort repairExecutor = repairExecutorProvider.getIfAvailable();
+        if (repairExecutor == null) {
+            if (!agentRuntimeConfiguration.enabled()) {
+                return RequirementExecutorPort.unavailable();
+            }
+            // The router owns dispatch once agent runtime is on, so the adapter never reaches
+            // its direct-execution branch. Supply a placeholder that says so instead of
+            // treating an absent legacy executor as "no requirement executor at all".
+            repairExecutor = ROUTED_BY_AGENT_RUNTIME;
         }
         return new EngineRequirementExecutorAdapter(
                 repairExecutor,

@@ -75,7 +75,7 @@ public final class AgentStrategyAdminController {
             ObjectProvider<ProjectRuntimeProfileUploadService> uploadServiceProvider,
             ObjectProvider<ProjectRuntimeProfileService> runtimeProfileService,
             PiAgentExecutorProperties piProperties,
-            @Value("${rd.executor.agent-runtime.enabled:false}") boolean agentRuntimeEnabled,
+            @Value("${rd.executor.agent-runtime.enabled:true}") boolean agentRuntimeEnabled,
             @Value("${rd.executor.docker.image:rd-bot/claude-code:local}") String defaultClaudeImage
     ) {
         this(

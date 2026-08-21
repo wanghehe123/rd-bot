@@ -20,7 +20,7 @@ import com.wish.rd.rag.project.agent.impl.InMemoryAgentToolPolicyStore;
 import com.wish.rd.rag.project.agent.impl.InMemoryModelProviderCredentialStore;
 import com.wish.rd.rag.project.agent.impl.InMemoryModelProviderProfileStore;
 import com.wish.rd.rag.project.agent.impl.InMemoryAgentStageStateProjectionStore;
-import com.wish.rd.exec.repair.docker.impl.DockerClaudeCodeExecutor;
+import com.wish.rd.exec.repair.docker.AuthEnvironmentResolver;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
@@ -108,13 +108,13 @@ public class AgentRuntimeControlPlaneConfiguration {
     }
 
     @Bean
-    @ConditionalOnMissingBean(DockerClaudeCodeExecutor.AuthEnvironmentResolver.class)
-    public DockerClaudeCodeExecutor.AuthEnvironmentResolver storedThenSystemAuthEnvironmentResolver(
+    @ConditionalOnMissingBean(AuthEnvironmentResolver.class)
+    public AuthEnvironmentResolver storedThenSystemAuthEnvironmentResolver(
             ModelProviderCredentialService credentials
     ) {
         return new StoredThenSystemAuthEnvironmentResolver(
                 credentials,
-                DockerClaudeCodeExecutor.AuthEnvironmentResolver.system()
+                AuthEnvironmentResolver.system()
         );
     }
 

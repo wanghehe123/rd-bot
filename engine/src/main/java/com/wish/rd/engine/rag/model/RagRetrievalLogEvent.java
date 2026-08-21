@@ -6,10 +6,9 @@ import java.time.Instant;
 import java.util.List;
 
 /**
- * 一次 Bug 修复 RAG 检索的可评测日志事件。
+ * 一次检索的可选评测日志事件。
  *
- * <p>由 {@link RagBugFixEngine} 在完成检索和上下文打包后生成，外部 sink 可将其写入
- * JSONL、对象存储或评测平台。
+ * <p>保留给文件 sink 使用。BugFix 引擎已下线，不得再假定有生产编排写入该事件。
  *
  * @param occurredAt            事件发生时间
  * @param taskId                修复任务 ID

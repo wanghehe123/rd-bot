@@ -19,7 +19,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "rag.query-rewrite.enabled=false",
         "rag.rate-limit.global.enabled=true",
         "rag.rate-limit.global.max-concurrent=8",
-        "rag.memory.history-keep-turns=6",
         "rd.ai.provider.name=long-cat",
         "rd.ai.provider.base-url=https://api.longcat.chat/anthropic",
         "rd.ai.provider.api-key=abcdef1234567890"
@@ -42,7 +41,6 @@ class RagSettingsControllerTest {
                 .andExpect(jsonPath("$.rag.queryRewrite.enabled").value(false))
                 .andExpect(jsonPath("$.rag.rateLimit.global.enabled").value(true))
                 .andExpect(jsonPath("$.rag.rateLimit.global.maxConcurrent").value(8))
-                .andExpect(jsonPath("$.rag.memory.historyKeepTurns").value(6))
                 .andExpect(jsonPath("$.ai.chat.defaultModel", not(blankOrNullString())))
                 .andExpect(jsonPath("$.ai.providers['long-cat'].apiKey").value("abcdef***7890"))
                 .andExpect(jsonPath("$.ai.chat.candidates[0].provider").value("long-cat"));

@@ -16,6 +16,7 @@ import com.wish.rd.engine.requirement.job.model.RequirementStageCommand;
 import com.wish.rd.engine.requirement.job.model.RequirementStageExecutionPlan;
 import com.wish.rd.engine.scheduling.FairRequirementDeliveryClaimPlanner;
 import com.wish.rd.engine.scheduling.model.ScheduleResourceClass;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.stereotype.Component;
 
 import java.time.OffsetDateTime;
@@ -23,6 +24,7 @@ import java.util.Set;
 
 /** Writes all target objects for one recorded PI remediation intent inside the caller transaction. */
 @Component
+@ConditionalOnBean(AgentRemediationRoundMapper.class)
 public class PiRemediationFinalizationWriter {
     private static final ObjectMapper MAPPER = new ObjectMapper();
 

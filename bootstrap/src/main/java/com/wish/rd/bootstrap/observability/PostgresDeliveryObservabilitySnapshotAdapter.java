@@ -20,10 +20,9 @@ import com.wish.rd.engine.scheduling.RequirementDeliveryMetrics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
-import javax.sql.DataSource;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -38,7 +37,7 @@ import java.util.Set;
  * this class only loads window/project constrained ledger rows.
  */
 @Component
-@ConditionalOnBean(DataSource.class)
+@ConditionalOnProperty(name = "rd.knowledge.store", havingValue = "postgres")
 public class PostgresDeliveryObservabilitySnapshotAdapter implements DeliveryObservabilitySnapshotPort {
 
     private static final Logger log = LoggerFactory.getLogger(PostgresDeliveryObservabilitySnapshotAdapter.class);

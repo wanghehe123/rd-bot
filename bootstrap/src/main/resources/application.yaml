@@ -32,12 +32,6 @@ rag:
     metric-type: COSINE
   query-rewrite:
     enabled: true
-  memory:
-    history-keep-turns: 8
-    summary-enabled: false
-    summary-start-turns: 9
-    summary-max-chars: 200
-    title-max-length: 30
   rate-limit:
     global:
       enabled: false
@@ -54,40 +48,6 @@ rustfs:
   secret-access-key: ${RUSTFS_SECRET_ACCESS_KEY:rustfsadmin}
 
 rd:
-  evaluation:
-    enabled: ${RD_EVAL_ENABLED:true}
-    repository-root: ${RD_EVAL_REPOSITORY_ROOT:${user.dir}}
-    output-root: ${RD_EVAL_OUTPUT_ROOT:qa-runs/evaluation}
-    dataset-root: ${RD_EVAL_DATASET_ROOT:scripts/evaluation/datasets}
-    rag-log-root: ${RD_EVAL_RAG_LOG_ROOT:logs}
-    python-executable: ${RD_EVAL_PYTHON_EXECUTABLE:python3}
-    ragas-python-executable: ${RD_EVAL_RAGAS_PYTHON_EXECUTABLE:}
-    default-base-url: ${RD_EVAL_DEFAULT_BASE_URL:http://127.0.0.1:18080}
-    parallelism: ${RD_EVAL_PARALLELISM:2}
-    max-log-chars: ${RD_EVAL_MAX_LOG_CHARS:200000}
-    coding-benchmark-root: ${CODING_BENCHMARK_ROOT:/Volumes/WishDisk/codes/swe/public-prep/snapshots}
-    coding-benchmark-prep-root: ${CODING_BENCHMARK_PREP_ROOT:/Volumes/WishDisk/codes/swe/public-prep}
-    coding-benchmark:
-      # docker runs the isolated Agent/Oracle containers; fake runs a container-free control-plane rehearsal
-      executor: ${CODING_BENCHMARK_EXECUTOR:docker}
-      oracle-image: ${CODING_BENCHMARK_ORACLE_IMAGE:rd-bot/coding-eval-oracle@sha256:904063462a3f3eb74902fdf38283f18d66f2ce908fffe00381b68ad8ee90b27d}
-      model-provider:
-        name: ${CODING_BENCHMARK_MODEL_PROVIDER:opencode-go}
-        base-url: ${CODING_BENCHMARK_MODEL_BASE_URL:https://opencode.ai/zen/go/v1}
-        model: ${CODING_BENCHMARK_MODEL:deepseek-v4-flash}
-        api-key-env: ${CODING_BENCHMARK_MODEL_API_KEY_ENV:OPENCODE_API_KEY}
-        protocol: ${CODING_BENCHMARK_MODEL_PROTOCOL:openai-chat-completions}
-        relay-image: ${CODING_BENCHMARK_RELAY_IMAGE:rd-bot/coding-eval-relay:local}
-        allowed-paths:
-          - /chat/completions
-          - /v1/chat/completions
-          - /models
-          - /v1/models
-        fallback:
-          name: ${CODING_BENCHMARK_FALLBACK_PROVIDER:deepseek}
-          base-url: ${CODING_BENCHMARK_FALLBACK_BASE_URL:https://api.deepseek.com}
-          model: ${CODING_BENCHMARK_FALLBACK_MODEL:deepseek-v4-flash}
-          api-key-env: ${CODING_BENCHMARK_FALLBACK_API_KEY_ENV:DEEPSEEK_API_KEY}
   ai-review:
     enabled: ${RD_AI_REVIEW_ENABLED:false}
     base-url: ${RD_AI_REVIEW_BASE_URL:https://api.longcat.chat/anthropic}
@@ -138,13 +98,6 @@ rd:
       keep-alive-seconds: ${RD_THREAD_EXECUTOR_IO_KEEP_ALIVE_SECONDS:60}
       await-termination-seconds: ${RD_THREAD_EXECUTOR_IO_AWAIT_TERMINATION_SECONDS:30}
       thread-name-prefix: rd-executor-io-
-    repair-queue:
-      core-size: ${RD_THREAD_REPAIR_QUEUE_CORE_SIZE:2}
-      max-size: ${RD_THREAD_REPAIR_QUEUE_MAX_SIZE:4}
-      queue-capacity: ${RD_THREAD_REPAIR_QUEUE_QUEUE_CAPACITY:200}
-      keep-alive-seconds: ${RD_THREAD_REPAIR_QUEUE_KEEP_ALIVE_SECONDS:60}
-      await-termination-seconds: ${RD_THREAD_REPAIR_QUEUE_AWAIT_TERMINATION_SECONDS:30}
-      thread-name-prefix: rd-repair-queue-
     ingestion:
       core-size: ${RD_THREAD_INGESTION_CORE_SIZE:2}
       max-size: ${RD_THREAD_INGESTION_MAX_SIZE:4}
@@ -236,36 +189,11 @@ rd:
     request-timeout-millis: ${RD_OPENVIKING_REQUEST_TIMEOUT_MILLIS:30000}
   storage:
     mode: ${RD_STORAGE_MODE:s3}
-  redis-stream:
-    repair:
-      stream-key: ${RD_REDIS_STREAM_REPAIR_STREAM_KEY:rd-bot:repair:tickets}
-      consumer-group: ${RD_REDIS_STREAM_REPAIR_CONSUMER_GROUP:rd-bot-repair-workers}
-      consumer-name-base: ${RD_REDIS_STREAM_REPAIR_CONSUMER_NAME_BASE:rd-bot-repair}
-      consumer-concurrency: ${RD_REDIS_STREAM_REPAIR_CONSUMER_CONCURRENCY:2}
-      poll-timeout-millis: ${RD_REDIS_STREAM_REPAIR_POLL_TIMEOUT_MILLIS:1000}
-      batch-size: ${RD_REDIS_STREAM_REPAIR_BATCH_SIZE:10}
-      pending-claim-idle-millis: ${RD_REDIS_STREAM_REPAIR_PENDING_CLAIM_IDLE_MILLIS:60000}
-      failure-backoff-millis: ${RD_REDIS_STREAM_REPAIR_FAILURE_BACKOFF_MILLIS:1000}
-      max-retry-attempts: ${RD_REDIS_STREAM_REPAIR_MAX_RETRY_ATTEMPTS:3}
-  repair:
-    queue:
-      mode: ${RD_REPAIR_QUEUE_MODE:redis-stream}
-    ticket:
-      provider: ${RD_REPAIR_TICKET_PROVIDER:feishu-im}
-      auto-execute:
-        enabled: ${RD_REPAIR_TICKET_AUTO_EXECUTE_ENABLED:true}
-      ingestion:
-        default-source: ${RD_REPAIR_TICKET_DEFAULT_SOURCE:feishu}
-    acceptance:
-      enabled: ${RD_REPAIR_ACCEPTANCE_ENABLED:true}
-      max-steps: ${RD_REPAIR_ACCEPTANCE_MAX_STEPS:20}
-      write-operations-enabled: ${RD_REPAIR_ACCEPTANCE_WRITE_OPERATIONS_ENABLED:true}
-      environment-allowlist:
-        - local
-        - sit
   executor:
     agent-runtime:
-      enabled: ${RD_EXECUTOR_AGENT_RUNTIME_ENABLED:false}
+      # Snapshot-driven routing is the only supported execution path. Setting this to
+      # false restores direct legacy dispatch, which ignores the frozen profile snapshot.
+      enabled: ${RD_EXECUTOR_AGENT_RUNTIME_ENABLED:true}
       mutation-token: ${RD_AGENT_RUNTIME_MUTATION_TOKEN:}
     pi:
       image: ${RD_EXECUTOR_PI_IMAGE:rd-bot/pi-agent:local}
@@ -317,9 +245,6 @@ rd:
         # Uploading a Dockerfile builds untrusted operator input. Keep mutations disabled until an operator supplies
         # this capability token through the environment; the UI keeps it only in memory for the current dialog.
         upload-token: ${RD_RUNTIME_PROFILE_UPLOAD_TOKEN:}
-      command: claude
-      yolo-flag: --dangerously-skip-permissions
-      output-format: stream-json
       network-mode: bridge
       remove-after-exit: true
       timeout-alert-millis: 1800000
@@ -345,37 +270,6 @@ rd:
         user-name: ${RD_EXECUTOR_DOCKER_GIT_USER_NAME:RD-Bot}
         user-email: ${RD_EXECUTOR_DOCKER_GIT_USER_EMAIL:rd-bot@example.local}
         timeout-seconds: ${RD_EXECUTOR_DOCKER_GIT_TIMEOUT_SECONDS:120}
-      providers:
-        - name: long-cat
-          protocol: ${LONGCAT_PROTOCOL:anthropic-compatible}
-          base-url: ${LONGCAT_ANTHROPIC_BASE_URL:https://api.longcat.chat/anthropic}
-          auth-token-env: ${RD_CLAUDE_AUTH_TOKEN_ENV:LONGCAT_API_KEY}
-          model: ${LONGCAT_CLAUDE_MODEL:LongCat-2.0}
-          default-opus-model: ${LONGCAT_CLAUDE_OPUS_MODEL:LongCat-2.0}
-          default-sonnet-model: ${LONGCAT_CLAUDE_SONNET_MODEL:LongCat-2.0}
-          default-haiku-model: ${LONGCAT_CLAUDE_HAIKU_MODEL:LongCat-2.0}
-          subagent-model: ${LONGCAT_CLAUDE_SUBAGENT_MODEL:LongCat-2.0}
-          effort-level: ${LONGCAT_CLAUDE_EFFORT_LEVEL:max}
-          extra-env:
-            RD_CLAUDE_LOCAL_FALLBACK_ENABLED: ${RD_CLAUDE_LOCAL_FALLBACK_ENABLED:true}
-        - name: minimax
-          protocol: ${MINIMAX_PROTOCOL:openai-chat-completions}
-          base-url: ${MINIMAX_BASE_URL:https://api.minimaxi.com/v1}
-          api-key-env: ${MINIMAX_API_KEY_ENV:MINIMAX_API_KEY}
-          model: ${MINIMAX_MODEL:MiniMax-M3}
-          default-opus-model: ${MINIMAX_OPUS_MODEL:MiniMax-M3}
-          default-sonnet-model: ${MINIMAX_SONNET_MODEL:MiniMax-M3}
-          default-haiku-model: ${MINIMAX_HAIKU_MODEL:MiniMax-M3}
-          subagent-model: ${MINIMAX_SUBAGENT_MODEL:MiniMax-M3}
-          effort-level: ${MINIMAX_EFFORT_LEVEL:max}
-    openai-chat:
-      enabled: ${RD_EXECUTOR_OPENAI_CHAT_ENABLED:false}
-      provider-name: ${MINIMAX_PROVIDER_NAME:minimax}
-      base-url: ${MINIMAX_BASE_URL:https://api.minimaxi.com/v1}
-      api-key-env: ${MINIMAX_API_KEY_ENV:MINIMAX_API_KEY}
-      model: ${MINIMAX_MODEL:MiniMax-M3}
-      protocol: ${RD_EXECUTOR_OPENAI_CHAT_PROTOCOL:openai-chat-completions}
-      timeout: ${RD_EXECUTOR_OPENAI_CHAT_TIMEOUT:0s}
   github:
     merge-sync:
       enabled: ${RD_GITHUB_MERGE_SYNC_ENABLED:true}

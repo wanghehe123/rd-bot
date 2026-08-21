@@ -34,8 +34,6 @@ import {
   type ExecutionTracePageResult,
   type ExecutionTraceRecord
 } from "@/services/executionTraceService";
-import { createTaskRunEvaluation } from "@/services/evaluationService";
-
 import {
   executionTraceQueryForScope,
   formatTraceDuration,
@@ -171,24 +169,8 @@ function TracePagination({ page, pages, total, onPageChange }: { page: number; p
 
 export function ExecutionTraceDetailPage() {
   const { taskId = "" } = useParams();
-  const navigate = useNavigate();
-  const [evaluating, setEvaluating] = useState(false);
   const detailState = useAsyncData(() => getExecutionTraceDetail(taskId), [taskId], null);
   const detail = detailState.data;
-
-  const evaluateCurrentRun = async () => {
-    if (!taskId || evaluating) return;
-    setEvaluating(true);
-    try {
-      const run = await createTaskRunEvaluation(taskId);
-      toast.success(`执行评测 ${run.runId} 已进入队列`);
-      navigate(`/admin/evaluations?runId=${run.runId}`);
-    } catch (error) {
-      toast.error(getErrorMessage(error, "创建执行评测失败"));
-    } finally {
-      setEvaluating(false);
-    }
-  };
 
   return (
     <div className="admin-page execution-trace-detail-page space-y-4">
@@ -203,10 +185,6 @@ export function ExecutionTraceDetailPage() {
           </p>
         </div>
         <div className="trace-detail-actions flex flex-wrap items-center gap-2">
-          <Button variant="outline" onClick={() => void evaluateCurrentRun()} disabled={!detail || evaluating}>
-            <FlaskConical className={evaluating ? "spin" : undefined} aria-hidden="true" />
-            {evaluating ? "创建评测中" : "评测本次执行"}
-          </Button>
           <Button asChild variant="outline">
             <Link to="/admin/traces">
               <ArrowLeft className="mr-1.5 h-4 w-4" aria-hidden="true" />

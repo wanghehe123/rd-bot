@@ -4,6 +4,7 @@ import com.wish.rd.bootstrap.persistence.PostgresPersistenceSupport;
 import com.wish.rd.bootstrap.persistence.entity.AgentRemediationRoundRow;
 import com.wish.rd.bootstrap.persistence.mapper.AgentRemediationRoundMapper;
 import com.wish.rd.engine.requirement.remediation.model.AgentRemediationKind;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RestController;
@@ -14,6 +15,7 @@ import java.util.Map;
 
 /** Read-only remediation ledger view used by the admin workbench and alert drill-down. */
 @RestController
+@ConditionalOnBean(AgentRemediationRoundMapper.class)
 public class RdTaskRemediationController {
     private final AgentRemediationRoundMapper mapper;
 
