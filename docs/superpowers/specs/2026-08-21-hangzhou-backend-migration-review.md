@@ -281,6 +281,19 @@ A-lite 切换当日，G1 一次通过；G2 端到端任务连续暴露 5 个 Mac
 3. **宿主资源事实**：QA 编译峰值触发 kswapd 换页风暴（load 27），阿里云
    AliYunDun/argusagent 常驻吃 CPU；停 openviking（-300MB）后恢复。A-lite 接受项内的表现。
 
-**门控结论**：G1 通过；G2 通过（评审/方案/编码三角色真机全通）；G3 有条件通过——
+### 10.4 终局更新（QA 真机通过 + 交付记账缺口）
+
+生产模式 start.sh 推入验收仓库 main（`fc5e305`）+ 停阿里云监控 agent 后，**QA 角色真机通过**
+（桌面+移动截图、console/network/trace 证据齐全，stage run SUCCEEDED）。四角色全部在 ECS 跑通。
+
+交付记账暴露两处检查点×状态机的既有缺口（均为正常流程不触发、checkpoint 重试才触发的潜伏缺陷）：
+1. `continuationTargetBindingId` 把 ("REQUIREMENT_DELIVERY","AI_REVIEW") 喂给 AgentRole.valueOf 必抛
+   （已修：AI_REVIEW 按 review-run 身份绑定，无预绑定降级普通 pending，commit `f0e44dda`）。
+2. 死信恢复后 DETERMINISTIC_REVIEW 要求任务 status=EXECUTING 但 checkpoint 将其置为 RECOVERING
+   ——待 OpenSpec 变更：交付阶段的检查点恢复应把任务置回 EXECUTING。
+
+候选补丁完好：patch.diff（16 行，Dashboard.tsx 页脚）在任务工作区，可人工 apply/push。
+
+**门控结论**：G1 通过；G2 通过；G3 的实质目标（QA 角色真实跑通并产出证据）达成——
 基础设施与协议链路全部真机验证（含 5 个迁移耦合缺陷的修复与沉淀），QA 角色受
 上述既有缺口阻塞，按 §9.4 降级接受项处理：QA 失败任务人工验收或临时回 Mac 跑 QA。
