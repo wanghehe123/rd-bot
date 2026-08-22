@@ -1664,6 +1664,104 @@ class RequirementDeliveryDispatchServiceTest {
     }
 
     @Test
+    void checkpointBoundAiReviewContinuationProceedsWithoutAnAgentRoleBinding() {
+        // 2026-08-21 杭州真机回归：QA 成功后的续跑是 ("REQUIREMENT_DELIVERY","AI_REVIEW")，
+        // 旧实现把它喂给 AgentRole.valueOf 必抛 IllegalStateException，任务卡死 EXECUTING。
+        // AI_REVIEW 续跑按 review-run 身份（kind=AI_REVIEW）绑定；路由未包含 AI 复审重试时
+        // 没有预绑定，必须放行而不是失败。
+        long now = System.currentTimeMillis();
+        String taskId = "task-checkpoint-ai-review";
+        String checkpointId = "301";
+        String qaBindingId = "302";
+        InMemoryRequirementStageCommandStore commands = new InMemoryRequirementStageCommandStore();
+        InMemoryTaskRetryCheckpointStore checkpoints = new InMemoryTaskRetryCheckpointStore();
+        InMemoryTaskRetryAttemptBindingStore bindings = new InMemoryTaskRetryAttemptBindingStore();
+        TaskRetryCheckpoint checkpoint = new TaskRetryCheckpoint(
+                checkpointId, taskId, TaskFailurePhase.AGENT_ROLE, AgentRole.QA_AGENT,
+                "qa-3", "", "", 1, taskId + ":13:AGENT_ROLE:QA_AGENT",
+                RdTaskStatus.FAILED_NEEDS_HUMAN, 13L, 14L,
+                "command-old", "ROLE_EXECUTION:QA_AGENT", "policy-1", "",
+                "sha256:" + "a".repeat(64), "", "", 0L, 0L, "", Long.parseLong(checkpointId),
+                "", List.of(), TaskRetryCheckpointStatus.CREATED, "qa failed", "", now, now);
+        checkpoints.createOrGet(checkpoint);
+        checkpoints.dispatch(checkpointId, 20L, 21L, "qa-command", now);
+        bindings.save(new TaskRetryAttemptBinding(
+                qaBindingId, checkpointId, TaskRetryAttemptKind.AGENT_STAGE,
+                AgentRole.QA_AGENT, "qa-4", "", 4, 0));
+        RequirementStageCommand pending = RequirementStageCommand.pending(
+                "qa-command", taskId, 20L, 21L,
+                AgentRole.QA_AGENT.name(), "ROLE_EXECUTION:" + AgentRole.QA_AGENT.name(),
+                0, 3, now + 3_600_000L, ScheduleResourceClass.DOCKER,
+                Set.of(ScheduleResourceClass.DOCKER), "project-1", "provider", "P1",
+                "policy-1", checkpointId, Long.parseLong(checkpointId), qaBindingId, now);
+        commands.enqueue(pending);
+        RequirementStageCommand claimed = commands.claim(
+                pending.commandId(), "test-worker", now, 60_000L).orElseThrow();
+        RequirementStageExecutionPlan plan = new RequirementStageExecutionPlan(
+                RequirementStageExecutionPlan.CURRENT_SCHEMA_VERSION,
+                claimed.taskId(), claimed.taskVersion(), claimed.fencingToken(), RdTaskStatus.VALIDATING,
+                List.of(RequirementTaskMutation.snapshotUpdate(
+                        RdTaskStatus.VALIDATING, "", "{\"qa\":\"passed\"}", "", "", "")),
+                com.wish.rd.engine.requirement.job.model.CommandDisposition.SUCCEEDED,
+                new com.wish.rd.engine.requirement.job.model.ContinuationSpec(
+                        "REQUIREMENT_DELIVERY", "AI_REVIEW"),
+                com.wish.rd.engine.requirement.job.model.ExternalEffectReceipt.none());
+        RequirementStageFinalization marker = RequirementStageFinalization.prepared(
+                claimed, RdTaskStatus.EXECUTING, now);
+        RagStreamTaskRegistry registry = mock(RagStreamTaskRegistry.class);
+        when(registry.getTask(taskId)).thenReturn(
+                requirementTask(taskId, RdTaskStatus.EXECUTING).withConcurrency(20L, 21L));
+        RequirementStageExecutor stageExecutor = mock(RequirementStageExecutor.class);
+        when(stageExecutor.plan(claimed)).thenReturn(plan);
+        RequirementStageFinalizationPort finalizer = mock(RequirementStageFinalizationPort.class);
+        when(finalizer.findLatestPrepared(claimed.commandId())).thenReturn(Optional.empty());
+        when(finalizer.prepare(any(), any(), any(), anyLong())).thenReturn(marker);
+        when(finalizer.recordOutcome(any(), any(), any(), any(), anyLong())).thenReturn(marker);
+        when(finalizer.decodeOutcomePlan(any())).thenReturn(plan);
+        ArgumentCaptor<RequirementStageFinalizationPort.FinalizationCommand> finalization =
+                ArgumentCaptor.forClass(RequirementStageFinalizationPort.FinalizationCommand.class);
+        when(finalizer.finalize(finalization.capture())).thenAnswer(invocation -> {
+            RequirementStageFinalizationPort.FinalizationCommand command = invocation.getArgument(0);
+            RequirementDeliveryResult outcome = new RequirementDeliveryResult(
+                    taskId, RdTaskStatus.VALIDATING, "", "{\"qa\":\"passed\"}", "");
+            return new RequirementStageFinalizationPort.FinalizationResult(
+                    marker.finalized(outcome, command.nextCommand() == null ? "" : command.nextCommand().commandId(),
+                            now + 1L),
+                    claimed.succeeded(now + 1L),
+                    command.nextCommand());
+        });
+        RequirementDeliveryDispatchService dispatcher = new RequirementDeliveryDispatchService(
+                mock(RequirementDeliveryEngine.class),
+                new TaskExecutorAdapter(runnable -> {
+                }),
+                new InMemoryRequirementDeliveryJobStore(),
+                SnowflakeIdGenerator.defaultGenerator(),
+                registry,
+                "test-worker",
+                3,
+                60_000L,
+                null,
+                checkpoints,
+                commands,
+                stageExecutor,
+                finalizer,
+                RequirementDeliverySchedulingPolicy.defaults(),
+                null,
+                bindings);
+
+        // 续跑命令被调度到 no-op executor 上，future 不会完成——用丢弃型 future，
+        // 断言只看 finalizer 收到的 proposedNext。
+        invokeRunClaimedCommand(dispatcher, claimed, new CompletableFuture<>());
+
+        RequirementStageCommand next = finalization.getValue().nextCommand();
+        assertEquals("REQUIREMENT_DELIVERY", next.role());
+        assertEquals("AI_REVIEW", next.stage());
+        // 无预绑定的控制面续跑降级为普通 pending 命令，不携带 checkpoint 语义。
+        assertEquals("", next.retryCheckpointId());
+        assertEquals("", next.targetRetryBindingId());
+    }
+
+    @Test
     void recoveryReplaysTheOriginalRetryableFailurePlanAtTheFinalAttempt() {
         long now = System.currentTimeMillis();
         RequirementStageCommand initial = RequirementStageCommand.pending(

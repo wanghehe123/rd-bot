@@ -1158,6 +1158,22 @@ public class RequirementDeliveryDispatchService {
                     previous.policyRunId(),
                     nowEpochMillis);
         }
+        String targetBindingId = continuationTargetBindingId(previous.retryCheckpointId(), role, stage);
+        if (targetBindingId.isBlank() && "AI_REVIEW".equals(stage)) {
+            // AI_REVIEW 是控制面阶段：路由未包含 AI 复审重试时没有预绑定，
+            // 降级为普通 pending 命令放行（retry-pending 工厂强制要求绑定 id）。
+            return stageCommandFactory.createPendingCommand(
+                    previous.taskId(),
+                    plan.postVersion(),
+                    plan.postFencingToken(),
+                    role,
+                    stage,
+                    previous.projectId(),
+                    priorityName(previous.priorityRank()),
+                    previous.providerId(),
+                    previous.policyRunId(),
+                    nowEpochMillis);
+        }
         return stageCommandFactory.createRetryPendingCommand(
                 previous.taskId(),
                 plan.postVersion(),
@@ -1170,7 +1186,7 @@ public class RequirementDeliveryDispatchService {
                 previous.policyRunId(),
                 previous.retryCheckpointId(),
                 previous.businessGeneration(),
-                continuationTargetBindingId(previous.retryCheckpointId(), role, stage),
+                targetBindingId,
                 nowEpochMillis);
     }
 
@@ -1182,6 +1198,15 @@ public class RequirementDeliveryDispatchService {
         if (attemptBindingStore == null) {
             throw new IllegalStateException(
                     "checkpoint-bound role continuation requires attempt bindings: " + checkpointId);
+        }
+        if ("AI_REVIEW".equals(stage)) {
+            // AI_REVIEW 续跑按 review-run 身份（kind=AI_REVIEW，role 为空）绑定；
+            // 路由未包含 AI 复审重试时没有预绑定，返回空串直接放行，不得阻塞交付。
+            // 旧实现把 REQUIREMENT_DELIVERY 喂给 AgentRole.valueOf 必然抛错——
+            // 2026-08-21 杭州真机：QA 成功后的 AI_REVIEW 续跑使任务卡死在 EXECUTING。
+            return attemptBindingStore.findPrimary(checkpointId, TaskRetryAttemptKind.AI_REVIEW, null)
+                    .map(binding -> binding.bindingId())
+                    .orElse("");
         }
         AgentRole nextRole;
         try {
