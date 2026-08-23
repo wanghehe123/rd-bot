@@ -249,6 +249,87 @@ class PostgresRequirementStageFinalizationAdapterTest {
     }
 
     @Test
+    void publicationFailureWithoutPolicyRunSkipsProvenanceInsteadOfRollingBack() {
+        // 2026-08-23 真机回归：checkpoint 重试链派生的交付命令不带 policyRunId，
+        // 终态发布失败的溯源记录曾直接抛异常让 finalize 回滚，命令卡死 RUNNING、
+        // 重试 API 因歧义拒绝。缺失关联时必须跳过溯源而不是阻塞交付收尾。
+        RequirementStageFinalizationMapper markers = mock(RequirementStageFinalizationMapper.class);
+        RequirementStageCommandMapper commands = mock(RequirementStageCommandMapper.class);
+        RequirementDeliveryJobMapper jobs = mock(RequirementDeliveryJobMapper.class);
+        RdTaskMapper tasks = mock(RdTaskMapper.class);
+        RdTaskStatusEventMapper events = mock(RdTaskStatusEventMapper.class);
+        RequirementPublicationMapper publications = mock(RequirementPublicationMapper.class);
+        RdAgentStageRunMapper stages = mock(RdAgentStageRunMapper.class);
+        TaskFailureProvenanceMapper provenance = mock(TaskFailureProvenanceMapper.class);
+        RequirementPolicyRunMapper policies = mock(RequirementPolicyRunMapper.class);
+        RequirementStageCommand command = RequirementStageCommand.pending(
+                "811", "810", 12L, 13L,
+                "REQUIREMENT_DELIVERY", "PUBLICATION",
+                2, 3, 60_000L, ScheduleResourceClass.GENERIC,
+                java.util.Set.of(ScheduleResourceClass.GENERIC), "project", "", "P1", "", 1L)
+                .claimed("worker", 60_000L, 2L);
+        String operationId = "sha256:" + "e".repeat(64);
+        ExternalEffectReceipt receipt = new ExternalEffectReceipt(
+                ExternalEffectReceipt.Kind.PUBLICATION, operationId, "UNKNOWN_REMOTE_RESULT",
+                "{\"taskId\":\"810\",\"operationId\":\"" + operationId + "\"}");
+        RequirementStageExecutionPlan plan = new RequirementStageExecutionPlan(
+                RequirementStageExecutionPlan.CURRENT_SCHEMA_VERSION,
+                command.taskId(), command.taskVersion(), command.fencingToken(), RdTaskStatus.VALIDATING,
+                List.of(RequirementTaskMutation.statusTransition(
+                        RdTaskStatus.VALIDATING, RdTaskStatus.FAILED_RETRYABLE,
+                        "", "{\"status\":\"FAILED\"}", "", "waiting for remote reconciliation", "")),
+                com.wish.rd.engine.requirement.job.model.CommandDisposition.RETRYABLE_TECHNICAL_FAILURE,
+                com.wish.rd.engine.requirement.job.model.ContinuationSpec.terminal(),
+                receipt);
+        RequirementStageFinalization marker = outcomeRecordedMarker(command, plan);
+        when(commands.lockByIdForUpdate(anyLong())).thenReturn(commandRow(command));
+        when(markers.findForUpdate(anyLong(), anyInt())).thenReturn(markerRow(marker));
+        RdTaskRow task = new RdTaskRow();
+        task.title = "failed publication without policy";
+        when(tasks.selectById(810L)).thenReturn(task);
+        when(tasks.advanceStatusWithExpectedVersionFenced(
+                anyLong(), anyLong(), anyLong(), anyString(), anyString(), any(), any(), any(), any(), any()))
+                .thenReturn(1);
+        when(events.insert(any(RdTaskStatusEventRow.class))).thenReturn(1);
+        when(commands.failAttempt(anyLong(), anyInt(), anyString(), anyString(), any(), any()))
+                .thenReturn(commandRow(command.failed("waiting for remote reconciliation", 20L)));
+        when(markers.finalizePrepared(any())).thenReturn(1);
+        com.wish.rd.bootstrap.persistence.entity.RequirementPublicationRow publicationRow =
+                new com.wish.rd.bootstrap.persistence.entity.RequirementPublicationRow();
+        publicationRow.operationId = operationId;
+        publicationRow.taskId = 810L;
+        publicationRow.status = "UNKNOWN_REMOTE_RESULT";
+        when(publications.selectByOperationIdForUpdate(operationId)).thenReturn(publicationRow);
+
+        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            context.getEnvironment().getPropertySources().addFirst(
+                    new MapPropertySource("retry-provenance-blank-test", Map.of("rd.knowledge.store", "postgres")));
+            context.registerBean(RequirementStageFinalizationMapper.class, () -> markers);
+            context.registerBean(RequirementStageCommandMapper.class, () -> commands);
+            context.registerBean(RequirementDeliveryJobMapper.class, () -> jobs);
+            context.registerBean(RdTaskMapper.class, () -> tasks);
+            context.registerBean(RdTaskStatusEventMapper.class, () -> events);
+            context.registerBean(RequirementPublicationMapper.class, () -> publications);
+            context.registerBean(RequirementPolicyRunMapper.class, () -> policies);
+            context.registerBean(RdAgentStageRunMapper.class, () -> stages);
+            context.registerBean(TaskFailureProvenanceMapper.class, () -> provenance);
+            context.registerBean(com.wish.rd.framework.id.SnowflakeIdGenerator.class,
+                    com.wish.rd.framework.id.SnowflakeIdGenerator::defaultGenerator);
+            context.registerBean(PostgresRequirementStageFinalizationAdapter.class);
+            context.refresh();
+
+            context.getBean(PostgresRequirementStageFinalizationAdapter.class).finalize(
+                    new RequirementStageFinalizationPort.FinalizationCommand(
+                            marker, command, "worker", plan, null, null,
+                            RequirementStageFinalizationPort.JobDisposition.NONE,
+                            RequirementStageFinalizationPort.TaskMutationDisposition.APPLY, 20L));
+        }
+
+        verify(provenance, never()).insertIfAbsent(any());
+        verify(markers).finalizePrepared(any());
+    }
+
+    @Test
     void outcomePlanIsRecordedBeforeAnyTaskCommandOrContinuationWrite() {
         RequirementStageFinalizationMapper markers = mock(RequirementStageFinalizationMapper.class);
         RequirementStageCommandMapper commands = mock(RequirementStageCommandMapper.class);

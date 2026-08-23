@@ -1288,8 +1288,10 @@ public class PostgresRequirementStageFinalizationAdapter implements RequirementS
                     + stageCommand.commandId());
         }
         if (stageCommand.policyRunId().isBlank()) {
-            throw new IllegalStateException("terminal publication failure has no policy generation: "
-                    + stageCommand.commandId());
+            // checkpoint 重试链（TaskRetryRoutePlanner）派生的交付命令不带 policyRunId。
+            // 失败溯源是补充审计：缺失关联时跳过记录而不是让 finalize 回滚——
+            // 否则命令永远卡在 RUNNING，重试 API 也会因歧义拒绝（2026-08-23 真机）。
+            return;
         }
         RequirementPublicationRow publication = publicationMapper.selectByOperationIdForUpdate(receipt.operationId());
         if (publication == null
