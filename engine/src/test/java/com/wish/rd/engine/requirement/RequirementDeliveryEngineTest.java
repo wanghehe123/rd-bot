@@ -39,6 +39,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.ArrayList;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -55,6 +56,9 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import com.wish.rd.engine.requirement.model.RequirementDeliveryResult;
 import com.wish.rd.engine.requirement.model.RequirementDeliveryReviewResult;
+import com.wish.rd.engine.requirement.job.model.CommandDisposition;
+import com.wish.rd.engine.requirement.job.model.RequirementStageCommand;
+import com.wish.rd.engine.requirement.job.model.RequirementStageExecutionPlan;
 import com.wish.rd.engine.requirement.model.RequirementExecutionRequest;
 import com.wish.rd.engine.requirement.model.RequirementExecutionResult;
 import com.wish.rd.engine.requirement.model.RequirementExecutionProfileResolution;
@@ -2416,6 +2420,111 @@ class RequirementDeliveryEngineTest {
     }
 
     @Test
+    void deterministicReviewStageAcceptsRecoveringTaskFromCheckpointRetry() {
+        // 2026-08-22 杭州真机回归：checkpoint 重试路由把任务置为 RECOVERING 后派生
+        // DETERMINISTIC_REVIEW 命令，旧守卫硬性要求 EXECUTING 导致死信死循环，
+        // PR 永远无法发布。交付记账阶段必须与 PUBLICATION 一致地容忍恢复态。
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(),
+                new InMemoryRdTaskStatusEventStore(),
+                generator());
+        RdRequirementTask created = registry.createRequirementTask(new CreateRequirementTaskCommand(
+                "外卖页脚需求", "P1", "https://github.com/example/waimai.git",
+                "example", "waimai", "main", "给商家首页加页脚",
+                List.of("前端构建通过"), false));
+        String deliveryResultJson = """
+                {"status":"SUCCESS","pullRequestUrl":"","multiAgentStatus":"SUCCESS","multiAgentStages":[]}
+                """.strip();
+        InMemoryRdTaskStore taskStore = new InMemoryRdTaskStore();
+        RdRequirementTask recovering = created.withState(
+                RdTaskStatus.RECOVERING, "", deliveryResultJson, "", "", System.currentTimeMillis());
+        taskStore.saveRequirementTask(recovering);
+        RequirementStageCommand command = RequirementStageCommand.pending(
+                "cmd-deterministic-review", created.taskId(), recovering.version(), recovering.fencingToken(),
+                "REQUIREMENT_DELIVERY", "DETERMINISTIC_REVIEW", 0, 3,
+                System.currentTimeMillis() + 60_000L,
+                com.wish.rd.engine.scheduling.model.ScheduleResourceClass.GENERIC,
+                Set.of(com.wish.rd.engine.scheduling.model.ScheduleResourceClass.GENERIC),
+                "project-1", "", "P1", System.currentTimeMillis());
+
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                new RagStreamTaskRegistry(taskStore,
+                        new InMemoryRdTaskStatusEventStore(), generator()),
+                new InMemoryTaskMaterialStore(),
+                request -> {
+                    throw new AssertionError("delivery review must not execute roles");
+                },
+                new RequirementContextBuilder(),
+                new RequirementPlanGenerator(),
+                new RuleBasedRequirementPolicyGate(),
+                new AgentStagePlanner(new AtomicStageIdSupplier()),
+                new InMemoryAgentStageRunStore(),
+                new RoleContextBuilder(),
+                new InMemoryRoleContextPackageStore(),
+                new RecordingAgentWorkflowAlertSink(),
+                new InMemoryWorkflowExperienceStore(),
+                approvingReviewer(),
+                null);
+
+        RequirementStageExecutionPlan plan = engine.planStage(command);
+
+        assertEquals(CommandDisposition.SUCCEEDED, plan.commandDisposition());
+        assertEquals("AI_REVIEW", plan.continuation().stage());
+        assertTrue(plan.mutations().stream().anyMatch(mutation -> mutation.toStatus() == RdTaskStatus.VALIDATING));
+    }
+
+    @Test
+    void aiReviewStageAcceptsRecoveringTaskFromCheckpointRetry() {
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(),
+                new InMemoryRdTaskStatusEventStore(),
+                generator());
+        RdRequirementTask created = registry.createRequirementTask(new CreateRequirementTaskCommand(
+                "外卖页脚需求", "P1", "https://github.com/example/waimai.git",
+                "example", "waimai", "main", "给商家首页加页脚",
+                List.of("前端构建通过"), false));
+        String deliveryResultJson = """
+                {"status":"SUCCESS","pullRequestUrl":"","multiAgentStatus":"SUCCESS","multiAgentStages":[]}
+                """.strip();
+        InMemoryRdTaskStore taskStore = new InMemoryRdTaskStore();
+        RdRequirementTask recovering = created.withState(
+                RdTaskStatus.RECOVERING, "", deliveryResultJson, "", "", System.currentTimeMillis());
+        taskStore.saveRequirementTask(recovering);
+        RequirementStageCommand command = RequirementStageCommand.pending(
+                "cmd-ai-review", created.taskId(), recovering.version(), recovering.fencingToken(),
+                "REQUIREMENT_DELIVERY", "AI_REVIEW", 0, 3,
+                System.currentTimeMillis() + 60_000L,
+                com.wish.rd.engine.scheduling.model.ScheduleResourceClass.GENERIC,
+                Set.of(com.wish.rd.engine.scheduling.model.ScheduleResourceClass.GENERIC),
+                "project-1", "", "P1", System.currentTimeMillis());
+
+        // aiDeliveryReviewEngine 缺省禁用：直接放行到 PUBLICATION，正好验证守卫本身。
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                new RagStreamTaskRegistry(taskStore,
+                        new InMemoryRdTaskStatusEventStore(), generator()),
+                new InMemoryTaskMaterialStore(),
+                request -> {
+                    throw new AssertionError("ai review stage must not execute roles");
+                },
+                new RequirementContextBuilder(),
+                new RequirementPlanGenerator(),
+                new RuleBasedRequirementPolicyGate(),
+                new AgentStagePlanner(new AtomicStageIdSupplier()),
+                new InMemoryAgentStageRunStore(),
+                new RoleContextBuilder(),
+                new InMemoryRoleContextPackageStore(),
+                new RecordingAgentWorkflowAlertSink(),
+                new InMemoryWorkflowExperienceStore(),
+                null,
+                null);
+
+        RequirementStageExecutionPlan plan = engine.planStage(command);
+
+        assertEquals(CommandDisposition.SUCCEEDED, plan.commandDisposition());
+        assertEquals("PUBLICATION", plan.continuation().stage());
+    }
+
+    @Test
     void shouldMarkTaskFailedNeedsHumanWhenCodingAgentStageNeedsHuman() {
         RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
                 new InMemoryRdTaskStore(),
@@ -2833,6 +2942,15 @@ class RequirementDeliveryEngineTest {
                 1L
         ));
         return task;
+    }
+
+    private RequirementDeliveryReviewer approvingReviewer() {
+        return new RequirementDeliveryReviewer() {
+            @Override
+            public RequirementDeliveryReviewResult review(String taskId, String deliveryResultJson) {
+                return RequirementDeliveryReviewResult.approved(taskId);
+            }
+        };
     }
 
     private String roleResultJson(AgentRole role) {

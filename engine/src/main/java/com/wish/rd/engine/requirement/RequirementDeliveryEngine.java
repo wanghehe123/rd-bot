@@ -1525,7 +1525,7 @@ public class RequirementDeliveryEngine {
             RdRequirementTask task,
             RequirementStageCommand command
     ) {
-        requireStageStatus(task, command, RdTaskStatus.EXECUTING);
+        requireDeliveryStageStatus(task, command, RdTaskStatus.EXECUTING);
         RequirementExecutionResult execution = recoverExecutionResult(task);
         RequirementDeliveryReviewResult review = deliveryReviewer.review(task.taskId(), execution.resultJson());
         String reviewedResultJson = withDeliveryReviewJson(execution.resultJson(), review);
@@ -1546,7 +1546,7 @@ public class RequirementDeliveryEngine {
             RdRequirementTask task,
             RequirementStageCommand command
     ) {
-        requireStageStatus(task, command, RdTaskStatus.VALIDATING);
+        requireDeliveryStageStatus(task, command, RdTaskStatus.VALIDATING);
         if (aiDeliveryReviewEngine == null || !aiDeliveryReviewEngine.isEnabled()) {
             return plan(task, command, List.of(), CommandDisposition.SUCCEEDED,
                     new ContinuationSpec("REQUIREMENT_DELIVERY", "PUBLICATION"));
@@ -1750,6 +1750,24 @@ public class RequirementDeliveryEngine {
             throw new IllegalStateException("stage command " + command.commandId()
                     + " requires task status " + expectedStatus + " but was " + task.status());
         }
+    }
+
+    /**
+     * 交付记账三阶段（DETERMINISTIC_REVIEW / AI_REVIEW / PUBLICATION）的宽容守卫。
+     * checkpoint 重试路由（TaskRetryRoutePlanner）会把任务置为 RECOVERING 再派生交付阶段命令；
+     * PUBLICATION 早已容忍恢复态，DETERMINISTIC_REVIEW 与 AI_REVIEW 必须对齐，
+     * 否则交付阶段的重试会在守卫处死信死循环、永远到不了 PR 发布。
+     */
+    private void requireDeliveryStageStatus(
+            RdRequirementTask task,
+            RequirementStageCommand command,
+            RdTaskStatus expectedStatus
+    ) {
+        if (task.status() == expectedStatus || task.status() == RdTaskStatus.RECOVERING) {
+            return;
+        }
+        throw new IllegalStateException("stage command " + command.commandId()
+                + " requires task status " + expectedStatus + " but was " + task.status());
     }
 
     private ContinuationSpec roleContinuation(AgentRole role) {
