@@ -297,3 +297,32 @@ A-lite 切换当日，G1 一次通过；G2 端到端任务连续暴露 5 个 Mac
 **门控结论**：G1 通过；G2 通过；G3 的实质目标（QA 角色真实跑通并产出证据）达成——
 基础设施与协议链路全部真机验证（含 5 个迁移耦合缺陷的修复与沉淀），QA 角色受
 上述既有缺口阻塞，按 §9.4 降级接受项处理：QA 失败任务人工验收或临时回 Mac 跑 QA。
+
+### 10.5 交付收尾实录（任务 7496481903000817664 全链路打通，PR #28）
+
+§10.4 的两处缺口修复后（`f3889fdc` RECOVERING 守卫、`5598fc70` 空 policyRunId 跳过溯源），
+发布仍被四层连环缺口阻塞，逐一定位并处置后 **PR #28 创建成功、任务 COMPLETED**
+（https://github.com/wanghehe123/rd-bot-waimai-acceptance-20260624-141045/pull/28，
+Dashboard.tsx 页脚补丁，head 10fec3e）。处置记录与待迭代清单：
+
+1. **RETRY_POINT_AMBIGUOUS 根因链**：交付阶段重试解析只认 provenance 行
+   （结构化 failurePhase JSON 不被认）；而恢复链延续命令天生不带
+   `policy_run_id`/`source_plan_digest`，provenance 身份校验
+   （`hasRequiredLedgerIdentity` 要求 hasPolicyId==hasPlanDigest 且 PR_PUBLICATION 必须带
+   publication+policy 关联）必失败 → 歧义。本次用 SQL 手术把真实 policy run
+   （7496481912005988352）回填进 command/provenance 三处字段解锁。
+   → 待 OpenSpec：延续命令应继承 checkpoint.source_policy_run_id/plan_digest，
+   provenance 写入对无 policy 链允许 checkpoint 回退校验。
+2. **死信竞态丢结果 JSON**：PUBLICATION 命令 finalize 与 dead-letter 竞态导致
+   rd_tasks.execution_result_json 被截成 85 字节，candidatePatch 清单丢失 →
+   "publication requires a candidate-patch operation id"。已从 DETERMINISTIC_REVIEW
+   终局 marker 的 outcome_plan_json 还原 34KB 结果 JSON。
+3. **marker 重放掩盖重新规划**：同命令存在 OUTCOME_RECORDED marker 时 attempt 重领走
+   确定性重放（设计正确），但配合缺口 1/2 会死锁在旧失败上；删除陈旧 marker + 命令
+   重置 PENDING 后真正重跑。
+4. **needsHuman 终局崩溃**：publicationFailurePlan(needsHuman=true) 的 receipt=NONE 进
+   recordPublicationFailureProvenance 抛 "terminal publication failure requires a
+   publication receipt"（finalize 整体回滚，命令卡 RUNNING 直到租约回收）。
+   → 待 OpenSpec：NONE receipt 的 needsHuman 失败应记 provenance 而非抛错。
+5. **ECS→GitHub git 协议瞬时拥塞**：clone 120s 超时一次，重试即过（gh API 始终正常）；
+   安全组白名单须用直连出口 IP（Clash TUN 下 ipify 是代理出口，见 §10.3）。
