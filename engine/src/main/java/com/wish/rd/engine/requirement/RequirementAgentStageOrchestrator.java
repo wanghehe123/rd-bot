@@ -279,6 +279,12 @@ public class RequirementAgentStageOrchestrator {
             // 已成功阶段：直接复用历史产物，不再触发重跑，保持幂等与可恢复性。
             if (stage.status() == AgentStageStatus.SUCCEEDED) {
                 stageResults.add(reusedStageResultJson(stage));
+                if (role == AgentRole.CODING_AGENT) {
+                    String persistedCodingResult = persistedStageResultJson(stage);
+                    if (!persistedCodingResult.isBlank()) {
+                        deliveryResultJson = persistedCodingResult;
+                    }
+                }
                 continue;
             }
             // 阶段已进入终态但不成功时，当前提交链路直接失败（避免在异常阶段上继续向后推进）。
@@ -885,8 +891,29 @@ public class RequirementAgentStageOrchestrator {
                 artifactMetadata(stage, "RESULT_JSON", resultJson),
                 now
         ));
+        capturePublicationFactsArtifact(stage, resultJson, now + 1L);
         captureExecutorStageArtifacts(stage, resultJson, now);
         return stageRunStore.save(stage.withResultArtifactId(artifact.artifactId(), now));
+    }
+
+    private void capturePublicationFactsArtifact(AgentStageRun stage, String resultJson, long now) {
+        String projection = RequirementPublicationFactsProjection.from(stage.role(), resultJson);
+        if (projection.isBlank()) {
+            return;
+        }
+        artifactStore.saveImmutable(new AgentStageArtifact(
+                idGenerator.nextIdString(),
+                stage.stageRunId(),
+                stage.taskId(),
+                stage.role(),
+                RequirementPublicationFactsProjection.ARTIFACT_TYPE,
+                artifactUri(stage, "publication-facts"),
+                stage.role().name() + " publication facts",
+                projection,
+                sha256(projection),
+                artifactMetadata(stage, RequirementPublicationFactsProjection.ARTIFACT_TYPE, projection),
+                now
+        ));
     }
 
     private void captureExecutorStageArtifacts(AgentStageRun stage, String resultJson, long now) {
@@ -2190,11 +2217,7 @@ public class RequirementAgentStageOrchestrator {
         List<AgentStageArtifact> stageArtifacts = artifactStore.listByTask(stage.taskId()).stream()
                 .filter(artifact -> artifact.stageRunId().equals(stage.stageRunId()))
                 .toList();
-        AgentStageArtifact resultArtifact = stageArtifacts.stream()
-                .filter(artifact -> artifact.artifactId().equals(stage.resultArtifactId())
-                        || "RESULT_JSON".equals(artifact.artifactType()))
-                .max(Comparator.comparingLong(AgentStageArtifact::createdAtEpochMillis))
-                .orElse(null);
+        AgentStageArtifact resultArtifact = preferredResultArtifact(stage, stageArtifacts);
         Map<String, Object> reused = new LinkedHashMap<>();
         reused.put("role", stage.role().name());
         reused.put("success", true);
@@ -2218,6 +2241,38 @@ public class RequirementAgentStageOrchestrator {
             reused.put("candidatePatch", candidatePatch);
         }
         return compactJson(reused);
+    }
+
+    /**
+     * 读取已成功阶段持久化的完整结果；仅在历史预览被截断时保留可解析的完整顶层字段。
+     */
+    private String persistedStageResultJson(AgentStageRun stage) {
+        List<AgentStageArtifact> stageArtifacts = artifactStore.listByTask(stage.taskId()).stream()
+                .filter(artifact -> artifact.stageRunId().equals(stage.stageRunId()))
+                .toList();
+        AgentStageArtifact resultArtifact = preferredResultArtifact(stage, stageArtifacts);
+        String resultPreview = resultArtifact == null ? "" : safe(resultArtifact.contentPreview());
+        if (resultPreview.isBlank() || isJsonObject(resultPreview)) {
+            return resultPreview;
+        }
+        return salvageTruncatedResultJson(resultPreview);
+    }
+
+    private AgentStageArtifact preferredResultArtifact(
+            AgentStageRun stage,
+            List<AgentStageArtifact> stageArtifacts
+    ) {
+        return stageArtifacts.stream()
+                .filter(artifact -> artifact.artifactId().equals(stage.resultArtifactId())
+                        || "RESULT_JSON".equals(artifact.artifactType())
+                        || (stage.role() == AgentRole.CODING_AGENT
+                        && RequirementPublicationFactsProjection.ARTIFACT_TYPE.equals(artifact.artifactType())))
+                .max(Comparator
+                        .comparingInt((AgentStageArtifact artifact) ->
+                                RequirementPublicationFactsProjection.ARTIFACT_TYPE.equals(artifact.artifactType())
+                                        ? 1 : 0)
+                        .thenComparingLong(AgentStageArtifact::createdAtEpochMillis))
+                .orElse(null);
     }
 
     private boolean isJsonObject(String value) {

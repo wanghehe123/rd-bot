@@ -94,6 +94,19 @@ class EngineRequirementExecutorConfigurationTest {
                 "requirement/task-1001",
                 """
                         {"status":"SUCCESS","summary":"done","prBody":"body","multiAgentStatus":"SUCCESS","deliveryReview":{"approved":true}}
+                        """,
+                "op-test",
+                """
+                        ## Delivery Review
+                        - Approved: **yes**
+
+                        ## Acceptance
+                        | # | Scope | Criteria | Status | Command | Exit code | Duration ms | Evidence |
+                        | 1 | CURRENT | done | PASSED | test | 0 | 1 | https://evidence.example/1 |
+
+                        ## RD-Bot Provenance
+                        - taskId: task-1001
+                        - operationId: op-test
                         """
         );
     }

@@ -310,9 +310,10 @@ class RequirementDeliveryStageProposalTest {
     void publicationWaitReconcileFailureCarriesNonFinalizablePublicationReceipt() {
         PublicationFixture publication = publicationFixture();
         Fixture fixture = publication.fixture();
+        String approvedDelivery = approvedDeliveryJson(fixture.task().taskId());
         RdRequirementTask validating = fixture.registry().transitionRequirementFenced(
-                advanceToExecuting(fixture, successfulDeliveryJson()), RdTaskStatus.VALIDATING,
-                "", successfulDeliveryJson(), "", "");
+                advanceToExecuting(fixture, approvedDelivery), RdTaskStatus.VALIDATING,
+                "", approvedDelivery, "", "");
         String patchSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         String workBranch = "requirement/" + validating.taskId();
         String operationId = RequirementOperationId.of(
@@ -335,9 +336,10 @@ class RequirementDeliveryStageProposalTest {
     void publicationNeedsHumanFailureCarriesNonFinalizablePublicationReceipt() {
         PublicationFixture publication = publicationFixture();
         Fixture fixture = publication.fixture();
+        String approvedDelivery = approvedDeliveryJson(fixture.task().taskId());
         RdRequirementTask validating = fixture.registry().transitionRequirementFenced(
-                advanceToExecuting(fixture, successfulDeliveryJson()), RdTaskStatus.VALIDATING,
-                "", successfulDeliveryJson(), "", "");
+                advanceToExecuting(fixture, approvedDelivery), RdTaskStatus.VALIDATING,
+                "", approvedDelivery, "", "");
         String patchSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         String workBranch = "requirement/" + validating.taskId();
         String operationId = RequirementOperationId.of(
@@ -360,9 +362,10 @@ class RequirementDeliveryStageProposalTest {
     void remainingTailStagesAreNonMutatingAndPublicationReturnsAFinalizableReceipt() {
         PublicationFixture publicationFixture = publicationFixture();
         Fixture fixture = publicationFixture.fixture();
+        String approvedDelivery = approvedDeliveryJson(fixture.task().taskId());
         RdRequirementTask validating = fixture.registry().transitionRequirementFenced(
-                advanceToExecuting(fixture, successfulDeliveryJson()), RdTaskStatus.VALIDATING,
-                "", successfulDeliveryJson(), "", "");
+                advanceToExecuting(fixture, approvedDelivery), RdTaskStatus.VALIDATING,
+                "", approvedDelivery, "", "");
         Snapshot validatingBefore = Snapshot.capture(fixture, validating);
 
         RequirementStageExecutionPlan ai = fixture.engine().planStage(command(validating, "AI_REVIEW"));
@@ -566,14 +569,28 @@ class RequirementDeliveryStageProposalTest {
 
     private static String successfulDeliveryJson() {
         return """
-                {"multiAgentStatus":"SUCCESS","multiAgentStages":[
+                {"status":"SUCCESS","multiAgentStatus":"SUCCESS",
+                "changedFiles":["src/App.java"],"testCommands":["./mvnw test"],"testStatus":"PASSED","riskLevel":"LOW",
+                "multiAgentStages":[
                 {"role":"REQUIREMENT_REVIEWER","success":true},
                 {"role":"SOLUTION_ARCHITECT","success":true},
-                {"role":"CODING_AGENT","success":true,"candidatePatch":{"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","bytes":1,"artifactUri":"s3://patch"},"resultJson":{"prBody":"body"}},
+                {"role":"CODING_AGENT","success":true,"candidatePatch":{"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","bytes":1,"artifactUri":"s3://patch"},
+                 "resultJson":{"summary":"implemented","prBody":"body","changedFiles":["src/App.java"],"testCommands":["./mvnw test"],"testStatus":"PASSED","riskLevel":"LOW"}},
                 {"role":"QA_AGENT","success":true,"resultJson":{"status":"PASSED","failureCategory":"NONE","retryRecommendation":"NONE",
                 "browserValidation":{"required":false,"performed":false,"decisionSource":"NOT_APPLICABLE","baseUrl":"","browser":"chromium","viewports":[]},
-                "acceptanceResults":[{"criteria":"current","scope":"CURRENT","command":"test","status":"PASSED","exitCode":0,"durationMillis":0,"logArtifactId":"current.log","evidenceArtifactIds":["current.log"]},{"criteria":"regression","scope":"REGRESSION","command":"test","status":"PASSED","exitCode":0,"durationMillis":0,"logArtifactId":"regression.log","evidenceArtifactIds":["regression.log"]}],"evidenceManifestArtifactId":"manifest.json"}}]}
+                "acceptanceResults":[{"criteria":"current","scope":"CURRENT","command":"test","status":"PASSED","exitCode":0,"durationMillis":0,"logArtifactId":"current.log","evidenceArtifactIds":["https://evidence.example/current"]},{"criteria":"regression","scope":"REGRESSION","command":"test","status":"PASSED","exitCode":0,"durationMillis":0,"logArtifactId":"regression.log","evidenceArtifactIds":["regression.log"]}],"evidenceManifestArtifactId":"manifest.json"}}]}
                 """;
+    }
+
+    private static String approvedDeliveryJson(String taskId) {
+        String delivery = successfulDeliveryJson().strip();
+        String hash = new RequirementDeliveryPublicationViewAssembler()
+                .assemble(delivery)
+                .publicationFactsHash();
+        return delivery.substring(0, delivery.length() - 1)
+                + ",\"deliveryReview\":{\"taskId\":\"" + taskId
+                + "\",\"reviewer\":\"DELIVERY_REVIEWER\",\"approved\":true,\"factsHash\":\""
+                + hash + "\"}}";
     }
 
     private static RdRequirementTask advance(Fixture fixture, RdTaskStatus... statuses) {

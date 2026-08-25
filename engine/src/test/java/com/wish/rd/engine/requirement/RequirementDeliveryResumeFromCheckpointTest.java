@@ -12,6 +12,7 @@ import com.wish.rd.engine.agent.model.AgentStageStatus;
 import com.wish.rd.engine.requirement.model.RequirementBranchPublication;
 import com.wish.rd.engine.requirement.model.RequirementDeliveryResult;
 import com.wish.rd.engine.requirement.model.RequirementDeliveryReviewResult;
+import com.wish.rd.engine.requirement.model.RequirementDeliveryPublicationView;
 import com.wish.rd.engine.requirement.model.RequirementPullRequestPublication;
 import com.wish.rd.engine.requirement.publication.RequirementOperationId;
 import com.wish.rd.engine.requirement.publication.RequirementPublicationLedger;
@@ -65,9 +66,12 @@ class RequirementDeliveryResumeFromCheckpointTest {
         AtomicInteger reviewerCalls = new AtomicInteger();
         RequirementDeliveryEngine engine = fixture.engine(new RequirementDeliveryReviewer() {
             @Override
-            public RequirementDeliveryReviewResult review(String taskId, String deliveryResultJson) {
+            public RequirementDeliveryReviewResult review(
+                    String taskId,
+                    RequirementDeliveryPublicationView publicationView
+            ) {
                 reviewerCalls.incrementAndGet();
-                assertTrue(deliveryResultJson.contains("multiAgentStages"));
+                assertEquals(4, publicationView.successfulRoles().size());
                 return RequirementDeliveryReviewResult.approved(taskId);
             }
         });
@@ -91,10 +95,12 @@ class RequirementDeliveryResumeFromCheckpointTest {
         RequirementDeliveryEngine engine = fixture.engine(stageRuns, artifacts,
                 new RequirementDeliveryReviewer() {
                     @Override
-                    public RequirementDeliveryReviewResult review(String taskId, String deliveryResultJson) {
+                    public RequirementDeliveryReviewResult review(
+                            String taskId,
+                            RequirementDeliveryPublicationView publicationView
+                    ) {
                         reviewerCalls.incrementAndGet();
-                        assertTrue(deliveryResultJson.contains("\\\"prBody\\\""), deliveryResultJson);
-                        assertTrue(deliveryResultJson.contains("\"resultJsonTruncated\":true"), deliveryResultJson);
+                        assertEquals(List.of("src/App.java"), publicationView.coding().changedFiles());
                         return RequirementDeliveryReviewResult.approved(taskId);
                     }
                 });
@@ -109,10 +115,13 @@ class RequirementDeliveryResumeFromCheckpointTest {
     @Test
     void aiReviewProviderRetrySkipsDeterministicReviewAndRolesThenPublishesOnOk() {
         ResumeFixture fixture = resumeFixture(TaskFailurePhase.AI_REVIEW,
-                withDeliveryReview(validDeliveryJson()));
+                withDeliveryReview("task-resume", validDeliveryJson()));
         RequirementDeliveryEngine engine = fixture.engine(new RequirementDeliveryReviewer() {
             @Override
-            public RequirementDeliveryReviewResult review(String taskId, String deliveryResultJson) {
+            public RequirementDeliveryReviewResult review(
+                    String taskId,
+                    RequirementDeliveryPublicationView publicationView
+            ) {
                 throw new AssertionError("deterministic review must not rerun for AI provider retry");
             }
         });
@@ -141,6 +150,32 @@ class RequirementDeliveryResumeFromCheckpointTest {
         assertEquals(1, modelCalls.get());
         assertEquals(0, fixture.executorCalls.get());
         assertEquals(1, fixture.publisherCalls.get());
+    }
+
+    @Test
+    void aiReviewRetryFailsClosedBeforePublisherWithoutApprovedDeterministicReview() {
+        for (String resultJson : List.of(
+                validDeliveryJson(),
+                withReviewObject(validDeliveryJson(), "{}"),
+                withReviewObject(validDeliveryJson(),
+                        "{\"reviewer\":\"DELIVERY_REVIEWER\",\"approved\":false,\"reason\":\"rejected\"}"))) {
+            ResumeFixture fixture = resumeFixture(TaskFailurePhase.AI_REVIEW, resultJson);
+            RequirementDeliveryEngine engine = fixture.engine(new RequirementDeliveryReviewer() {
+                @Override
+                public RequirementDeliveryReviewResult review(
+                        String taskId,
+                        RequirementDeliveryPublicationView publicationView
+                ) {
+                    throw new AssertionError("deterministic review must not rerun for AI provider retry");
+                }
+            });
+
+            RequirementDeliveryResult result = engine.submit(fixture.task.taskId());
+
+            assertEquals(RdTaskStatus.REJECTED, result.status(), result.errorMessage());
+            assertEquals(0, fixture.publisherCalls.get());
+            assertTrue(result.errorMessage().contains("delivery review failed"), result.errorMessage());
+        }
     }
 
     @Test
@@ -192,6 +227,55 @@ class RequirementDeliveryResumeFromCheckpointTest {
         assertTrue(stages.listByTask(task.taskId()).isEmpty(), "PR retry must not create role attempts");
         assertEquals(1, occurrences(result.resultJson(), "\"pullRequestPublication\""),
                 "repeated PR retry must replace the old publication snapshot instead of duplicating JSON keys");
+    }
+
+    @Test
+    void prPublicationCheckpointRejectsInvalidViewBeforeAnyRemoteWrite() {
+        ResumeFixture fixture = resumeFixture(TaskFailurePhase.PR_PUBLICATION, validDeliveryJson());
+        RequirementDeliveryEngine engine = fixture.engine(new RequirementDeliveryReviewer());
+        AtomicInteger branchCalls = new AtomicInteger();
+        engine.setBranchPublisher(command -> {
+            branchCalls.incrementAndGet();
+            return RequirementBranchPublication.success(command.taskId(), "unexpected", "{}");
+        });
+
+        RequirementDeliveryResult result = engine.submit(fixture.task().taskId());
+
+        assertEquals(0, branchCalls.get(), "invalid publication view must block before branch push");
+        assertEquals(0, fixture.publisherCalls().get(), "invalid publication view must block before PR create");
+        assertEquals(RdTaskStatus.FAILED_NEEDS_HUMAN, result.status());
+        assertTrue(result.errorMessage().contains("approved delivery review"), result.errorMessage());
+    }
+
+    @Test
+    void checkpointsRejectFailedAggregateAndLoopbackOnlyEvidenceBeforePublisher() {
+        String failedAggregate = validDeliveryJson().replace(
+                "\"multiAgentStatus\":\"SUCCESS\"", "\"multiAgentStatus\":\"FAILED\"");
+        ResumeFixture failedFixture = resumeFixture(
+                TaskFailurePhase.PR_PUBLICATION,
+                withReviewObject(failedAggregate,
+                        "{\"taskId\":\"task-resume\",\"reviewer\":\"DELIVERY_REVIEWER\","
+                                + "\"approved\":true,\"factsHash\":\"sha256:stale\"}"));
+
+        RequirementDeliveryResult failedResult = failedFixture.engine(new RequirementDeliveryReviewer())
+                .submit(failedFixture.task().taskId());
+
+        assertEquals(RdTaskStatus.FAILED_NEEDS_HUMAN, failedResult.status());
+        assertEquals(0, failedFixture.publisherCalls().get());
+        assertTrue(failedResult.errorMessage().contains("multiAgentStatus"), failedResult.errorMessage());
+
+        String loopbackOnly = validDeliveryJson()
+                .replace("qa/manifest.json", "http://2130706433/manifest.json")
+                .replace("qa/current.log", "http://[::ffff:127.0.0.1]/current.log")
+                .replace("qa/regression.log", "http://localhost/regression.log");
+        ResumeFixture evidenceFixture = resumeFixture(TaskFailurePhase.DETERMINISTIC_REVIEW, loopbackOnly);
+
+        RequirementDeliveryResult evidenceResult = evidenceFixture.engine(new RequirementDeliveryReviewer())
+                .submit(evidenceFixture.task().taskId());
+
+        assertEquals(RdTaskStatus.REJECTED, evidenceResult.status());
+        assertEquals(0, evidenceFixture.publisherCalls().get());
+        assertTrue(evidenceResult.errorMessage().contains("persistent"), evidenceResult.errorMessage());
     }
 
     @Test
@@ -745,11 +829,7 @@ class RequirementDeliveryResumeFromCheckpointTest {
                 "订单状态筛选", "project-1", "waimai", "外卖项目",
                 "https://github.com/acme/waimai", "acme", "waimai", "main", "feature/status",
                 "支持状态筛选", "[\"筛选正确\"]", "prompt",
-                """
-                        {"status":"SUCCESS","multiAgentStages":[{"role":"QA_AGENT","success":true}],
-                         "deliveryReview":{"approved":true},
-                         "pullRequestPublication":{"success":false,"errorMessage":"temporary"}}
-                        """,
+                withPullRequestPublication(withDeliveryReview("task-1", validDeliveryJson())),
                 "", "GitHub temporarily unavailable", 10L, 20L, false);
     }
 
@@ -759,23 +839,7 @@ class RequirementDeliveryResumeFromCheckpointTest {
                 "订单状态筛选", "project-1", "waimai", "外卖项目",
                 "https://github.com/acme/waimai", "acme", "waimai", "main", "feature/status",
                 "支持状态筛选", "[\"筛选正确\"]", "prompt",
-                """
-                        {"status":"SUCCESS",
-                         "multiAgentStages":[{
-                           "role":"CODING_AGENT",
-                           "success":true,
-                           "candidatePatch":{
-                             "sourceRole":"CODING_AGENT",
-                             "targetRole":"QA_AGENT",
-                             "artifactName":"patch.diff",
-                             "artifactUri":"s3://rd-role-handoffs/private-candidate.patch",
-                             "sha256":"%s",
-                             "bytes":321
-                           }
-                         },{"role":"QA_AGENT","success":true}],
-                         "deliveryReview":{"approved":true},
-                         "pullRequestPublication":{"success":false,"errorMessage":"temporary"}}
-                        """.formatted(patchSha),
+                withPullRequestPublication(withDeliveryReview("task-1", validDeliveryJson(patchSha))),
                 "", "GitHub temporarily unavailable", 10L, 20L, false);
     }
 
@@ -813,14 +877,30 @@ class RequirementDeliveryResumeFromCheckpointTest {
     }
 
     private static String validDeliveryJson() {
+        return validDeliveryJson("a".repeat(64));
+    }
+
+    private static String validDeliveryJson(String patchSha) {
         return """
-                {"multiAgentStatus":"SUCCESS","multiAgentStages":[
-                  {"role":"REQUIREMENT_REVIEWER","success":true,"pullRequestUrl":"","resultJson":"{}"},
-                  {"role":"SOLUTION_ARCHITECT","success":true,"pullRequestUrl":"","resultJson":"{}"},
-                  {"role":"CODING_AGENT","success":true,"pullRequestUrl":"","resultJson":"{\\\"changedFiles\\\":[\\\"a.java\\\"]}"},
-                  {"role":"QA_AGENT","success":true,"pullRequestUrl":"","resultJson":"{\\\"status\\\":\\\"PASSED\\\",\\\"acceptanceResults\\\":[{\\\"criteria\\\":\\\"筛选正确\\\",\\\"command\\\":\\\"mvn test\\\",\\\"status\\\":\\\"PASSED\\\",\\\"logArtifactId\\\":\\\"log-1\\\"}]}"}
+                {"status":"SUCCESS","multiAgentStatus":"SUCCESS",
+                 "changedFiles":["src/App.java"],"testCommands":["./mvnw test"],"testStatus":"PASSED","riskLevel":"LOW",
+                 "multiAgentStages":[
+                  {"role":"REQUIREMENT_REVIEWER","success":true,"pullRequestUrl":"","resultJson":{}},
+                  {"role":"SOLUTION_ARCHITECT","success":true,"pullRequestUrl":"","resultJson":{}},
+                  {"role":"CODING_AGENT","success":true,"pullRequestUrl":"",
+                   "candidatePatch":{"sourceRole":"CODING_AGENT","targetRole":"QA_AGENT","artifactName":"patch.diff",
+                     "artifactUri":"s3://rd-role-handoffs/private-candidate.patch","sha256":"%s","bytes":321},
+                   "resultJson":{"summary":"implemented","prBody":"implemented","changedFiles":["src/App.java"],
+                     "testCommands":["./mvnw test"],"testStatus":"PASSED","riskLevel":"LOW"}},
+                  {"role":"QA_AGENT","success":true,"pullRequestUrl":"","resultJson":{
+                    "status":"PASSED","summary":"current and regression passed","failureCategory":"NONE","retryRecommendation":"NONE",
+                    "browserValidation":{"required":false,"performed":false,"decisionSource":"NOT_APPLICABLE","baseUrl":"","browser":"chromium","viewports":[]},
+                    "acceptanceResults":[
+                      {"criteria":"筛选正确","scope":"CURRENT","command":"./mvnw test","status":"PASSED","exitCode":0,"durationMillis":1,"logArtifactId":"qa/current.log","evidenceArtifactIds":["qa/current.log"]},
+                      {"criteria":"回归正确","scope":"REGRESSION","command":"./mvnw test","status":"PASSED","exitCode":0,"durationMillis":1,"logArtifactId":"qa/regression.log","evidenceArtifactIds":["qa/regression.log"]}
+                    ],"evidenceManifestArtifactId":"qa/manifest.json"}}
                 ]}
-                """;
+                """.formatted(patchSha);
     }
 
     /** 每个阶段的 resultJson 都是被字符截断后不再合法的 RESULT_JSON 预览。 */
@@ -858,10 +938,25 @@ class RequirementDeliveryResumeFromCheckpointTest {
             index++;
             String stageRunId = "stage-" + index;
             String artifactId = "artifact-" + index;
+            String resultJson = switch (role) {
+                case CODING_AGENT -> """
+                        {"summary":"implemented","prBody":"implemented","changedFiles":["src/App.java"],
+                         "testCommands":["./mvnw test"],"testStatus":"PASSED","riskLevel":"LOW"}
+                        """;
+                case QA_AGENT -> """
+                        {"status":"PASSED","summary":"passed","failureCategory":"NONE","retryRecommendation":"NONE",
+                         "browserValidation":{"required":false,"performed":false,"decisionSource":"NOT_APPLICABLE","baseUrl":"","browser":"chromium","viewports":[]},
+                         "acceptanceResults":[
+                           {"criteria":"current","scope":"CURRENT","command":"./mvnw test","status":"PASSED","exitCode":0,"durationMillis":1,"logArtifactId":"qa/current.log","evidenceArtifactIds":["qa/current.log"]},
+                           {"criteria":"regression","scope":"REGRESSION","command":"./mvnw test","status":"PASSED","exitCode":0,"durationMillis":1,"logArtifactId":"qa/regression.log","evidenceArtifactIds":["qa/regression.log"]}],
+                         "evidenceManifestArtifactId":"qa/manifest.json"}
+                        """;
+                default -> "{}";
+            };
             artifacts.save(new AgentStageArtifact(
                     artifactId, stageRunId, taskId, role, "RESULT_JSON",
                     "rd-agent-stage://" + taskId + "/" + stageRunId + "/result",
-                    role.name() + " result json", truncatedRolePreview(), "sha256:" + artifactId,
+                    role.name() + " result json", resultJson, "sha256:" + artifactId,
                     "{}", 100L + index));
             stageRuns.save(new AgentStageRun(
                     stageRunId, taskId, role, AgentStageStatus.SUCCEEDED, 1,
@@ -870,10 +965,25 @@ class RequirementDeliveryResumeFromCheckpointTest {
         }
     }
 
-    private static String withDeliveryReview(String value) {
+    private static String withDeliveryReview(String taskId, String value) {
+        String factsHash = new RequirementDeliveryPublicationViewAssembler()
+                .assemble(value)
+                .publicationFactsHash();
+        return withReviewObject(value,
+                "{\"taskId\":\"" + taskId + "\",\"reviewer\":\"DELIVERY_REVIEWER\"," +
+                        "\"approved\":true,\"factsHash\":\"" + factsHash + "\"}");
+    }
+
+    private static String withReviewObject(String value, String reviewJson) {
         String normalized = value.strip();
         return normalized.substring(0, normalized.length() - 1)
-                + ",\"deliveryReview\":{\"approved\":true}}";
+                + ",\"deliveryReview\":" + reviewJson + "}";
+    }
+
+    private static String withPullRequestPublication(String value) {
+        String normalized = value.strip();
+        return normalized.substring(0, normalized.length() - 1)
+                + ",\"pullRequestPublication\":{\"success\":false,\"errorMessage\":\"temporary\"}}";
     }
 
     private static int occurrences(String value, String token) {

@@ -1,27 +1,42 @@
 package com.wish.rd.engine.requirement;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wish.rd.engine.agent.model.AgentRole;
+import com.wish.rd.engine.requirement.model.RequirementDeliveryPublicationView;
+import com.wish.rd.engine.requirement.model.RequirementDeliveryPublicationView.AcceptanceResult;
+import com.wish.rd.engine.requirement.model.RequirementDeliveryPublicationView.BrowserValidation;
+import com.wish.rd.engine.requirement.model.RequirementDeliveryReviewResult;
 import org.springframework.stereotype.Component;
 
-import java.util.EnumMap;
-import java.util.Map;
-import com.wish.rd.engine.requirement.model.RequirementDeliveryReviewResult;
+import java.util.Locale;
 
 /**
  * 需求交付复核器。
  *
- * <p>该组件只复核控制面产物完整性，不调用外部 provider，也不修改代码或创建 PR。
+ * <p>该组件只复核统一发布视图，不调用外部 provider，也不修改代码或创建 PR。
  */
 @Component
 public class RequirementDeliveryReviewer {
 
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private final RequirementDeliveryPublicationViewAssembler publicationViewAssembler;
+
+    /** 使用默认统一发布视图组装器。 */
+    public RequirementDeliveryReviewer() {
+        this(new RequirementDeliveryPublicationViewAssembler());
+    }
 
     /**
-     * 复核多 Agent 交付结果是否可以发布 PR。
+     * 创建复核器。
+     *
+     * @param publicationViewAssembler 统一发布视图组装器
+     */
+    public RequirementDeliveryReviewer(RequirementDeliveryPublicationViewAssembler publicationViewAssembler) {
+        this.publicationViewAssembler = publicationViewAssembler == null
+                ? new RequirementDeliveryPublicationViewAssembler()
+                : publicationViewAssembler;
+    }
+
+    /**
+     * 兼容旧调用方：只在边界组装一次统一视图，然后执行同一套复核。
      *
      * @param taskId             RD 任务 ID
      * @param deliveryResultJson 多 Agent 聚合结果 JSON
@@ -32,59 +47,87 @@ public class RequirementDeliveryReviewer {
         if (normalizedTaskId.isBlank()) {
             return RequirementDeliveryReviewResult.rejected(normalizedTaskId, "taskId must not be blank");
         }
-        JsonNode root;
         try {
-            root = OBJECT_MAPPER.readTree(deliveryResultJson == null ? "" : deliveryResultJson);
-        } catch (JsonProcessingException exception) {
-            return RequirementDeliveryReviewResult.rejected(normalizedTaskId, "invalid delivery result json");
+            return review(normalizedTaskId, publicationViewAssembler.assemble(deliveryResultJson));
+        } catch (IllegalArgumentException exception) {
+            String reason = safe(exception.getMessage());
+            if (reason.startsWith("deliveryResultJson:")) {
+                reason = "invalid delivery result json: " + reason.substring("deliveryResultJson:".length()).strip();
+            }
+            return RequirementDeliveryReviewResult.rejected(normalizedTaskId, reason);
         }
-        if (root == null || !root.isObject()) {
-            return RequirementDeliveryReviewResult.rejected(normalizedTaskId, "delivery result json must be an object");
+    }
+
+    /**
+     * 复核已组装的统一发布视图。
+     *
+     * @param taskId RD 任务 ID
+     * @param view   统一发布视图
+     * @return 复核结果
+     */
+    public RequirementDeliveryReviewResult review(String taskId, RequirementDeliveryPublicationView view) {
+        String normalizedTaskId = safe(taskId);
+        if (normalizedTaskId.isBlank()) {
+            return RequirementDeliveryReviewResult.rejected(normalizedTaskId, "taskId must not be blank");
         }
-        if (!"SUCCESS".equals(text(root.path("multiAgentStatus")))) {
-            return RequirementDeliveryReviewResult.rejected(normalizedTaskId, "multiAgentStatus must be SUCCESS");
+        if (view == null) {
+            return RequirementDeliveryReviewResult.rejected(normalizedTaskId, "publication view must not be null");
         }
-        JsonNode stages = root.path("multiAgentStages");
-        if (!stages.isArray() || stages.isEmpty()) {
-            return RequirementDeliveryReviewResult.rejected(normalizedTaskId, "multiAgentStages must not be empty");
-        }
-        Map<AgentRole, JsonNode> byRole = stagesByRole(stages);
         for (AgentRole role : AgentRole.requirementDeliveryOrder()) {
-            JsonNode stage = byRole.get(role);
-            if (stage == null) {
-                return RequirementDeliveryReviewResult.rejected(
-                        normalizedTaskId,
-                        "required agent stage missing: " + role.name()
-                );
-            }
-            if (!text(stage.path("pullRequestUrl")).isBlank()) {
-                return RequirementDeliveryReviewResult.rejected(
-                        normalizedTaskId,
-                        "agent stage must not contain pullRequestUrl before delivery review: " + role.name()
-                );
-            }
-            if (!stage.path("success").asBoolean(false)) {
-                return RequirementDeliveryReviewResult.rejected(
-                        normalizedTaskId,
-                        "required agent stage failed: " + role.name()
-                );
+            if (!view.successfulRoles().contains(role.name())) {
+                return rejected(normalizedTaskId, "required agent stage missing or failed: " + role.name());
             }
         }
-        JsonNode codingStage = byRole.get(AgentRole.CODING_AGENT);
-        JsonNode codingResult = codingStage.path("resultJson");
-        if (!hasCodingDeliveryEvidence(codingResult)) {
-            return RequirementDeliveryReviewResult.rejected(
-                    normalizedTaskId,
-                    "CODING_AGENT delivery evidence is incomplete"
-            );
+        if (view.coding().changedFiles().isEmpty()) {
+            return rejected(normalizedTaskId, "CODING_AGENT.changedFiles must not be empty");
         }
-        JsonNode qaStage = byRole.get(AgentRole.QA_AGENT);
-        JsonNode qaResult = qaStage.path("resultJson");
-        if (!hasQaDeliveryEvidence(qaResult)) {
-            return RequirementDeliveryReviewResult.rejected(
-                    normalizedTaskId,
-                    "QA_AGENT delivery evidence is incomplete"
-            );
+        if (view.coding().testCommands().isEmpty()) {
+            return rejected(normalizedTaskId, "CODING_AGENT.testCommands must not be empty");
+        }
+        if (!isOneOf(view.coding().testStatus(), "PASSED", "SKIPPED")) {
+            return rejected(normalizedTaskId, "CODING_AGENT.testStatus must be PASSED or SKIPPED");
+        }
+        if (!isOneOf(view.coding().riskLevel(), "LOW", "MEDIUM", "HIGH")) {
+            return rejected(normalizedTaskId, "CODING_AGENT.riskLevel must be LOW, MEDIUM, or HIGH");
+        }
+
+        RequirementDeliveryPublicationView.QaDelivery qa = view.qa();
+        if (!"PASSED".equalsIgnoreCase(qa.status())) {
+            return rejected(normalizedTaskId, "QA_AGENT.status must be PASSED");
+        }
+        if (!"NONE".equalsIgnoreCase(qa.failureCategory())) {
+            return rejected(normalizedTaskId, "QA_AGENT.failureCategory must be NONE");
+        }
+        if (!"NONE".equalsIgnoreCase(qa.retryRecommendation())) {
+            return rejected(normalizedTaskId, "QA_AGENT.retryRecommendation must be NONE");
+        }
+        if (!RequirementPublicationEvidenceReference.isPersistentReference(
+                qa.evidenceManifestArtifactId())) {
+            return rejected(normalizedTaskId,
+                    "QA_AGENT.evidenceManifestArtifactId must be a persistent non-loopback reference");
+        }
+        String browserError = browserError(qa.browserValidation());
+        if (!browserError.isBlank()) {
+            return rejected(normalizedTaskId, browserError);
+        }
+        if (qa.acceptanceResults().isEmpty()) {
+            return rejected(normalizedTaskId, "QA_AGENT.acceptanceResults must not be empty");
+        }
+        boolean currentScopePresent = false;
+        boolean regressionScopePresent = false;
+        for (int index = 0; index < qa.acceptanceResults().size(); index++) {
+            AcceptanceResult acceptance = qa.acceptanceResults().get(index);
+            String prefix = "QA_AGENT.acceptanceResults[" + index + "]";
+            String error = acceptanceError(prefix, acceptance);
+            if (!error.isBlank()) {
+                return rejected(normalizedTaskId, error);
+            }
+            currentScopePresent |= "CURRENT".equalsIgnoreCase(acceptance.scope());
+            regressionScopePresent |= "REGRESSION".equalsIgnoreCase(acceptance.scope());
+        }
+        if (!currentScopePresent || !regressionScopePresent) {
+            return rejected(normalizedTaskId,
+                    "QA_AGENT.acceptanceResults must include CURRENT and REGRESSION scopes");
         }
         return RequirementDeliveryReviewResult.approved(normalizedTaskId);
     }
@@ -96,129 +139,55 @@ public class RequirementDeliveryReviewer {
         return review(taskId, deliveryResultJson);
     }
 
-    private boolean hasCodingDeliveryEvidence(JsonNode codingResult) {
-        JsonNode parsed = parseResultObject(codingResult);
-        if (parsed == null) {
-            return false;
+    private String acceptanceError(String prefix, AcceptanceResult acceptance) {
+        if (acceptance.criteria().isBlank()) return prefix + ".criteria must not be blank";
+        if (!isOneOf(acceptance.scope(), "CURRENT", "REGRESSION")) {
+            return prefix + ".scope must be CURRENT or REGRESSION";
         }
-        return !text(parsed.path("prBody")).isBlank()
-                || !text(parsed.path("changedFiles")).isBlank()
-                || !text(parsed.path("testSummary")).isBlank();
+        if (acceptance.command().isBlank()) return prefix + ".command must not be blank";
+        if (!"PASSED".equalsIgnoreCase(acceptance.status())) return prefix + ".status must be PASSED";
+        if (acceptance.exitCode() == null || acceptance.exitCode() != 0L) {
+            return prefix + ".exitCode must be 0";
+        }
+        if (acceptance.durationMillis() == null || acceptance.durationMillis() < 0L) {
+            return prefix + ".durationMillis must be a non-negative integer";
+        }
+        if (!RequirementPublicationEvidenceReference.isPersistentReference(acceptance.logArtifactId())) {
+            return prefix + ".logArtifactId must be a persistent non-loopback reference";
+        }
+        if (acceptance.evidenceArtifactIds().isEmpty()
+                || acceptance.evidenceArtifactIds().stream().anyMatch(String::isBlank)) {
+            return prefix + ".evidenceArtifactIds must contain non-empty references";
+        }
+        if (acceptance.evidenceArtifactIds().stream()
+                .noneMatch(RequirementPublicationEvidenceReference::isPersistentReference)) {
+            return prefix + ".evidenceArtifactIds must contain a persistent non-loopback reference";
+        }
+        return "";
     }
 
-    private boolean hasQaDeliveryEvidence(JsonNode qaResult) {
-        JsonNode parsed = parseResultObject(qaResult);
-        if (parsed == null) {
-            return false;
-        }
-        if (!"PASSED".equalsIgnoreCase(text(parsed.path("status")))) {
-            return false;
-        }
-        if (!"NONE".equalsIgnoreCase(text(parsed.path("failureCategory")))
-                || !"NONE".equalsIgnoreCase(text(parsed.path("retryRecommendation")))
-                || text(parsed.path("evidenceManifestArtifactId")).isBlank()
-                || !hasValidBrowserDecision(parsed.path("browserValidation"))) {
-            return false;
-        }
-        JsonNode acceptanceResults = parsed.path("acceptanceResults");
-        if (!acceptanceResults.isArray() || acceptanceResults.isEmpty()) {
-            return false;
-        }
-        boolean currentScopePresent = false;
-        boolean regressionScopePresent = false;
-        for (JsonNode acceptanceResult : acceptanceResults) {
-            String scope = text(acceptanceResult.path("scope"));
-            if (!acceptanceResult.isObject()
-                    || text(acceptanceResult.path("criteria")).isBlank()
-                    || text(acceptanceResult.path("command")).isBlank()
-                    || !"PASSED".equalsIgnoreCase(text(acceptanceResult.path("status")))
-                    || !acceptanceResult.path("exitCode").isIntegralNumber()
-                    || acceptanceResult.path("exitCode").longValue() != 0L
-                    || !acceptanceResult.path("durationMillis").canConvertToLong()
-                    || acceptanceResult.path("durationMillis").longValue() < 0L
-                    || text(acceptanceResult.path("logArtifactId")).isBlank()
-                    || !hasNonEmptyStringArray(acceptanceResult.path("evidenceArtifactIds"))
-                    || !("CURRENT".equalsIgnoreCase(scope) || "REGRESSION".equalsIgnoreCase(scope))) {
-                return false;
-            }
-            currentScopePresent |= "CURRENT".equalsIgnoreCase(scope);
-            regressionScopePresent |= "REGRESSION".equalsIgnoreCase(scope);
-        }
-        return currentScopePresent && regressionScopePresent;
+    private String browserError(BrowserValidation browser) {
+        if (!browser.requiredReported()) return "QA_AGENT.browserValidation.required must be boolean";
+        if (!browser.performedReported()) return "QA_AGENT.browserValidation.performed must be boolean";
+        if (browser.decisionSource().isBlank()) return "QA_AGENT.browserValidation.decisionSource must not be blank";
+        if (browser.browser().isBlank()) return "QA_AGENT.browserValidation.browser must not be blank";
+        if (!browser.required()) return "";
+        if (!browser.performed()) return "QA_AGENT.browserValidation.performed must be true when required";
+        if (browser.baseUrl().isBlank()) return "QA_AGENT.browserValidation.baseUrl must not be blank when required";
+        if (browser.viewports().isEmpty()) return "QA_AGENT.browserValidation.viewports must not be empty when required";
+        return "";
     }
 
-    private boolean hasValidBrowserDecision(JsonNode browserValidation) {
-        if (browserValidation == null || !browserValidation.isObject()
-                || !browserValidation.path("required").isBoolean()
-                || !browserValidation.path("performed").isBoolean()
-                || text(browserValidation.path("decisionSource")).isBlank()
-                || text(browserValidation.path("browser")).isBlank()
-                || !browserValidation.path("viewports").isArray()) {
-            return false;
-        }
-        if (!browserValidation.path("required").asBoolean(false)) {
-            return true;
-        }
-        return browserValidation.path("performed").asBoolean(false)
-                && !text(browserValidation.path("baseUrl")).isBlank()
-                && hasNonEmptyStringArray(browserValidation.path("viewports"));
+    private RequirementDeliveryReviewResult rejected(String taskId, String reason) {
+        return RequirementDeliveryReviewResult.rejected(taskId, reason);
     }
 
-    private boolean hasNonEmptyStringArray(JsonNode value) {
-        if (value == null || !value.isArray() || value.isEmpty()) {
-            return false;
+    private boolean isOneOf(String value, String... allowed) {
+        String normalized = safe(value).toUpperCase(Locale.ROOT);
+        for (String item : allowed) {
+            if (item.equals(normalized)) return true;
         }
-        for (JsonNode item : value) {
-            if (text(item).isBlank()) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    private JsonNode parseResultObject(JsonNode result) {
-        if (result == null || result.isMissingNode()) {
-            return null;
-        }
-        String raw = text(result);
-        JsonNode parsed = result;
-        if (!raw.isBlank()) {
-            try {
-                parsed = OBJECT_MAPPER.readTree(raw);
-            } catch (JsonProcessingException exception) {
-                return null;
-            }
-        }
-        if (parsed == null || !parsed.isObject()) {
-            return null;
-        }
-        return parsed;
-    }
-
-    private Map<AgentRole, JsonNode> stagesByRole(JsonNode stages) {
-        Map<AgentRole, JsonNode> byRole = new EnumMap<>(AgentRole.class);
-        stages.forEach(stage -> {
-            AgentRole role = parseRole(text(stage.path("role")));
-            if (role != null) {
-                byRole.putIfAbsent(role, stage);
-            }
-        });
-        return byRole;
-    }
-
-    private AgentRole parseRole(String value) {
-        if (value.isBlank()) {
-            return null;
-        }
-        try {
-            return AgentRole.valueOf(value);
-        } catch (IllegalArgumentException exception) {
-            return null;
-        }
-    }
-
-    private String text(JsonNode node) {
-        return node == null || !node.isTextual() ? "" : safe(node.asText());
+        return false;
     }
 
     private static String safe(String value) {

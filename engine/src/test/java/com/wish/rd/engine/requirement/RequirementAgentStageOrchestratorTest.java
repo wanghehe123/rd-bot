@@ -853,6 +853,96 @@ class RequirementAgentStageOrchestratorTest {
     }
 
     @Test
+    void reusedCodingStageRestoresCompletePublicationResultBase() throws Exception {
+        AgentWorkflowPlan plan = AgentWorkflowPlan.production();
+        String codingJson = """
+                {"status":"SUCCESS","summary":"implemented","prBody":"narrative",
+                 "changedFiles":["src/App.java"],"testCommands":["./mvnw test"],
+                 "testStatus":"PASSED","riskLevel":"LOW"}
+                """;
+        String qaJson = successfulQaResultJson();
+
+        OrchestratorTestHarness reused = new OrchestratorTestHarness()
+                .prestageRoles(plan.roles())
+                .prestageRoleContexts(plan.roles());
+        reused.executor.qaSuccessResultOverride = qaJson;
+        for (AgentRole role : List.of(AgentRole.REQUIREMENT_REVIEWER, AgentRole.SOLUTION_ARCHITECT)) {
+            reused.stageRunStore.save(makeStageRun(reused.task.taskId(), role, 1)
+                    .withStatus(AgentStageStatus.SUCCEEDED, "", "", System.currentTimeMillis()));
+        }
+        AgentStageRun codingStage = makeStageRun(reused.task.taskId(), AgentRole.CODING_AGENT, 1)
+                .withResultArtifactId("coding-result-1", System.currentTimeMillis())
+                .withStatus(AgentStageStatus.SUCCEEDED, "", "", System.currentTimeMillis());
+        reused.stageRunStore.save(codingStage);
+        reused.artifactStore.save(new AgentStageArtifact(
+                "coding-result-1", codingStage.stageRunId(), reused.task.taskId(), AgentRole.CODING_AGENT,
+                "RESULT_JSON", "", "coding", "{\"prBody\":\"" + "x".repeat(20_000),
+                "hash", "{}", System.currentTimeMillis()
+        ));
+        reused.artifactStore.save(new AgentStageArtifact(
+                "coding-publication-1", codingStage.stageRunId(), reused.task.taskId(), AgentRole.CODING_AGENT,
+                RequirementPublicationFactsProjection.ARTIFACT_TYPE, "", "coding publication facts",
+                codingJson, "projection-hash", "{}", System.currentTimeMillis() + 1L
+        ));
+
+        RequirementExecutionResult reusedResult = reused.orchestrator.run(
+                plan, reused.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION, null);
+
+        assertTrue(reusedResult.success(), reusedResult.errorMessage());
+        assertEquals(0, reused.executor.executedRoleCount(AgentRole.CODING_AGENT));
+        JsonNode root = new ObjectMapper().readTree(reusedResult.resultJson());
+        assertEquals("src/App.java", root.path("changedFiles").get(0).asText());
+        assertEquals("./mvnw test", root.path("testCommands").get(0).asText());
+        assertEquals("PASSED", root.path("testStatus").asText());
+        assertEquals("LOW", root.path("riskLevel").asText());
+        assertEquals("narrative", root.path("prBody").asText());
+
+        OrchestratorTestHarness continuous = new OrchestratorTestHarness()
+                .prestageRoles(plan.roles())
+                .prestageRoleContexts(plan.roles());
+        continuous.executor.codingResultOverride = codingJson;
+        continuous.executor.qaSuccessResultOverride = qaJson;
+        RequirementExecutionResult continuousResult = continuous.orchestrator.run(
+                plan, continuous.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION, null);
+        RequirementDeliveryPublicationViewAssembler assembler =
+                new RequirementDeliveryPublicationViewAssembler();
+        assertEquals(assembler.assemble(continuousResult.resultJson()).coding(),
+                assembler.assemble(reusedResult.resultJson()).coding());
+        assertEquals(assembler.assemble(continuousResult.resultJson()).qa(),
+                assembler.assemble(reusedResult.resultJson()).qa());
+    }
+
+    @Test
+    void codingSuccessPersistsCompletePublicationFactsBeyondResultPreviewLimit() throws Exception {
+        AgentWorkflowPlan plan = AgentWorkflowPlan.production();
+        String codingJson = "{\"prBody\":\"" + "x".repeat(21_000) + "\"," +
+                "\"changedFiles\":[\"src/App.java\"],\"testCommands\":[\"./mvnw test\"]," +
+                "\"testStatus\":\"PASSED\",\"riskLevel\":\"LOW\"}";
+        OrchestratorTestHarness harness = new OrchestratorTestHarness()
+                .prestageRoles(plan.roles())
+                .prestageRoleContexts(plan.roles());
+        harness.executor.codingResultOverride = codingJson;
+        harness.executor.qaSuccessResultOverride = successfulQaResultJson();
+
+        RequirementExecutionResult result = harness.orchestrator.run(
+                plan, harness.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION, null);
+
+        assertTrue(result.success(), result.errorMessage());
+        AgentStageArtifact projection = harness.artifactStore.listByTask(harness.task.taskId()).stream()
+                .filter(artifact -> artifact.role() == AgentRole.CODING_AGENT)
+                .filter(artifact -> RequirementPublicationFactsProjection.ARTIFACT_TYPE
+                        .equals(artifact.artifactType()))
+                .findFirst()
+                .orElseThrow();
+        JsonNode facts = new ObjectMapper().readTree(projection.contentPreview());
+        assertEquals("src/App.java", facts.path("changedFiles").get(0).asText());
+        assertEquals("./mvnw test", facts.path("testCommands").get(0).asText());
+        assertEquals("PASSED", facts.path("testStatus").asText());
+        assertEquals("LOW", facts.path("riskLevel").asText());
+        assertEquals(21_000, facts.path("prBody").asText().length());
+    }
+
+    @Test
     void product_defect_then_succeeded_retries_coding_once_then_dispatches_qa() {
         AgentWorkflowPlan plan = AgentWorkflowPlan.production();
         OrchestratorTestHarness harness = new OrchestratorTestHarness()
@@ -1186,6 +1276,7 @@ class RequirementAgentStageOrchestratorTest {
         boolean qaAgentFailsWithRemediation = false;
         String qaFailureResultJson = "";
         String codingResultOverride = null;
+        String qaSuccessResultOverride = null;
 
         @Override
         public RequirementExecutionResult execute(RequirementExecutionRequest request) {
@@ -1209,6 +1300,12 @@ class RequirementAgentStageOrchestratorTest {
                         request.role().name() + " 完成",
                         "",
                         codingResultOverride
+                );
+            }
+            if (request.role() == AgentRole.QA_AGENT
+                    && qaSuccessResultOverride != null && !qaSuccessResultOverride.isBlank()) {
+                return RequirementExecutionResult.success(
+                        request.taskId(), request.role().name() + " 完成", "", qaSuccessResultOverride
                 );
             }
             String resultJson = switch (request.role()) {
@@ -1339,6 +1436,18 @@ class RequirementAgentStageOrchestratorTest {
                         + "\"suspectedFiles\":[\"src/main/App.java\"]}]"
                         : "[]"
         );
+    }
+
+    private static String successfulQaResultJson() {
+        return """
+                {"status":"PASSED","summary":"current and regression passed",
+                 "failureCategory":"NONE","retryRecommendation":"NONE",
+                 "browserValidation":{"required":false,"performed":false,"decisionSource":"NOT_APPLICABLE","baseUrl":"","browser":"chromium","viewports":[]},
+                 "acceptanceResults":[
+                   {"criteria":"current","scope":"CURRENT","command":"./mvnw test","status":"PASSED","exitCode":0,"durationMillis":1,"logArtifactId":"qa/current.log","evidenceArtifactIds":["qa/current.log"]},
+                   {"criteria":"regression","scope":"REGRESSION","command":"./mvnw test","status":"PASSED","exitCode":0,"durationMillis":1,"logArtifactId":"qa/regression.log","evidenceArtifactIds":["qa/regression.log"]}
+                 ],"evidenceManifestArtifactId":"qa/manifest.json"}
+                """;
     }
 
     private static void assertCodingPromptOwnsHostVerifyAndQaDoesNot(String codingPrompt, String qaPrompt) {

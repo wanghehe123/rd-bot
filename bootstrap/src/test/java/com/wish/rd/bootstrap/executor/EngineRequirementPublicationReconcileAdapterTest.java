@@ -53,6 +53,35 @@ class EngineRequirementPublicationReconcileAdapterTest {
     }
 
     @Test
+    void shouldMatchMarkersFromRenderedPublicationBody() {
+        CodePlatformPort platform = new CodePlatformPort() {
+            @Override
+            public PullRequestResult createPullRequest(CreatePullRequestCommand command) {
+                throw new AssertionError("create must not run during reconcile");
+            }
+
+            @Override
+            public Optional<PullRequestResult> findOpenPullRequest(FindOpenPullRequestCommand command) {
+                return Optional.of(new PullRequestResult(
+                        "https://github.com/acme/order/pull/56",
+                        "56",
+                        Map.of("body", "## RD-Bot Provenance\n\n- schemaVersion: `1`\n"
+                                + "- taskId: `task-1`\n- operationId: `op-55`")
+                ));
+            }
+        };
+        EngineRequirementPublicationReconcileAdapter adapter =
+                new EngineRequirementPublicationReconcileAdapter(platform);
+
+        Optional<RequirementPublicationReconcilePort.MatchedOpenPullRequest> match =
+                adapter.findMatchingOpenPullRequest(new RequirementPublicationReconcilePort.ReconcileQuery(
+                        "acme", "order", "main", "requirement/task-1", "task-1", "op-55"));
+
+        assertTrue(match.isPresent());
+        assertEquals(56, match.orElseThrow().pullRequestNumber());
+    }
+
+    @Test
     void shouldIgnoreOpenPullRequestWhenMarkersMismatch() {
         CodePlatformPort platform = new CodePlatformPort() {
             @Override

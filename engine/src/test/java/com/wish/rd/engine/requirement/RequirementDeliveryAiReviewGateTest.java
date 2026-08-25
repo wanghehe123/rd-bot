@@ -140,8 +140,9 @@ class RequirementDeliveryAiReviewGateTest {
         }
         if (role == AgentRole.CODING_AGENT) {
             return RequirementExecutionResult.success(taskId, "coding complete", "", """
-                    {"status":"SUCCESS","changedFiles":"OrderService.java","testSummary":"tests passed",
-                     "prBody":"implemented requirement"}
+                    {"status":"SUCCESS","summary":"implemented requirement",
+                     "changedFiles":["OrderService.java"],"testCommands":["./mvnw test"],
+                     "testStatus":"PASSED","riskLevel":"LOW","prBody":"implemented requirement"}
                     """);
         }
         if (role == AgentRole.QA_AGENT) {

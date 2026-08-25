@@ -36,15 +36,7 @@ class EngineRequirementPullRequestPublisherAdapterTest {
         assertEquals("order", codePlatform.command().repoName());
         assertEquals("main", codePlatform.command().baseBranch());
         assertEquals("requirement/task-1001", codePlatform.command().workBranch());
-        assertTrue(codePlatform.command().prBody().contains("implement requirement"));
-        assertTrue(codePlatform.command().prBody().contains("deliveryReview"));
-        assertTrue(codePlatform.command().prBody().contains("approved"));
-        assertTrue(codePlatform.command().prBody().contains("RD-Bot QA Evidence"));
-        assertTrue(codePlatform.command().prBody().contains("真实验收通过"));
-        assertTrue(codePlatform.command().prBody().contains("acceptanceResults=1"));
-        assertTrue(codePlatform.command().prBody().contains("taskId: task-1001"));
-        assertTrue(codePlatform.command().prBody().contains("operationId: sha256:op-test-1"));
-        assertTrue(codePlatform.command().prBody().contains("rd-artifact://task-1001/coding/patch.diff"));
+        assertEquals(finalBody("sha256:op-test-1"), codePlatform.command().prBody());
         assertEquals("task-1001", codePlatform.command().metadata().get("taskId"));
         assertEquals("sha256:op-test-1", codePlatform.command().metadata().get("operationId"));
         assertEquals("REQUIREMENT", codePlatform.command().metadata().get("taskType"));
@@ -117,7 +109,42 @@ class EngineRequirementPullRequestPublisherAdapterTest {
         assertTrue(publication.errorMessage().contains("blank pull request url"));
     }
 
+    @Test
+    void shouldRejectBlankFinalBodyBeforeCallingCodePlatform() {
+        RecordingCodePlatform codePlatform = new RecordingCodePlatform("https://github.com/acme/order/pull/42");
+        EngineRequirementPullRequestPublisherAdapter adapter =
+                new EngineRequirementPullRequestPublisherAdapter(codePlatform);
+        RequirementPullRequestPublishCommand command = command("sha256:blank-body", "");
+
+        RequirementPullRequestPublication publication = adapter.publish(command);
+
+        assertEquals(false, publication.success());
+        assertTrue(publication.errorMessage().contains("pullRequestBody"));
+        assertEquals(0, codePlatform.findOpenCalls.get());
+        assertNull(codePlatform.command);
+    }
+
+    @Test
+    void rawDeliveryJsonCannotChangeExplicitFinalBody() {
+        RecordingCodePlatform codePlatform = new RecordingCodePlatform("https://github.com/acme/order/pull/42");
+        EngineRequirementPullRequestPublisherAdapter adapter =
+                new EngineRequirementPullRequestPublisherAdapter(codePlatform);
+        String explicit = finalBody("sha256:raw-ignored");
+        RequirementPullRequestPublishCommand command = command("sha256:raw-ignored", explicit);
+
+        RequirementPullRequestPublication publication = adapter.publish(command);
+
+        assertTrue(publication.success());
+        assertEquals(explicit, codePlatform.command().prBody());
+        assertTrue(!codePlatform.command().prBody().contains("OLD ROOT VALUE"));
+        assertTrue(!codePlatform.command().prBody().contains("http://localhost:8080/private"));
+    }
+
     private RequirementPullRequestPublishCommand command(String operationId) {
+        return command(operationId, finalBody(operationId));
+    }
+
+    private RequirementPullRequestPublishCommand command(String operationId, String pullRequestBody) {
         return new RequirementPullRequestPublishCommand(
                 "task-1001",
                 "需求交付",
@@ -129,7 +156,7 @@ class EngineRequirementPullRequestPublisherAdapterTest {
                 """
                         {
                           "status": "SUCCESS",
-                          "summary": "实现完成",
+                          "summary": "OLD ROOT VALUE http://localhost:8080/private",
                           "prBody": "## Summary\\n- implement requirement",
                           "changedFiles": "src/main/java/com/example/OrderController.java",
                           "testSummary": "./mvnw test passed",
@@ -182,8 +209,47 @@ class EngineRequirementPullRequestPublisherAdapterTest {
                           }
                         }
                         """,
-                operationId
+                operationId,
+                pullRequestBody
         );
+    }
+
+    private String finalBody(String operationId) {
+        return """
+                ## Summary
+
+                - Delivery: implement requirement
+
+                ## Changes
+
+                - `src/main/java/com/example/OrderController.java`
+
+                ## Verification
+
+                - Test status: `PASSED`
+                - Commands:
+                  - `./mvnw test`
+
+                ## Acceptance
+
+                | # | Scope | Criteria | Status | Command | Exit code | Duration ms | Evidence |
+                |---:|---|---|---|---|---:|---:|---|
+                | 1 | CURRENT | 真实验收通过 | PASSED | `./mvnw test` | 0 | 12 | [artifact](https://evidence.example/1) |
+
+                ## Delivery Review
+
+                - Approved: **yes**
+                - Reviewer: `DELIVERY_REVIEWER`
+
+                ## Evidence
+
+                - [https://evidence.example/1](https://evidence.example/1)
+
+                ## RD-Bot Provenance
+
+                - taskId: `task-1001`
+                - operationId: `%s`
+                """.formatted(operationId).strip();
     }
 
     private static final class RecordingCodePlatform implements CodePlatformPort {

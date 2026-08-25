@@ -56,6 +56,7 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import com.wish.rd.engine.requirement.model.RequirementDeliveryResult;
 import com.wish.rd.engine.requirement.model.RequirementDeliveryReviewResult;
+import com.wish.rd.engine.requirement.model.RequirementDeliveryPublicationView;
 import com.wish.rd.engine.requirement.job.model.CommandDisposition;
 import com.wish.rd.engine.requirement.job.model.RequirementStageCommand;
 import com.wish.rd.engine.requirement.job.model.RequirementStageExecutionPlan;
@@ -175,6 +176,11 @@ class RequirementDeliveryEngineTest {
         assertEquals(task.taskId(), pullRequestPublisher.command().taskId());
         assertEquals("requirement/" + task.taskId(), pullRequestPublisher.command().workBranch());
         assertTrue(pullRequestPublisher.command().deliveryResultJson().contains("\"deliveryReview\""));
+        assertTrue(pullRequestPublisher.command().pullRequestBody().contains("## Changes"));
+        assertTrue(pullRequestPublisher.command().pullRequestBody()
+                .contains("`src/main/java/com/example/OrderController.java`"));
+        assertTrue(pullRequestPublisher.command().pullRequestBody().contains("## Delivery Review"));
+        assertTrue(pullRequestPublisher.command().pullRequestBody().contains("Approved: **yes**"));
         assertTrue(captured.getFirst().prompt().contains("REQUIREMENT_REVIEWER"));
         assertTrue(captured.get(2).prompt().contains("用户可以在订单详情页点击催单。"));
         assertTrue(captured.get(3).upstreamResultJson().contains("CODING_AGENT"));
@@ -1021,6 +1027,9 @@ class RequirementDeliveryEngineTest {
                 .findFirst()
                 .orElseThrow();
         assertEquals(20_000, codingResult.contentPreview().length());
+        assertTrue(artifactStore.listByTask(task.taskId()).stream()
+                .anyMatch(artifact -> artifact.role() == AgentRole.CODING_AGENT
+                        && RequirementPublicationFactsProjection.ARTIFACT_TYPE.equals(artifact.artifactType())));
         assertFalse(codingResult.contentPreview().contains("\"candidatePatch\""));
         assertTrue(artifactStore.listByTask(task.taskId()).stream()
                 .anyMatch(artifact -> artifact.role() == AgentRole.CODING_AGENT
@@ -1102,7 +1111,7 @@ class RequirementDeliveryEngineTest {
         RequirementDeliveryResult result = engine.submit(task.taskId());
 
         assertEquals(RdTaskStatus.COMPLETED, result.status(), result.errorMessage());
-        assertTrue(result.resultJson().contains("\"resultJsonTruncated\":true"), result.resultJson());
+        assertFalse(result.resultJson().contains("\"resultJsonTruncated\":true"), result.resultJson());
         assertTrue(result.resultJson().contains("\"approved\":true"), result.resultJson());
     }
 
@@ -1161,7 +1170,7 @@ class RequirementDeliveryEngineTest {
         RequirementDeliveryResult result = engine.submit(task.taskId());
 
         assertEquals(RdTaskStatus.REJECTED, result.status());
-        assertTrue(result.errorMessage().contains("CODING_AGENT delivery evidence is incomplete"),
+        assertTrue(result.errorMessage().contains("CODING_AGENT."),
                 result.errorMessage());
     }
 
@@ -1288,9 +1297,10 @@ class RequirementDeliveryEngineTest {
                                         {
                                           "status": "SUCCESS",
                                           "summary": "实现完成",
-                                          "changedFiles": "src/main/java/com/example/OrderController.java",
-                                          "testCommands": "./mvnw test",
+                                          "changedFiles": ["src/main/java/com/example/OrderController.java"],
+                                          "testCommands": ["./mvnw test"],
                                           "testStatus": "PASSED",
+                                          "riskLevel": "LOW",
                                           "testsFailed": 0,
                                           "validationExitCode": 0,
                                           "prBody": "## Summary\\n- implement requirement",
@@ -2199,8 +2209,10 @@ class RequirementDeliveryEngineTest {
                                         {
                                           "status": "SUCCESS",
                                           "summary": "实现完成",
-                                          "changedFiles": "src/main/java/com/example/OrderController.java",
-                                          "testSummary": "./mvnw test passed",
+                                          "changedFiles": ["src/main/java/com/example/OrderController.java"],
+                                          "testCommands": ["./mvnw test"],
+                                          "testStatus": "PASSED",
+                                          "riskLevel": "LOW",
                                           "prBody": "## Summary\\n- implement requirement",
                                           "dockerMetadata": {
                                             "provider": "claude-code-coding_agent",
@@ -2278,8 +2290,10 @@ class RequirementDeliveryEngineTest {
                                         {
                                           "status": "SUCCESS",
                                           "summary": "实现完成",
-                                          "changedFiles": "src/main/java/com/example/OrderController.java",
-                                          "testSummary": "./mvnw test passed",
+                                          "changedFiles": ["src/main/java/com/example/OrderController.java"],
+                                          "testCommands": ["./mvnw test"],
+                                          "testStatus": "PASSED",
+                                          "riskLevel": "LOW",
                                           "prBody": "## Summary\\n- implement requirement",
                                           "dockerMetadata": {
                                             "provider": "deepseek",
@@ -2359,7 +2373,7 @@ class RequirementDeliveryEngineTest {
             @Override
             public RequirementDeliveryReviewResult review(
                     String taskId,
-                    String deliveryResultJson
+                    RequirementDeliveryPublicationView publicationView
             ) {
                 return RequirementDeliveryReviewResult.rejected(taskId, "missing delivery review artifact");
             }
@@ -2432,9 +2446,7 @@ class RequirementDeliveryEngineTest {
                 "外卖页脚需求", "P1", "https://github.com/example/waimai.git",
                 "example", "waimai", "main", "给商家首页加页脚",
                 List.of("前端构建通过"), false));
-        String deliveryResultJson = """
-                {"status":"SUCCESS","pullRequestUrl":"","multiAgentStatus":"SUCCESS","multiAgentStages":[]}
-                """.strip();
+        String deliveryResultJson = validAggregatedDeliveryJson();
         InMemoryRdTaskStore taskStore = new InMemoryRdTaskStore();
         RdRequirementTask recovering = created.withState(
                 RdTaskStatus.RECOVERING, "", deliveryResultJson, "", "", System.currentTimeMillis());
@@ -2483,9 +2495,7 @@ class RequirementDeliveryEngineTest {
                 "外卖页脚需求", "P1", "https://github.com/example/waimai.git",
                 "example", "waimai", "main", "给商家首页加页脚",
                 List.of("前端构建通过"), false));
-        String deliveryResultJson = """
-                {"status":"SUCCESS","pullRequestUrl":"","multiAgentStatus":"SUCCESS","multiAgentStages":[]}
-                """.strip();
+        String deliveryResultJson = withApprovedReview(created.taskId(), validAggregatedDeliveryJson());
         InMemoryRdTaskStore taskStore = new InMemoryRdTaskStore();
         RdRequirementTask recovering = created.withState(
                 RdTaskStatus.RECOVERING, "", deliveryResultJson, "", "", System.currentTimeMillis());
@@ -2522,6 +2532,25 @@ class RequirementDeliveryEngineTest {
 
         assertEquals(CommandDisposition.SUCCEEDED, plan.commandDisposition());
         assertEquals("PUBLICATION", plan.continuation().stage());
+
+        String staleReviewJson = deliveryResultJson.replaceFirst(
+                "sha256:[0-9a-f]{64}", "sha256:stale");
+        RdRequirementTask staleReview = recovering.withState(
+                RdTaskStatus.RECOVERING, "", staleReviewJson, "", "", System.currentTimeMillis());
+        staleReview = taskStore.saveRequirementTask(staleReview);
+        RequirementStageCommand staleCommand = RequirementStageCommand.pending(
+                "cmd-ai-review-stale", created.taskId(), staleReview.version(), staleReview.fencingToken(),
+                "REQUIREMENT_DELIVERY", "AI_REVIEW", 0, 3,
+                System.currentTimeMillis() + 60_000L,
+                com.wish.rd.engine.scheduling.model.ScheduleResourceClass.GENERIC,
+                Set.of(com.wish.rd.engine.scheduling.model.ScheduleResourceClass.GENERIC),
+                "project-1", "", "P1", System.currentTimeMillis());
+
+        RequirementStageExecutionPlan blocked = engine.planStage(staleCommand);
+
+        assertEquals(CommandDisposition.TERMINAL_FAILURE, blocked.commandDisposition());
+        assertEquals(RdTaskStatus.FAILED_NEEDS_HUMAN, blocked.postStatus());
+        assertTrue(blocked.mutations().getLast().errorMessage().contains("factsHash"));
     }
 
     @Test
@@ -2947,10 +2976,43 @@ class RequirementDeliveryEngineTest {
     private RequirementDeliveryReviewer approvingReviewer() {
         return new RequirementDeliveryReviewer() {
             @Override
-            public RequirementDeliveryReviewResult review(String taskId, String deliveryResultJson) {
+            public RequirementDeliveryReviewResult review(
+                    String taskId,
+                    RequirementDeliveryPublicationView publicationView
+            ) {
                 return RequirementDeliveryReviewResult.approved(taskId);
             }
         };
+    }
+
+    private static String validAggregatedDeliveryJson() {
+        return """
+                {"status":"SUCCESS","pullRequestUrl":"","multiAgentStatus":"SUCCESS",
+                 "changedFiles":["src/App.java"],"testCommands":["./mvnw test"],"testStatus":"PASSED","riskLevel":"LOW",
+                 "multiAgentStages":[
+                   {"role":"REQUIREMENT_REVIEWER","success":true,"resultJson":{}},
+                   {"role":"SOLUTION_ARCHITECT","success":true,"resultJson":{}},
+                   {"role":"CODING_AGENT","success":true,"resultJson":{"changedFiles":["src/App.java"],"testCommands":["./mvnw test"],"testStatus":"PASSED","riskLevel":"LOW"}},
+                   {"role":"QA_AGENT","success":true,"resultJson":{
+                     "status":"PASSED","summary":"current and regression passed","failureCategory":"NONE","retryRecommendation":"NONE",
+                     "browserValidation":{"required":false,"performed":false,"decisionSource":"NOT_APPLICABLE","baseUrl":"","browser":"chromium","viewports":[]},
+                     "acceptanceResults":[
+                       {"criteria":"current","scope":"CURRENT","command":"./mvnw test","status":"PASSED","exitCode":0,"durationMillis":1,"logArtifactId":"qa/current.log","evidenceArtifactIds":["qa/current.log"]},
+                       {"criteria":"regression","scope":"REGRESSION","command":"./mvnw test","status":"PASSED","exitCode":0,"durationMillis":1,"logArtifactId":"qa/regression.log","evidenceArtifactIds":["qa/regression.log"]}
+                     ],"evidenceManifestArtifactId":"qa/manifest.json"}}
+                 ]}
+                """.strip();
+    }
+
+    private static String withApprovedReview(String taskId, String deliveryResultJson) {
+        String hash = new RequirementDeliveryPublicationViewAssembler()
+                .assemble(deliveryResultJson)
+                .publicationFactsHash();
+        String normalized = deliveryResultJson.strip();
+        return normalized.substring(0, normalized.length() - 1)
+                + ",\"deliveryReview\":{\"taskId\":\"" + taskId
+                + "\",\"reviewer\":\"DELIVERY_REVIEWER\",\"approved\":true,\"factsHash\":\""
+                + hash + "\"}}";
     }
 
     private String roleResultJson(AgentRole role) {
@@ -3110,7 +3172,10 @@ class RequirementDeliveryEngineTest {
                   "status": "SUCCESS",
                   "summary": "实现完成",
                   "prBody": "## Summary\\n- implement requirement",
-                  "changedFiles": "src/main/java/com/example/OrderController.java",
+                  "changedFiles": ["src/main/java/com/example/OrderController.java"],
+                  "testCommands": ["./mvnw test"],
+                  "testStatus": "PASSED",
+                  "riskLevel": "LOW",
                   "largeRaw": "%s"
                 }
                 """.formatted("x".repeat(20_500));
@@ -3133,8 +3198,10 @@ class RequirementDeliveryEngineTest {
                 {
                   "status": "SUCCESS",
                   "summary": "实现完成",
-                  "changedFiles": "src/main/java/com/example/OrderController.java",
-                  "testSummary": "./mvnw test passed",
+                  "changedFiles": ["src/main/java/com/example/OrderController.java"],
+                  "testCommands": ["./mvnw test"],
+                  "testStatus": "PASSED",
+                  "riskLevel": "LOW",
                   "prBody": "## Summary\\n- implement requirement",
                   "dockerMetadata": {
                     "provider": "%s",
@@ -3149,8 +3216,10 @@ class RequirementDeliveryEngineTest {
                 {
                   "status": "SUCCESS",
                   "summary": "实现完成",
-                  "changedFiles": "src/main/java/com/example/OrderController.java",
-                  "testSummary": "./mvnw test passed",
+                  "changedFiles": ["src/main/java/com/example/OrderController.java"],
+                  "testCommands": ["./mvnw test"],
+                  "testStatus": "PASSED",
+                  "riskLevel": "LOW",
                   "prBody": "## Summary\\n- implement requirement",
                   "stageArtifacts": [
                     {

@@ -75,6 +75,7 @@ import com.wish.rd.engine.requirement.job.model.PiQaRemediationIntent;
 import com.wish.rd.engine.requirement.policy.CanonicalJsonSha256;
 import com.wish.rd.engine.requirement.remediation.model.AgentRemediationKind;
 import com.wish.rd.engine.requirement.model.RequirementDeliveryReviewResult;
+import com.wish.rd.engine.requirement.model.RequirementDeliveryPublicationView;
 import com.wish.rd.engine.requirement.model.RequirementExecutionRequest;
 import com.wish.rd.engine.requirement.model.RequirementExecutionResult;
 import com.wish.rd.engine.requirement.model.RequirementExecutionProfileResolution;
@@ -149,6 +150,10 @@ public class RequirementDeliveryEngine {
     private final WorkflowExperienceStore experienceStore;
     private final RequirementDeliveryReviewer deliveryReviewer;
     private final RequirementPullRequestPublisherPort pullRequestPublisher;
+    private final RequirementDeliveryPublicationViewAssembler publicationViewAssembler =
+            new RequirementDeliveryPublicationViewAssembler();
+    private final RequirementPullRequestBodyRenderer pullRequestBodyRenderer =
+            new RequirementPullRequestBodyRenderer();
     // Set-once via optional setter injection; defaults to a skipped no-op so the many
     // existing constructors and tests keep their behavior unchanged when no branch
     // publisher is wired. The bootstrap adapter pushes the reviewed work branch here
@@ -1527,7 +1532,7 @@ public class RequirementDeliveryEngine {
     ) {
         requireDeliveryStageStatus(task, command, RdTaskStatus.EXECUTING);
         RequirementExecutionResult execution = recoverExecutionResult(task);
-        RequirementDeliveryReviewResult review = deliveryReviewer.review(task.taskId(), execution.resultJson());
+        RequirementDeliveryReviewResult review = reviewPublicationView(task.taskId(), execution.resultJson());
         String reviewedResultJson = withDeliveryReviewJson(execution.resultJson(), review);
         List<RequirementTaskMutation> mutations = new ArrayList<>();
         mutations.add(mutation(task.status(), RdTaskStatus.VALIDATING, "", execution.resultJson(), "", ""));
@@ -1547,6 +1552,18 @@ public class RequirementDeliveryEngine {
             RequirementStageCommand command
     ) {
         requireDeliveryStageStatus(task, command, RdTaskStatus.VALIDATING);
+        RequirementDeliveryReviewResult deterministicReview = validateExistingDeliveryReview(
+                task.taskId(), task.executionResultJson());
+        if (!deterministicReview.approved()) {
+            String rejectedResultJson = withDeliveryReviewJson(task.executionResultJson(), deterministicReview);
+            RdTaskStatus rejectedStatus = task.status() == RdTaskStatus.RECOVERING
+                    ? RdTaskStatus.FAILED_NEEDS_HUMAN
+                    : RdTaskStatus.REJECTED;
+            return plan(task, command, List.of(mutation(
+                            task.status(), rejectedStatus, "", rejectedResultJson, "",
+                            "delivery review failed: " + deterministicReview.reason())),
+                    CommandDisposition.TERMINAL_FAILURE, ContinuationSpec.terminal());
+        }
         if (aiDeliveryReviewEngine == null || !aiDeliveryReviewEngine.isEnabled()) {
             return plan(task, command, List.of(), CommandDisposition.SUCCEEDED,
                     new ContinuationSpec("REQUIREMENT_DELIVERY", "PUBLICATION"));
@@ -1613,6 +1630,12 @@ public class RequirementDeliveryEngine {
         if (operationId.isBlank()) {
             return publicationFailurePlan(task, command, mutations, reviewedResultJson,
                     "publication requires a candidate-patch operation id", true);
+        }
+        try {
+            finalPullRequestBody(task, reviewedResultJson);
+        } catch (IllegalArgumentException exception) {
+            return publicationFailurePlan(task, command, mutations, reviewedResultJson,
+                    "publication view invalid: " + safe(exception.getMessage()), true);
         }
         preparePublicationIntent(task, reviewedResultJson);
         PublicationRemotePlan remotePlan = resolvePublicationRemotePlan(task, reviewedResultJson);
@@ -2013,7 +2036,7 @@ public class RequirementDeliveryEngine {
                 ? task
                 : taskRegistry.transitionRequirementFenced(
                         task, RdTaskStatus.VALIDATING, "", execution.resultJson(), "", "");
-        RequirementDeliveryReviewResult reviewResult = deliveryReviewer.review(
+        RequirementDeliveryReviewResult reviewResult = reviewPublicationView(
                 validating.taskId(), execution.resultJson());
         String reviewedResultJson = withDeliveryReviewJson(execution.resultJson(), reviewResult);
         if (!reviewResult.approved()) {
@@ -2032,6 +2055,18 @@ public class RequirementDeliveryEngine {
     }
 
     private RequirementDeliveryResult executeAiReviewStage(RdRequirementTask task) {
+        RequirementDeliveryReviewResult deterministicReview = validateExistingDeliveryReview(
+                task.taskId(), task.executionResultJson());
+        if (!deterministicReview.approved()) {
+            publishDeliveryReviewAlert(task.taskId(), task.pullRequestUrl(), deterministicReview);
+            RdTaskStatus rejectedStatus = task.status() == RdTaskStatus.RECOVERING
+                    ? RdTaskStatus.FAILED_NEEDS_HUMAN
+                    : RdTaskStatus.REJECTED;
+            return stageResult(taskRegistry.transitionRequirementFenced(
+                    task, rejectedStatus, "",
+                    withDeliveryReviewJson(task.executionResultJson(), deterministicReview), "",
+                    "delivery review failed: " + deterministicReview.reason()));
+        }
         if (aiDeliveryReviewEngine == null || !aiDeliveryReviewEngine.isEnabled()) {
             return stageResult(task);
         }
@@ -2117,6 +2152,47 @@ public class RequirementDeliveryEngine {
                 task.taskId(), task.status(), task.pullRequestUrl(), task.executionResultJson(), task.errorMessage());
     }
 
+    private RequirementDeliveryReviewResult reviewPublicationView(String taskId, String deliveryResultJson) {
+        try {
+            RequirementDeliveryPublicationView view = publicationViewAssembler.assemble(deliveryResultJson);
+            RequirementDeliveryReviewResult result = deliveryReviewer.review(taskId, view);
+            return result.approved() ? result.withFactsHash(view.publicationFactsHash()) : result;
+        } catch (IllegalArgumentException exception) {
+            return RequirementDeliveryReviewResult.rejected(
+                    taskId, "publication view invalid: " + safe(exception.getMessage()));
+        }
+    }
+
+    private RequirementDeliveryReviewResult validateExistingDeliveryReview(
+            String taskId,
+            String deliveryResultJson
+    ) {
+        try {
+            RequirementDeliveryPublicationView view = publicationViewAssembler.assemble(deliveryResultJson);
+            RequirementDeliveryPublicationView.DeliveryReview review = view.deliveryReview();
+            if (!review.approved()) {
+                return RequirementDeliveryReviewResult.rejected(
+                        taskId, "existing deliveryReview.approved must be true for AI review retry");
+            }
+            if (!"DELIVERY_REVIEWER".equals(review.reviewer())) {
+                return RequirementDeliveryReviewResult.rejected(
+                        taskId, "existing deliveryReview.reviewer must be DELIVERY_REVIEWER for AI review retry");
+            }
+            if (!taskId.equals(review.taskId())) {
+                return RequirementDeliveryReviewResult.rejected(
+                        taskId, "existing deliveryReview.taskId does not match task");
+            }
+            if (!view.publicationFactsHash().equals(review.factsHash())) {
+                return RequirementDeliveryReviewResult.rejected(
+                        taskId, "existing deliveryReview.factsHash does not match publication facts");
+            }
+            return RequirementDeliveryReviewResult.approved(taskId, review.factsHash());
+        } catch (IllegalArgumentException exception) {
+            return RequirementDeliveryReviewResult.rejected(
+                    taskId, "publication view invalid: " + safe(exception.getMessage()));
+        }
+    }
+
     private RequirementDeliveryResult validateAndPublish(
             RdRequirementTask task,
             RequirementExecutionResult executionResult,
@@ -2127,10 +2203,8 @@ public class RequirementDeliveryEngine {
         String deterministicReviewJson = existingDeliveryReviewJson(executionResult.resultJson());
         String reviewedResultJson = executionResult.resultJson();
         if (!skipDeterministicReview) {
-        RequirementDeliveryReviewResult reviewResult = deliveryReviewer.review(
-                requirementTask.taskId(),
-                executionResult.resultJson()
-        );
+        RequirementDeliveryReviewResult reviewResult = reviewPublicationView(
+                requirementTask.taskId(), executionResult.resultJson());
         if (!reviewResult.approved()) {
             // VALIDATING -> REJECTED：复核不通过则直接阻断，保留复核快照用于复盘。
             publishDeliveryReviewAlert(requirementTask.taskId(), executionResult.pullRequestUrl(), reviewResult);
@@ -2150,6 +2224,20 @@ public class RequirementDeliveryEngine {
         }
             deterministicReviewJson = reviewResult.toJson();
             reviewedResultJson = withDeliveryReviewJson(executionResult.resultJson(), reviewResult);
+        } else {
+            RequirementDeliveryReviewResult existingReview = validateExistingDeliveryReview(
+                    requirementTask.taskId(), executionResult.resultJson());
+            if (!existingReview.approved()) {
+                publishDeliveryReviewAlert(requirementTask.taskId(), executionResult.pullRequestUrl(), existingReview);
+                RdRequirementTask rejected = taskRegistry.markRequirementRejected(
+                        requirementTask.taskId(),
+                        "delivery review failed: " + existingReview.reason(),
+                        withDeliveryReviewJson(executionResult.resultJson(), existingReview));
+                return new RequirementDeliveryResult(
+                        rejected.taskId(), rejected.status(), "",
+                        rejected.executionResultJson(), rejected.errorMessage());
+            }
+            deterministicReviewJson = existingDeliveryReviewJson(executionResult.resultJson());
         }
         if (aiDeliveryReviewEngine != null && aiDeliveryReviewEngine.isEnabled()) {
             AiReviewRun aiReviewRun = aiDeliveryReviewEngine.review(
@@ -2243,6 +2331,14 @@ public class RequirementDeliveryEngine {
         if (patchOnlyDelivery) {
             publication = RequirementPullRequestPublication.success(requirementTask.taskId(), "", "", "{}");
         } else {
+            try {
+                finalPullRequestBody(requirementTask, reviewedResultJson);
+            } catch (IllegalArgumentException exception) {
+                RequirementDeliveryResult blocked = blockPublication(
+                        requirementTask, reviewedResultJson,
+                        "publication view invalid: " + safe(exception.getMessage()), true);
+                return PublicationStageOutcome.failure(blocked);
+            }
             preparePublicationIntent(requirementTask, reviewedResultJson);
             PublicationRemotePlan plan = resolvePublicationRemotePlan(requirementTask, reviewedResultJson);
             if (plan.blockedReason() != null) {
@@ -2375,6 +2471,15 @@ public class RequirementDeliveryEngine {
         if (patchOnlyDelivery) {
             publication = RequirementPullRequestPublication.success(publishing.taskId(), "", "", "{}");
         } else {
+            try {
+                finalPullRequestBody(publishing, reviewedResultJson);
+            } catch (IllegalArgumentException exception) {
+                return blockPublication(
+                        publishing,
+                        reviewedResultJson,
+                        "publication view invalid: " + safe(exception.getMessage()),
+                        true);
+            }
             preparePublicationIntent(publishing, reviewedResultJson);
             PublicationRemotePlan plan = resolvePublicationRemotePlan(publishing, reviewedResultJson);
             if (plan.blockedReason() != null) {
@@ -2934,6 +3039,8 @@ public class RequirementDeliveryEngine {
 
     private RequirementPullRequestPublication publishPullRequest(RdRequirementTask task, String reviewedResultJson) {
         try {
+            String operationId = publicationOperationId(task, reviewedResultJson);
+            String pullRequestBody = finalPullRequestBody(task, reviewedResultJson);
             return pullRequestPublisher.publish(new RequirementPullRequestPublishCommand(
                     task.taskId(),
                     task.title(),
@@ -2943,7 +3050,8 @@ public class RequirementDeliveryEngine {
                     task.baseBranch(),
                     workBranch(task),
                     reviewedResultJson,
-                    publicationOperationId(task, reviewedResultJson)
+                    operationId,
+                    pullRequestBody
             ));
         } catch (RuntimeException exception) {
             return RequirementPullRequestPublication.failure(
@@ -2951,6 +3059,12 @@ public class RequirementDeliveryEngine {
                     "pull request publisher exception: " + safe(exception.getMessage())
             );
         }
+    }
+
+    private String finalPullRequestBody(RdRequirementTask task, String reviewedResultJson) {
+        RequirementDeliveryPublicationView view = publicationViewAssembler.assemble(reviewedResultJson);
+        return pullRequestBodyRenderer.render(
+                task.taskId(), publicationOperationId(task, reviewedResultJson), task.title(), view);
     }
 
     /**
@@ -3587,8 +3701,29 @@ public class RequirementDeliveryEngine {
                 artifactMetadata(stage, "RESULT_JSON", resultJson),
                 now
         ));
+        capturePublicationFactsArtifact(stage, resultJson, now + 1L);
         captureExecutorStageArtifacts(stage, resultJson, now);
         return stageRunStore.save(stage.withResultArtifactId(artifact.artifactId(), now));
+    }
+
+    private void capturePublicationFactsArtifact(AgentStageRun stage, String resultJson, long now) {
+        String projection = RequirementPublicationFactsProjection.from(stage.role(), resultJson);
+        if (projection.isBlank()) {
+            return;
+        }
+        artifactStore.saveImmutable(new AgentStageArtifact(
+                idGenerator.nextIdString(),
+                stage.stageRunId(),
+                stage.taskId(),
+                stage.role(),
+                RequirementPublicationFactsProjection.ARTIFACT_TYPE,
+                artifactUri(stage, "publication-facts"),
+                stage.role().name() + " publication facts",
+                projection,
+                sha256(projection),
+                artifactMetadata(stage, RequirementPublicationFactsProjection.ARTIFACT_TYPE, projection),
+                now
+        ));
     }
 
     private void captureExecutorStageArtifacts(AgentStageRun stage, String resultJson, long now) {
@@ -5061,8 +5196,14 @@ public class RequirementDeliveryEngine {
                 .toList();
         AgentStageArtifact resultArtifact = stageArtifacts.stream()
                 .filter(artifact -> artifact.artifactId().equals(stage.resultArtifactId())
-                        || "RESULT_JSON".equals(artifact.artifactType()))
-                .max(Comparator.comparingLong(AgentStageArtifact::createdAtEpochMillis))
+                        || "RESULT_JSON".equals(artifact.artifactType())
+                        || (stage.role() == AgentRole.CODING_AGENT
+                        && RequirementPublicationFactsProjection.ARTIFACT_TYPE.equals(artifact.artifactType())))
+                .max(Comparator
+                        .comparingInt((AgentStageArtifact artifact) ->
+                                RequirementPublicationFactsProjection.ARTIFACT_TYPE.equals(artifact.artifactType())
+                                        ? 1 : 0)
+                        .thenComparingLong(AgentStageArtifact::createdAtEpochMillis))
                 .orElse(null);
         Map<String, Object> reused = new LinkedHashMap<>();
         reused.put("role", stage.role().name());
@@ -5301,6 +5442,16 @@ public class RequirementDeliveryEngine {
                 ? RequirementDeliveryReviewResult.rejected("", "delivery review result missing").toJson()
                 : reviewResult.toJson();
         String normalized = resultJson == null ? "" : resultJson.strip();
+        try {
+            JsonNode parsed = OBJECT_MAPPER.readTree(normalized);
+            JsonNode review = OBJECT_MAPPER.readTree(reviewJson);
+            if (parsed instanceof ObjectNode object && review != null && review.isObject()) {
+                object.set("deliveryReview", review);
+                return OBJECT_MAPPER.writeValueAsString(object);
+            }
+        } catch (JsonProcessingException ignored) {
+            // 保留下方兼容包装，使非法旧快照仍能留下可诊断的审核结论。
+        }
         String appended = "\"deliveryReview\":" + reviewJson;
         if (normalized.startsWith("{") && normalized.endsWith("}")) {
             String body = normalized.substring(1, normalized.length() - 1).strip();

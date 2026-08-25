@@ -182,7 +182,8 @@ class FeishuImMessageControllerTest {
                                       "prBody": "## 改动介绍\\n- 新增订单催单按钮",
                                       "changedFiles": ["client/src/pages/OrderDetail.tsx"],
                                       "testCommands": ["npm run build"],
-                                      "testStatus": "PASSED"
+                                      "testStatus": "PASSED",
+                                      "riskLevel": "LOW"
                                     }
                                     """
                     );
