@@ -180,6 +180,20 @@ rd:
         batch-size: ${RD_OPENVIKING_BACKFILL_BATCH_SIZE:20}
         max-in-flight: ${RD_OPENVIKING_BACKFILL_MAX_IN_FLIGHT:200}
         knowledge-base-allowlist: ${RD_OPENVIKING_BACKFILL_KNOWLEDGE_BASE_ALLOWLIST:}
+  project-memory:
+    worker:
+      enabled: ${RD_PROJECT_MEMORY_WORKER_ENABLED:false}
+      poll-interval-ms: ${RD_PROJECT_MEMORY_WORKER_POLL_INTERVAL_MS:5000}
+      lease-duration-ms: ${RD_PROJECT_MEMORY_WORKER_LEASE_DURATION_MS:30000}
+      base-backoff-ms: ${RD_PROJECT_MEMORY_WORKER_BASE_BACKOFF_MS:1000}
+      owner-id: ${RD_PROJECT_MEMORY_WORKER_OWNER_ID:bootstrap-project-memory-worker}
+    reconcile:
+      enabled: ${RD_PROJECT_MEMORY_RECONCILE_ENABLED:false}
+      poll-interval-ms: ${RD_PROJECT_MEMORY_RECONCILE_POLL_INTERVAL_MS:30000}
+      batch-size: ${RD_PROJECT_MEMORY_RECONCILE_BATCH_SIZE:20}
+    projection:
+      mode: ${RD_PROJECT_MEMORY_PROJECTION_MODE:OFF}
+      enabled: ${RD_PROJECT_MEMORY_PROJECTION_ENABLED:false}
   openviking:
     enabled: ${RD_OPENVIKING_ENABLED:false}
     base-url: ${RD_OPENVIKING_BASE_URL:http://127.0.0.1:1933}

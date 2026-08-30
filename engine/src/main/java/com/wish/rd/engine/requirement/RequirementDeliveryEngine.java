@@ -26,6 +26,7 @@ import com.wish.rd.engine.agent.WorkflowExperienceStore;
 import com.wish.rd.engine.agent.model.WorkflowExperienceType;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
 import com.wish.rd.rag.context.impl.InMemoryRoleContextPackageStore;
+import com.wish.rd.rag.context.ProjectMemoryUntrustedContext;
 import com.wish.rd.rag.context.RoleContextBuilder;
 import com.wish.rd.rag.context.model.RoleContextEvidence;
 import com.wish.rd.rag.retrieval.run.model.RetrievalConsumerType;
@@ -2664,6 +2665,9 @@ public class RequirementDeliveryEngine {
             long collectedAtEpochMillis
     ) {
         List<TaskMaterial> contextMaterials = new ArrayList<>(materials == null ? List.of() : materials);
+        if (retrievalRecorder != null) {
+            return List.copyOf(contextMaterials);
+        }
         String query = experienceSearchQuery(task);
         experienceStore.searchReusable(query, task == null ? "" : task.taskId(), 100).stream()
                 .filter(experience -> sameProjectExperience(task, experience))
@@ -4359,6 +4363,8 @@ public class RequirementDeliveryEngine {
 
                 %s
 
+                %s
+
                 # 上游交接摘要
                 %s
 
@@ -4378,6 +4384,7 @@ public class RequirementDeliveryEngine {
                 roleInstruction(role),
                 roleContextJson(roleContext),
                 repositoryDiscoveryPromptSection(roleContext),
+                projectMemoryUntrustedPromptSection(roleContext),
                 upstreamHandoffPromptSection(role, upstreamResultJson),
                 budgetEstimatePromptSection(role, task),
                 lightweightDeliveryPromptSection(role, task),
@@ -4762,6 +4769,19 @@ public class RequirementDeliveryEngine {
                 evidenceJson(roleContext.evidence()),
                 jsonArray(roleContext.omittedEvidenceIds())
         ).strip();
+    }
+
+    private String projectMemoryUntrustedPromptSection(RoleContextPackage roleContext) {
+        if (roleContext == null || roleContext.evidence().isEmpty()) {
+            return "";
+        }
+        List<RoleContextEvidence> memoryEvidence = roleContext.evidence().stream()
+                .filter(evidence -> "PROJECT_MEMORY".equalsIgnoreCase(evidence.sourceType()))
+                .toList();
+        if (memoryEvidence.isEmpty()) {
+            return "";
+        }
+        return ProjectMemoryUntrustedContext.render(memoryEvidence);
     }
 
     /**

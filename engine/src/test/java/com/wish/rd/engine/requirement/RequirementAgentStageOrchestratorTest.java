@@ -781,6 +781,34 @@ class RequirementAgentStageOrchestratorTest {
     }
 
     @Test
+    void scopedRetrievalDoesNotPrefetchLegacyExperienceWhenRecorderIsConfigured() {
+        WorkflowExperienceStore experienceStore = org.mockito.Mockito.mock(WorkflowExperienceStore.class);
+        org.mockito.Mockito.when(experienceStore.searchReusable(
+                        org.mockito.ArgumentMatchers.anyString(),
+                        org.mockito.ArgumentMatchers.anyString(),
+                        org.mockito.ArgumentMatchers.anyInt()))
+                .thenThrow(new AssertionError("legacy experience prefetch must not bypass scoped retrieval"));
+        AgentWorkflowPlan plan = AgentWorkflowPlanFixtures.reviewArchitectCodingWithRetrieval();
+        OrchestratorTestHarness harness = new OrchestratorTestHarness(experienceStore)
+                .prestageRoles(plan.roles())
+                .prestageRoleContexts(plan.roles());
+        harness.orchestrator.setRetrievalRecorder(new RequirementContextRetrievalRecorder(
+                new com.wish.rd.rag.retrieval.run.RetrievalRunLifecycle(
+                        new com.wish.rd.rag.retrieval.run.impl.InMemoryRetrievalRunStore(),
+                        () -> "run-1",
+                        () -> 100L)));
+
+        RequirementExecutionResult result = harness.orchestrator.run(
+                plan, harness.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION, null);
+
+        org.mockito.Mockito.verify(experienceStore, org.mockito.Mockito.never()).searchReusable(
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyInt());
+        assertNotNull(result);
+    }
+
+    @Test
     void recordRetrieval_returns_empty_succeed_outcome_when_recorder_missing() {
         AgentWorkflowPlan plan = AgentWorkflowPlanFixtures.reviewArchitectCodingWithRetrieval();
         OrchestratorTestHarness harness = new OrchestratorTestHarness()
@@ -1155,7 +1183,6 @@ class RequirementAgentStageOrchestratorTest {
                         roleContextBuilder, roleContextPackageStore,
                         SnowflakeIdGenerator.defaultGenerator()::nextIdString, 18_000);
         final AgentWorkflowAlertSinkPort alertSink = new RecordingAlertSink();
-        final WorkflowExperienceStore experienceStore = WorkflowExperienceStore.noop();
         final RecordingExecutor executor = new RecordingExecutor();
         final RequirementExecutionProfileResolverPort executionProfileResolver = new SnapshotProfileResolver();
         final RagStreamTaskRegistry taskRegistry = RagStreamTaskRegistry.inMemory();
@@ -1164,6 +1191,10 @@ class RequirementAgentStageOrchestratorTest {
         final RequirementAgentStageOrchestrator orchestrator;
 
         OrchestratorTestHarness() {
+            this(WorkflowExperienceStore.noop());
+        }
+
+        OrchestratorTestHarness(WorkflowExperienceStore experienceStore) {
             this.orchestrator = new RequirementAgentStageOrchestrator(
                     stageRunStore,
                     artifactStore,

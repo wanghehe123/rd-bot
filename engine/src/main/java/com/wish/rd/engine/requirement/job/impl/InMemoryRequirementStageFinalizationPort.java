@@ -21,6 +21,7 @@ import com.wish.rd.engine.requirement.publication.model.RequirementPublicationSt
 import com.wish.rd.engine.requirement.policy.RequirementPolicyRunStore;
 import com.wish.rd.engine.requirement.policy.model.RequirementPolicyRun;
 import com.wish.rd.engine.requirement.policy.model.RequirementPolicyRunState;
+import com.wish.rd.engine.project.memory.ProjectMemoryFinalizationRegistrar;
 import com.wish.rd.engine.retry.HostVerifyFailureJson;
 import com.wish.rd.engine.retry.TaskRetryAttemptBindingStore;
 import com.wish.rd.engine.retry.TaskRetryCheckpointStore;
@@ -33,6 +34,7 @@ import com.wish.rd.engine.retry.model.TaskRetryCheckpoint;
 import com.wish.rd.engine.retry.model.TaskRetryCheckpointStatus;
 import com.wish.rd.engine.retry.model.TaskRetryFailureProvenance;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
+import com.wish.rd.rag.project.memory.ProjectMemoryOperationStore;
 import com.wish.rd.rag.runtime.RdTaskStatePersistence;
 import com.wish.rd.rag.runtime.RdTaskStore;
 import com.wish.rd.rag.runtime.impl.InMemoryRdTaskStore;
@@ -72,6 +74,7 @@ public final class InMemoryRequirementStageFinalizationPort implements Requireme
     private final TaskRetryCheckpointStore checkpointStore;
     private final TaskRetryAttemptBindingStore bindingStore;
     private final AgentStageRunStore stageRunStore;
+    private final ProjectMemoryOperationStore memoryOperationStore;
     private final Map<String, RequirementStageFinalization> finalizations = new LinkedHashMap<>();
     private final Map<String, RequirementStageExecutionPlan> outcomePlans = new LinkedHashMap<>();
 
@@ -170,6 +173,29 @@ public final class InMemoryRequirementStageFinalizationPort implements Requireme
             TaskRetryAttemptBindingStore bindingStore,
             AgentStageRunStore stageRunStore
     ) {
+        this(stageCommandStore, jobStore, taskStore, taskStatePersistence, eventIdGenerator, publicationStore,
+                policyRunStore, failureProvenanceStore, checkpointStore, bindingStore, stageRunStore, null);
+    }
+
+    /**
+     * Creates the memory-mode finalizer with project-memory operation registration support.
+     *
+     * @param memoryOperationStore durable operation ledger registered in the same finalization boundary
+     */
+    public InMemoryRequirementStageFinalizationPort(
+            RequirementStageCommandStore stageCommandStore,
+            RequirementDeliveryJobStore jobStore,
+            RdTaskStore taskStore,
+            RdTaskStatePersistence taskStatePersistence,
+            SnowflakeIdGenerator eventIdGenerator,
+            RequirementPublicationStore publicationStore,
+            RequirementPolicyRunStore policyRunStore,
+            TaskRetryFailureProvenanceStore failureProvenanceStore,
+            TaskRetryCheckpointStore checkpointStore,
+            TaskRetryAttemptBindingStore bindingStore,
+            AgentStageRunStore stageRunStore,
+            ProjectMemoryOperationStore memoryOperationStore
+    ) {
         this.stageCommandStore = Objects.requireNonNull(stageCommandStore, "stageCommandStore must not be null");
         this.jobStore = Objects.requireNonNull(jobStore, "jobStore must not be null");
         if ((taskStore == null) != (taskStatePersistence == null)) {
@@ -184,6 +210,7 @@ public final class InMemoryRequirementStageFinalizationPort implements Requireme
         this.checkpointStore = checkpointStore;
         this.bindingStore = bindingStore;
         this.stageRunStore = stageRunStore;
+        this.memoryOperationStore = memoryOperationStore;
     }
 
     /**
@@ -618,6 +645,7 @@ public final class InMemoryRequirementStageFinalizationPort implements Requireme
             throw new IllegalStateException("stage finalization marker is stale: " + marker.commandId());
         }
         requireOwnedRunning(command.stageCommand(), command.leaseOwner(), command.nowEpochMillis());
+        ProjectMemoryFinalizationRegistrar.registerIfPresent(memoryOperationStore, command.memoryOperation());
         InMemoryRequirementStageCommandStore memoryCommandStore = null;
         if (command.nextCommand() != null) {
             if (!(stageCommandStore instanceof InMemoryRequirementStageCommandStore store)) {

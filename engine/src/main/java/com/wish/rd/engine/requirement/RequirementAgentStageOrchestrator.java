@@ -20,6 +20,7 @@ import com.wish.rd.engine.agent.model.WorkflowExperienceEntry;
 import com.wish.rd.engine.agent.model.WorkflowExperienceType;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
 import com.wish.rd.engine.retrieval.model.RetrievalOutcome;
+import com.wish.rd.rag.context.ProjectMemoryUntrustedContext;
 import com.wish.rd.rag.context.model.RoleContextPackage;
 import com.wish.rd.rag.context.RoleContextPackageStore;
 import com.wish.rd.rag.project.budget.RdProjectTokenBudgetService;
@@ -305,9 +306,7 @@ public class RequirementAgentStageOrchestrator {
             if (retrievalRecorder == null || !plan.retrievalEnabled()) {
                 roleContext = latestRoleContext(task.taskId(), role);
             } else {
-                List<TaskMaterial> retrievalMaterials = materialsWithReusableExperience(
-                        task, materials, System.currentTimeMillis()
-                );
+                List<TaskMaterial> retrievalMaterials = List.copyOf(materials == null ? List.of() : materials);
                 RetrievalOutcome retrieval = recordRetrieval(
                         task, retrievalMaterials, role, stage, upstreamResultJson
                 );
@@ -1411,6 +1410,8 @@ public class RequirementAgentStageOrchestrator {
 
                 %s
 
+                %s
+
                 # 上游交接摘要
                 %s
 
@@ -1430,6 +1431,7 @@ public class RequirementAgentStageOrchestrator {
                 roleInstruction(role, executionProfileResolution),
                 roleContextJson(roleContext),
                 repositoryDiscoveryPromptSection(roleContext),
+                projectMemoryUntrustedPromptSection(roleContext),
                 upstreamHandoffPromptSection(role, upstreamResultJson),
                 budgetEstimatePromptSection(role, task),
                 lightweightDeliveryPromptSection(role, task),
@@ -1692,6 +1694,19 @@ public class RequirementAgentStageOrchestrator {
                 evidenceJson(roleContext.evidence()),
                 jsonArray(roleContext.omittedEvidenceIds())
         ).strip();
+    }
+
+    private String projectMemoryUntrustedPromptSection(RoleContextPackage roleContext) {
+        if (roleContext == null || roleContext.evidence().isEmpty()) {
+            return "";
+        }
+        List<com.wish.rd.rag.context.model.RoleContextEvidence> memoryEvidence = roleContext.evidence().stream()
+                .filter(evidence -> "PROJECT_MEMORY".equalsIgnoreCase(evidence.sourceType()))
+                .toList();
+        if (memoryEvidence.isEmpty()) {
+            return "";
+        }
+        return ProjectMemoryUntrustedContext.render(memoryEvidence);
     }
 
     private String repositoryDiscoveryPromptSection(RoleContextPackage roleContext) {

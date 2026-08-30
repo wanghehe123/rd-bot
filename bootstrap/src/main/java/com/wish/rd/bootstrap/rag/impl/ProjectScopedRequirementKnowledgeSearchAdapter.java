@@ -15,6 +15,9 @@ import com.wish.rd.rag.project.model.RdProject;
 import com.wish.rd.rag.retrieval.MultiChannelRetrievalEngine;
 import com.wish.rd.rag.retrieval.impl.IntentDirectedVectorSearchChannel;
 import com.wish.rd.rag.retrieval.impl.KeywordBM25SearchChannel;
+import com.wish.rd.rag.retrieval.impl.ProjectMemoryRetrievalChannel;
+import com.wish.rd.rag.project.memory.ProjectMemoryModeService;
+import com.wish.rd.rag.project.memory.ProjectMemorySearchPort;
 import com.wish.rd.rag.retrieval.model.ChannelSearchOutcome;
 import com.wish.rd.rag.retrieval.model.RetrievalExecutionResult;
 import com.wish.rd.rag.retrieval.model.RetrievalRequest;
@@ -53,13 +56,41 @@ public class ProjectScopedRequirementKnowledgeSearchAdapter implements Requireme
     private final RdProjectService projectService;
     private final WorkflowExperienceStore experienceStore;
     private final RagStreamTaskRegistry taskRegistry;
+    private final ProjectMemoryRetrievalChannel memoryChannel;
+    private final ProjectMemoryModeService memoryModeService;
     private final boolean experienceChannelEnabled;
 
     public ProjectScopedRequirementKnowledgeSearchAdapter(
             VectorStore vectorStore,
             RdProjectService projectService
     ) {
-        this(vectorStore, projectService, WorkflowExperienceStore.noop(), null, false);
+        this(vectorStore, projectService, WorkflowExperienceStore.noop(), null, null, null, false);
+    }
+
+    public ProjectScopedRequirementKnowledgeSearchAdapter(
+            VectorStore vectorStore,
+            RdProjectService projectService,
+            WorkflowExperienceStore experienceStore,
+            RagStreamTaskRegistry taskRegistry
+    ) {
+        this(vectorStore, projectService, experienceStore, taskRegistry, null, null, true);
+    }
+
+    public ProjectScopedRequirementKnowledgeSearchAdapter(
+            VectorStore vectorStore,
+            RdProjectService projectService,
+            WorkflowExperienceStore experienceStore,
+            RagStreamTaskRegistry taskRegistry,
+            org.springframework.beans.factory.ObjectProvider<ProjectMemorySearchPort> memorySearchPortProvider
+    ) {
+        this(
+                vectorStore,
+                projectService,
+                experienceStore,
+                taskRegistry,
+                memorySearchPortProvider == null ? null : memorySearchPortProvider.getIfAvailable(),
+                null,
+                true);
     }
 
     @Autowired
@@ -67,9 +98,18 @@ public class ProjectScopedRequirementKnowledgeSearchAdapter implements Requireme
             VectorStore vectorStore,
             RdProjectService projectService,
             WorkflowExperienceStore experienceStore,
-            RagStreamTaskRegistry taskRegistry
+            RagStreamTaskRegistry taskRegistry,
+            org.springframework.beans.factory.ObjectProvider<ProjectMemorySearchPort> memorySearchPortProvider,
+            org.springframework.beans.factory.ObjectProvider<ProjectMemoryModeService> memoryModeServiceProvider
     ) {
-        this(vectorStore, projectService, experienceStore, taskRegistry, true);
+        this(
+                vectorStore,
+                projectService,
+                experienceStore,
+                taskRegistry,
+                memorySearchPortProvider == null ? null : memorySearchPortProvider.getIfAvailable(),
+                memoryModeServiceProvider == null ? null : memoryModeServiceProvider.getIfAvailable(),
+                true);
     }
 
     private ProjectScopedRequirementKnowledgeSearchAdapter(
@@ -77,12 +117,16 @@ public class ProjectScopedRequirementKnowledgeSearchAdapter implements Requireme
             RdProjectService projectService,
             WorkflowExperienceStore experienceStore,
             RagStreamTaskRegistry taskRegistry,
+            ProjectMemorySearchPort memorySearchPort,
+            ProjectMemoryModeService memoryModeService,
             boolean experienceChannelEnabled
     ) {
         this.vectorStore = Objects.requireNonNull(vectorStore, "vectorStore must not be null");
         this.projectService = Objects.requireNonNull(projectService, "projectService must not be null");
         this.experienceStore = experienceStore == null ? WorkflowExperienceStore.noop() : experienceStore;
         this.taskRegistry = taskRegistry;
+        this.memoryChannel = memorySearchPort == null ? null : new ProjectMemoryRetrievalChannel(memorySearchPort);
+        this.memoryModeService = memoryModeService;
         this.experienceChannelEnabled = experienceChannelEnabled && taskRegistry != null;
     }
 
@@ -146,22 +190,160 @@ public class ProjectScopedRequirementKnowledgeSearchAdapter implements Requireme
         List<ChannelAudit> audits = new ArrayList<>(result.channelOutcomes().values().stream()
                 .map(this::audit)
                 .toList());
+        List<RoleContextEvidence> memoryEvidence = projectMemoryEvidence(task, role, query, Math.max(1, topK));
+        int shadowMemoryCount = shadowProjectMemoryCount(task, role, query, Math.max(1, topK));
+        if (!memoryEvidence.isEmpty() || shadowMemoryCount > 0) {
+            audits.add(new ChannelAudit(
+                    "ProjectMemory",
+                    false,
+                    memoryEvidence.isEmpty() ? shadowMemoryCount : memoryEvidence.size(),
+                    memoryEvidence.isEmpty() ? "SHADOW_AUDIT" : "",
+                    memoryEvidence.isEmpty() ? "project memory retrieved for shadow comparison only" : ""
+            ));
+        }
         List<RoleContextEvidence> experienceEvidence = experienceEvidence(task, role, query, Math.max(1, topK));
         if (experienceChannelEnabled) {
             audits.add(new ChannelAudit(
                     "WorkflowExperience", false, experienceEvidence.size(), "", ""
             ));
         }
-        int experienceLimit = Math.max(0, (int) Math.floor(Math.max(1, topK) * 0.30d));
+        int totalBudget = Math.max(1, topK);
+        int experienceLimit = Math.max(0, (int) Math.floor(totalBudget * 0.30d));
         List<RoleContextEvidence> boundedExperiences = experienceEvidence.stream()
                 .limit(experienceLimit)
                 .toList();
-        int knowledgeLimit = Math.max(0, Math.max(1, topK) - boundedExperiences.size());
-        List<RoleContextEvidence> evidence = new ArrayList<>(knowledgeEvidence.stream()
-                .limit(knowledgeLimit)
-                .toList());
-        evidence.addAll(boundedExperiences);
+        List<RoleContextEvidence> evidence = mergeWithSharedBudget(
+                knowledgeEvidence,
+                memoryEvidence,
+                boundedExperiences,
+                totalBudget);
         return new SearchResult(List.copyOf(evidence), List.copyOf(audits));
+    }
+
+    private List<RoleContextEvidence> projectMemoryEvidence(
+            RdRequirementTask task,
+            AgentRole role,
+            String query,
+            int topK
+    ) {
+        if (!shouldInjectProjectMemory(task)) {
+            return List.of();
+        }
+        return retrieveProjectMemory(task, role, query, topK);
+    }
+
+    private int shadowProjectMemoryCount(
+            RdRequirementTask task,
+            AgentRole role,
+            String query,
+            int topK
+    ) {
+        if (!shouldShadowAuditProjectMemory(task)) {
+            return 0;
+        }
+        return retrieveProjectMemory(task, role, query, topK).size();
+    }
+
+    private List<RoleContextEvidence> retrieveProjectMemory(
+            RdRequirementTask task,
+            AgentRole role,
+            String query,
+            int topK
+    ) {
+        if (memoryChannel == null || task == null || role == null || query == null || query.isBlank()) {
+            return List.of();
+        }
+        String projectId = task.projectId();
+        if (!projectId.matches("[1-9][0-9]*")) {
+            return List.of();
+        }
+        return memoryChannel.retrieve(
+                projectId,
+                role.name(),
+                query,
+                Math.max(1, topK),
+                0.5d,
+                System.currentTimeMillis());
+    }
+
+    private boolean shouldInjectProjectMemory(RdRequirementTask task) {
+        RdProject project = resolveProject(task == null ? "" : task.projectId()).orElse(null);
+        if (project == null) {
+            return false;
+        }
+        if (memoryModeService == null) {
+            return false;
+        }
+        return memoryModeService.shouldInjectProjectMemory(
+                project.projectId(), project.enabled(), project.deleted());
+    }
+
+    private boolean shouldShadowAuditProjectMemory(RdRequirementTask task) {
+        RdProject project = resolveProject(task == null ? "" : task.projectId()).orElse(null);
+        if (project == null || memoryModeService == null) {
+            return false;
+        }
+        return memoryModeService.shouldShadowAuditProjectMemory(
+                project.projectId(), project.enabled(), project.deleted());
+    }
+
+    private boolean shouldIncludeLegacyExperience(RdRequirementTask task) {
+        if (memoryModeService == null) {
+            return true;
+        }
+        RdProject project = resolveProject(task == null ? "" : task.projectId()).orElse(null);
+        if (project == null) {
+            return false;
+        }
+        return memoryModeService.shouldIncludeLegacyExperience(
+                project.projectId(), project.enabled(), project.deleted());
+    }
+
+    private Optional<RdProject> resolveProject(String projectId) {
+        if (projectId == null || projectId.isBlank()) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.of(projectService.get(projectId));
+        } catch (RuntimeException exception) {
+            return Optional.empty();
+        }
+    }
+
+    private List<RoleContextEvidence> mergeWithSharedBudget(
+            List<RoleContextEvidence> knowledgeEvidence,
+            List<RoleContextEvidence> memoryEvidence,
+            List<RoleContextEvidence> experienceEvidence,
+            int totalBudget
+    ) {
+        LinkedHashSet<String> seenContentHashes = new LinkedHashSet<>();
+        LinkedHashSet<String> seenSourceUris = new LinkedHashSet<>();
+        List<RoleContextEvidence> merged = new ArrayList<>();
+        appendDeduped(merged, knowledgeEvidence, seenContentHashes, seenSourceUris, totalBudget);
+        appendDeduped(merged, memoryEvidence, seenContentHashes, seenSourceUris, totalBudget);
+        appendDeduped(merged, experienceEvidence, seenContentHashes, seenSourceUris, totalBudget);
+        return List.copyOf(merged);
+    }
+
+    private void appendDeduped(
+            List<RoleContextEvidence> merged,
+            List<RoleContextEvidence> candidates,
+            LinkedHashSet<String> seenContentHashes,
+            LinkedHashSet<String> seenSourceUris,
+            int totalBudget
+    ) {
+        for (RoleContextEvidence candidate : candidates == null ? List.<RoleContextEvidence>of() : candidates) {
+            if (candidate == null || merged.size() >= totalBudget) {
+                return;
+            }
+            String contentHash = normalizedContentHash(candidate.contentHash());
+            String sourceUri = safe(candidate.sourceUri());
+            if ((!contentHash.isBlank() && !seenContentHashes.add(contentHash))
+                    || (!sourceUri.isBlank() && !seenSourceUris.add(sourceUri))) {
+                continue;
+            }
+            merged.add(candidate);
+        }
     }
 
     private List<RoleContextEvidence> experienceEvidence(
@@ -171,6 +353,9 @@ public class ProjectScopedRequirementKnowledgeSearchAdapter implements Requireme
             int topK
     ) {
         if (!experienceChannelEnabled || task == null || role == null || topK < 4) {
+            return List.of();
+        }
+        if (!shouldIncludeLegacyExperience(task)) {
             return List.of();
         }
         LinkedHashSet<String> sourceTasks = new LinkedHashSet<>();
@@ -345,6 +530,11 @@ public class ProjectScopedRequirementKnowledgeSearchAdapter implements Requireme
         } catch (NoSuchAlgorithmException exception) {
             throw new IllegalStateException("SHA-256 unavailable", exception);
         }
+    }
+
+    private String normalizedContentHash(String hash) {
+        String safeValue = safe(hash);
+        return safeValue.startsWith("sha256:") ? safeValue.substring("sha256:".length()) : safeValue;
     }
 
     private String bounded(String value, int maxChars) {

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Bell,
+  Brain,
   Database,
   FolderOpen,
   Gauge,
@@ -322,6 +323,15 @@ export function ProjectListPage() {
                         >
                           <SlidersHorizontal className="h-3.5 w-3.5 text-primary" />
                           <span>策略</span>
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-8 gap-1 px-2.5 text-xs font-medium text-slate-700 hover:text-primary hover:border-primary/40"
+                          onClick={() => navigate(`/admin/projects/${project.projectId}/memories`)}
+                        >
+                          <Brain className="h-3.5 w-3.5 text-primary" />
+                          <span>记忆</span>
                         </Button>
                         <Button
                           size="sm"

@@ -1,0 +1,110 @@
+{
+  "datasetRevision": "corpus-v1",
+  "gateRevision": "gate-v1",
+  "projects": [
+    {
+      "projectId": "101",
+      "repositoryFingerprint": "repo-alpha",
+      "queries": [
+        {
+          "queryId": "q-build",
+          "role": "CODING_AGENT",
+          "text": "npm run build",
+          "expectedSourceIds": ["src-101-build"],
+          "legacyBaselineSourceIds": ["legacy-101-build"],
+          "k": 3
+        },
+        {
+          "queryId": "q-test",
+          "role": "CODING_AGENT",
+          "text": "unit test",
+          "expectedSourceIds": ["src-101-test"],
+          "legacyBaselineSourceIds": ["legacy-101-test"],
+          "k": 3
+        }
+      ],
+      "hits": [
+        {
+          "memoryId": "mem-101-build",
+          "projectId": "101",
+          "role": "CODING_AGENT",
+          "summary": "use npm run build for production bundles",
+          "sourceId": "src-101-build",
+          "activeHead": true,
+          "valid": true,
+          "redacted": true,
+          "quality": 0.95,
+          "stale": false,
+          "conflict": false,
+          "latencyMillis": 12,
+          "tokenEstimate": 40
+        },
+        {
+          "memoryId": "mem-101-test",
+          "projectId": "101",
+          "role": "CODING_AGENT",
+          "summary": "run unit tests with npm test",
+          "sourceId": "src-101-test",
+          "activeHead": true,
+          "valid": true,
+          "redacted": true,
+          "quality": 0.9,
+          "stale": false,
+          "conflict": false,
+          "latencyMillis": 18,
+          "tokenEstimate": 35
+        }
+      ]
+    },
+    {
+      "projectId": "102",
+      "repositoryFingerprint": "repo-beta",
+      "queries": [
+        {
+          "queryId": "q-leak-probe",
+          "role": "CODING_AGENT",
+          "text": "build",
+          "expectedSourceIds": ["src-102-build"],
+          "legacyBaselineSourceIds": ["legacy-102-build"],
+          "k": 3
+        }
+      ],
+      "hits": [
+        {
+          "memoryId": "mem-102-build",
+          "projectId": "102",
+          "role": "CODING_AGENT",
+          "summary": "use npm run build in beta repo",
+          "sourceId": "src-102-build",
+          "activeHead": true,
+          "valid": true,
+          "redacted": true,
+          "quality": 0.92,
+          "stale": false,
+          "conflict": false,
+          "latencyMillis": 15,
+          "tokenEstimate": 38
+        },
+        {
+          "memoryId": "mem-101-leak",
+          "projectId": "101",
+          "role": "CODING_AGENT",
+          "summary": "foreign build guidance from project 101",
+          "sourceId": "src-101-build",
+          "activeHead": true,
+          "valid": true,
+          "redacted": true,
+          "quality": 0.99,
+          "stale": false,
+          "conflict": false,
+          "latencyMillis": 10,
+          "tokenEstimate": 42
+        }
+      ]
+    }
+  ],
+  "legacyBaseline": {
+    "datasetRevision": "corpus-v1",
+    "passRate": 1.0
+  }
+}

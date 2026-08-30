@@ -36,7 +36,8 @@ public final class PostgresClasspathSchemaInitializer
             try (Connection connection = DriverManager.getConnection(url, username, password)) {
                 connection.setAutoCommit(true);
                 if (schemaAlreadyApplied(connection)) {
-                    applyScript(connection, "p16_model_provider_credentials.sql");
+                    applyScriptIfMissing(connection, "p16_model_provider_credentials.sql", "rd_model_provider_credentials");
+                    applyScriptIfMissing(connection, "p19_project_agent_memory.sql", "rd_project_memories");
                     return;
                 }
                 for (Resource script : listedScripts()) {
@@ -57,7 +58,8 @@ public final class PostgresClasspathSchemaInitializer
                 "p4_web_evaluation_console.sql",
                 "p8_pi_agent_runtime.sql",
                 "p16_model_provider_credentials.sql",
-                "p18_pi_agent_state_and_remediation.sql"
+                "p18_pi_agent_state_and_remediation.sql",
+                "p19_project_agent_memory.sql"
         );
         List<Resource> scripts = new ArrayList<>();
         for (String name : names) {
@@ -70,6 +72,20 @@ public final class PostgresClasspathSchemaInitializer
         try (Statement statement = connection.createStatement();
              var result = statement.executeQuery(
                      "SELECT to_regclass('public.rd_agent_remediation_rounds')")) {
+            return result.next() && result.getString(1) != null;
+        }
+    }
+
+    private static void applyScriptIfMissing(Connection connection, String name, String tableName) throws Exception {
+        if (tablePresent(connection, tableName)) {
+            return;
+        }
+        applyScript(connection, name);
+    }
+
+    private static boolean tablePresent(Connection connection, String tableName) throws java.sql.SQLException {
+        try (Statement statement = connection.createStatement();
+             var result = statement.executeQuery("SELECT to_regclass('public." + tableName + "')")) {
             return result.next() && result.getString(1) != null;
         }
     }

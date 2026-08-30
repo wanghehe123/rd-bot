@@ -31,6 +31,7 @@ import com.wish.rd.bootstrap.persistence.mapper.RequirementPublicationMapper;
 import com.wish.rd.bootstrap.persistence.mapper.TaskFailureProvenanceMapper;
 import com.wish.rd.bootstrap.persistence.mapper.TaskRetryAttemptBindingMapper;
 import com.wish.rd.bootstrap.persistence.mapper.TaskRetryCheckpointMapper;
+import com.wish.rd.engine.project.memory.ProjectMemoryFinalizationRegistrar;
 import com.wish.rd.engine.requirement.job.RequirementStageFinalizationPort;
 import com.wish.rd.engine.requirement.job.RequirementStageExecutionPlanCodec;
 import com.wish.rd.engine.requirement.job.model.RequirementDeliveryJob;
@@ -48,6 +49,7 @@ import com.wish.rd.engine.retry.model.TaskRetryCheckpointStatus;
 import com.wish.rd.engine.retry.model.TaskRetryFailureProvenance;
 import com.wish.rd.engine.scheduling.model.ScheduleResourceClass;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
+import com.wish.rd.rag.project.memory.ProjectMemoryOperationStore;
 import com.wish.rd.rag.runtime.model.RdRequirementTask;
 import com.wish.rd.rag.runtime.model.RdTaskStatus;
 import org.springframework.beans.factory.ObjectProvider;
@@ -89,6 +91,7 @@ public class PostgresRequirementStageFinalizationAdapter implements RequirementS
     private final AgentExecutionProfileMapper executionProfileMapper;
     private final PiRemediationFinalizationWriter remediationWriter;
     private final AgentRemediationRoundMapper remediationRoundMapper;
+    private final ProjectMemoryOperationStore memoryOperationStore;
 
     /** Advisory-lock namespace distinct from fair stage admission. */
     static final long REMEDIATION_TASK_LOCK_NAMESPACE = 0x5049_524D_4C4B_0000L;
@@ -217,7 +220,8 @@ public class PostgresRequirementStageFinalizationAdapter implements RequirementS
             ObjectProvider<TaskRetryAttemptBindingMapper> attemptBindingMapperProvider,
             ObjectProvider<AgentExecutionProfileMapper> executionProfileMapperProvider,
             ObjectProvider<PiRemediationFinalizationWriter> remediationWriterProvider,
-            ObjectProvider<AgentRemediationRoundMapper> remediationRoundMapperProvider
+            ObjectProvider<AgentRemediationRoundMapper> remediationRoundMapperProvider,
+            ObjectProvider<ProjectMemoryOperationStore> memoryOperationStoreProvider
     ) {
         this(finalizationMapper, stageCommandMapper, jobMapper, taskMapper, taskStatusEventMapper,
                 eventIdGenerator, publicationMapper, policyRunMapper, agentStageRunMapper,
@@ -226,7 +230,8 @@ public class PostgresRequirementStageFinalizationAdapter implements RequirementS
                 attemptBindingMapperProvider == null ? null : attemptBindingMapperProvider.getIfAvailable(),
                 executionProfileMapperProvider == null ? null : executionProfileMapperProvider.getIfAvailable(),
                 remediationWriterProvider == null ? null : remediationWriterProvider.getIfAvailable(),
-                remediationRoundMapperProvider == null ? null : remediationRoundMapperProvider.getIfAvailable());
+                remediationRoundMapperProvider == null ? null : remediationRoundMapperProvider.getIfAvailable(),
+                memoryOperationStoreProvider == null ? null : memoryOperationStoreProvider.getIfAvailable());
     }
 
     /**
@@ -316,6 +321,31 @@ public class PostgresRequirementStageFinalizationAdapter implements RequirementS
             PiRemediationFinalizationWriter remediationWriter,
             AgentRemediationRoundMapper remediationRoundMapper
     ) {
+        this(finalizationMapper, stageCommandMapper, jobMapper, taskMapper, taskStatusEventMapper,
+                eventIdGenerator, publicationMapper, policyRunMapper, agentStageRunMapper,
+                failureProvenanceMapper, checkpointMapper, attemptBindingMapper, executionProfileMapper,
+                remediationWriter, remediationRoundMapper, null);
+    }
+
+    /** Full constructor for focused remediation and project-memory finalization tests. */
+    public PostgresRequirementStageFinalizationAdapter(
+            RequirementStageFinalizationMapper finalizationMapper,
+            RequirementStageCommandMapper stageCommandMapper,
+            RequirementDeliveryJobMapper jobMapper,
+            RdTaskMapper taskMapper,
+            RdTaskStatusEventMapper taskStatusEventMapper,
+            SnowflakeIdGenerator eventIdGenerator,
+            RequirementPublicationMapper publicationMapper,
+            RequirementPolicyRunMapper policyRunMapper,
+            RdAgentStageRunMapper agentStageRunMapper,
+            TaskFailureProvenanceMapper failureProvenanceMapper,
+            TaskRetryCheckpointMapper checkpointMapper,
+            TaskRetryAttemptBindingMapper attemptBindingMapper,
+            AgentExecutionProfileMapper executionProfileMapper,
+            PiRemediationFinalizationWriter remediationWriter,
+            AgentRemediationRoundMapper remediationRoundMapper,
+            ProjectMemoryOperationStore memoryOperationStore
+    ) {
         this.finalizationMapper = Objects.requireNonNull(finalizationMapper, "finalizationMapper must not be null");
         this.stageCommandMapper = Objects.requireNonNull(stageCommandMapper, "stageCommandMapper must not be null");
         this.jobMapper = Objects.requireNonNull(jobMapper, "jobMapper must not be null");
@@ -332,6 +362,7 @@ public class PostgresRequirementStageFinalizationAdapter implements RequirementS
         this.executionProfileMapper = executionProfileMapper;
         this.remediationWriter = remediationWriter;
         this.remediationRoundMapper = remediationRoundMapper;
+        this.memoryOperationStore = memoryOperationStore;
     }
 
     /**
@@ -603,6 +634,8 @@ public class PostgresRequirementStageFinalizationAdapter implements RequirementS
         if (!marker.sameOutcomeRecordedIdentity(lockedMarker)) {
             throw new IllegalStateException("stage finalization marker changed: " + marker.commandId());
         }
+
+        ProjectMemoryFinalizationRegistrar.registerIfPresent(memoryOperationStore, command.memoryOperation());
 
         boolean deferRetryableMutation = defersRetryableMutation(command);
         applyTaskMutation(command, lockedMarker);

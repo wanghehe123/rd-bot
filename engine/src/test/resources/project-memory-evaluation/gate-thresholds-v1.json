@@ -1,0 +1,14 @@
+{
+  "gateRevision": "gate-v1",
+  "datasetRevision": "corpus-v1",
+  "maxCrossProjectLeakage": 0,
+  "minRecallAtK": 0.8,
+  "minPrecisionAtK": 0.8,
+  "maxStaleConflictRate": 0.1,
+  "maxAbstentionRate": 0.2,
+  "maxDuplicateContextRate": 0.1,
+  "minSourceCoverage": 0.9,
+  "maxP95LatencyMillis": 100,
+  "maxTokenShare": 0.35,
+  "defaultK": 3
+}

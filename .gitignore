@@ -82,6 +82,7 @@ outputs/
 feishu-wiki-auth.png
 
 # ===== 本地环境与密钥 =====
+sk/env.yaml
 *.env
 *.local
 application-local.yml

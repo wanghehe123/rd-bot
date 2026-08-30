@@ -93,6 +93,13 @@ final class RoleExecutionInputManifestBuilder {
     );
   }
 
+  private static String evidenceFactKind(RoleContextEvidence evidence) {
+    if (evidence != null && "PROJECT_MEMORY".equalsIgnoreCase(evidence.sourceType())) {
+      return "UNTRUSTED_PROJECT_MEMORY";
+    }
+    return "DECLARED";
+  }
+
   private static RuntimeContextPolicyMode resolveContextPolicyMode(
       RequirementExecutionProfileResolution executionProfileResolution
   ) {
@@ -136,7 +143,7 @@ final class RoleExecutionInputManifestBuilder {
       entries.add(new RoleExecutionEvidenceEntry(
               evidence.evidenceId(),
               evidence.sourceType(),
-              "DECLARED",
+              evidenceFactKind(evidence),
               evidence.contentHash(),
               AgentManifestCanonicalJson.contentHash(evidence.summary()),
               false,

@@ -1,5 +1,6 @@
 package com.wish.rd.bootstrap.persistence.impl;
 
+import com.wish.rd.bootstrap.persistence.entity.ProjectMemoryOperationRow;
 import com.wish.rd.bootstrap.persistence.entity.RequirementStageCommandRow;
 import com.wish.rd.bootstrap.persistence.entity.RequirementStageFinalizationRow;
 import com.wish.rd.bootstrap.persistence.entity.RdAgentStageRunRow;
@@ -8,6 +9,7 @@ import com.wish.rd.bootstrap.persistence.entity.RdTaskStatusEventRow;
 import com.wish.rd.bootstrap.persistence.entity.TaskFailureProvenanceRow;
 import com.wish.rd.bootstrap.persistence.entity.TaskRetryAttemptBindingRow;
 import com.wish.rd.bootstrap.persistence.entity.TaskRetryCheckpointRow;
+import com.wish.rd.bootstrap.persistence.mapper.ProjectMemoryOperationMapper;
 import com.wish.rd.bootstrap.persistence.mapper.RequirementDeliveryJobMapper;
 import com.wish.rd.bootstrap.persistence.mapper.RequirementPolicyRunMapper;
 import com.wish.rd.bootstrap.persistence.mapper.RequirementStageCommandMapper;
@@ -20,6 +22,7 @@ import com.wish.rd.bootstrap.persistence.mapper.TaskFailureProvenanceMapper;
 import com.wish.rd.bootstrap.persistence.mapper.TaskRetryAttemptBindingMapper;
 import com.wish.rd.bootstrap.persistence.mapper.TaskRetryCheckpointMapper;
 import com.wish.rd.engine.requirement.job.RequirementStageFinalizationPort;
+import com.wish.rd.rag.project.memory.model.ProjectMemoryOperationKey;
 import com.wish.rd.engine.requirement.job.model.ExternalEffectReceipt;
 import com.wish.rd.engine.requirement.job.model.RequirementStageCommand;
 import com.wish.rd.engine.requirement.job.model.RequirementStageExecutionPlan;
@@ -1316,6 +1319,152 @@ class PostgresRequirementStageFinalizationAdapterTest {
         order.verify(mocks.finalizations).insertPreparedForExhaustedAttempt(
                 eq(801L), eq(3), eq("RECOVERING"), any());
         order.verify(mocks.provenance).insertIfAbsent(any(TaskFailureProvenanceRow.class));
+    }
+
+    @Test
+    void finalizationRegistersProjectMemoryOperationBeforeTaskMutation() {
+        RequirementStageFinalizationMapper markers = mock(RequirementStageFinalizationMapper.class);
+        RequirementStageCommandMapper commands = mock(RequirementStageCommandMapper.class);
+        RdTaskMapper tasks = mock(RdTaskMapper.class);
+        RdTaskStatusEventMapper events = mock(RdTaskStatusEventMapper.class);
+        ProjectMemoryOperationMapper memoryMapper = mock(ProjectMemoryOperationMapper.class);
+        PostgresProjectMemoryOperationStore memoryStore = new PostgresProjectMemoryOperationStore(memoryMapper);
+        PostgresRequirementStageFinalizationAdapter adapter = new PostgresRequirementStageFinalizationAdapter(
+                markers, commands, mock(RequirementDeliveryJobMapper.class), tasks, events,
+                com.wish.rd.framework.id.SnowflakeIdGenerator.defaultGenerator(), null, null, null, null,
+                null, null, null, null, null, memoryStore);
+        RequirementStageCommand command = claimedCommand();
+        when(commands.lockByIdForUpdate(anyLong())).thenReturn(commandRow(command));
+        RequirementStageExecutionPlan plan = singleMutationPlan(command);
+        String canonicalPlanJson = canonicalPlanJson(plan);
+        RequirementStageFinalization recorded = RequirementStageFinalization.prepared(
+                command, RdTaskStatus.CREATED, 10L).outcomeRecorded(
+                plan.postStatus(), canonicalPlanJson, RequirementPolicyRun.canonicalJsonDigest(canonicalPlanJson), 20L);
+        when(markers.findForUpdate(anyLong(), anyInt())).thenReturn(markerRow(recorded));
+        RdTaskRow task = new RdTaskRow();
+        task.title = "atomic stage";
+        when(tasks.selectById(anyLong())).thenReturn(task);
+        when(tasks.advanceStatusWithExpectedVersionFenced(
+                anyLong(), anyLong(), anyLong(), anyString(), anyString(), any(), any(), any(), any(), any()))
+                .thenReturn(1);
+        when(events.insert(any(RdTaskStatusEventRow.class))).thenReturn(1);
+        when(commands.completeAttempt(anyLong(), anyInt(), anyString(), any()))
+                .thenReturn(commandRow(command.succeeded(20L)));
+        when(markers.finalizePrepared(any())).thenReturn(1);
+        when(memoryMapper.insertIfAbsent(any(ProjectMemoryOperationRow.class))).thenReturn(1);
+        String contentHash = "c".repeat(64);
+        RequirementStageFinalizationPort.ProjectMemoryOperationDraft draft =
+                RequirementStageFinalizationPort.ProjectMemoryOperationDraft.stageCapture(
+                        "901", "101", "stage-run-1", contentHash, "extractor-1", "schema-1");
+
+        adapter.finalize(new RequirementStageFinalizationPort.FinalizationCommand(
+                recorded, command, "worker", plan, null, null,
+                RequirementStageFinalizationPort.JobDisposition.NONE,
+                RequirementStageFinalizationPort.TaskMutationDisposition.APPLY, 20L, draft));
+
+        InOrder order = inOrder(memoryMapper, tasks, commands);
+        order.verify(memoryMapper).insertIfAbsent(any(ProjectMemoryOperationRow.class));
+        order.verify(tasks).advanceStatusWithExpectedVersionFenced(
+                anyLong(), anyLong(), anyLong(), anyString(), anyString(), any(), any(), any(), any(), any());
+        order.verify(commands).completeAttempt(anyLong(), anyInt(), anyString(), any());
+    }
+
+    @Test
+    void finalizationRejectsConflictingProjectMemoryOperationBeforeMutatingTaskState() {
+        RequirementStageFinalizationMapper markers = mock(RequirementStageFinalizationMapper.class);
+        RequirementStageCommandMapper commands = mock(RequirementStageCommandMapper.class);
+        RdTaskMapper tasks = mock(RdTaskMapper.class);
+        ProjectMemoryOperationMapper memoryMapper = mock(ProjectMemoryOperationMapper.class);
+        PostgresProjectMemoryOperationStore memoryStore = new PostgresProjectMemoryOperationStore(memoryMapper);
+        PostgresRequirementStageFinalizationAdapter adapter = new PostgresRequirementStageFinalizationAdapter(
+                markers, commands, mock(RequirementDeliveryJobMapper.class), tasks,
+                mock(RdTaskStatusEventMapper.class),
+                com.wish.rd.framework.id.SnowflakeIdGenerator.defaultGenerator(), null, null, null, null,
+                null, null, null, null, null, memoryStore);
+        RequirementStageCommand command = claimedCommand();
+        when(commands.lockByIdForUpdate(anyLong())).thenReturn(commandRow(command));
+        RequirementStageExecutionPlan plan = singleMutationPlan(command);
+        String canonicalPlanJson = canonicalPlanJson(plan);
+        RequirementStageFinalization recorded = RequirementStageFinalization.prepared(
+                command, RdTaskStatus.CREATED, 10L).outcomeRecorded(
+                plan.postStatus(), canonicalPlanJson, RequirementPolicyRun.canonicalJsonDigest(canonicalPlanJson), 20L);
+        when(markers.findForUpdate(anyLong(), anyInt())).thenReturn(markerRow(recorded));
+        String contentHash = "d".repeat(64);
+        String operationKey = ProjectMemoryOperationKey.sha256(
+                "101", "STAGE_FINALIZATION", "stage-run-2", contentHash, "extractor-1", "schema-1");
+        ProjectMemoryOperationRow conflicting = new ProjectMemoryOperationRow();
+        conflicting.id = 1L;
+        conflicting.projectId = 102L;
+        conflicting.operationKind = "STAGE_FINALIZATION";
+        conflicting.sourceIdentity = "stage-run-2";
+        conflicting.sourceContentHash = contentHash;
+        conflicting.extractorVersion = "extractor-1";
+        conflicting.schemaVersion = "schema-1";
+        conflicting.operationKey = operationKey;
+        when(memoryMapper.insertIfAbsent(any(ProjectMemoryOperationRow.class))).thenReturn(0);
+        when(memoryMapper.findForUpdate(operationKey)).thenReturn(conflicting);
+        RequirementStageFinalizationPort.ProjectMemoryOperationDraft draft =
+                RequirementStageFinalizationPort.ProjectMemoryOperationDraft.stageCapture(
+                        "902", "101", "stage-run-2", contentHash, "extractor-1", "schema-1");
+
+        assertThrows(IllegalStateException.class, () -> adapter.finalize(
+                new RequirementStageFinalizationPort.FinalizationCommand(
+                        recorded, command, "worker", plan, null, null,
+                        RequirementStageFinalizationPort.JobDisposition.NONE,
+                        RequirementStageFinalizationPort.TaskMutationDisposition.APPLY, 20L, draft)));
+
+        verify(tasks, never()).advanceStatusWithExpectedVersionFenced(
+                anyLong(), anyLong(), anyLong(), anyString(), anyString(), any(), any(), any(), any(), any());
+        verify(commands, never()).completeAttempt(anyLong(), anyInt(), anyString(), any());
+        verify(markers, never()).finalizePrepared(any());
+    }
+
+    @Test
+    void finalizationRegistersSkippedByPolicyMarkerInTheSameBoundary() {
+        RequirementStageFinalizationMapper markers = mock(RequirementStageFinalizationMapper.class);
+        RequirementStageCommandMapper commands = mock(RequirementStageCommandMapper.class);
+        RdTaskMapper tasks = mock(RdTaskMapper.class);
+        RdTaskStatusEventMapper events = mock(RdTaskStatusEventMapper.class);
+        ProjectMemoryOperationMapper memoryMapper = mock(ProjectMemoryOperationMapper.class);
+        PostgresProjectMemoryOperationStore memoryStore = new PostgresProjectMemoryOperationStore(memoryMapper);
+        PostgresRequirementStageFinalizationAdapter adapter = new PostgresRequirementStageFinalizationAdapter(
+                markers, commands, mock(RequirementDeliveryJobMapper.class), tasks, events,
+                com.wish.rd.framework.id.SnowflakeIdGenerator.defaultGenerator(), null, null, null, null,
+                null, null, null, null, null, memoryStore);
+        RequirementStageCommand command = claimedCommand();
+        when(commands.lockByIdForUpdate(anyLong())).thenReturn(commandRow(command));
+        RequirementStageExecutionPlan plan = singleMutationPlan(command);
+        String canonicalPlanJson = canonicalPlanJson(plan);
+        RequirementStageFinalization recorded = RequirementStageFinalization.prepared(
+                command, RdTaskStatus.CREATED, 10L).outcomeRecorded(
+                plan.postStatus(), canonicalPlanJson, RequirementPolicyRun.canonicalJsonDigest(canonicalPlanJson), 20L);
+        when(markers.findForUpdate(anyLong(), anyInt())).thenReturn(markerRow(recorded));
+        RdTaskRow task = new RdTaskRow();
+        task.title = "atomic stage";
+        when(tasks.selectById(anyLong())).thenReturn(task);
+        when(tasks.advanceStatusWithExpectedVersionFenced(
+                anyLong(), anyLong(), anyLong(), anyString(), anyString(), any(), any(), any(), any(), any()))
+                .thenReturn(1);
+        when(events.insert(any(RdTaskStatusEventRow.class))).thenReturn(1);
+        when(commands.completeAttempt(anyLong(), anyInt(), anyString(), any()))
+                .thenReturn(commandRow(command.succeeded(20L)));
+        when(markers.finalizePrepared(any())).thenReturn(1);
+        when(memoryMapper.insertIfAbsent(any(ProjectMemoryOperationRow.class))).thenReturn(1);
+        String contentHash = "f".repeat(64);
+        RequirementStageFinalizationPort.ProjectMemoryOperationDraft draft =
+                RequirementStageFinalizationPort.ProjectMemoryOperationDraft.skippedByPolicy(
+                        "903", "101", "stage-run-4", contentHash, "schema-1");
+
+        adapter.finalize(new RequirementStageFinalizationPort.FinalizationCommand(
+                recorded, command, "worker", plan, null, null,
+                RequirementStageFinalizationPort.JobDisposition.NONE,
+                RequirementStageFinalizationPort.TaskMutationDisposition.APPLY, 20L, draft));
+
+        ArgumentCaptor<ProjectMemoryOperationRow> rowCaptor = ArgumentCaptor.forClass(ProjectMemoryOperationRow.class);
+        verify(memoryMapper).insertIfAbsent(rowCaptor.capture());
+        assertEquals(RequirementStageFinalizationPort.ProjectMemoryOperationDraft.KIND_SKIPPED_BY_POLICY,
+                rowCaptor.getValue().operationKind);
+        assertEquals("NONE", rowCaptor.getValue().extractorVersion);
     }
 
     private static final class ExhaustionMocks {
