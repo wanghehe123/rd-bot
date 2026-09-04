@@ -114,6 +114,15 @@ class FairRequirementDeliveryClaimPlannerTest {
         );
     }
 
+    @Test
+    void shouldClassifyHostVerifyAsDockerWork() {
+        assertEquals(
+                Set.of(ScheduleResourceClass.PROVIDER, ScheduleResourceClass.DOCKER),
+                FairRequirementDeliveryClaimPlanner.classifyStageRequirements(
+                        "REQUIREMENT_DELIVERY", "HOST_VERIFY")
+        );
+    }
+
     private static RequirementStageCommand command(
             String commandId,
             String projectId,

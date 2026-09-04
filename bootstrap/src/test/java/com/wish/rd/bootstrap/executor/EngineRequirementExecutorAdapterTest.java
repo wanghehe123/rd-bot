@@ -26,6 +26,9 @@ import com.wish.rd.exec.repair.execution.model.RepairExecutionResult;
 import com.wish.rd.exec.repair.execution.model.RepairExecutionStatus;
 import com.wish.rd.exec.repair.execution.RepairExecutorPort;
 import com.wish.rd.exec.repair.execution.model.RepairJobCommand;
+import com.wish.rd.exec.repair.execution.model.RepairInputAttachment;
+import com.wish.rd.engine.requirement.audit.AcceptanceCriteriaIds;
+import com.wish.rd.rag.project.agent.model.AgentManifestCanonicalJson;
 import com.wish.rd.exec.repair.oracle.model.HostVerifierWorkspace;
 import com.wish.rd.rag.runtime.model.CreateRequirementTaskCommand;
 import com.wish.rd.rag.runtime.model.RdRequirementTask;
@@ -989,13 +992,53 @@ class EngineRequirementExecutorAdapterTest {
 
         RepairJobCommand qaCommand = commands.get(1);
         assertEquals("true", qaCommand.policyJson().get("applyCandidatePatch"));
-        assertEquals(1, qaCommand.attachments().size());
-        assertEquals("candidate-patch.diff", qaCommand.attachments().getFirst().filename());
+        assertTrue(qaCommand.attachments().stream().anyMatch(attachment ->
+                "candidate-patch.diff".equals(attachment.filename())));
+        assertTrue(qaCommand.attachments().stream().anyMatch(attachment ->
+                "acceptance-criteria-ids.json".equals(attachment.filename())));
+        RepairInputAttachment patch = qaCommand.attachments().stream()
+                .filter(attachment -> "candidate-patch.diff".equals(attachment.filename()))
+                .findFirst()
+                .orElseThrow();
         assertEquals(new String(patchBytes, StandardCharsets.UTF_8),
-                new String(qaCommand.attachments().getFirst().content(), StandardCharsets.UTF_8));
+                new String(patch.content(), StandardCharsets.UTF_8));
         assertTrue(qaCommand.contextJson().get("upstreamHandoffManifestJson")
                 .contains("/work/input/attachments/candidate-patch.diff"));
         assertFalse(qaCommand.contextJson().get("upstreamHandoffManifestJson").contains("s3://"));
+    }
+
+    @Test
+    void shouldAttachFrozenAcceptanceCriteriaIdsForQaAndRecordHash() {
+        List<RepairJobCommand> commands = new java.util.ArrayList<>();
+        EngineRequirementExecutorAdapter adapter = new EngineRequirementExecutorAdapter(command -> {
+            commands.add(command);
+            return new RepairExecutionResult(
+                    RepairExecutionStatus.SUCCESS, "ok", "", List.of(), Map.of(), Map.of(),
+                    Map.of(), Map.of(), Map.of(), ""
+            );
+        });
+
+        adapter.execute(new RequirementExecutionRequest(
+                "task-1001",
+                task(),
+                List.of(),
+                "verify",
+                AgentRole.QA_AGENT,
+                "{}",
+                false,
+                "{\"version\":1,\"stages\":[]}"
+        ));
+
+        RepairJobCommand qaCommand = commands.getFirst();
+        RepairInputAttachment frozen = qaCommand.attachments().stream()
+                .filter(attachment -> AcceptanceCriteriaIds.ATTACHMENT_FILENAME.equals(attachment.filename()))
+                .findFirst()
+                .orElseThrow();
+        String expectedJson = AcceptanceCriteriaIds.canonicalJson(List.of("AC-001"));
+        assertEquals(expectedJson, new String(frozen.content(), StandardCharsets.UTF_8));
+        assertEquals(
+                AgentManifestCanonicalJson.contentHash(expectedJson),
+                qaCommand.contextJson().get("frozenAcceptanceCriteriaIdsHash"));
     }
 
     @Test

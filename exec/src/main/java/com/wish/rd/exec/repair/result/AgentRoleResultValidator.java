@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.LinkedHashSet;
 import java.util.HashSet;
 import java.util.List;
@@ -96,17 +97,28 @@ public final class AgentRoleResultValidator {
      * @return 校验结果
      */
     public AgentRoleResultValidation validate(String role, String json) {
-        return validate(role, json, ContextProtocolVersion.LEGACY_ENVIRONMENT_NOTES.name(), null, false);
+        return validate(role, json, ContextProtocolVersion.LEGACY_ENVIRONMENT_NOTES.name(), null, false, null);
     }
 
     /** Validates a capability-gated PI QA remediation-v2 result while preserving legacy callers. */
     public AgentRoleResultValidation validate(String role, String json, boolean qaRemediationV2Enabled) {
+        return validate(role, json, qaRemediationV2Enabled, null);
+    }
+
+    /** Validates PI-v2 QA results against the host-frozen CURRENT {@code criteriaId} set. */
+    public AgentRoleResultValidation validate(
+            String role,
+            String json,
+            boolean qaRemediationV2Enabled,
+            Collection<String> frozenCriteriaIds
+    ) {
         return validate(
                 role,
                 json,
                 ContextProtocolVersion.LEGACY_ENVIRONMENT_NOTES.name(),
                 null,
-                qaRemediationV2Enabled
+                qaRemediationV2Enabled,
+                frozenCriteriaIds
         );
     }
 
@@ -119,7 +131,7 @@ public final class AgentRoleResultValidator {
             String contextProtocolVersion,
             FactFreshnessEvaluator.FreshnessContext freshnessContext
     ) {
-        return validate(role, json, contextProtocolVersion, freshnessContext, false);
+        return validate(role, json, contextProtocolVersion, freshnessContext, false, null);
     }
 
     public AgentRoleResultValidation validate(
@@ -128,6 +140,17 @@ public final class AgentRoleResultValidator {
             String contextProtocolVersion,
             FactFreshnessEvaluator.FreshnessContext freshnessContext,
             boolean qaRemediationV2Enabled
+    ) {
+        return validate(role, json, contextProtocolVersion, freshnessContext, qaRemediationV2Enabled, null);
+    }
+
+    public AgentRoleResultValidation validate(
+            String role,
+            String json,
+            String contextProtocolVersion,
+            FactFreshnessEvaluator.FreshnessContext freshnessContext,
+            boolean qaRemediationV2Enabled,
+            Collection<String> frozenCriteriaIds
     ) {
         String normalizedRole = normalizeRole(role);
         if ("CODING_AGENT".equals(normalizedRole)) {
@@ -145,7 +168,7 @@ public final class AgentRoleResultValidator {
         List<String> errors = new ArrayList<>(switch (normalizedRole) {
             case "REQUIREMENT_REVIEWER" -> validateRequirementReview(root);
             case "SOLUTION_ARCHITECT" -> validateSolutionPlan(root);
-            case "QA_AGENT" -> validateQaReport(root, qaRemediationV2Enabled);
+            case "QA_AGENT" -> validateQaReport(root, qaRemediationV2Enabled, frozenCriteriaIds);
             default -> List.of("unsupported agent role: " + normalizedRole);
         });
         errors.addAll(RoleExecutionFactsValidator.validateFactsProtocol(
@@ -219,6 +242,14 @@ public final class AgentRoleResultValidator {
     }
 
     private List<String> validateQaReport(JsonNode root, boolean qaRemediationV2Enabled) {
+        return validateQaReport(root, qaRemediationV2Enabled, null);
+    }
+
+    private List<String> validateQaReport(
+            JsonNode root,
+            boolean qaRemediationV2Enabled,
+            Collection<String> frozenCriteriaIds
+    ) {
         List<String> errors = new ArrayList<>();
         validateEnum(root, "status", QA_STATUSES, errors);
         validateString(root, "summary", errors);
@@ -274,6 +305,7 @@ public final class AgentRoleResultValidator {
                 if ("REGRESSION".equals(scope)) {
                     regressionScopePresent = true;
                 }
+                validateCurrentCriteriaId(result, index, scope, qaRemediationV2Enabled, frozenCriteriaIds, errors);
                 if ("PASSED".equals(resultStatus)
                         && result.path("exitCode").isIntegralNumber()
                         && result.path("exitCode").longValue() != 0L) {
@@ -316,6 +348,28 @@ public final class AgentRoleResultValidator {
             validateQaRemediationV2(root, errors);
         }
         return List.copyOf(errors);
+    }
+
+    private static void validateCurrentCriteriaId(
+            JsonNode result,
+            int index,
+            String scope,
+            boolean qaRemediationV2Enabled,
+            Collection<String> frozenCriteriaIds,
+            List<String> errors
+    ) {
+        if (!qaRemediationV2Enabled || !"CURRENT".equals(scope)) {
+            return;
+        }
+        String prefix = "acceptanceResults[" + index + "].criteriaId";
+        String criteriaId = result.path("criteriaId").asText("").strip();
+        if (criteriaId.isBlank()) {
+            errors.add(prefix + " must be a frozen AC-%03d id");
+            return;
+        }
+        if (frozenCriteriaIds != null && !frozenCriteriaIds.contains(criteriaId)) {
+            errors.add(prefix + " is not in the frozen acceptance-criteria set");
+        }
     }
 
     private static void validateQaRemediationV2(JsonNode root, List<String> errors) {

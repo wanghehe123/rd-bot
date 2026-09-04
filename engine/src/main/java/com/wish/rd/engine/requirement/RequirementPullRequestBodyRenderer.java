@@ -1,5 +1,8 @@
 package com.wish.rd.engine.requirement;
 
+import com.wish.rd.engine.requirement.audit.AuditedRecord;
+import com.wish.rd.engine.requirement.audit.AuditedTaskState;
+import com.wish.rd.engine.requirement.audit.EvidenceRef;
 import com.wish.rd.engine.requirement.model.RequirementDeliveryPublicationView;
 import com.wish.rd.engine.requirement.model.RequirementDeliveryPublicationView.AcceptanceResult;
 import org.springframework.stereotype.Component;
@@ -36,6 +39,27 @@ public class RequirementPullRequestBodyRenderer {
             String title,
             RequirementDeliveryPublicationView view
     ) {
+        return render(taskId, operationId, title, view, null);
+    }
+
+    /**
+     * 生成固定章节的 PR 正文；当已审计 head 存在时，首段为已审计验收清单，
+     * Agent {@code prBody} 降为「未核验叙述」。
+     *
+     * @param taskId      RD 任务 ID
+     * @param operationId publication operation ID
+     * @param title       需求标题
+     * @param view        已批准的统一发布视图
+     * @param auditedHead Host 拥有的已审计状态；{@code null} 时保持历史章节
+     * @return 最终 PR Markdown 正文
+     */
+    public String render(
+            String taskId,
+            String operationId,
+            String title,
+            RequirementDeliveryPublicationView view,
+            AuditedTaskState auditedHead
+    ) {
         if (view == null || !view.deliveryReview().approved()) {
             throw new IllegalArgumentException("publication view must contain an approved delivery review");
         }
@@ -49,6 +73,10 @@ public class RequirementPullRequestBodyRenderer {
             throw new IllegalArgumentException("delivery review factsHash must match publication facts");
         }
         StringBuilder body = new StringBuilder();
+        if (auditedHead != null) {
+            appendAuditedAcceptance(body, auditedHead);
+            appendUnverifiedNarrative(body, view.agentNarrative());
+        }
         appendHeading(body, "Summary");
         if (!safe(title).isBlank()) {
             body.append("- Title: ").append(markdown(title)).append('\n');
@@ -56,7 +84,9 @@ public class RequirementPullRequestBodyRenderer {
         if (!view.summary().isBlank()) {
             body.append("- Delivery: ").append(markdown(view.summary())).append('\n');
         }
-        if (!view.agentNarrative().isBlank() && !view.agentNarrative().equals(view.summary())) {
+        if (auditedHead == null
+                && !view.agentNarrative().isBlank()
+                && !view.agentNarrative().equals(view.summary())) {
             body.append("- Agent narrative: ").append(markdown(view.agentNarrative())).append('\n');
         }
 
@@ -109,6 +139,44 @@ public class RequirementPullRequestBodyRenderer {
         body.append("- taskId: ").append(code(taskId)).append('\n');
         body.append("- operationId: ").append(code(operationId)).append('\n');
         return body.toString().strip();
+    }
+
+    private void appendAuditedAcceptance(StringBuilder body, AuditedTaskState head) {
+        appendHeading(body, "已审计验收清单");
+        body.append("| Record | Kind | Status | auditRunId | Evidence |\n");
+        body.append("|---|---|---|---|---|\n");
+        for (AuditedRecord record : head.records()) {
+            List<String> references = new ArrayList<>();
+            String auditRunId = "";
+            for (EvidenceRef ref : record.evidenceRefs()) {
+                if (auditRunId.isBlank()) {
+                    auditRunId = ref.auditRunId();
+                }
+                addRenderableReference(references, ref.uri());
+            }
+            if (auditRunId.isBlank()) {
+                auditRunId = head.lastAuditRunId();
+            }
+            body.append("| ").append(tableCode(record.id()))
+                    .append(" | ").append(table(record.kind().name()))
+                    .append(" | ").append(table(record.status().name()))
+                    .append(" | ").append(auditRunId.isBlank() ? "" : tableCode(auditRunId))
+                    .append(" | ").append(String.join("<br>", references))
+                    .append(" |\n");
+        }
+        body.append("\n- lastAuditRunId: ").append(code(head.lastAuditRunId())).append('\n');
+        body.append("- stateVersion: ").append(code(Long.toString(head.stateVersion()))).append('\n');
+        if (!head.stateHash().isBlank()) {
+            body.append("- stateHash: ").append(code(head.stateHash())).append('\n');
+        }
+    }
+
+    private void appendUnverifiedNarrative(StringBuilder body, String agentNarrative) {
+        appendHeading(body, "未核验叙述");
+        body.append("- 来源: Agent `prBody`（未核验）\n");
+        if (!safe(agentNarrative).isBlank()) {
+            body.append("- ").append(markdown(agentNarrative)).append('\n');
+        }
     }
 
     private void appendHeading(StringBuilder body, String heading) {

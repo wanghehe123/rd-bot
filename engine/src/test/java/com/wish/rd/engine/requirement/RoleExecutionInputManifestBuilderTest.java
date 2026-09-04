@@ -13,6 +13,7 @@ import com.wish.rd.rag.project.agent.model.HandoffManifestEntry;
 import com.wish.rd.rag.project.agent.model.RecoveryManifestEntry;
 import com.wish.rd.rag.project.agent.model.RoleExecutionBudget;
 import com.wish.rd.rag.project.agent.model.RoleExecutionInputManifest;
+import com.wish.rd.rag.project.agent.model.AgentManifestCanonicalJson;
 import com.wish.rd.rag.runtime.model.CreateRequirementTaskCommand;
 import com.wish.rd.rag.runtime.model.RdRequirementTask;
 import com.wish.rd.rag.runtime.model.RdTaskStatus;
@@ -206,6 +207,40 @@ class RoleExecutionInputManifestBuilderTest {
         assertEquals("UNTRUSTED_PROJECT_MEMORY", manifest.evidence().getFirst().factKind());
         assertEquals("PROJECT_MEMORY", manifest.evidence().getFirst().sourceType());
         assertTrue(manifest.evidence().getFirst().contentHash().endsWith("a".repeat(64)));
+    }
+
+    @Test
+    void recordsFrozenAcceptanceCriteriaIdsHashForQa() {
+        AgentStageRun stage = AgentStageRun.pending(
+                "stage-qa-1",
+                "task-2001",
+                AgentRole.QA_AGENT,
+                1,
+                "task-2001:QA_AGENT:1",
+                10L
+        );
+        RoleExecutionInputManifest manifest = RoleExecutionInputManifestBuilder.build(
+                stage,
+                AgentRole.QA_AGENT,
+                task(),
+                List.of(),
+                emptyContext("task-2001"),
+                "qa prompt",
+                "qa contract",
+                "{\"version\":1,\"stages\":[]}",
+                RequirementExecutionProfileResolution.none(),
+                "",
+                null,
+                List.of("input-manifest-qa"),
+                null
+        );
+
+        assertEquals(1, manifest.evidence().size());
+        assertEquals("acceptance-criteria-ids.json", manifest.evidence().getFirst().sourceId());
+        assertEquals("FROZEN_ACCEPTANCE_CRITERIA_IDS", manifest.evidence().getFirst().sourceType());
+        assertEquals(
+                AgentManifestCanonicalJson.contentHash("[\"AC-001\"]"),
+                manifest.evidence().getFirst().contentHash());
     }
 
     private static RoleContextPackage emptyContext(String taskId) {

@@ -81,8 +81,10 @@ public class PiRemediationFinalizationWriter {
             persistStage(intent.sourceTaskId(), intent.codingProfile(), intent.roundId(), now);
             persistSnapshot(intent.sourceTaskId(), intent.codingProfile(), now);
         }
-        persistStage(intent.sourceTaskId(), intent.qaProfile(), intent.roundId(), now);
-        persistSnapshot(intent.sourceTaskId(), intent.qaProfile(), now);
+        if (intent.qaProfile() != null) {
+            persistStage(intent.sourceTaskId(), intent.qaProfile(), intent.roundId(), now);
+            persistSnapshot(intent.sourceTaskId(), intent.qaProfile(), now);
+        }
 
         if (existingSource == null) {
             roundMapper.insertClaimed(requestedRound);
@@ -178,9 +180,10 @@ public class PiRemediationFinalizationWriter {
         row.sourceFencingToken = intent.sourceFencingToken();
         row.targetCodingStageRunId = intent.targetCodingStageRunId().isBlank()
                 ? null : PostgresPersistenceSupport.parseId(intent.targetCodingStageRunId());
-        row.targetQaStageRunId = PostgresPersistenceSupport.parseId(intent.targetQaStageRunId());
+        row.targetQaStageRunId = intent.targetQaStageRunId().isBlank()
+                ? null : PostgresPersistenceSupport.parseId(intent.targetQaStageRunId());
         row.codingProfileSnapshotId = intent.codingProfile() == null ? null : intent.codingProfile().snapshotId();
-        row.qaProfileSnapshotId = intent.qaProfile().snapshotId();
+        row.qaProfileSnapshotId = intent.qaProfile() == null ? null : intent.qaProfile().snapshotId();
         row.requestJson = intent.requestJson();
         row.requestHash = intent.requestHash();
         row.createdAt = now;
@@ -267,7 +270,7 @@ public class PiRemediationFinalizationWriter {
                 || !expected.kind.equals(actual.kind) || !expected.remediationNo.equals(actual.remediationNo)
                 || !expected.sourceCommandId.equals(actual.sourceCommandId)
                 || !expected.requestHash.equals(actual.requestHash)
-                || !expected.targetQaStageRunId.equals(actual.targetQaStageRunId)
+                || !java.util.Objects.equals(expected.targetQaStageRunId, actual.targetQaStageRunId)
                 || !java.util.Objects.equals(expected.targetCodingStageRunId, actual.targetCodingStageRunId)) {
             throw new IllegalStateException("conflicting remediation replay for source stage");
         }

@@ -2,6 +2,10 @@ package com.wish.rd.engine.requirement.job.impl;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.wish.rd.engine.requirement.audit.AuditedCompletionBindingGuard;
+import com.wish.rd.engine.requirement.audit.AuditedStateMutation;
+import com.wish.rd.engine.requirement.audit.AuditedTaskStatePolicyBootstrap;
+import com.wish.rd.engine.requirement.audit.AuditedTaskStateStore;
 import com.wish.rd.engine.requirement.job.RequirementDeliveryJobStore;
 import com.wish.rd.engine.requirement.job.RequirementStageCommandStore;
 import com.wish.rd.engine.requirement.job.RequirementStageFinalizationPort;
@@ -75,6 +79,7 @@ public final class InMemoryRequirementStageFinalizationPort implements Requireme
     private final TaskRetryAttemptBindingStore bindingStore;
     private final AgentStageRunStore stageRunStore;
     private final ProjectMemoryOperationStore memoryOperationStore;
+    private final AuditedTaskStateStore auditedTaskStateStore;
     private final Map<String, RequirementStageFinalization> finalizations = new LinkedHashMap<>();
     private final Map<String, RequirementStageExecutionPlan> outcomePlans = new LinkedHashMap<>();
 
@@ -196,6 +201,31 @@ public final class InMemoryRequirementStageFinalizationPort implements Requireme
             AgentStageRunStore stageRunStore,
             ProjectMemoryOperationStore memoryOperationStore
     ) {
+        this(stageCommandStore, jobStore, taskStore, taskStatePersistence, eventIdGenerator, publicationStore,
+                policyRunStore, failureProvenanceStore, checkpointStore, bindingStore, stageRunStore,
+                memoryOperationStore, null);
+    }
+
+    /**
+     * Creates the memory-mode finalizer with audited-state writeback.
+     *
+     * @param auditedTaskStateStore Host audited-state store; required when a plan carries a mutation
+     */
+    public InMemoryRequirementStageFinalizationPort(
+            RequirementStageCommandStore stageCommandStore,
+            RequirementDeliveryJobStore jobStore,
+            RdTaskStore taskStore,
+            RdTaskStatePersistence taskStatePersistence,
+            SnowflakeIdGenerator eventIdGenerator,
+            RequirementPublicationStore publicationStore,
+            RequirementPolicyRunStore policyRunStore,
+            TaskRetryFailureProvenanceStore failureProvenanceStore,
+            TaskRetryCheckpointStore checkpointStore,
+            TaskRetryAttemptBindingStore bindingStore,
+            AgentStageRunStore stageRunStore,
+            ProjectMemoryOperationStore memoryOperationStore,
+            AuditedTaskStateStore auditedTaskStateStore
+    ) {
         this.stageCommandStore = Objects.requireNonNull(stageCommandStore, "stageCommandStore must not be null");
         this.jobStore = Objects.requireNonNull(jobStore, "jobStore must not be null");
         if ((taskStore == null) != (taskStatePersistence == null)) {
@@ -211,6 +241,7 @@ public final class InMemoryRequirementStageFinalizationPort implements Requireme
         this.bindingStore = bindingStore;
         this.stageRunStore = stageRunStore;
         this.memoryOperationStore = memoryOperationStore;
+        this.auditedTaskStateStore = auditedTaskStateStore;
     }
 
     /**
@@ -660,6 +691,8 @@ public final class InMemoryRequirementStageFinalizationPort implements Requireme
         RequirementPublication publicationReceipt = effectReceipt.isFinalizable()
                 ? verifyPublicationReceipt(command.plan(), marker.taskId()) : null;
         boolean deferRetryableMutation = defersRetryableMutation(command);
+        AuditedCompletionBindingGuard.requireBindingIfCompleted(command.plan(), auditedTaskStateStore != null);
+        applyAuditedStateMutation(command.plan());
         applyTaskMutations(command);
         commitPublicationReceipt(publicationReceipt, command.nowEpochMillis());
         applyJobDisposition(command.umbrellaJob(), command.jobDisposition(), command);
@@ -698,7 +731,8 @@ public final class InMemoryRequirementStageFinalizationPort implements Requireme
             return;
         }
         RequirementStageCommand stageCommand = command.stageCommand();
-        if (!stageCommand.stage().startsWith("ROLE_EXECUTION:")) {
+        if (!HostVerifyFailureJson.STAGE.equals(stageCommand.stage())
+                && !stageCommand.stage().startsWith("ROLE_EXECUTION:")) {
             return;
         }
         if (finalized.outcomeStatus() != RdTaskStatus.FAILED_RETRYABLE
@@ -960,6 +994,40 @@ public final class InMemoryRequirementStageFinalizationPort implements Requireme
         } catch (JsonProcessingException exception) {
             throw new IllegalStateException("publication receipt payload cannot be decoded: "
                     + receipt.operationId(), exception);
+        }
+    }
+
+    private void applyAuditedStateMutation(RequirementStageExecutionPlan plan) {
+        AuditedStateMutation mutation = plan.auditedStateMutation();
+        if (mutation == null) {
+            return;
+        }
+        if (auditedTaskStateStore == null) {
+            throw new IllegalStateException("audited task state store is unavailable for writeback: "
+                    + plan.taskId());
+        }
+        if (auditedTaskStateStore.head(plan.taskId()).isEmpty() && mutation.expectedStateVersion() > 1L) {
+            if (taskStore == null) {
+                throw new IllegalStateException(
+                        "audited state head is missing and task store is unavailable: " + plan.taskId());
+            }
+            RdTask current = taskStore.findTask(plan.taskId()).orElseThrow(
+                    () -> new IllegalStateException(
+                            "requirement task is missing for audited initialize-if-absent: " + plan.taskId()));
+            if (!(current instanceof RdRequirementTask task)) {
+                throw new IllegalStateException("audited initialize-if-absent requires a requirement task: "
+                        + plan.taskId());
+            }
+            new AuditedTaskStatePolicyBootstrap(auditedTaskStateStore).initializeIfAbsent(task);
+        }
+        auditedTaskStateStore.appendRevision(
+                mutation.expectedStateVersion(), mutation.nextState(), mutation.auditRun());
+        if (mutation.completionBinding() != null) {
+            auditedTaskStateStore.bindCompletion(
+                    mutation.completionBinding().taskId(),
+                    mutation.completionBinding().auditRunId(),
+                    mutation.completionBinding().stateVersion(),
+                    mutation.completionBinding().stateHash());
         }
     }
 

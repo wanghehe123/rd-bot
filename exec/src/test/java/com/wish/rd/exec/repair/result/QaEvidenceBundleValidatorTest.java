@@ -75,6 +75,59 @@ class QaEvidenceBundleValidatorTest {
     }
 
     @Test
+    void shouldRequireFrozenCurrentCriteriaIdWhenPiV2EnabledAndAllowRegressionToOmitIt() {
+        String missingId = strictQaResultWithCriteriaId("", null);
+        AgentRoleResultValidation missing = validator.validate(
+                missingId,
+                browserArtifacts(),
+                List.of(),
+                List.of("src/app.tsx"),
+                true,
+                List.of("AC-001")
+        );
+        assertFalse(missing.valid());
+        assertTrue(missing.errors().stream().anyMatch(error ->
+                error.contains("acceptanceResults[0].criteriaId") && error.contains("frozen AC-%03d")));
+
+        String unknownId = strictQaResultWithCriteriaId("AC-999", null);
+        AgentRoleResultValidation unknown = validator.validate(
+                unknownId,
+                browserArtifacts(),
+                List.of(),
+                List.of("src/app.tsx"),
+                true,
+                List.of("AC-001")
+        );
+        assertFalse(unknown.valid());
+        assertTrue(unknown.errors().stream().anyMatch(error ->
+                error.contains("not in the frozen acceptance-criteria set")));
+
+        String valid = strictQaResultWithCriteriaId("AC-001", null);
+        AgentRoleResultValidation accepted = validator.validate(
+                valid,
+                browserArtifacts(),
+                List.of(),
+                List.of("src/app.tsx"),
+                true,
+                List.of("AC-001")
+        );
+        assertTrue(accepted.valid(), () -> String.join(", ", accepted.errors()));
+    }
+
+    @Test
+    void shouldNotForceCriteriaIdOnLegacyQaWithoutV2Capability() {
+        AgentRoleResultValidation validation = validator.validate(
+                strictQaResult(),
+                browserArtifacts(),
+                List.of(),
+                List.of("src/app.tsx"),
+                false,
+                List.of("AC-001")
+        );
+        assertTrue(validation.valid(), () -> String.join(", ", validation.errors()));
+    }
+
+    @Test
     void shouldAcceptDocsOnlyQaWithoutBrowserEvidenceWhenChangedFilesAreDocsOnly() {
         AgentRoleResultValidation validation = validator.validate(
                 docsOnlyQaResult(),
@@ -358,6 +411,64 @@ class QaEvidenceBundleValidatorTest {
                   "evidenceManifestArtifactId": "qa-evidence/manifest.json"
                 }
                 """;
+    }
+
+    private static String strictQaResultWithCriteriaId(String currentCriteriaId, String regressionCriteriaId) {
+        String currentIdField = currentCriteriaId == null || currentCriteriaId.isBlank()
+                ? ""
+                : "\"criteriaId\": \"" + currentCriteriaId + "\",";
+        String regressionIdField = regressionCriteriaId == null || regressionCriteriaId.isBlank()
+                ? ""
+                : "\"criteriaId\": \"" + regressionCriteriaId + "\",";
+        return """
+                {
+                  "status": "PASSED",
+                  "summary": "current and regression browser checks passed",
+                  "failureCategory": "NONE",
+                  "retryRecommendation": "NONE",
+                  "browserValidation": {
+                    "required": true,
+                    "performed": true,
+                    "decisionSource": "AUTO_DETECTION",
+                    "baseUrl": "http://127.0.0.1:4173",
+                    "browser": "chromium",
+                    "viewports": ["desktop-1440x900", "mobile-390x844"]
+                  },
+                  "acceptanceResults": [
+                    {
+                      %s
+                      "criteria": "current feature",
+                      "scope": "CURRENT",
+                      "command": "playwright-cli screenshot",
+                      "status": "PASSED",
+                      "exitCode": 0,
+                      "durationMillis": 1200,
+                      "logArtifactId": "qa-evidence/commands/current.log",
+                      "evidenceArtifactIds": [
+                        "qa-evidence/screenshots/current-desktop.png",
+                        "qa-evidence/screenshots/current-mobile.png",
+                        "qa-evidence/traces/current.zip",
+                        "qa-evidence/console/current.log",
+                        "qa-evidence/network/current.log"
+                      ]
+                    },
+                    {
+                      %s
+                      "criteria": "critical regression",
+                      "scope": "REGRESSION",
+                      "command": "npm test",
+                      "status": "PASSED",
+                      "exitCode": 0,
+                      "durationMillis": 800,
+                      "logArtifactId": "qa-evidence/commands/regression.log",
+                      "evidenceArtifactIds": ["qa-evidence/commands/regression.log"]
+                    }
+                  ],
+                  "evidenceManifestArtifactId": "qa-evidence/manifest.json",
+                  "remediationRequest": {"requested": false, "targetRole": "", "reason": "passed", "bugFindingIds": []},
+                  "bugFindings": []
+                }
+                """.formatted(currentIdField, regressionIdField);
     }
 
     private static String strictQaResultWithPrefixedCriteria() {

@@ -1,5 +1,12 @@
 package com.wish.rd.engine.requirement;
 
+import com.wish.rd.engine.requirement.audit.AuditedContractRef;
+import com.wish.rd.engine.requirement.audit.AuditedRecord;
+import com.wish.rd.engine.requirement.audit.AuditedRecordKind;
+import com.wish.rd.engine.requirement.audit.AuditedRecordStatus;
+import com.wish.rd.engine.requirement.audit.AuditedTaskState;
+import com.wish.rd.engine.requirement.audit.EvidenceRef;
+import com.wish.rd.engine.requirement.audit.EvidenceSourceKind;
 import com.wish.rd.engine.requirement.model.RequirementDeliveryPublicationView;
 import com.wish.rd.engine.requirement.model.RequirementDeliveryPublicationView.DeliveryReview;
 import org.junit.jupiter.api.Test;
@@ -7,6 +14,7 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -37,6 +45,70 @@ class RequirementPullRequestBodyRendererTest {
         assertTrue(body.contains("- operationId: `op-28`"));
         assertFalse(body.contains("not reported"));
         assertFalse(body.contains("{}"));
+    }
+
+    @Test
+    void shouldPrefixAuditedAcceptanceChecklistAndLabelAgentNarrativeUnverified() throws IOException {
+        RequirementDeliveryPublicationView view = approved(assembler.assemble(fixture()), "task-28");
+        EvidenceRef evidence = new EvidenceRef(
+                "audit-9",
+                EvidenceSourceKind.QA_EVIDENCE,
+                "qa-evidence://artifacts/current.log",
+                "sha256:" + "e".repeat(64));
+        AuditedTaskState head = new AuditedTaskState(
+                "task-28",
+                2L,
+                "sha256:" + "d".repeat(64),
+                new AuditedContractRef("sha256:" + "c".repeat(64), 1L, 9L),
+                List.of(
+                        new AuditedRecord(
+                                "AC-001",
+                                AuditedRecordKind.REQUIREMENT,
+                                true,
+                                "订单筛选可用",
+                                AuditedRecordStatus.COMPLETED,
+                                List.of(evidence),
+                                "",
+                                ""),
+                        new AuditedRecord(
+                                "AC-002",
+                                AuditedRecordKind.REQUIREMENT,
+                                true,
+                                "既有订单列表回归",
+                                AuditedRecordStatus.PENDING,
+                                List.of(),
+                                "",
+                                ""),
+                        new AuditedRecord(
+                                "GATE-BUILD",
+                                AuditedRecordKind.GATE,
+                                true,
+                                "build",
+                                AuditedRecordStatus.PENDING,
+                                List.of(),
+                                "",
+                                "")),
+                "audit-9");
+
+        String body = renderer.render("task-28", "op-28", "外卖接单页", view, head);
+
+        assertEquals(
+                "已审计验收清单,未核验叙述,Summary,Changes,Verification,Acceptance,Delivery Review,Evidence,RD-Bot Provenance",
+                headings(body));
+        int checklist = body.indexOf("## 已审计验收清单");
+        int unverified = body.indexOf("## 未核验叙述");
+        int summary = body.indexOf("## Summary");
+        int agentBody = body.indexOf("实现了外卖接单页，并补充验证。");
+        assertTrue(checklist >= 0 && checklist < unverified && unverified < summary);
+        assertTrue(unverified < agentBody);
+        assertTrue(body.contains("`AC-001`"));
+        assertTrue(body.contains("COMPLETED"));
+        assertTrue(body.contains("`audit-9`"));
+        assertTrue(body.contains("`qa-evidence://artifacts/current.log`"));
+        assertTrue(body.contains("`AC-002`"));
+        assertTrue(body.contains("PENDING"));
+        assertTrue(body.contains("未核验叙述"));
+        assertFalse(body.contains("- Agent narrative:"));
     }
 
     @Test

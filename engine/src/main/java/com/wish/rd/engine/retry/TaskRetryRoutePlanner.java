@@ -103,7 +103,10 @@ public final class TaskRetryRoutePlanner {
                 if (point.retryFromRole() != AgentRole.CODING_AGENT) {
                     throw ambiguous(point);
                 }
-                yield aiRoleRoute(point);
+                // 歧义/环境类 HOST_VERIFY 失败不得再开 Coding attempt；PRODUCT_DEFECT 由
+                // planHostVerifyStage 的 HOST_VERIFY_FIX 自动补 Coding。下游 PENDING QA 仍必须
+                // 预绑定，否则 HOST_VERIFY 成功后续跑会缺 QA binding。
+                yield infrastructure(HostVerifyFailureJson.STAGE, rolesAfter(AgentRole.CODING_AGENT));
             }
             case DETERMINISTIC_REVIEW -> {
                 requirePolicy(point);
@@ -198,5 +201,14 @@ public final class TaskRetryRoutePlanner {
 
     private static List<AgentRole> allRoles() {
         return AgentRole.requirementDeliveryOrder();
+    }
+
+    private static List<AgentRole> rolesAfter(AgentRole role) {
+        List<AgentRole> roles = AgentRole.requirementDeliveryOrder();
+        int index = roles.indexOf(role);
+        if (index < 0 || index + 1 >= roles.size()) {
+            return List.of();
+        }
+        return List.copyOf(roles.subList(index + 1, roles.size()));
     }
 }

@@ -1,0 +1,109 @@
+# Server overlay for 106.55.13.166 — secrets via environment only (.env.opencode.local, GH_TOKEN).
+# Merge with docker-compose infra defaults; port 8080 on the VM.
+
+spring:
+  datasource:
+    url: jdbc:postgresql://127.0.0.1:5432/rdbot?client_encoding=UTF8
+    username: postgres
+    password: postgres
+  data:
+    redis:
+      host: 127.0.0.1
+      port: 6379
+
+rustfs:
+  url: http://127.0.0.1:9000
+  bucket: biz
+  access-key-id: rustfsadmin
+  secret-access-key: rustfsadmin
+
+server:
+  port: 8080
+
+rd:
+  knowledge:
+    store: postgres
+  requirement-delivery:
+    audited-writeback:
+      gate-mode: SHADOW
+  storage:
+    mode: s3
+  distributed-lock:
+    mode: redisson
+  ai:
+    provider:
+      name: opencode-go
+      base-url: https://opencode.ai/zen/go
+      api-key: ${OPENCODE_API_KEY:}
+    chat:
+      default-model: ${RD_AI_CHAT_DEFAULT_MODEL:qwen3.8-flash}
+  repair:
+    queue:
+      mode: redis-stream
+    ticket:
+      provider: mock
+      auto-execute:
+        enabled: false
+    acceptance:
+      enabled: false
+  executor:
+    agent-runtime:
+      enabled: true
+      mutation-token: ${RD_AGENT_RUNTIME_MUTATION_TOKEN:local-agent-runtime}
+    openai-chat:
+      enabled: true
+      provider-name: opencode-go
+      base-url: https://opencode.ai/zen/go
+      api-key-env: OPENCODE_API_KEY
+      model: ${RD_AI_CHAT_DEFAULT_MODEL:qwen3.8-flash}
+      protocol: anthropic-messages
+    docker:
+      enabled: true
+      git:
+        enabled: true
+        timeout-seconds: 600
+      security:
+        repository-urls:
+          - https://github.com/wanghehe123/*
+          - https://github.com/wanghehe123/rd-bot-waimai-acceptance-20260624-141045.git
+        repositories:
+          - wanghehe123/*
+          - wanghehe123/rd-bot-waimai-acceptance-20260624-141045
+      providers:
+        - name: opencode-go
+          protocol: anthropic-messages
+          base-url: https://opencode.ai/zen/go
+          api-key-env: OPENCODE_API_KEY
+          model: ${RD_AI_CHAT_DEFAULT_MODEL:qwen3.8-flash}
+          default-opus-model: ${RD_AI_CHAT_DEFAULT_MODEL:qwen3.8-flash}
+          default-sonnet-model: ${RD_AI_CHAT_DEFAULT_MODEL:qwen3.8-flash}
+          default-haiku-model: ${RD_AI_CHAT_DEFAULT_MODEL:qwen3.8-flash}
+          subagent-model: ${RD_AI_CHAT_DEFAULT_MODEL:qwen3.8-flash}
+    pi:
+      credential-relay-enabled: true
+      credential-relay-url: http://172.17.0.1:8080/internal/pi/credential-relay/proxy
+      dynamic-state-enabled: true
+      container-cpu-limit: 1.5
+      container-memory-limit: 1500m
+    mock:
+      enabled: false
+  github:
+    merge-sync:
+      enabled: false
+    code-platform:
+      mode: real
+      auth-mode: PAT_LOCAL_SMOKE
+      # Prefer GITHUB_PAT; fall back to GH_TOKEN. start-backend.sh exports both.
+      pat-token: ${GITHUB_PAT:${GH_TOKEN:}}
+  ticket:
+    write-back:
+      enabled: true
+      mode: mock
+  feishu:
+    im:
+      enabled: false
+  project-memory:
+    worker:
+      enabled: true
+    reconcile:
+      enabled: true

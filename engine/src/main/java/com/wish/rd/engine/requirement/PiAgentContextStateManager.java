@@ -1,6 +1,7 @@
 package com.wish.rd.engine.requirement;
 
 import com.wish.rd.engine.agent.model.AgentRole;
+import com.wish.rd.engine.requirement.audit.AcceptanceCriteriaIds;
 import com.wish.rd.rag.project.agent.model.AgentStateSnapshotV2;
 import com.wish.rd.rag.project.agent.model.AgentStateV2Codec;
 import com.wish.rd.rag.project.agent.model.AgentRuntimeType;
@@ -44,7 +45,7 @@ public final class PiAgentContextStateManager {
         int totalAttachmentBytes = 0;
         for (int index = 0; index < request.acceptanceCriteria().size(); index++) {
             String content = requireText(request.acceptanceCriteria().get(index), "acceptance criterion");
-            String criteriaId = "AC-%03d".formatted(index + 1);
+            String criteriaId = AcceptanceCriteriaIds.idAt(index);
             String contentHash = stateContentHash(content);
             int contentBytes = content.getBytes(StandardCharsets.UTF_8).length;
             if (contentBytes > MAX_ATTACHMENT_ITEM_BYTES) {

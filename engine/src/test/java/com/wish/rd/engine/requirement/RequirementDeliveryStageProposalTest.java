@@ -333,6 +333,37 @@ class RequirementDeliveryStageProposalTest {
     }
 
     @Test
+    void publicationGnutlsPushFailureMarksUnknownAndCarriesPublicationReceipt() {
+        PublicationFixture publication = publicationFixture();
+        Fixture fixture = publication.fixture();
+        String approvedDelivery = approvedDeliveryJson(fixture.task().taskId());
+        RdRequirementTask validating = fixture.registry().transitionRequirementFenced(
+                advanceToExecuting(fixture, approvedDelivery), RdTaskStatus.VALIDATING,
+                "", approvedDelivery, "", "");
+        fixture.engine().setBranchPublisher(command -> RequirementBranchPublication.failure(
+                command.taskId(),
+                "work branch push failed: git command failed exitCode=128 command=git -C /tmp/repo "
+                        + "push -u origin requirement/" + command.taskId()
+                        + " stderr=fatal: unable to access 'https://github.com/example/repo.git/': "
+                        + "GnuTLS recv error (-110): The TLS connection was non-properly terminated."));
+
+        RequirementStageExecutionPlan plan = fixture.engine().planStage(command(validating, "PUBLICATION"));
+
+        String patchSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        String workBranch = "requirement/" + validating.taskId();
+        String operationId = RequirementOperationId.of(
+                validating.taskId(), validating.baseBranch(), workBranch, patchSha);
+        assertEquals(RdTaskStatus.FAILED_RETRYABLE, plan.postStatus());
+        assertEquals(CommandDisposition.RETRYABLE_TECHNICAL_FAILURE, plan.commandDisposition());
+        assertEquals(ExternalEffectReceipt.Kind.PUBLICATION, plan.externalEffectReceipt().kind());
+        assertEquals(operationId, plan.externalEffectReceipt().operationId());
+        assertEquals("UNKNOWN_REMOTE_RESULT", plan.externalEffectReceipt().durableState());
+        assertFalse(plan.externalEffectReceipt().isFinalizable());
+        assertEquals(RequirementPublicationStatus.UNKNOWN_REMOTE_RESULT,
+                publication.ledger().findByOperationId(operationId).orElseThrow().status());
+    }
+
+    @Test
     void publicationNeedsHumanFailureCarriesNonFinalizablePublicationReceipt() {
         PublicationFixture publication = publicationFixture();
         Fixture fixture = publication.fixture();

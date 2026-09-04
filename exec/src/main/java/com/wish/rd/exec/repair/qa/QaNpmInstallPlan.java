@@ -6,14 +6,15 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
- * Host-side npm install plan for a QA workspace.
+ * Host-side npm install plan for isolated Pi workspaces.
  *
- * <p>Pi QA runs on an {@code --internal} credential-relay network and cannot
- * reach package registries. The host therefore installs into the Linux QA
- * image (with egress) before the isolated agent starts, so native addons such
- * as {@code better-sqlite3} match the container ABI.
+ * <p>Pi QA and coding agents run on an {@code --internal} credential-relay
+ * network and cannot reach package registries. The host therefore installs
+ * into the role's Linux image (with egress) before the isolated agent starts,
+ * so native addons such as {@code better-sqlite3} match the container ABI.
  */
 public final class QaNpmInstallPlan {
 
@@ -27,6 +28,16 @@ public final class QaNpmInstallPlan {
     );
 
     private QaNpmInstallPlan() {
+    }
+
+    /**
+     * Whether an isolated coding workspace needs a networked npm install.
+     *
+     * @param repository prepared coding repository root
+     * @return {@code true} when at least one known package.json exists
+     */
+    public static boolean requiredForCoding(Path repository) {
+        return !packageDirectories(repository).isEmpty();
     }
 
     /**
@@ -67,6 +78,35 @@ public final class QaNpmInstallPlan {
     }
 
     /**
+     * Copy a host npm registry into the provision container environment.
+     *
+     * <p>Only the bridge provision container may use this. Isolated agents stay
+     * {@code npm_config_offline=true} and must not inherit registry egress.
+     *
+     * @param environment destination container env
+     * @param hostEnv     process environment, typically {@code System.getenv()}
+     */
+    public static void copyHostNpmRegistry(Map<String, String> environment, Map<String, String> hostEnv) {
+        if (environment == null || hostEnv == null) {
+            return;
+        }
+        String registry = firstNonBlank(hostEnv.get("npm_config_registry"), hostEnv.get("NPM_CONFIG_REGISTRY"));
+        if (!registry.isBlank()) {
+            environment.put("npm_config_registry", registry);
+        }
+    }
+
+    private static String firstNonBlank(String first, String second) {
+        if (first != null && !first.isBlank()) {
+            return first.strip();
+        }
+        if (second != null && !second.isBlank()) {
+            return second.strip();
+        }
+        return "";
+    }
+
+    /**
      * POSIX script that installs every detected package tree.
      *
      * <p>Uses {@code npm ci} when a lockfile is present, otherwise {@code npm install}.
@@ -86,7 +126,9 @@ public final class QaNpmInstallPlan {
             Path directory = ".".equals(relative) ? repository : repository.resolve(relative);
             boolean locked = Files.isRegularFile(directory.resolve("package-lock.json"))
                     || Files.isRegularFile(directory.resolve("npm-shrinkwrap.json"));
-            String command = locked ? "npm ci --include=dev" : "npm install --include=dev";
+            String command = locked
+                    ? "npm ci --include=dev --no-audit --no-fund --prefer-offline"
+                    : "npm install --include=dev --no-audit --no-fund --prefer-offline";
             script.append("( cd ").append(shellSingleQuote(relative)).append(" && ").append(command).append(" )\n");
         }
         return script.toString();

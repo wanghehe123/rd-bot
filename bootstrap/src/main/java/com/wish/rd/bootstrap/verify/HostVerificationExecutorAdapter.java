@@ -157,8 +157,15 @@ public final class HostVerificationExecutorAdapter implements HostVerificationPo
         if (remediationCountAlreadyUsed < 0) {
             throw new IllegalArgumentException("remediationCountAlreadyUsed must be >= 0");
         }
-        // 工作区由调用方准备；这里只跑白名单命令，禁止清理 cache/ 或 node_modules
-        Path workspace = workspaceFactory.prepare(task, codingStage);
+        Path workspace;
+        try {
+            // 工作区由调用方准备；这里只跑白名单命令，禁止清理 cache/ 或 node_modules
+            workspace = workspaceFactory.prepare(task, codingStage);
+        } catch (RuntimeException exception) {
+            HostVerificationRun run = store.create(newRun(task, codingStage, remediationCountAlreadyUsed, false));
+            run = transition(run, HostVerificationStatus.CREATED, HostVerificationStatus.PREPARING, "", "");
+            return failPrepare(run, exception);
+        }
         List<String> changedFiles = changeSetResolver.resolve(task, codingStage, workspace);
         // 任务覆盖 > 项目配置 > 仓库自动探测；Declared=false 的一侧仍走自动探测
         QaValidationProfile profile = resolveQaProfile(task);
@@ -188,7 +195,7 @@ public final class HostVerificationExecutorAdapter implements HostVerificationPo
                 workspace
         );
         if (!build.successful()) {
-            saveSkippedStep(run.runId(), HostVerificationStepName.STATIC, List.of(), BUILD_SKIPPED_AFTER_FAILURE);
+            saveSkippedStep(run, HostVerificationStepName.STATIC, List.of(), BUILD_SKIPPED_AFTER_FAILURE);
             return failFromOutcome(run, HostVerificationStatus.BUILDING, build);
         }
         saveSucceededOrSkipped(run, HostVerificationStepName.BUILD, commands.buildCommands(), build);
@@ -207,8 +214,8 @@ public final class HostVerificationExecutorAdapter implements HostVerificationPo
     }
 
     private HostVerificationRun skipDocsOnly(HostVerificationRun run) {
-        saveSkippedStep(run.runId(), HostVerificationStepName.BUILD, List.of(), "docs-only change-set");
-        saveSkippedStep(run.runId(), HostVerificationStepName.STATIC, List.of(), "docs-only change-set");
+        saveSkippedStep(run, HostVerificationStepName.BUILD, List.of(), "docs-only change-set");
+        saveSkippedStep(run, HostVerificationStepName.STATIC, List.of(), "docs-only change-set");
         return transition(
                 run,
                 HostVerificationStatus.PREPARING,
@@ -218,12 +225,27 @@ public final class HostVerificationExecutorAdapter implements HostVerificationPo
         );
     }
 
+    private HostVerificationRun failPrepare(HostVerificationRun run, RuntimeException exception) {
+        String reason = exception.getMessage() == null || exception.getMessage().isBlank()
+                ? exception.getClass().getSimpleName()
+                : exception.getMessage();
+        saveSkippedStep(run, HostVerificationStepName.BUILD, List.of(), reason);
+        saveSkippedStep(run, HostVerificationStepName.STATIC, List.of(), BUILD_SKIPPED_AFTER_FAILURE);
+        return transition(
+                run,
+                HostVerificationStatus.PREPARING,
+                HostVerificationStatus.FAILED_NEEDS_HUMAN,
+                "ENVIRONMENT",
+                reason
+        );
+    }
+
     private HostVerificationRun failAmbiguous(HostVerificationRun run, HostVerificationCommandSet commands) {
         String reason = commands.reason().isBlank()
                 ? "cannot detect safe BUILD commands from the repository"
                 : commands.reason();
-        saveSkippedStep(run.runId(), HostVerificationStepName.BUILD, List.of(), reason);
-        saveSkippedStep(run.runId(), HostVerificationStepName.STATIC, List.of(), BUILD_SKIPPED_AMBIGUOUS);
+        saveSkippedStep(run, HostVerificationStepName.BUILD, List.of(), reason);
+        saveSkippedStep(run, HostVerificationStepName.STATIC, List.of(), BUILD_SKIPPED_AMBIGUOUS);
         return transition(
                 run,
                 HostVerificationStatus.PREPARING,
@@ -289,7 +311,7 @@ public final class HostVerificationExecutorAdapter implements HostVerificationPo
             StepOutcome outcome
     ) {
         if (planned == null || planned.isEmpty()) {
-            saveSkippedStep(run.runId(), stepName, List.of(), "no commands");
+            saveSkippedStep(run, stepName, List.of(), "no commands");
             return;
         }
         store.saveStep(new HostVerificationStep(
@@ -304,15 +326,21 @@ public final class HostVerificationExecutorAdapter implements HostVerificationPo
         ));
     }
 
-    private void saveSkippedStep(String runId, HostVerificationStepName stepName, List<String> commands, String reason) {
+    private void saveSkippedStep(
+            HostVerificationRun run,
+            HostVerificationStepName stepName,
+            List<String> commands,
+            String reason
+    ) {
+        String artifactId = writeLog(run, stepName, reason == null ? "" : reason);
         store.saveStep(new HostVerificationStep(
-                runId,
+                run.runId(),
                 stepName,
                 HostVerificationStepStatus.SKIPPED,
                 commands,
                 null,
                 0L,
-                "",
+                artifactId,
                 reason
         ));
     }

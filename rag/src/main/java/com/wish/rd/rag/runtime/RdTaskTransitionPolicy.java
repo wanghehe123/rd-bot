@@ -88,7 +88,7 @@ public final class RdTaskTransitionPolicy {
         put(graph, RdTaskStatus.COMMITTED, RdTaskStatus.MERGED, RdTaskStatus.REPORTING,
                 RdTaskStatus.COMPLETED, RdTaskStatus.REJECTED, RdTaskStatus.CANCELLED);
         put(graph, RdTaskStatus.REPORTING, RdTaskStatus.COMPLETED, RdTaskStatus.FAILED_RETRYABLE,
-                RdTaskStatus.CANCELLED, RdTaskStatus.DEAD_LETTERED);
+                RdTaskStatus.FAILED_NEEDS_HUMAN, RdTaskStatus.CANCELLED, RdTaskStatus.DEAD_LETTERED);
         put(graph, RdTaskStatus.COMPLETED, RdTaskStatus.MERGED);
         put(graph, RdTaskStatus.REJECTED, RdTaskStatus.RECOVERING, RdTaskStatus.DEAD_LETTERED);
         put(graph, RdTaskStatus.FAILED_RETRYABLE, RdTaskStatus.RECOVERING, RdTaskStatus.DEAD_LETTERED);
@@ -118,7 +118,7 @@ public final class RdTaskTransitionPolicy {
         put(graph, RdTaskStatus.COMMITTED, RdTaskStatus.MERGED, RdTaskStatus.REPORTING,
                 RdTaskStatus.COMPLETED, RdTaskStatus.REJECTED, RdTaskStatus.CANCELLED);
         put(graph, RdTaskStatus.REPORTING, RdTaskStatus.COMPLETED, RdTaskStatus.FAILED_RETRYABLE,
-                RdTaskStatus.CANCELLED, RdTaskStatus.DEAD_LETTERED);
+                RdTaskStatus.FAILED_NEEDS_HUMAN, RdTaskStatus.CANCELLED, RdTaskStatus.DEAD_LETTERED);
         put(graph, RdTaskStatus.COMPLETED, RdTaskStatus.MERGED);
         put(graph, RdTaskStatus.REJECTED, RdTaskStatus.SEARCHING, RdTaskStatus.EXECUTING,
                 RdTaskStatus.RECOVERING, RdTaskStatus.DEAD_LETTERED);

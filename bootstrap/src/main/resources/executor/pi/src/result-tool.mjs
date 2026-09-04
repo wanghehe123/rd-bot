@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
+import { createReadStream, existsSync, readFileSync } from "node:fs";
 import { lstat, mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { dirname, relative, resolve, sep } from "node:path";
 import { classifyDocsOnlyChange, DOCS_ONLY_DECISION } from "./docs-only.mjs";
@@ -246,6 +246,64 @@ export function validateResult(result) {
  * time. Returns the full error list so the agent can repair every violation
  * with a single follow-up rd_submit_result call.
  */
+export const FROZEN_ACCEPTANCE_CRITERIA_IDS_FILENAME = "acceptance-criteria-ids.json";
+
+/**
+ * Loads the host-frozen CURRENT criteriaId set from the read-only input mount.
+ *
+ * @param {string} [inputRoot="/work/input"]
+ * @returns {string[]}
+ */
+export function loadFrozenAcceptanceCriteriaIds(inputRoot = "/work/input") {
+  const root = typeof inputRoot === "string" && inputRoot.trim() ? inputRoot.trim() : "/work/input";
+  const candidates = [
+    resolve(root, FROZEN_ACCEPTANCE_CRITERIA_IDS_FILENAME),
+    resolve(root, "attachments", FROZEN_ACCEPTANCE_CRITERIA_IDS_FILENAME),
+  ];
+  for (const path of candidates) {
+    const ids = readJsonStringArray(path);
+    if (ids !== null) {
+      return ids;
+    }
+  }
+  const profile = readJsonObject(resolve(root, "qa-profile.json"));
+  if (profile && Array.isArray(profile.frozenAcceptanceCriteriaIds)) {
+    return profile.frozenAcceptanceCriteriaIds
+      .filter((id) => typeof id === "string" && id.trim() !== "")
+      .map((id) => id.trim());
+  }
+  return [];
+}
+
+function readJsonStringArray(path) {
+  if (!existsSync(path)) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed
+      .filter((id) => typeof id === "string" && id.trim() !== "")
+      .map((id) => id.trim());
+  } catch {
+    return [];
+  }
+}
+
+function readJsonObject(path) {
+  if (!existsSync(path)) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 export function validateRoleResult(
   role,
   result,
@@ -254,6 +312,7 @@ export function validateRoleResult(
   hostAssertionContracts = [],
   candidateChangedFiles = undefined,
   qaRemediationV2Enabled = false,
+  frozenCriteriaIds = undefined,
 ) {
   if (!result || typeof result !== "object" || Array.isArray(result)) {
     return ["result must be a JSON object"];
@@ -272,6 +331,7 @@ export function validateRoleResult(
           hostAssertionContracts,
           candidateChangedFiles,
           qaRemediationV2Enabled,
+          frozenCriteriaIds,
         );
       default:
         return [];
@@ -361,6 +421,7 @@ function validateQaReport(
   hostAssertionContracts = [],
   candidateChangedFiles = undefined,
   qaRemediationV2Enabled = false,
+  frozenCriteriaIds = undefined,
 ) {
   const errors = [];
   checkEnum(result, "status", QA_STATUSES, errors);
@@ -395,6 +456,9 @@ function validateQaReport(
   let nonPassedCount = 0;
   let currentPresent = false;
   let regressionPresent = false;
+  const frozenIds = frozenCriteriaIds === undefined
+    ? loadFrozenAcceptanceCriteriaIds()
+    : frozenCriteriaIds;
   acceptance.forEach((item, index) => {
     const prefix = `acceptanceResults[${index}]`;
     if (!item || typeof item !== "object" || Array.isArray(item)) {
@@ -416,6 +480,7 @@ function validateQaReport(
     }
     if (item.scope === "CURRENT") currentPresent = true;
     if (item.scope === "REGRESSION") regressionPresent = true;
+    validateCurrentCriteriaId(item, prefix, qaRemediationV2Enabled, frozenIds, errors);
     if (item.status === "PASSED" && Number.isInteger(item.exitCode) && item.exitCode !== 0) {
       errors.push(`${prefix}.status PASSED requires exitCode 0`);
     }
@@ -460,6 +525,20 @@ function validateQaReport(
   }
   if (qaRemediationV2Enabled) validateQaRemediationV2(result, errors);
   return errors;
+}
+
+function validateCurrentCriteriaId(item, prefix, qaRemediationV2Enabled, frozenIds, errors) {
+  if (!qaRemediationV2Enabled || item.scope !== "CURRENT") {
+    return;
+  }
+  const id = typeof item.criteriaId === "string" ? item.criteriaId.trim() : "";
+  if (!id) {
+    errors.push(`${prefix}.criteriaId must be a frozen AC-%03d id`);
+    return;
+  }
+  if (Array.isArray(frozenIds) && !frozenIds.includes(id)) {
+    errors.push(`${prefix}.criteriaId is not in the frozen acceptance-criteria set`);
+  }
 }
 
 function validateQaRemediationV2(result, errors) {

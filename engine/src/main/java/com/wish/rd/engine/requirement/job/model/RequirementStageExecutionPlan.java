@@ -1,5 +1,6 @@
 package com.wish.rd.engine.requirement.job.model;
 
+import com.wish.rd.engine.requirement.audit.AuditedStateMutation;
 import com.wish.rd.rag.runtime.model.RdTaskStatus;
 
 import java.util.List;
@@ -17,6 +18,7 @@ import java.util.List;
  * @param continuation optional continuation identity
  * @param externalEffectReceipt durable external-effect evidence
  * @param piQaRemediationIntent optional immutable PI QA remediation intent
+ * @param auditedStateMutation optional audited-state writeback (schema v3)
  */
 public record RequirementStageExecutionPlan(
         int schemaVersion,
@@ -28,16 +30,20 @@ public record RequirementStageExecutionPlan(
         CommandDisposition commandDisposition,
         ContinuationSpec continuation,
         ExternalEffectReceipt externalEffectReceipt,
-        PiQaRemediationIntent piQaRemediationIntent
+        PiQaRemediationIntent piQaRemediationIntent,
+        AuditedStateMutation auditedStateMutation
 ) {
 
     public static final int LEGACY_SCHEMA_VERSION = 1;
+    public static final int SCHEMA_VERSION_V2 = 2;
     /** Current durable JSON schema accepted by the Host stage finalizer. */
-    public static final int CURRENT_SCHEMA_VERSION = 2;
+    public static final int CURRENT_SCHEMA_VERSION = 3;
 
     /** Normalizes the plan and verifies task-edge continuity before it becomes durable. */
     public RequirementStageExecutionPlan {
-        if (schemaVersion != LEGACY_SCHEMA_VERSION && schemaVersion != CURRENT_SCHEMA_VERSION) {
+        if (schemaVersion != LEGACY_SCHEMA_VERSION
+                && schemaVersion != SCHEMA_VERSION_V2
+                && schemaVersion != CURRENT_SCHEMA_VERSION) {
             throw new IllegalArgumentException("unsupported stage execution plan schemaVersion: " + schemaVersion);
         }
         taskId = require(taskId, "taskId");
@@ -63,6 +69,9 @@ public record RequirementStageExecutionPlan(
         if (schemaVersion == LEGACY_SCHEMA_VERSION && piQaRemediationIntent != null) {
             throw new IllegalArgumentException("legacy stage execution plan must not carry remediation intent");
         }
+        if (schemaVersion < CURRENT_SCHEMA_VERSION && auditedStateMutation != null) {
+            throw new IllegalArgumentException("schema v1/v2 stage execution plan must not carry audited state mutation");
+        }
         if (piQaRemediationIntent != null
                 && (!taskId.equals(piQaRemediationIntent.sourceTaskId())
                 || expectedVersion != piQaRemediationIntent.sourceTaskVersion()
@@ -86,7 +95,21 @@ public record RequirementStageExecutionPlan(
     public RequirementStageExecutionPlan withRemediationIntent(PiQaRemediationIntent intent) {
         return new RequirementStageExecutionPlan(
                 schemaVersion, taskId, expectedVersion, expectedFencingToken, expectedStatus,
-                mutations, commandDisposition, continuation, externalEffectReceipt, intent);
+                mutations, commandDisposition, continuation, externalEffectReceipt, intent,
+                auditedStateMutation);
+    }
+
+    /**
+     * Returns a schema-v3 copy carrying audited-state writeback.
+     *
+     * @param mutation writeback, or {@code null} to clear it
+     * @return plan carrying {@code mutation}
+     */
+    public RequirementStageExecutionPlan withAuditedStateMutation(AuditedStateMutation mutation) {
+        return new RequirementStageExecutionPlan(
+                CURRENT_SCHEMA_VERSION, taskId, expectedVersion, expectedFencingToken, expectedStatus,
+                mutations, commandDisposition, continuation, externalEffectReceipt, piQaRemediationIntent,
+                mutation);
     }
 
     /** Backward-compatible constructor used by non-remediation plan producers. */
@@ -102,7 +125,24 @@ public record RequirementStageExecutionPlan(
             ExternalEffectReceipt externalEffectReceipt
     ) {
         this(schemaVersion, taskId, expectedVersion, expectedFencingToken, expectedStatus, mutations,
-                commandDisposition, continuation, externalEffectReceipt, null);
+                commandDisposition, continuation, externalEffectReceipt, null, null);
+    }
+
+    /** Backward-compatible constructor used by remediation plan producers. */
+    public RequirementStageExecutionPlan(
+            int schemaVersion,
+            String taskId,
+            long expectedVersion,
+            long expectedFencingToken,
+            RdTaskStatus expectedStatus,
+            List<RequirementTaskMutation> mutations,
+            CommandDisposition commandDisposition,
+            ContinuationSpec continuation,
+            ExternalEffectReceipt externalEffectReceipt,
+            PiQaRemediationIntent piQaRemediationIntent
+    ) {
+        this(schemaVersion, taskId, expectedVersion, expectedFencingToken, expectedStatus, mutations,
+                commandDisposition, continuation, externalEffectReceipt, piQaRemediationIntent, null);
     }
 
     /**

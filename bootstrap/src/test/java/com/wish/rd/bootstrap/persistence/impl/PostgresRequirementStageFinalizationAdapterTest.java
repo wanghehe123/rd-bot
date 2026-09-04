@@ -21,6 +21,17 @@ import com.wish.rd.bootstrap.persistence.mapper.RdTaskStatusEventMapper;
 import com.wish.rd.bootstrap.persistence.mapper.TaskFailureProvenanceMapper;
 import com.wish.rd.bootstrap.persistence.mapper.TaskRetryAttemptBindingMapper;
 import com.wish.rd.bootstrap.persistence.mapper.TaskRetryCheckpointMapper;
+import com.wish.rd.engine.requirement.audit.AuditCompletion;
+import com.wish.rd.engine.requirement.audit.AuditIntegrity;
+import com.wish.rd.engine.requirement.audit.AuditRun;
+import com.wish.rd.engine.requirement.audit.AuditedContractRef;
+import com.wish.rd.engine.requirement.audit.AuditedRecord;
+import com.wish.rd.engine.requirement.audit.AuditedRecordKind;
+import com.wish.rd.engine.requirement.audit.AuditedRecordStatus;
+import com.wish.rd.engine.requirement.audit.AuditedStateMutation;
+import com.wish.rd.engine.requirement.audit.AuditedTaskState;
+import com.wish.rd.engine.requirement.audit.AuditedTaskStateCodec;
+import com.wish.rd.engine.requirement.audit.ContractAuditVerdict;
 import com.wish.rd.engine.requirement.job.RequirementStageFinalizationPort;
 import com.wish.rd.rag.project.memory.model.ProjectMemoryOperationKey;
 import com.wish.rd.engine.requirement.job.model.ExternalEffectReceipt;
@@ -253,9 +264,8 @@ class PostgresRequirementStageFinalizationAdapterTest {
 
     @Test
     void publicationFailureWithoutPolicyRunSkipsProvenanceInsteadOfRollingBack() {
-        // 2026-08-23 真机回归：checkpoint 重试链派生的交付命令不带 policyRunId，
-        // 终态发布失败的溯源记录曾直接抛异常让 finalize 回滚，命令卡死 RUNNING、
-        // 重试 API 因歧义拒绝。缺失关联时必须跳过溯源而不是阻塞交付收尾。
+        // 2026-08-23 真机回归：既没有 command.policyRunId、也没有 checkpoint.sourcePolicyRunId 时，
+        // 终态发布失败的溯源记录不得抛异常让 finalize 回滚。缺失关联时必须跳过溯源而不是阻塞交付收尾。
         RequirementStageFinalizationMapper markers = mock(RequirementStageFinalizationMapper.class);
         RequirementStageCommandMapper commands = mock(RequirementStageCommandMapper.class);
         RequirementDeliveryJobMapper jobs = mock(RequirementDeliveryJobMapper.class);
@@ -330,6 +340,104 @@ class PostgresRequirementStageFinalizationAdapterTest {
 
         verify(provenance, never()).insertIfAbsent(any());
         verify(markers).finalizePrepared(any());
+    }
+
+    @Test
+    void publicationFailureUsesCheckpointSourcePolicyWhenCommandPolicyIsBlank() {
+        RequirementStageFinalizationMapper markers = mock(RequirementStageFinalizationMapper.class);
+        RequirementStageCommandMapper commands = mock(RequirementStageCommandMapper.class);
+        RequirementDeliveryJobMapper jobs = mock(RequirementDeliveryJobMapper.class);
+        RdTaskMapper tasks = mock(RdTaskMapper.class);
+        RdTaskStatusEventMapper events = mock(RdTaskStatusEventMapper.class);
+        RequirementPublicationMapper publications = mock(RequirementPublicationMapper.class);
+        RdAgentStageRunMapper stages = mock(RdAgentStageRunMapper.class);
+        TaskFailureProvenanceMapper provenance = mock(TaskFailureProvenanceMapper.class);
+        RequirementPolicyRunMapper policies = mock(RequirementPolicyRunMapper.class);
+        TaskRetryCheckpointMapper checkpoints = mock(TaskRetryCheckpointMapper.class);
+        RequirementStageCommand command = RequirementStageCommand.pending(
+                "821", "820", 12L, 13L,
+                "REQUIREMENT_DELIVERY", "PUBLICATION:sha256:" + "f".repeat(64),
+                3, 3, 60_000L, ScheduleResourceClass.GENERIC,
+                java.util.Set.of(ScheduleResourceClass.GENERIC), "project", "", "P1", "",
+                "9001", 9001L, "", 1L)
+                .claimed("worker", 60_000L, 2L);
+        String operationId = "sha256:" + "f".repeat(64);
+        ExternalEffectReceipt receipt = new ExternalEffectReceipt(
+                ExternalEffectReceipt.Kind.PUBLICATION, operationId, "UNKNOWN_REMOTE_RESULT",
+                "{\"taskId\":\"820\",\"operationId\":\"" + operationId + "\"}");
+        RequirementStageExecutionPlan plan = new RequirementStageExecutionPlan(
+                RequirementStageExecutionPlan.CURRENT_SCHEMA_VERSION,
+                command.taskId(), command.taskVersion(), command.fencingToken(), RdTaskStatus.VALIDATING,
+                List.of(RequirementTaskMutation.statusTransition(
+                        RdTaskStatus.VALIDATING, RdTaskStatus.FAILED_RETRYABLE,
+                        "", "{\"status\":\"FAILED\"}", "", "waiting for remote reconciliation", "")),
+                com.wish.rd.engine.requirement.job.model.CommandDisposition.RETRYABLE_TECHNICAL_FAILURE,
+                com.wish.rd.engine.requirement.job.model.ContinuationSpec.terminal(),
+                receipt);
+        RequirementStageFinalization marker = outcomeRecordedMarker(command, plan);
+        when(commands.lockByIdForUpdate(anyLong())).thenReturn(commandRow(command));
+        when(markers.findForUpdate(anyLong(), anyInt())).thenReturn(markerRow(marker));
+        RdTaskRow task = new RdTaskRow();
+        task.title = "failed publication with checkpoint policy";
+        when(tasks.selectById(820L)).thenReturn(task);
+        when(tasks.advanceStatusWithExpectedVersionFenced(
+                anyLong(), anyLong(), anyLong(), anyString(), anyString(), any(), any(), any(), any(), any()))
+                .thenReturn(1);
+        when(events.insert(any(RdTaskStatusEventRow.class))).thenReturn(1);
+        when(commands.failAttempt(anyLong(), anyInt(), anyString(), anyString(), any(), any()))
+                .thenReturn(commandRow(command.failed("waiting for remote reconciliation", 20L)));
+        when(markers.finalizePrepared(any())).thenReturn(1);
+        TaskRetryCheckpointRow checkpoint = new TaskRetryCheckpointRow();
+        checkpoint.id = 9001L;
+        checkpoint.taskId = 820L;
+        checkpoint.sourcePolicyRunId = 101L;
+        when(checkpoints.lockByIdForUpdate(9001L)).thenReturn(checkpoint);
+        com.wish.rd.bootstrap.persistence.entity.RequirementPolicyRunRow policy =
+                new com.wish.rd.bootstrap.persistence.entity.RequirementPolicyRunRow();
+        policy.id = 101L;
+        policy.taskId = 820L;
+        policy.planDigest = "sha256:plan";
+        when(policies.findById(101L)).thenReturn(policy);
+        com.wish.rd.bootstrap.persistence.entity.RequirementPublicationRow publicationRow =
+                new com.wish.rd.bootstrap.persistence.entity.RequirementPublicationRow();
+        publicationRow.operationId = operationId;
+        publicationRow.taskId = 820L;
+        publicationRow.status = "UNKNOWN_REMOTE_RESULT";
+        when(publications.selectByOperationIdForUpdate(operationId)).thenReturn(publicationRow);
+        when(provenance.insertIfAbsent(any(TaskFailureProvenanceRow.class))).thenReturn(1);
+
+        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            context.getEnvironment().getPropertySources().addFirst(
+                    new MapPropertySource("retry-provenance-checkpoint-test", Map.of("rd.knowledge.store", "postgres")));
+            context.registerBean(RequirementStageFinalizationMapper.class, () -> markers);
+            context.registerBean(RequirementStageCommandMapper.class, () -> commands);
+            context.registerBean(RequirementDeliveryJobMapper.class, () -> jobs);
+            context.registerBean(RdTaskMapper.class, () -> tasks);
+            context.registerBean(RdTaskStatusEventMapper.class, () -> events);
+            context.registerBean(RequirementPublicationMapper.class, () -> publications);
+            context.registerBean(RequirementPolicyRunMapper.class, () -> policies);
+            context.registerBean(RdAgentStageRunMapper.class, () -> stages);
+            context.registerBean(TaskFailureProvenanceMapper.class, () -> provenance);
+            context.registerBean(TaskRetryCheckpointMapper.class, () -> checkpoints);
+            context.registerBean(com.wish.rd.framework.id.SnowflakeIdGenerator.class,
+                    com.wish.rd.framework.id.SnowflakeIdGenerator::defaultGenerator);
+            context.registerBean(PostgresRequirementStageFinalizationAdapter.class);
+            context.refresh();
+
+            context.getBean(PostgresRequirementStageFinalizationAdapter.class).finalize(
+                    new RequirementStageFinalizationPort.FinalizationCommand(
+                            marker, command, "worker", plan, null, null,
+                            RequirementStageFinalizationPort.JobDisposition.NONE,
+                            RequirementStageFinalizationPort.TaskMutationDisposition.APPLY, 20L));
+        }
+
+        ArgumentCaptor<TaskFailureProvenanceRow> captured = ArgumentCaptor.forClass(TaskFailureProvenanceRow.class);
+        verify(provenance).insertIfAbsent(captured.capture());
+        assertEquals("PUBLICATION:" + operationId, captured.getValue().failedStage);
+        assertEquals("PR_PUBLICATION", captured.getValue().failurePhase);
+        assertEquals(101L, captured.getValue().sourcePolicyRunId);
+        assertEquals("sha256:plan", captured.getValue().sourcePlanDigest);
+        assertEquals(operationId, captured.getValue().publicationOperationId);
     }
 
     @Test
@@ -591,6 +699,104 @@ class PostgresRequirementStageFinalizationAdapterTest {
         assertEquals("first event", eventsCaptor.getAllValues().getFirst().message);
         assertEquals(RdTaskStatus.MATERIAL_READY.name(), eventsCaptor.getAllValues().get(1).status);
         assertEquals("second event", eventsCaptor.getAllValues().get(1).message);
+    }
+
+    @Test
+    void auditedWritebackRunsBeforeTaskCasAndRollsBackWhenCasFails() {
+        RequirementStageFinalizationMapper markers = mock(RequirementStageFinalizationMapper.class);
+        RequirementStageCommandMapper commands = mock(RequirementStageCommandMapper.class);
+        RdTaskMapper tasks = mock(RdTaskMapper.class);
+        RdTaskStatusEventMapper events = mock(RdTaskStatusEventMapper.class);
+        AuditedStateFinalizationWriter writer = mock(AuditedStateFinalizationWriter.class);
+        PostgresRequirementStageFinalizationAdapter adapter = new PostgresRequirementStageFinalizationAdapter(
+                markers, commands, mock(RequirementDeliveryJobMapper.class), tasks, events,
+                com.wish.rd.framework.id.SnowflakeIdGenerator.defaultGenerator(),
+                null, null, null, null, null, null, null, null, null, null, writer);
+        RequirementStageCommand command = claimedCommand();
+        when(commands.lockByIdForUpdate(anyLong())).thenReturn(commandRow(command));
+        AuditedStateMutation mutation = auditedMutation(command.taskId(), command.commandId(), "AC-001");
+        RequirementStageExecutionPlan plan = singleMutationPlan(command).withAuditedStateMutation(mutation);
+        String canonicalPlanJson = canonicalPlanJson(plan);
+        RequirementStageFinalization recorded = RequirementStageFinalization.prepared(
+                command, RdTaskStatus.CREATED, 10L).outcomeRecorded(
+                plan.postStatus(), canonicalPlanJson, RequirementPolicyRun.canonicalJsonDigest(canonicalPlanJson), 20L);
+        when(markers.findForUpdate(anyLong(), anyInt())).thenReturn(markerRow(recorded));
+        RdTaskRow task = new RdTaskRow();
+        task.title = "audit writeback";
+        when(tasks.selectById(anyLong())).thenReturn(task);
+        when(tasks.advanceStatusWithExpectedVersionFenced(
+                anyLong(), anyLong(), anyLong(), anyString(), anyString(), any(), any(), any(), any(), any()))
+                .thenReturn(1);
+        when(events.insert(any(RdTaskStatusEventRow.class))).thenReturn(1);
+        when(commands.completeAttempt(anyLong(), anyInt(), anyString(), any()))
+                .thenReturn(commandRow(command.succeeded(20L)));
+        when(markers.finalizePrepared(any())).thenReturn(1);
+
+        adapter.finalize(new RequirementStageFinalizationPort.FinalizationCommand(
+                recorded, command, "worker", plan, null, null,
+                RequirementStageFinalizationPort.JobDisposition.NONE,
+                RequirementStageFinalizationPort.TaskMutationDisposition.APPLY, 20L));
+
+        InOrder ordered = inOrder(writer, tasks);
+        ordered.verify(writer).apply(mutation);
+        ordered.verify(tasks).advanceStatusWithExpectedVersionFenced(
+                anyLong(), anyLong(), anyLong(), anyString(), anyString(), any(), any(), any(), any(), any());
+
+        org.mockito.Mockito.reset(writer, tasks, markers);
+        when(commands.lockByIdForUpdate(anyLong())).thenReturn(commandRow(command));
+        when(markers.findForUpdate(anyLong(), anyInt())).thenReturn(markerRow(recorded));
+        org.mockito.Mockito.doThrow(new IllegalStateException("same version has a different hash"))
+                .when(writer).apply(mutation);
+
+        assertThrows(IllegalStateException.class, () -> adapter.finalize(
+                new RequirementStageFinalizationPort.FinalizationCommand(
+                        recorded, command, "worker", plan, null, null,
+                        RequirementStageFinalizationPort.JobDisposition.NONE,
+                        RequirementStageFinalizationPort.TaskMutationDisposition.APPLY, 21L)));
+        verify(tasks, never()).advanceStatusWithExpectedVersionFenced(
+                anyLong(), anyLong(), anyLong(), anyString(), anyString(), any(), any(), any(), any(), any());
+        verify(markers, never()).finalizePrepared(any());
+    }
+
+    @Test
+    void completedPlanWithoutBindingIsRejectedBeforeTaskCas() {
+        RequirementStageFinalizationMapper markers = mock(RequirementStageFinalizationMapper.class);
+        RequirementStageCommandMapper commands = mock(RequirementStageCommandMapper.class);
+        RdTaskMapper tasks = mock(RdTaskMapper.class);
+        AuditedStateFinalizationWriter writer = mock(AuditedStateFinalizationWriter.class);
+        PostgresRequirementStageFinalizationAdapter adapter = new PostgresRequirementStageFinalizationAdapter(
+                markers, commands, mock(RequirementDeliveryJobMapper.class), tasks,
+                mock(RdTaskStatusEventMapper.class),
+                com.wish.rd.framework.id.SnowflakeIdGenerator.defaultGenerator(),
+                null, null, null, null, null, null, null, null, null, null, writer);
+        RequirementStageCommand command = RequirementStageCommand.pending(
+                "701", "700", 4L, 9L, "REQUIREMENT_DELIVERY", "COMPLETION",
+                0, 3, 60_000L, ScheduleResourceClass.GENERIC, "project", "", "P1", 1L)
+                .claimed("worker", 60_000L, 2L);
+        when(commands.lockByIdForUpdate(anyLong())).thenReturn(commandRow(command));
+        RequirementStageExecutionPlan plan = new RequirementStageExecutionPlan(
+                RequirementStageExecutionPlan.CURRENT_SCHEMA_VERSION,
+                command.taskId(), command.taskVersion(), command.fencingToken(), RdTaskStatus.REPORTING,
+                java.util.List.of(RequirementTaskMutation.statusTransition(
+                        RdTaskStatus.REPORTING, RdTaskStatus.COMPLETED, "", "{}", "", "", "done")),
+                com.wish.rd.engine.requirement.job.model.CommandDisposition.SUCCEEDED,
+                com.wish.rd.engine.requirement.job.model.ContinuationSpec.terminal(),
+                com.wish.rd.engine.requirement.job.model.ExternalEffectReceipt.none());
+        String canonicalPlanJson = canonicalPlanJson(plan);
+        RequirementStageFinalization recorded = RequirementStageFinalization.prepared(
+                command, RdTaskStatus.REPORTING, 10L).outcomeRecorded(
+                plan.postStatus(), canonicalPlanJson, RequirementPolicyRun.canonicalJsonDigest(canonicalPlanJson), 20L);
+        when(markers.findForUpdate(anyLong(), anyInt())).thenReturn(markerRow(recorded));
+
+        IllegalStateException thrown = assertThrows(IllegalStateException.class, () -> adapter.finalize(
+                new RequirementStageFinalizationPort.FinalizationCommand(
+                        recorded, command, "worker", plan, null, null,
+                        RequirementStageFinalizationPort.JobDisposition.NONE,
+                        RequirementStageFinalizationPort.TaskMutationDisposition.APPLY, 20L)));
+        assertTrue(thrown.getMessage().toLowerCase().contains("binding"));
+        verify(writer, never()).apply(any());
+        verify(tasks, never()).advanceStatusWithExpectedVersionFenced(
+                anyLong(), anyLong(), anyLong(), anyString(), anyString(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -1646,6 +1852,40 @@ class PostgresRequirementStageFinalizationAdapterTest {
                 "701", "700", 4L, 9L, "REQUIREMENT_DELIVERY", "MATERIAL_COLLECTING",
                 0, 3, 60_000L, ScheduleResourceClass.GENERIC, "project", "", "P1", 1L)
                 .claimed("worker", 60_000L, 2L);
+    }
+
+    private static AuditedStateMutation auditedMutation(String taskId, String commandId, String recordId) {
+        AuditedTaskState next = new AuditedTaskStateCodec().seal(new AuditedTaskState(
+                taskId,
+                1L,
+                "",
+                new AuditedContractRef("sha256:" + "c".repeat(64), 1L, 1L),
+                List.of(new AuditedRecord(
+                        recordId,
+                        AuditedRecordKind.REQUIREMENT,
+                        true,
+                        "criterion " + recordId,
+                        AuditedRecordStatus.PENDING,
+                        List.of(),
+                        "",
+                        "")),
+                "audit-" + commandId));
+        AuditRun run = new AuditRun(
+                "audit-" + commandId,
+                taskId,
+                "stage-1",
+                "HOST_VERIFY",
+                commandId,
+                AuditCompletion.INCOMPLETE,
+                AuditIntegrity.CLEAN,
+                ContractAuditVerdict.ALIGNED,
+                List.of(),
+                List.of(recordId),
+                List.of(),
+                List.of(),
+                List.of(),
+                1_700_000_000_000L);
+        return new AuditedStateMutation(run, next, next.stateVersion());
     }
 
     private static RequirementStageCommand claimedPlanGeneratingCommand() {

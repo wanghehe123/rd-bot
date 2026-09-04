@@ -141,11 +141,16 @@ public final class CleanHostVerificationWorkspaceFactory implements HostVerifica
                 task.repoOwner(),
                 task.repoName(),
                 task.baseBranch(),
-                task.workBranch(),
+                workBranch(task),
                 context,
                 policy,
                 List.of(new RepairInputAttachment(CANDIDATE_PATCH_NAME, CANDIDATE_PATCH_MIME, content))
         );
+    }
+
+    private static String workBranch(RdRequirementTask task) {
+        String persisted = task.workBranch() == null ? "" : task.workBranch().strip();
+        return persisted.isBlank() ? "requirement/" + task.taskId() : persisted;
     }
 
     private static String handoffManifest(String digest, int bytes) {

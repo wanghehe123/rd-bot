@@ -9,7 +9,7 @@ Treat QA as a delivery blocker, not a build summary.
 
 ## Boundaries
 
-- Read `/work/input/prompt.md`, `/work/input/context.json`, `/work/input/qa-profile.json`, and `/work/input/result.schema.json` first.
+- Read `/work/input/prompt.md`, `/work/input/context.json`, `/work/input/qa-profile.json`, `/work/input/acceptance-criteria-ids.json`, and `/work/input/result.schema.json` first.
 - Do not modify tracked files in `/work/repo`. Put temporary scripts and configuration under `/work/output/qa-work`.
 - Capture `git status --porcelain=v1 --untracked-files=all` before QA and require the same clean state after QA. If dependency installation creates `node_modules`, framework caches, coverage, or build output, remove only those paths created by this QA attempt after stopping the application; never use `git clean`, `git reset`, or checkout to hide a mutation.
 - Use only origins allowed by `RD_QA_ALLOWED_HOSTS`. Do not weaken TLS, authentication, or repository policy.
@@ -18,7 +18,7 @@ Treat QA as a delivery blocker, not a build summary.
 
 ## Required Coverage
 
-1. Verify every current acceptance criterion with an executable command or browser flow.
+1. Verify every current acceptance criterion with an executable command or browser flow. When PI-v2 is enabled, every `scope=CURRENT` `acceptanceResults` item must include `criteriaId` from `/work/input/acceptance-criteria-ids.json` (`AC-001`, `AC-002`, …). `REGRESSION` items may omit `criteriaId`.
 2. Run the repository's existing relevant tests and an impacted regression set.
 3. Exercise at least one pre-existing critical path that the change could break.
 4. When browser validation is required, verify desktop `1440x900` and mobile `390x844` with Chromium.

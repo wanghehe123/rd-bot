@@ -4,6 +4,8 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wish.rd.engine.agent.model.AgentRole;
+import com.wish.rd.engine.requirement.audit.AuditedTaskStatePolicyBootstrap;
+import com.wish.rd.engine.requirement.audit.AuditedTaskStateStore;
 import com.wish.rd.engine.requirement.job.RequirementStageCommandStore;
 import com.wish.rd.engine.requirement.job.model.RequirementStageCommand;
 import com.wish.rd.engine.requirement.policy.RequirementPolicyRunStore;
@@ -51,6 +53,7 @@ public final class InMemoryRequirementPolicyTransactionAdapter implements Requir
     private final RdTaskStatusEventStore events;
     private final RequirementStageCommandStore commands;
     private final SnowflakeIdGenerator ids;
+    private final AuditedTaskStateStore auditedTaskStateStore;
 
     /** Creates the local transaction adapter from the same stores used by memory-mode delivery. */
     public InMemoryRequirementPolicyTransactionAdapter(
@@ -60,11 +63,28 @@ public final class InMemoryRequirementPolicyTransactionAdapter implements Requir
             RequirementStageCommandStore commands,
             SnowflakeIdGenerator ids
     ) {
+        this(policyRuns, tasks, events, commands, ids, null);
+    }
+
+    /**
+     * Creates the local transaction adapter with audited-state initialization.
+     *
+     * @param auditedTaskStateStore Host audited-state store; required when applying ALLOWED/resume
+     */
+    public InMemoryRequirementPolicyTransactionAdapter(
+            RequirementPolicyRunStore policyRuns,
+            RdTaskStore tasks,
+            RdTaskStatusEventStore events,
+            RequirementStageCommandStore commands,
+            SnowflakeIdGenerator ids,
+            AuditedTaskStateStore auditedTaskStateStore
+    ) {
         this.policyRuns = Objects.requireNonNull(policyRuns, "policyRuns must not be null");
         this.tasks = Objects.requireNonNull(tasks, "tasks must not be null");
         this.events = Objects.requireNonNull(events, "events must not be null");
         this.commands = Objects.requireNonNull(commands, "commands must not be null");
         this.ids = Objects.requireNonNull(ids, "ids must not be null");
+        this.auditedTaskStateStore = auditedTaskStateStore;
     }
 
     /** CAS-terminalizes only an eligible active policy source for one exact POLICY retry lineage. */
@@ -280,6 +300,9 @@ public final class InMemoryRequirementPolicyTransactionAdapter implements Requir
             commands.enqueue(next);
         }
         policyRuns.compareAndSet(consumed, RequirementPolicyRunState.POLICY_DECIDED, ledger.ledgerVersion());
+        if (disposition == RequirementPolicyApplyDisposition.ALLOWED) {
+            initializeAuditedState(requireTask(supplied.taskId()));
+        }
         return new RequirementPolicyApplyResult(consumed, completed, disposition, next, nextVersion, nextFence, retryContext);
     }
 
@@ -308,6 +331,7 @@ public final class InMemoryRequirementPolicyTransactionAdapter implements Requir
             requireAppliedReplay(ledger, task, supplied, current);
             RequirementStageCommand next = requireCommandByIdentity(task.taskId(), firstRole(), roleStage(), retryContext);
             requirePendingIdentity(next, ledger, firstRole(), roleStage(), retryContext);
+            initializeAuditedState(task);
             return new RequirementPolicyResumeResult(ledger, current, next, ledger.boundTaskVersion(), ledger.boundFencingToken(), retryContext);
         }
         requireApprovedResume(ledger, task, supplied, current, owner);
@@ -323,6 +347,7 @@ public final class InMemoryRequirementPolicyTransactionAdapter implements Requir
         RequirementStageCommand completed = commands.complete(supplied.commandId(), owner, nowEpochMillis);
         commands.enqueue(next);
         policyRuns.compareAndSet(applied, RequirementPolicyRunState.APPROVED, ledger.ledgerVersion());
+        initializeAuditedState(requireTask(supplied.taskId()));
         return new RequirementPolicyResumeResult(applied, completed, next, nextVersion, nextFence, retryContext);
     }
 
@@ -342,6 +367,9 @@ public final class InMemoryRequirementPolicyTransactionAdapter implements Requir
         RequirementStageCommand next = disposition == RequirementPolicyApplyDisposition.ALLOWED
                 ? requireCommandByIdentity(task.taskId(), firstRole(), roleStage(), retryContext) : null;
         if (next != null) requirePendingIdentity(next, ledger, firstRole(), roleStage(), retryContext); else requireNoContinuation(task.taskId(), retryContext);
+        if (disposition == RequirementPolicyApplyDisposition.ALLOWED) {
+            initializeAuditedState(requireTask(supplied.taskId()));
+        }
         return new RequirementPolicyApplyResult(ledger, current, disposition, next, ledger.boundTaskVersion(), ledger.boundFencingToken(), retryContext);
     }
 
@@ -432,6 +460,10 @@ public final class InMemoryRequirementPolicyTransactionAdapter implements Requir
     private RequirementPolicyRun requireRun(String id) { return policyRuns.findById(id).orElseThrow(() -> new IllegalStateException("policy run is missing: " + id)); }
     private RequirementPolicyRun requireCommandLedger(RequirementStageCommand command) { if (command.policyRunId().isBlank()) throw new IllegalStateException("policy command is missing policyRunId: " + command.commandId()); return requireRun(command.policyRunId()); }
     private RdRequirementTask requireTask(String id) { return tasks.findRequirementTask(id).orElseThrow(() -> new IllegalStateException("requirement task is missing: " + id)); }
+
+    private void initializeAuditedState(RdRequirementTask task) {
+        new AuditedTaskStatePolicyBootstrap(auditedTaskStateStore).initializeIfAbsent(task);
+    }
     private RequirementStageCommand requireCommand(String id) { return commands.findById(id).orElseThrow(() -> new IllegalStateException("stage command is missing: " + id)); }
     private RequirementStageCommand requireCommandByIdentity(
             String task, String role, String stage, RequirementPolicyRetryContext retryContext

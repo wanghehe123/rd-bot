@@ -39,6 +39,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.ArrayList;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -48,12 +49,23 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+import com.wish.rd.engine.requirement.audit.AuditedRecordStatus;
+import com.wish.rd.engine.requirement.audit.AuditedTaskState;
+import com.wish.rd.engine.requirement.audit.impl.InMemoryAuditedTaskStateStore;
+import com.wish.rd.engine.requirement.policy.RequirementPolicyRunStore;
+import com.wish.rd.engine.requirement.policy.model.RequirementPolicyRun;
+import com.wish.rd.engine.requirement.policy.model.RequirementPolicyRunState;
 import com.wish.rd.engine.requirement.model.RequirementDeliveryResult;
 import com.wish.rd.engine.requirement.model.RequirementDeliveryReviewResult;
 import com.wish.rd.engine.requirement.model.RequirementDeliveryPublicationView;
@@ -211,6 +223,9 @@ class RequirementDeliveryEngineTest {
         assertTrue(captured.get(2).prompt().contains("HTTP 请求必须设置不超过 30 秒的请求超时"));
         assertTrue(captured.get(2).prompt().contains("宿主会在本阶段成功后"));
         assertTrue(captured.get(2).prompt().contains("`testStatus` 只是交接信息，不是放行依据"));
+        assertTrue(captured.get(2).prompt().contains("credential-relay 隔离网"));
+        assertTrue(captured.get(2).prompt().contains("EAI_AGAIN"));
+        assertFalse(captured.get(2).prompt().contains("安装失败时保留诊断并停止"));
         assertTrue(captured.get(3).prompt().contains("\"acceptanceResults\""));
         assertFalse(captured.get(3).prompt().contains("BUILD/STATIC"));
         assertFalse(captured.get(3).prompt().contains("宿主会在本阶段成功后"));
@@ -223,6 +238,8 @@ class RequirementDeliveryEngineTest {
         assertTrue(captured.get(3).prompt().contains("\"hostAssertionResults\""));
         assertFalse(captured.get(3).prompt().contains("\"hostAssertionBundle\""));
         assertTrue(captured.get(3).prompt().contains("/work/input/qa-profile.json"));
+        assertTrue(captured.get(3).prompt().contains("CURRENT 项必须带 criteriaId"));
+        assertTrue(captured.get(3).prompt().contains("冻结集合"));
         assertTrue(captured.get(3).prompt().contains("docs-only"));
         assertTrue(captured.get(3).prompt().contains("DOCS_ONLY"));
         assertTrue(captured.get(3).prompt().contains("不得修改 /work/repo 中的跟踪文件"));
@@ -265,6 +282,160 @@ class RequirementDeliveryEngineTest {
                                 && entry.evidenceQuality() > 0.0d
                                 && !entry.applicableRoles().isEmpty()),
                 "new workflow experiences must carry repository scope, quality, and applicable roles");
+    }
+
+    @Test
+    void legacyRoleExecutionInitializesAuditedStateAndWritesUntrustedClaims() {
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(), new InMemoryRdTaskStatusEventStore(), generator());
+        RdRequirementTask task = registry.createRequirementTask(new CreateRequirementTaskCommand(
+                "legacy claims", "P1", "https://github.com/example/repo", "example", "repo", "main",
+                "result", List.of("works"), false));
+        String planJson = "{\"taskId\":\"" + task.taskId() + "\",\"implementationSteps\":[\"frozen\"],"
+                + "\"acceptanceCriteria\":[],\"suggestedValidationCommands\":[]}";
+        for (RdTaskStatus status : List.of(
+                RdTaskStatus.MATERIAL_COLLECTING, RdTaskStatus.MATERIAL_READY,
+                RdTaskStatus.CONTEXT_BUILDING, RdTaskStatus.CONTEXT_READY,
+                RdTaskStatus.PLAN_GENERATING, RdTaskStatus.PLAN_GENERATED,
+                RdTaskStatus.WAITING_POLICY, RdTaskStatus.EXECUTING)) {
+            task = registry.transitionRequirementFenced(task, status, "", planJson, "", "");
+        }
+        RequirementPolicyRun authorization = new RequirementPolicyRun(
+                "legacy-policy", task.taskId(), Math.subtractExact(task.version(), 2L),
+                Math.subtractExact(task.fencingToken(), 2L),
+                RequirementPolicyRun.canonicalizeJson(planJson),
+                RequirementPolicyRun.canonicalJsonDigest(RequirementPolicyRun.canonicalizeJson(planJson)),
+                RequirementPolicyRun.canonicalizeJson("{\"policyAction\":\"ALLOWED\",\"riskLevel\":\"LOW\",\"reason\":\"frozen\"}"),
+                RequirementPolicyRun.canonicalJsonDigest(RequirementPolicyRun.canonicalizeJson(
+                        "{\"policyAction\":\"ALLOWED\",\"riskLevel\":\"LOW\",\"reason\":\"frozen\"}")),
+                "ALLOWED", RequirementPolicyRunState.APPLIED, task.version(), task.fencingToken(),
+                null, null, "", "", "", 0L, "", "apply-command", 1L, 2L, 1L, 1L);
+        RequirementPolicyRunStore policies = mock(RequirementPolicyRunStore.class);
+        when(policies.findById(authorization.id())).thenReturn(Optional.of(authorization));
+        RequirementAgentStageOrchestrator orchestrator = mock(RequirementAgentStageOrchestrator.class);
+        when(orchestrator.run(any(), any(), anyList(), any(), any(), any(), isNull()))
+                .thenReturn(RequirementExecutionResult.success(
+                        task.taskId(),
+                        "coding complete",
+                        "",
+                        "{\"status\":\"SUCCESS\",\"testStatus\":\"PASSED\"}"));
+        InMemoryAuditedTaskStateStore audited = new InMemoryAuditedTaskStateStore();
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry, new InMemoryTaskMaterialStore(), request -> {
+                    throw new AssertionError("legacy role execution uses the stage orchestrator");
+                });
+        engine.setRequirementPolicyRunStore(policies);
+        engine.setStageOrchestrator(orchestrator);
+        engine.setAuditedTaskStateStore(audited);
+        RequirementStageCommand command = RequirementStageCommand.pending(
+                "legacy-coding-command", task.taskId(), task.version(), task.fencingToken(),
+                AgentRole.CODING_AGENT.name(), "ROLE_EXECUTION:CODING_AGENT", 0, 3,
+                System.currentTimeMillis() + 60_000L,
+                com.wish.rd.engine.scheduling.model.ScheduleResourceClass.PROVIDER,
+                Set.of(com.wish.rd.engine.scheduling.model.ScheduleResourceClass.PROVIDER),
+                "_default", "provider", "P1", authorization.id(), System.currentTimeMillis());
+
+        engine.executeStage(command);
+
+        AuditedTaskState head = audited.head(task.taskId()).orElseThrow();
+        assertEquals(2L, head.stateVersion());
+        assertEquals(AuditedRecordStatus.PENDING, head.record("GATE-BUILD").status());
+        assertTrue(head.records().stream().noneMatch(record -> record.status() == AuditedRecordStatus.COMPLETED));
+        assertTrue(head.records().stream().anyMatch(record ->
+                record.status() == AuditedRecordStatus.UNTRUSTED && record.text().contains("testStatus=PASSED")));
+        assertEquals(1, audited.listAuditRuns(task.taskId()).size());
+    }
+
+    @Test
+    void legacyDeterministicReviewRejectsFalseSuccessWhenGateBuildIsPending() {
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(), new InMemoryRdTaskStatusEventStore(), generator());
+        RdRequirementTask task = registry.createRequirementTask(new CreateRequirementTaskCommand(
+                "legacy false success", "P1", "https://github.com/example/repo", "example", "repo", "main",
+                "result", List.of("the change is accepted"), false));
+        String delivery = successfulDeliveryJsonForGate();
+        for (RdTaskStatus status : List.of(
+                RdTaskStatus.MATERIAL_COLLECTING, RdTaskStatus.MATERIAL_READY,
+                RdTaskStatus.CONTEXT_BUILDING, RdTaskStatus.CONTEXT_READY,
+                RdTaskStatus.PLAN_GENERATING, RdTaskStatus.PLAN_GENERATED,
+                RdTaskStatus.WAITING_POLICY)) {
+            task = registry.transitionRequirementFenced(task, status, "", delivery, "", "");
+        }
+        task = registry.transitionRequirementFenced(task, RdTaskStatus.EXECUTING, "", delivery, "", "");
+        InMemoryAuditedTaskStateStore audited = new InMemoryAuditedTaskStateStore();
+        new com.wish.rd.engine.requirement.audit.AuditedTaskStatePolicyBootstrap(audited)
+                .initializeIfAbsent(task);
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry, new InMemoryTaskMaterialStore(), request -> {
+                    throw new AssertionError("legacy review must not execute roles");
+                });
+        engine.setAuditedTaskStateStore(audited);
+        RequirementStageCommand command = RequirementStageCommand.pending(
+                "legacy-review-command", task.taskId(), task.version(), task.fencingToken(),
+                "REQUIREMENT_DELIVERY", "DETERMINISTIC_REVIEW", 0, 3,
+                System.currentTimeMillis() + 60_000L,
+                com.wish.rd.engine.scheduling.model.ScheduleResourceClass.GENERIC,
+                Set.of(com.wish.rd.engine.scheduling.model.ScheduleResourceClass.GENERIC),
+                "_default", "", "P1", System.currentTimeMillis());
+
+        RequirementDeliveryResult result = engine.executeStage(command);
+
+        assertEquals(RdTaskStatus.REJECTED, result.status());
+        assertTrue(result.errorMessage().contains("GATE-BUILD"), result.errorMessage());
+    }
+
+    @Test
+    void legacyCompletionFailsNeedsHumanWhenAuditedHeadIsDegraded() {
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(), new InMemoryRdTaskStatusEventStore(), generator());
+        RdRequirementTask task = registry.createRequirementTask(new CreateRequirementTaskCommand(
+                "legacy degraded completion", "P1", "https://github.com/example/repo", "example", "repo", "main",
+                "result", List.of("the change is accepted"), false));
+        String delivery = successfulDeliveryJsonForGate();
+        for (RdTaskStatus status : List.of(
+                RdTaskStatus.MATERIAL_COLLECTING, RdTaskStatus.MATERIAL_READY,
+                RdTaskStatus.CONTEXT_BUILDING, RdTaskStatus.CONTEXT_READY,
+                RdTaskStatus.PLAN_GENERATING, RdTaskStatus.PLAN_GENERATED,
+                RdTaskStatus.WAITING_POLICY, RdTaskStatus.EXECUTING,
+                RdTaskStatus.VALIDATING, RdTaskStatus.PR_CREATING, RdTaskStatus.COMMITTED,
+                RdTaskStatus.REPORTING)) {
+            task = registry.transitionRequirementFenced(task, status, "", delivery, "https://example.test/pull/1", "");
+        }
+        InMemoryAuditedTaskStateStore audited = new InMemoryAuditedTaskStateStore();
+        new com.wish.rd.engine.requirement.audit.AuditedTaskStatePolicyBootstrap(audited)
+                .initializeIfAbsent(task);
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry, new InMemoryTaskMaterialStore(), request -> {
+                    throw new AssertionError("legacy completion must not execute roles");
+                });
+        engine.setAuditedTaskStateStore(audited);
+        RequirementStageCommand command = RequirementStageCommand.pending(
+                "legacy-completion-command", task.taskId(), task.version(), task.fencingToken(),
+                "REQUIREMENT_DELIVERY", "COMPLETION", 0, 3,
+                System.currentTimeMillis() + 60_000L,
+                com.wish.rd.engine.scheduling.model.ScheduleResourceClass.GENERIC,
+                Set.of(com.wish.rd.engine.scheduling.model.ScheduleResourceClass.GENERIC),
+                "_default", "", "P1", System.currentTimeMillis());
+
+        RequirementDeliveryResult result = engine.executeStage(command);
+
+        assertEquals(RdTaskStatus.FAILED_NEEDS_HUMAN, result.status());
+        assertTrue(result.errorMessage().contains("GATE-BUILD"), result.errorMessage());
+    }
+
+    private static String successfulDeliveryJsonForGate() {
+        return """
+                {"status":"SUCCESS","multiAgentStatus":"SUCCESS",
+                "changedFiles":["src/App.java"],"testCommands":["./mvnw test"],"testStatus":"PASSED","riskLevel":"LOW",
+                "multiAgentStages":[
+                {"role":"REQUIREMENT_REVIEWER","success":true},
+                {"role":"SOLUTION_ARCHITECT","success":true},
+                {"role":"CODING_AGENT","success":true,"candidatePatch":{"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","bytes":1,"artifactUri":"s3://patch"},
+                 "resultJson":{"summary":"implemented","prBody":"body","changedFiles":["src/App.java"],"testCommands":["./mvnw test"],"testStatus":"PASSED","riskLevel":"LOW"}},
+                {"role":"QA_AGENT","success":true,"resultJson":{"status":"PASSED","failureCategory":"NONE","retryRecommendation":"NONE",
+                "browserValidation":{"required":false,"performed":false,"decisionSource":"NOT_APPLICABLE","baseUrl":"","browser":"chromium","viewports":[]},
+                "acceptanceResults":[{"criteria":"current","scope":"CURRENT","command":"test","status":"PASSED","exitCode":0,"durationMillis":0,"logArtifactId":"current.log","evidenceArtifactIds":["https://evidence.example/current"]},{"criteria":"regression","scope":"REGRESSION","command":"test","status":"PASSED","exitCode":0,"durationMillis":0,"logArtifactId":"regression.log","evidenceArtifactIds":["regression.log"]}],"evidenceManifestArtifactId":"manifest.json"}}]}
+                """;
     }
 
     @Test

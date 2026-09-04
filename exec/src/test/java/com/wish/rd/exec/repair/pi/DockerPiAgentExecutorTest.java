@@ -886,9 +886,171 @@ class DockerPiAgentExecutorTest {
                 temporaryDirectory.resolve("workspaces/task-qa-deps/repo").toString()
         ));
         assertEquals("development", provision.env().get("NODE_ENV"));
+        assertTrue(
+                provision.executionTimeoutMillis() >= 1_200_000L,
+                "npm provision must outlast a nested client+server install; was "
+                        + provision.executionTimeoutMillis()
+        );
         assertNotNull(agent.networkPlan());
         assertEquals("true", agent.env().get("npm_config_offline"));
         assertTrue(agent.entrypoint() == null || agent.entrypoint().isBlank());
+        assertNull(agent.env().get("npm_config_registry"), "isolated agent stays offline");
+    }
+
+    @Test
+    void shouldProvisionNpmDependenciesOnBridgeBeforeIsolatedCodingAgent() throws Exception {
+        RecordingRunner runner = new RecordingRunner();
+        DockerPiAgentExecutor executor = executor(
+                new RepairWorkspaceFactory(temporaryDirectory.resolve("workspaces"), RESULT_SCHEMA),
+                runner,
+                AgentExecutionEventSink.noop(),
+                ignored -> "secret",
+                defaultConfiguration(),
+                npmMonorepo()
+        );
+
+        executor.execute(new AgentRuntimeExecutionRequest(
+                snapshot("snapshot-coding-deps", "stage-coding-deps", "task-coding-deps",
+                        AgentRuntimeType.PI, "", "CODING_AGENT"),
+                command("task-coding-deps", "CODING_AGENT")
+        ));
+
+        assertEquals(2, runner.requests.size(), runner.requests.toString());
+        ContainerRunRequest provision = runner.requests.get(0);
+        ContainerRunRequest agent = runner.requests.get(1);
+        assertEquals("sh", provision.entrypoint());
+        assertEquals("bridge", provision.networkMode());
+        assertNull(provision.networkPlan());
+        assertEquals("rd-bot/pi-agent:test", provision.image());
+        assertTrue(provision.command().stream().anyMatch(part -> part.contains("npm")), provision.command().toString());
+        assertNotNull(agent.networkPlan());
+        assertEquals("true", agent.env().get("npm_config_offline"));
+        assertTrue(agent.entrypoint() == null || agent.entrypoint().isBlank());
+    }
+
+    @Test
+    void shouldRecordQaWorkspaceFingerprintsAfterNpmProvisionAndAfterAgentExit() throws Exception {
+        RecordingRunner runner = new RecordingRunner();
+        WorkspaceFingerprintRepository repository = new WorkspaceFingerprintRepository(
+                npmMonorepo(),
+                runner,
+                trackedFingerprint("head-before", "tree-before", 4)
+        );
+        DockerPiAgentExecutor executor = executor(
+                new RepairWorkspaceFactory(temporaryDirectory.resolve("workspaces"), RESULT_SCHEMA),
+                runner,
+                AgentExecutionEventSink.noop(),
+                ignored -> "secret",
+                defaultConfiguration(),
+                repository
+        );
+
+        RepairExecutionResult result = executor.execute(new AgentRuntimeExecutionRequest(
+                snapshot("snapshot-qa-fp", "stage-qa-fp", "task-qa-fp", AgentRuntimeType.PI, "", "QA_AGENT"),
+                command("task-qa-fp", "QA_AGENT")
+        ));
+
+        assertEquals(2, repository.stateCalls.get());
+        assertEquals(List.of(1, 2), repository.containerRunsAtStateCall);
+        assertTrue(result.dockerMetadataJson().containsKey(QaExecutionMetadataKeys.WORKSPACE_FINGERPRINT_BEFORE_JSON));
+        assertTrue(result.dockerMetadataJson().containsKey(QaExecutionMetadataKeys.WORKSPACE_FINGERPRINT_AFTER_JSON));
+        assertEquals(
+                QaExecutionMetadataKeys.WORKSPACE_INTEGRITY_CLEAN,
+                result.dockerMetadataJson().get(QaExecutionMetadataKeys.WORKSPACE_INTEGRITY)
+        );
+        assertFalse(result.githubMetadataJson().containsKey(QaExecutionMetadataKeys.WORKSPACE_FINGERPRINT_BEFORE_JSON));
+        assertFalse(result.githubMetadataJson().containsKey(QaExecutionMetadataKeys.WORKSPACE_INTEGRITY));
+        String before = result.dockerMetadataJson().get(QaExecutionMetadataKeys.WORKSPACE_FINGERPRINT_BEFORE_JSON);
+        assertTrue(before.contains("\"headSha\":\"head-before\""), before);
+        assertTrue(before.contains("\"trackedTreeSha256\":\"tree-before\""), before);
+        assertTrue(before.contains("\"trackedFileCount\":4"), before);
+    }
+
+    @Test
+    void shouldMarkQaWorkspaceIntegrityViolationWhenTrackedTreeChanges() throws Exception {
+        RecordingRunner runner = new RecordingRunner();
+        WorkspaceFingerprintRepository repository = new WorkspaceFingerprintRepository(
+                npmMonorepo(),
+                runner,
+                trackedFingerprint("head-before", "tree-before", 4)
+        );
+        repository.secondState = trackedFingerprint("head-after", "tree-after", 4);
+        DockerPiAgentExecutor executor = executor(
+                new RepairWorkspaceFactory(temporaryDirectory.resolve("workspaces"), RESULT_SCHEMA),
+                runner,
+                AgentExecutionEventSink.noop(),
+                ignored -> "secret",
+                defaultConfiguration(),
+                repository
+        );
+
+        RepairExecutionResult result = executor.execute(new AgentRuntimeExecutionRequest(
+                snapshot("snapshot-qa-fp-dirty", "stage-qa-fp-dirty", "task-qa-fp-dirty",
+                        AgentRuntimeType.PI, "", "QA_AGENT"),
+                command("task-qa-fp-dirty", "QA_AGENT")
+        ));
+
+        assertEquals(
+                QaExecutionMetadataKeys.WORKSPACE_INTEGRITY_VIOLATION,
+                result.dockerMetadataJson().get(QaExecutionMetadataKeys.WORKSPACE_INTEGRITY)
+        );
+    }
+
+    @Test
+    void shouldOmitQaWorkspaceFingerprintKeysWhenRepositoryStateThrows() throws Exception {
+        RecordingRunner runner = new RecordingRunner();
+        WorkspaceFingerprintRepository repository = new WorkspaceFingerprintRepository(
+                npmMonorepo(),
+                runner,
+                trackedFingerprint("head-before", "tree-before", 4)
+        );
+        repository.failWith = new IOException("fingerprint timed out");
+        DockerPiAgentExecutor executor = executor(
+                new RepairWorkspaceFactory(temporaryDirectory.resolve("workspaces"), RESULT_SCHEMA),
+                runner,
+                AgentExecutionEventSink.noop(),
+                ignored -> "secret",
+                defaultConfiguration(),
+                repository
+        );
+
+        RepairExecutionResult result = executor.execute(new AgentRuntimeExecutionRequest(
+                snapshot("snapshot-qa-fp-timeout", "stage-qa-fp-timeout", "task-qa-fp-timeout",
+                        AgentRuntimeType.PI, "", "QA_AGENT"),
+                command("task-qa-fp-timeout", "QA_AGENT")
+        ));
+
+        assertFalse(result.dockerMetadataJson().containsKey(QaExecutionMetadataKeys.WORKSPACE_FINGERPRINT_BEFORE_JSON));
+        assertFalse(result.dockerMetadataJson().containsKey(QaExecutionMetadataKeys.WORKSPACE_FINGERPRINT_AFTER_JSON));
+        assertFalse(result.dockerMetadataJson().containsKey(QaExecutionMetadataKeys.WORKSPACE_INTEGRITY));
+    }
+
+    @Test
+    void shouldNotFingerprintWorkspaceForNonQaRoles() throws Exception {
+        RecordingRunner runner = new RecordingRunner();
+        WorkspaceFingerprintRepository repository = new WorkspaceFingerprintRepository(
+                RepairWorkspaceRepositoryPort.noop(),
+                runner,
+                trackedFingerprint("head-coding", "tree-coding", 1)
+        );
+        DockerPiAgentExecutor executor = executor(
+                new RepairWorkspaceFactory(temporaryDirectory.resolve("workspaces"), RESULT_SCHEMA),
+                runner,
+                AgentExecutionEventSink.noop(),
+                ignored -> "secret",
+                defaultConfiguration(),
+                repository
+        );
+
+        RepairExecutionResult result = executor.execute(new AgentRuntimeExecutionRequest(
+                snapshot("snapshot-coding-fp", "stage-coding-fp", "task-coding-fp",
+                        AgentRuntimeType.PI, "", "CODING_AGENT"),
+                command("task-coding-fp", "CODING_AGENT")
+        ));
+
+        assertEquals(0, repository.stateCalls.get());
+        assertFalse(result.dockerMetadataJson().containsKey(QaExecutionMetadataKeys.WORKSPACE_FINGERPRINT_BEFORE_JSON));
+        assertFalse(result.dockerMetadataJson().containsKey(QaExecutionMetadataKeys.WORKSPACE_INTEGRITY));
     }
 
     @Test
@@ -915,6 +1077,48 @@ class DockerPiAgentExecutorTest {
         assertEquals("ENVIRONMENT", result.rawResultJson().get("failureCategory"));
         assertTrue(result.errorMessage().toLowerCase(java.util.Locale.ROOT).contains("npm")
                 || result.summary().toLowerCase(java.util.Locale.ROOT).contains("depend"), result.summary() + result.errorMessage());
+        assertTrue(result.errorMessage().contains("container exited with code 1"), result.errorMessage());
+    }
+
+    @Test
+    void shouldFailQaAsEnvironmentWhenNpmProvisionTimesOutWithoutHidingExitCodeBehindNpmNotices()
+            throws Exception {
+        RecordingRunner runner = new RecordingRunner();
+        runner.provisionExitCode = 124;
+        runner.provisionTimedOut = true;
+        runner.provisionDurationMillis = 600_000L;
+        runner.provisionStderr = """
+                npm notice
+                npm notice New major version of npm available! 10.9.3 -> 12.0.2
+                npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.0.2
+                npm notice To update run: npm install -g npm@12.0.2
+                npm notice
+                npm warn deprecated prebuild-install@7.1.3: No longer maintained.
+                npm warn deprecated uuid@9.0.1: uuid@10 and below is no longer supported.
+                """.repeat(8);
+        DockerPiAgentExecutor executor = executor(
+                new RepairWorkspaceFactory(temporaryDirectory.resolve("workspaces"), RESULT_SCHEMA),
+                runner,
+                AgentExecutionEventSink.noop(),
+                ignored -> "secret",
+                defaultConfiguration(),
+                npmMonorepo()
+        );
+
+        RepairExecutionResult result = executor.execute(new AgentRuntimeExecutionRequest(
+                snapshot("snapshot-qa-deps-timeout", "stage-qa-deps-timeout", "task-qa-deps-timeout",
+                        AgentRuntimeType.PI, "", "QA_AGENT"),
+                command("task-qa-deps-timeout", "QA_AGENT")
+        ));
+
+        assertEquals(1, runner.requests.size());
+        assertEquals(RepairExecutionStatus.FAILED, result.status());
+        assertEquals("ENVIRONMENT", result.rawResultJson().get("failureCategory"));
+        String error = result.errorMessage();
+        assertTrue(error.contains("timed out after 600000ms"), error);
+        assertTrue(error.contains("container exited with code 124"), error);
+        assertFalse(error.contains("npm notice"), error);
+        assertFalse(error.contains("uuid@9.0.1"), error);
     }
 
     @Test
@@ -941,7 +1145,7 @@ class DockerPiAgentExecutorTest {
     }
 
     @Test
-    @Disabled("aspirational QA provider-attempt isolation; see pi-qa spec §4")
+    @Disabled("aspirational QA provider-attempt isolation; see pi-qa spec §4. Phase 2 of mea-audit-only-writeback.")
     void shouldMountQaRepoFromAnIndependentProviderAttemptWorkspace() throws Exception {
         CapturingRunner runner = new CapturingRunner();
         DockerPiAgentExecutor executor = executor(runner, AgentExecutionEventSink.noop(), ignored -> "secret");
@@ -960,7 +1164,7 @@ class DockerPiAgentExecutorTest {
     }
 
     @Test
-    @Disabled("aspirational QA provider-attempt isolation; see pi-qa spec §4")
+    @Disabled("aspirational QA provider-attempt isolation; see pi-qa spec §4. Phase 2 of mea-audit-only-writeback.")
     void shouldGiveQaAnIndependentCandidatePatchWorkspaceWhileRetainingTaskCache() throws Exception {
         CapturingRunner runner = new CapturingRunner();
         DockerPiAgentExecutor executor = executor(runner, AgentExecutionEventSink.noop(), ignored -> "secret");
@@ -2107,9 +2311,66 @@ class DockerPiAgentExecutorTest {
         };
     }
 
+    private static RepairWorkspaceRepositoryPort.RepositoryState trackedFingerprint(
+            String headSha, String trackedTreeSha256, int trackedFileCount
+    ) {
+        return new RepairWorkspaceRepositoryPort.RepositoryState(
+                true, true, trackedTreeSha256, "", headSha, trackedTreeSha256, trackedFileCount);
+    }
+
+    private static final class WorkspaceFingerprintRepository implements RepairWorkspaceRepositoryPort {
+        private final RepairWorkspaceRepositoryPort inner;
+        private final RecordingRunner runner;
+        final AtomicInteger stateCalls = new AtomicInteger();
+        final List<Integer> containerRunsAtStateCall = new java.util.concurrent.CopyOnWriteArrayList<>();
+        volatile IOException failWith;
+        volatile RepairWorkspaceRepositoryPort.RepositoryState secondState;
+        private final RepairWorkspaceRepositoryPort.RepositoryState firstState;
+
+        private WorkspaceFingerprintRepository(
+                RepairWorkspaceRepositoryPort inner,
+                RecordingRunner runner,
+                RepairWorkspaceRepositoryPort.RepositoryState firstState
+        ) {
+            this.inner = inner;
+            this.runner = runner;
+            this.firstState = firstState;
+        }
+
+        @Override
+        public RepositoryOperationResult prepare(RepairJobCommand command, RepairWorkspace workspace)
+                throws IOException {
+            return inner.prepare(command, workspace);
+        }
+
+        @Override
+        public RepositoryOperationResult publish(RepairJobCommand command, RepairWorkspace workspace)
+                throws IOException {
+            return inner.publish(command, workspace);
+        }
+
+        @Override
+        public RepositoryState repositoryState(RepairJobCommand command, RepairWorkspace workspace)
+                throws IOException {
+            containerRunsAtStateCall.add(runner.containerRunCount());
+            int call = stateCalls.incrementAndGet();
+            if (failWith != null) {
+                throw failWith;
+            }
+            return call == 1 || secondState == null ? firstState : secondState;
+        }
+    }
+
     private static final class RecordingRunner extends CapturingRunner {
         private final List<ContainerRunRequest> requests = new ArrayList<>();
         private int provisionExitCode;
+        private String provisionStderr = "npm install failed: ENOTCACHED";
+        private boolean provisionTimedOut;
+        private long provisionDurationMillis = 5L;
+
+        int containerRunCount() {
+            return requests.size();
+        }
 
         @Override
         public ContainerRunResult run(ContainerRunRequest request, ContainerOutputListener listener) throws IOException {
@@ -2117,17 +2378,22 @@ class DockerPiAgentExecutorTest {
             if (request.entrypoint() != null && !request.entrypoint().isBlank()) {
                 this.request = request;
                 if (provisionExitCode != 0) {
+                    Map<String, String> metadata = new java.util.LinkedHashMap<>();
+                    metadata.put("containerName", request.containerName());
+                    metadata.put("timedOut", String.valueOf(provisionTimedOut));
+                    metadata.put("exitCode", String.valueOf(provisionExitCode));
+                    metadata.put("durationMillis", String.valueOf(provisionDurationMillis));
                     return new ContainerRunResult(
                             provisionExitCode,
-                            5L,
+                            provisionDurationMillis,
                             "",
-                            "npm install failed: ENOTCACHED",
+                            provisionStderr,
                             request.outputDirectory().resolve("result.json"),
                             null,
                             null,
                             null,
                             null,
-                            Map.of("containerName", request.containerName())
+                            metadata
                     );
                 }
             }

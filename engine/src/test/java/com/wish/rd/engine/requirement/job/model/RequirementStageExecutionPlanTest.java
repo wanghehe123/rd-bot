@@ -1,5 +1,16 @@
 package com.wish.rd.engine.requirement.job.model;
 
+import com.wish.rd.engine.requirement.audit.AuditCompletion;
+import com.wish.rd.engine.requirement.audit.AuditIntegrity;
+import com.wish.rd.engine.requirement.audit.AuditRun;
+import com.wish.rd.engine.requirement.audit.AuditedContractRef;
+import com.wish.rd.engine.requirement.audit.AuditedRecord;
+import com.wish.rd.engine.requirement.audit.AuditedRecordKind;
+import com.wish.rd.engine.requirement.audit.AuditedRecordStatus;
+import com.wish.rd.engine.requirement.audit.AuditedStateMutation;
+import com.wish.rd.engine.requirement.audit.AuditedTaskState;
+import com.wish.rd.engine.requirement.audit.AuditedTaskStateCodec;
+import com.wish.rd.engine.requirement.audit.ContractAuditVerdict;
 import com.wish.rd.rag.runtime.model.RdTaskStatus;
 import com.wish.rd.engine.scheduling.model.ScheduleResourceClass;
 import org.junit.jupiter.api.Test;
@@ -112,10 +123,30 @@ class RequirementStageExecutionPlanTest {
     }
 
     @Test
-    void rejectsUnsupportedSchemasNegativeConcurrencyAndNonterminalFailureContinuations() {
-        assertEquals(2, RequirementStageExecutionPlan.CURRENT_SCHEMA_VERSION);
+    void schemaV3CarriesAuditedStateMutationAndRejectsLegacyWriteback() {
+        assertEquals(3, RequirementStageExecutionPlan.CURRENT_SCHEMA_VERSION);
+        AuditedStateMutation mutation = auditedMutation("task", "cmd-1", "AC-001");
+        RequirementStageExecutionPlan v3 = plan(RdTaskStatus.CREATED).withAuditedStateMutation(mutation);
+        assertEquals(3, v3.schemaVersion());
+        assertEquals(mutation, v3.auditedStateMutation());
         assertThrows(IllegalArgumentException.class, () -> new RequirementStageExecutionPlan(
-                3, "task", 0L, 1L, RdTaskStatus.CREATED, List.of(),
+                1, "task", 7L, 11L, RdTaskStatus.CREATED, List.of(),
+                CommandDisposition.SUCCEEDED, ContinuationSpec.terminal(), ExternalEffectReceipt.none(),
+                null, mutation));
+        assertThrows(IllegalArgumentException.class, () -> new RequirementStageExecutionPlan(
+                2, "task", 7L, 11L, RdTaskStatus.CREATED, List.of(),
+                CommandDisposition.SUCCEEDED, ContinuationSpec.terminal(), ExternalEffectReceipt.none(),
+                null, mutation));
+        AuditedTaskState next = mutation.nextState();
+        assertThrows(IllegalArgumentException.class, () -> new AuditedStateMutation(
+                mutation.auditRun(), next, next.stateVersion() + 1L));
+    }
+
+    @Test
+    void rejectsUnsupportedSchemasNegativeConcurrencyAndNonterminalFailureContinuations() {
+        assertEquals(3, RequirementStageExecutionPlan.CURRENT_SCHEMA_VERSION);
+        assertThrows(IllegalArgumentException.class, () -> new RequirementStageExecutionPlan(
+                4, "task", 0L, 1L, RdTaskStatus.CREATED, List.of(),
                 CommandDisposition.SUCCEEDED, ContinuationSpec.terminal(), ExternalEffectReceipt.none()));
         assertThrows(IllegalArgumentException.class, () -> new RequirementStageExecutionPlan(
                 RequirementStageExecutionPlan.CURRENT_SCHEMA_VERSION, "task", -1L, 1L,
@@ -188,5 +219,39 @@ class RequirementStageExecutionPlanTest {
 
     private static RequirementTaskMutation transition(RdTaskStatus from, RdTaskStatus to) {
         return RequirementTaskMutation.statusTransition(from, to, "", "{}", "", "", to.name());
+    }
+
+    private static AuditedStateMutation auditedMutation(String taskId, String commandId, String recordId) {
+        AuditedTaskState next = new AuditedTaskStateCodec().seal(new AuditedTaskState(
+                taskId,
+                1L,
+                "",
+                new AuditedContractRef("sha256:" + "c".repeat(64), 1L, 1L),
+                List.of(new AuditedRecord(
+                        recordId,
+                        AuditedRecordKind.REQUIREMENT,
+                        true,
+                        "criterion " + recordId,
+                        AuditedRecordStatus.PENDING,
+                        List.of(),
+                        "",
+                        "")),
+                "audit-" + commandId));
+        AuditRun run = new AuditRun(
+                "audit-" + commandId,
+                taskId,
+                "stage-1",
+                "HOST_VERIFY",
+                commandId,
+                AuditCompletion.INCOMPLETE,
+                AuditIntegrity.CLEAN,
+                ContractAuditVerdict.ALIGNED,
+                List.of(),
+                List.of(recordId),
+                List.of(),
+                List.of(),
+                List.of(),
+                1_700_000_000_000L);
+        return new AuditedStateMutation(run, next, next.stateVersion());
     }
 }

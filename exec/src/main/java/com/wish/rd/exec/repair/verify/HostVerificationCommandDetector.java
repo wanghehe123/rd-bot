@@ -3,6 +3,7 @@ package com.wish.rd.exec.repair.verify;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wish.rd.exec.repair.qa.QaDocsOnlyChangeClassifier;
+import com.wish.rd.exec.repair.qa.QaNpmInstallPlan;
 import com.wish.rd.exec.repair.qa.model.QaExecutionProfile;
 import com.wish.rd.exec.repair.verify.model.HostVerificationCommandSet;
 import com.wish.rd.rag.qa.model.QaValidationProfile;
@@ -20,8 +21,10 @@ import java.util.List;
  * profiles, then conservative repository auto-detection.
  *
  * <p>Reuses {@link QaDocsOnlyChangeClassifier} for the docs-only allowlist and never
- * reads Coding {@code testCommands}. Auto-detection never emits {@code npm run dev}
- * or {@code next dev}.
+ * reads Coding {@code testCommands}. Node auto-detection walks the same package
+ * directories as {@link QaNpmInstallPlan} ({@code .}, {@code server}, {@code client},
+ * {@code frontend}, {@code web}, {@code ui}) and emits {@code npm --prefix <dir>}
+ * for nested trees. Auto-detection never emits {@code npm run dev} or {@code next dev}.
  */
 public final class HostVerificationCommandDetector {
 
@@ -137,7 +140,15 @@ public final class HostVerificationCommandDetector {
     }
 
     private static List<String> detectNodeBuild(Path repository) {
-        JsonNode root = readPackageJson(repository);
+        List<String> commands = new ArrayList<>();
+        for (String relative : QaNpmInstallPlan.packageDirectories(repository)) {
+            commands.addAll(detectNodeBuildIn(packageDirectory(repository, relative), npmPrefix(relative)));
+        }
+        return List.copyOf(commands);
+    }
+
+    private static List<String> detectNodeBuildIn(Path directory, String prefix) {
+        JsonNode root = readPackageJson(directory);
         if (root == null) {
             return List.of();
         }
@@ -149,30 +160,38 @@ public final class HostVerificationCommandDetector {
             return List.of();
         }
         List<String> commands = new ArrayList<>();
-        commands.add(installCommand(repository));
+        commands.add(npmCommand(prefix, installCommand(directory)));
         if (hasTest) {
-            commands.add("npm test");
+            commands.add(npmCommand(prefix, "npm test"));
         }
         if (hasBuild) {
-            commands.add("npm run build");
+            commands.add(npmCommand(prefix, "npm run build"));
         }
         return List.copyOf(commands);
     }
 
     private static List<String> detectNodeStatic(Path repository) {
-        JsonNode root = readPackageJson(repository);
+        List<String> commands = new ArrayList<>();
+        for (String relative : QaNpmInstallPlan.packageDirectories(repository)) {
+            commands.addAll(detectNodeStaticIn(packageDirectory(repository, relative), npmPrefix(relative)));
+        }
+        return List.copyOf(commands);
+    }
+
+    private static List<String> detectNodeStaticIn(Path directory, String prefix) {
+        JsonNode root = readPackageJson(directory);
         if (root == null) {
             return List.of();
         }
         JsonNode scripts = root.path("scripts");
         List<String> commands = new ArrayList<>();
         if (hasScript(scripts, "typecheck")) {
-            commands.add("npm run typecheck");
-        } else if (Files.isRegularFile(repository.resolve("tsconfig.json"))) {
+            commands.add(npmCommand(prefix, "npm run typecheck"));
+        } else if (prefix.isBlank() && Files.isRegularFile(directory.resolve("tsconfig.json"))) {
             commands.add("npx tsc --noEmit");
         }
         if (hasScript(scripts, "lint")) {
-            commands.add("npm run lint");
+            commands.add(npmCommand(prefix, "npm run lint"));
         }
         return List.copyOf(commands);
     }
@@ -254,6 +273,27 @@ public final class HostVerificationCommandDetector {
 
     private static String installCommand(Path repository) {
         return Files.isRegularFile(repository.resolve("package-lock.json")) ? "npm ci" : "npm install";
+    }
+
+    private static Path packageDirectory(Path repository, String relative) {
+        return ".".equals(relative) ? repository : repository.resolve(relative);
+    }
+
+    private static String npmPrefix(String relative) {
+        return ".".equals(relative) ? "" : relative;
+    }
+
+    private static String npmCommand(String prefix, String command) {
+        if (prefix == null || prefix.isBlank()) {
+            return command;
+        }
+        if (command.startsWith("npm ")) {
+            return "npm --prefix " + prefix + command.substring("npm".length());
+        }
+        if (command.startsWith("npx ")) {
+            return "npm --prefix " + prefix + " exec -- " + command.substring("npx ".length());
+        }
+        return command;
     }
 
     private static String reason(

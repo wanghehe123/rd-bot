@@ -9,6 +9,7 @@ import com.wish.rd.exec.repair.qa.QaDocsOnlyChangeClassifier;
 import com.wish.rd.exec.repair.result.model.AgentRoleResultValidation;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -87,7 +88,7 @@ public final class QaEvidenceBundleValidator {
             List<String> requiredAcceptanceCriteria,
             List<String> candidateChangedFiles
     ) {
-        return validate(resultJson, artifacts, requiredAcceptanceCriteria, candidateChangedFiles, false);
+        return validate(resultJson, artifacts, requiredAcceptanceCriteria, candidateChangedFiles, false, null);
     }
 
     /** Validates authoritative finding-to-acceptance-to-file evidence for PI remediation v2. */
@@ -98,8 +99,27 @@ public final class QaEvidenceBundleValidator {
             List<String> candidateChangedFiles,
             boolean qaRemediationV2Enabled
     ) {
+        return validate(
+                resultJson,
+                artifacts,
+                requiredAcceptanceCriteria,
+                candidateChangedFiles,
+                qaRemediationV2Enabled,
+                null
+        );
+    }
+
+    /** Validates PI-v2 CURRENT {@code criteriaId} membership against the host-frozen set. */
+    public AgentRoleResultValidation validate(
+            String resultJson,
+            List<RepairArtifact> artifacts,
+            List<String> requiredAcceptanceCriteria,
+            List<String> candidateChangedFiles,
+            boolean qaRemediationV2Enabled,
+            Collection<String> frozenCriteriaIds
+    ) {
         List<String> errors = new ArrayList<>(
-                roleResultValidator.validate("QA_AGENT", resultJson, qaRemediationV2Enabled).errors()
+                roleResultValidator.validate("QA_AGENT", resultJson, qaRemediationV2Enabled, frozenCriteriaIds).errors()
         );
         JsonNode root = parseObject(resultJson);
         if (root == null) {

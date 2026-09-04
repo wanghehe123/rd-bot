@@ -370,7 +370,19 @@ public final class TaskRetryEngine {
             List<AgentStageRun> preparedStageRuns
     ) {
         if (route.primaryAttemptKind() == null) {
-            return List.of();
+            if (route.precreatedRoles().isEmpty()) {
+                return List.of();
+            }
+            AgentRole firstDownstream = route.precreatedRoles().getFirst();
+            List<AgentStageRun> boundStages = createRoleAttemptsFrom(
+                    point.taskId(), firstDownstream, preparedStageRuns);
+            List<TaskRetryAttemptBinding> bindings = new ArrayList<>();
+            for (AgentStageRun stage : boundStages) {
+                bindings.add(new TaskRetryAttemptBinding(nextId(), checkpoint.checkpointId(),
+                        com.wish.rd.engine.retry.model.TaskRetryAttemptKind.AGENT_STAGE, stage.role(),
+                        stage.stageRunId(), "", stage.attemptNo(), 0));
+            }
+            return List.copyOf(bindings);
         }
         if (retryAttemptBindingStore == null) {
             throw new IllegalStateException("checkpoint-bound retry attempt bindings are not configured");

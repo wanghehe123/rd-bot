@@ -6,6 +6,7 @@ import com.wish.rd.engine.scheduling.model.RequirementDeliverySchedulingPolicy;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
 import org.junit.jupiter.api.Test;
 
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
@@ -36,6 +37,21 @@ class RequirementStageCommandFactoryTest {
                 () -> assertEquals("", infrastructure.targetRetryBindingId()),
                 () -> assertTrue(infrastructure.commandId().matches("\\d+"))
         );
+    }
+
+    @Test
+    void createsHostVerifyCommandWithDockerResourceAndDefaultDeadline() {
+        RequirementStageCommand command = factory().createPendingCommand(
+                "task-1", 4L, 9L, "REQUIREMENT_DELIVERY", "HOST_VERIFY",
+                "project-a", "P1", "provider-a", "policy-1", 100L);
+        assertEquals("REQUIREMENT_DELIVERY", command.role());
+        assertEquals("HOST_VERIFY", command.stage());
+        assertEquals(Set.of(
+                com.wish.rd.engine.scheduling.model.ScheduleResourceClass.PROVIDER,
+                com.wish.rd.engine.scheduling.model.ScheduleResourceClass.DOCKER),
+                command.resourceRequirements());
+        assertEquals(com.wish.rd.engine.scheduling.model.ScheduleResourceClass.DOCKER, command.resourceClass());
+        assertEquals(100L + 60_000L, command.deadlineEpochMillis());
     }
 
     private static void assertTarget(RequirementStageCommand command, String targetBindingId) {

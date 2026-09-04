@@ -1,3 +1,11 @@
+## Status (2026-09-03 alignment with `mea-audit-only-writeback`)
+
+Code for `HostVerificationPort`, `p15_host_verification.sql`, orchestrator gate, profile `buildCommands`/`staticCommands`, retry phase `HOST_VERIFY`, and `HostVerificationController` is already in the tree. Tasks below stay historical; they were never checkbox-synced after landing.
+
+**Durable production path is not owned by this change.** `boundedRolePlan` disables the orchestrator inner host-verify loop. `mea-audit-only-writeback` adds durable command `HOST_VERIFY` that calls the same port. See this change's `design.md` D2 amendment. Do not archive this change as “production path complete” until that command is live, or archive only after the D2 durable-path note is synced into the main spec.
+
+Verify: `OPENSPEC_NO_UPDATE_CHECK=1 openspec validate --all --strict`
+
 ## 1. 领域模型与计划开关
 
 - [ ] 1.1 为 `HostVerificationRun` / step / artifact 写失败测试与 record（engine），含终态不可复活与 parentRunId

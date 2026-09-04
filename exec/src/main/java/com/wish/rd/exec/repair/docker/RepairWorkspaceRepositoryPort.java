@@ -85,11 +85,36 @@ public interface RepairWorkspaceRepositoryPort {
      * <p>QA may start with a platform-applied Coding patch in a local-only workflow, so it must compare its
      * post-run state with this immutable baseline rather than require a globally clean worktree.
      */
-    record RepositoryState(boolean supported, boolean clean, String fingerprint, String summary) {
+    record RepositoryState(
+            boolean supported,
+            boolean clean,
+            String fingerprint,
+            String summary,
+            String headSha,
+            String trackedTreeSha256,
+            int trackedFileCount
+    ) {
 
         public RepositoryState {
             fingerprint = fingerprint == null ? "" : fingerprint.strip();
             summary = summary == null ? "" : summary.strip();
+            headSha = headSha == null ? "" : headSha.strip();
+            trackedTreeSha256 = trackedTreeSha256 == null ? "" : trackedTreeSha256.strip();
+            if (trackedFileCount < 0) {
+                trackedFileCount = 0;
+            }
+        }
+
+        /**
+         * Compatibility constructor for ports that only expose a combined fingerprint.
+         *
+         * @param supported whether inspection is available
+         * @param clean whether the worktree is porcelain-clean
+         * @param fingerprint combined fingerprint
+         * @param summary operator-facing summary
+         */
+        public RepositoryState(boolean supported, boolean clean, String fingerprint, String summary) {
+            this(supported, clean, fingerprint, summary, "", fingerprint == null ? "" : fingerprint, 0);
         }
 
         /** Compatibility constructor for ports that can provide a stable state description but not a hash. */

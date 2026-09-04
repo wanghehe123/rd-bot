@@ -14,8 +14,13 @@ import com.wish.rd.engine.requirement.model.RequirementPolicyDecision;
 import com.wish.rd.engine.requirement.model.RequirementExecutionRequest;
 import com.wish.rd.engine.requirement.model.RequirementExecutionProfileResolution;
 import com.wish.rd.engine.requirement.verify.HostVerificationPort;
+import com.wish.rd.engine.requirement.verify.impl.InMemoryHostVerificationStore;
+import com.wish.rd.engine.requirement.verify.model.HostVerificationArtifact;
 import com.wish.rd.engine.requirement.verify.model.HostVerificationRun;
 import com.wish.rd.engine.requirement.verify.model.HostVerificationStatus;
+import com.wish.rd.engine.requirement.audit.AuditedRecordStatus;
+import com.wish.rd.engine.requirement.audit.AuditedTaskStatePolicyBootstrap;
+import com.wish.rd.engine.requirement.audit.impl.InMemoryAuditedTaskStateStore;
 import com.wish.rd.engine.agent.AgentStageRunStore;
 import com.wish.rd.engine.agent.impl.InMemoryAgentStageRunStore;
 import com.wish.rd.engine.agent.AgentStageArtifactStore;
@@ -729,6 +734,26 @@ class RequirementAgentStageOrchestratorTest {
     }
 
     @Test
+    void buildAgentPrompt_lists_frozen_current_criteriaIds_for_pi_v2_qa() {
+        AgentWorkflowPlan plan = AgentWorkflowPlan.production();
+        OrchestratorTestHarness harness = new OrchestratorTestHarness()
+                .prestageRoles(plan.roles())
+                .prestageRoleContexts(plan.roles());
+        harness.orchestrator.setExecutionProfileResolver(new QaRemediationV2ProfileResolver());
+
+        RequirementExecutionResult result = harness.orchestrator.run(
+                plan, harness.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION, null);
+
+        assertTrue(result.success(), result.errorMessage());
+        String qaPrompt = harness.executor.lastPromptByRole.get(AgentRole.QA_AGENT);
+        assertNotNull(qaPrompt, "QA prompt should be captured");
+        assertTrue(qaPrompt.contains("CURRENT 项必须带 criteriaId"), qaPrompt);
+        assertTrue(qaPrompt.contains("冻结集合"), qaPrompt);
+        assertTrue(qaPrompt.contains("REGRESSION 项可不带 criteriaId"), qaPrompt);
+        assertTrue(qaPrompt.contains("（空）") || qaPrompt.contains("AC-"), qaPrompt);
+    }
+
+    @Test
     void buildAgentPrompt_requires_only_hostAssertionResultEchoes_for_qa() {
         AgentWorkflowPlan plan = AgentWorkflowPlan.production();
         OrchestratorTestHarness harness = new OrchestratorTestHarness()
@@ -862,6 +887,32 @@ class RequirementAgentStageOrchestratorTest {
         assertEquals(1, harness.hostVerificationPort.verifyCalls.get());
         assertEquals(1, harness.executor.executedRoleCount(AgentRole.QA_AGENT));
         assertEquals(1, stageCount(harness, AgentRole.QA_AGENT));
+    }
+
+    @Test
+    void productionHostVerifySuccessWritesAuditRunThenDispatchesQa() {
+        AgentWorkflowPlan plan = AgentWorkflowPlan.production();
+        OrchestratorTestHarness harness = new OrchestratorTestHarness()
+                .prestageRoles(plan.roles())
+                .prestageRoleContexts(plan.roles());
+        InMemoryAuditedTaskStateStore audited = new InMemoryAuditedTaskStateStore();
+        InMemoryHostVerificationStore verifyStore = new InMemoryHostVerificationStore();
+        new AuditedTaskStatePolicyBootstrap(audited)
+                .initializeIfAbsent(harness.task.withConcurrency(1L, 1L));
+        harness.orchestrator.setAuditedTaskStateStore(audited);
+        harness.orchestrator.setHostVerificationStore(verifyStore);
+        harness.hostVerificationPort.persistTo(verifyStore);
+
+        RequirementExecutionResult result = harness.orchestrator.run(
+                plan, harness.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION, null);
+
+        assertTrue(result.success(), result.errorMessage());
+        assertEquals(1, audited.listAuditRuns(harness.task.taskId()).size());
+        assertEquals(AuditedRecordStatus.COMPLETED,
+                audited.head(harness.task.taskId()).orElseThrow().record("GATE-BUILD").status());
+        assertEquals(AuditedRecordStatus.COMPLETED,
+                audited.head(harness.task.taskId()).orElseThrow().record("GATE-STATIC").status());
+        assertEquals(1, harness.executor.executedRoleCount(AgentRole.QA_AGENT));
     }
 
     @Test
@@ -1486,6 +1537,10 @@ class RequirementAgentStageOrchestratorTest {
         assertTrue(codingPrompt.contains("宿主会在本阶段成功后"), codingPrompt);
         assertTrue(codingPrompt.contains("`testStatus` 只是交接信息，不是放行依据"), codingPrompt);
         assertTrue(codingPrompt.contains("不要删 `/work/cache` 或 `node_modules`"), codingPrompt);
+        assertTrue(codingPrompt.contains("credential-relay 隔离网"), codingPrompt);
+        assertTrue(codingPrompt.contains("EAI_AGAIN"), codingPrompt);
+        assertTrue(codingPrompt.contains("testStatus=SKIPPED"), codingPrompt);
+        assertFalse(codingPrompt.contains("安装失败时保留诊断并停止"), codingPrompt);
         assertNotNull(qaPrompt, "QA prompt should be captured");
         assertFalse(qaPrompt.contains("宿主会在本阶段成功后"), qaPrompt);
         assertFalse(qaPrompt.contains("BUILD/STATIC"), qaPrompt);
@@ -1532,10 +1587,11 @@ class RequirementAgentStageOrchestratorTest {
      * Scripted host-verify port. Default outcome is {@link HostVerificationStatus#SUCCEEDED}
      * so existing D-plan tests keep dispatching QA.
      */
-    static final class FakeHostVerificationPort implements HostVerificationPort {
+        static final class FakeHostVerificationPort implements HostVerificationPort {
         final AtomicInteger verifyCalls = new AtomicInteger();
         final List<Integer> seenRemediationCounts = new CopyOnWriteArrayList<>();
         private final List<HostVerificationRun> outcomes = new CopyOnWriteArrayList<>();
+        private InMemoryHostVerificationStore persistStore;
 
         FakeHostVerificationPort() {
             outcomes.add(hostVerify(HostVerificationStatus.SUCCEEDED, "", ""));
@@ -1544,6 +1600,11 @@ class RequirementAgentStageOrchestratorTest {
         FakeHostVerificationPort withOutcomes(HostVerificationRun... runs) {
             outcomes.clear();
             outcomes.addAll(List.of(runs));
+            return this;
+        }
+
+        FakeHostVerificationPort persistTo(InMemoryHostVerificationStore store) {
+            this.persistStore = store;
             return this;
         }
 
@@ -1557,7 +1618,7 @@ class RequirementAgentStageOrchestratorTest {
             int index = verifyCalls.getAndIncrement();
             seenRemediationCounts.add(remediationCountAlreadyUsed);
             HostVerificationRun template = outcomes.get(Math.min(index, outcomes.size() - 1));
-            return new HostVerificationRun(
+            HostVerificationRun run = new HostVerificationRun(
                     "verify-" + (index + 1),
                     task.taskId(),
                     codingStage.stageRunId(),
@@ -1572,6 +1633,21 @@ class RequirementAgentStageOrchestratorTest {
                     1L,
                     2L
             );
+            if (persistStore != null) {
+                persistStore.create(run);
+                if (run.status() == HostVerificationStatus.SUCCEEDED
+                        || run.status() == HostVerificationStatus.SKIPPED_DOCS_ONLY) {
+                    persistStore.appendArtifact(new HostVerificationArtifact(
+                            "build-" + run.runId(), task.taskId(), run.runId(), "VERIFY_BUILD_LOG",
+                            "verify-evidence/build.log", "s3://verify/build.log", "text/plain", 12L,
+                            "sha256:" + "a".repeat(64), 2L));
+                    persistStore.appendArtifact(new HostVerificationArtifact(
+                            "static-" + run.runId(), task.taskId(), run.runId(), "VERIFY_STATIC_LOG",
+                            "verify-evidence/static.log", "s3://verify/static.log", "text/plain", 12L,
+                            "sha256:" + "b".repeat(64), 2L));
+                }
+            }
+            return run;
         }
     }
 

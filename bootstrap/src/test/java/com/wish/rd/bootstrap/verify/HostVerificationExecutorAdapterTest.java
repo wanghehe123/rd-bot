@@ -68,6 +68,85 @@ class HostVerificationExecutorAdapterTest {
         assertEquals(HostVerificationStepStatus.SKIPPED, step(run, HostVerificationStepName.BUILD).status());
         assertEquals(HostVerificationStepStatus.SKIPPED, step(run, HostVerificationStepName.STATIC).status());
         assertTrue(runner.commands.isEmpty(), runner.commands.toString());
+        List<HostVerificationArtifact> skipped = store.listArtifacts(run.runId());
+        assertTrue(skipped.stream().anyMatch(artifact -> "VERIFY_BUILD_LOG".equals(artifact.artifactType())),
+                skipped.toString());
+        assertTrue(skipped.stream().anyMatch(artifact -> "VERIFY_STATIC_LOG".equals(artifact.artifactType())),
+                skipped.toString());
+    }
+
+    @Test
+    void nestedBuildWithoutTypecheckStillPersistsStaticEvidence() throws Exception {
+        Files.createDirectories(workspace.resolve("client"));
+        Files.createDirectories(workspace.resolve("server"));
+        Files.writeString(workspace.resolve("package.json"), """
+                {
+                  "scripts": {
+                    "install:all": "npm --prefix server install && npm --prefix client install",
+                    "dev": "concurrently npm:dev:*"
+                  }
+                }
+                """);
+        Files.writeString(workspace.resolve("client/package.json"), """
+                { "scripts": { "dev": "vite", "build": "tsc && vite build" } }
+                """);
+        Files.writeString(workspace.resolve("server/package.json"), """
+                { "scripts": { "dev": "tsx watch src/index.ts", "build": "tsc" } }
+                """);
+        Files.writeString(workspace.resolve("client/tsconfig.json"), "{}");
+        Files.writeString(workspace.resolve("server/tsconfig.json"), "{}");
+        QaValidationProfileService profiles = new QaValidationProfileService(new InMemoryQaValidationProfileStore());
+        profiles.updateTask("9001", new QaValidationProfileCommand(
+                "AUTO",
+                "",
+                "",
+                "",
+                List.of(),
+                List.of(),
+                List.of("npm --prefix server install", "npm --prefix server run build",
+                        "npm --prefix client install", "npm --prefix client run build"),
+                null
+        ));
+        HostVerificationExecutorAdapter adapter = adapter(List.of("client/src/pages/customer/Home.tsx"), profiles);
+
+        HostVerificationRun run = adapter.verify(task(), codingStage(), AgentWorkflowPlan.production(), 0);
+
+        assertEquals(HostVerificationStatus.SUCCEEDED, run.status());
+        assertEquals(HostVerificationStepStatus.SUCCEEDED, step(run, HostVerificationStepName.BUILD).status());
+        assertEquals(HostVerificationStepStatus.SKIPPED, step(run, HostVerificationStepName.STATIC).status());
+        assertFalse(runner.commands.stream().anyMatch(command -> command.contains("tsc --noEmit")),
+                runner.commands.toString());
+        List<HostVerificationArtifact> artifacts = store.listArtifacts(run.runId());
+        assertTrue(artifacts.stream().anyMatch(artifact -> "VERIFY_BUILD_LOG".equals(artifact.artifactType())),
+                artifacts.toString());
+        assertTrue(artifacts.stream().anyMatch(artifact -> "VERIFY_STATIC_LOG".equals(artifact.artifactType())),
+                artifacts.toString());
+    }
+
+    @Test
+    void prepareFailureRecordsEnvironmentRunInsteadOfThrowing() {
+        HostVerificationExecutorAdapter adapter = new HostVerificationExecutorAdapter(
+                store,
+                new HostVerificationCommandDetector(),
+                runner,
+                (task, codingStage) -> {
+                    throw new IllegalArgumentException("workBranch must not be blank");
+                },
+                (task, codingStage, prepared) -> List.of("src/App.tsx"),
+                ids::incrementAndGet,
+                clock::incrementAndGet,
+                600,
+                evidenceRoot
+        );
+
+        HostVerificationRun run = adapter.verify(task(), codingStage(), AgentWorkflowPlan.production(), 0);
+
+        assertEquals(HostVerificationStatus.FAILED_NEEDS_HUMAN, run.status());
+        assertEquals("ENVIRONMENT", run.failureCategory());
+        assertTrue(run.errorMessage().contains("workBranch"), run.errorMessage());
+        assertEquals(HostVerificationStepStatus.SKIPPED, step(run, HostVerificationStepName.BUILD).status());
+        assertEquals(HostVerificationStepStatus.SKIPPED, step(run, HostVerificationStepName.STATIC).status());
+        assertTrue(runner.commands.isEmpty(), runner.commands.toString());
     }
 
     @Test

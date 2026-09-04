@@ -97,3 +97,16 @@ straightforward CRUD work or obvious test fixes.
   `cd frontend && node --experimental-strip-types --test test/*.test.ts && npm run typecheck && npm run build`.
 - After changing the OpenSpec CLI profile or upgrading the CLI, run
   `OPENSPEC_NO_UPDATE_CHECK=1 openspec update --force` in the repository.
+
+## MEA phase 1 audited writeback
+
+- Before changing the auditor, `HOST_VERIFY`, QA fingerprints, or the QA
+  `criteriaId` contract, trace
+  `RequirementDeliveryDispatchService.submit` → `EngineRequirementStageExecutor.plan`
+  → `RequirementDeliveryEngine.planStage` → `DeterministicAuditor` →
+  `RequirementStageFinalizationPort.recordOutcome` / `finalize`.
+- Prompt, `bootstrap/src/main/resources/executor/pi/src/result-tool.mjs`, and
+  host `QaEvidenceBundleValidator` must agree on CURRENT `criteriaId`. After
+  editing the bridge or QA skill resources, rebuild both Pi images
+  (`Dockerfile` and `Dockerfile.qa`). `unaudited_claim_promoted_to_completed`
+  must stay 0.

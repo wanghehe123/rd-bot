@@ -75,6 +75,8 @@ rd:
       project-weights: {}
     handoff:
       max-tokens: ${RD_REQUIREMENT_DELIVERY_HANDOFF_MAX_TOKENS:4000}
+    audited-writeback:
+      gate-mode: ${RD_REQUIREMENT_DELIVERY_AUDITED_GATE_MODE:ENFORCE}
   financial:
     cny-per-usd: ${RD_FINANCIAL_CNY_PER_USD:7.20}
   task-draft:

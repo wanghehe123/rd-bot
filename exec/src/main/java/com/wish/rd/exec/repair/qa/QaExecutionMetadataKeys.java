@@ -27,6 +27,30 @@ public final class QaExecutionMetadataKeys {
      */
     public static final String CANDIDATE_CHANGED_FILES_JSON = "qaCandidateChangedFilesJson";
 
+    /**
+     * Docker-metadata key for the Host tracked-tree fingerprint taken after npm provision
+     * and before the QA agent container starts.
+     */
+    public static final String WORKSPACE_FINGERPRINT_BEFORE_JSON = "qaWorkspaceFingerprintBeforeJson";
+
+    /**
+     * Docker-metadata key for the Host tracked-tree fingerprint taken after the QA agent
+     * container exits.
+     */
+    public static final String WORKSPACE_FINGERPRINT_AFTER_JSON = "qaWorkspaceFingerprintAfterJson";
+
+    /**
+     * Docker-metadata key for {@code CLEAN} or {@code VIOLATION}. Missing means the auditor
+     * must treat integrity as {@code SUSPECT}.
+     */
+    public static final String WORKSPACE_INTEGRITY = "qaWorkspaceIntegrity";
+
+    /** Host-computed integrity when before/after fingerprints match. */
+    public static final String WORKSPACE_INTEGRITY_CLEAN = "CLEAN";
+
+    /** Host-computed integrity when HEAD or tracked tree changed during the QA container. */
+    public static final String WORKSPACE_INTEGRITY_VIOLATION = "VIOLATION";
+
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     private QaExecutionMetadataKeys() {

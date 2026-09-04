@@ -10,7 +10,11 @@ import com.wish.rd.bootstrap.persistence.mapper.RequirementStageCommandMapper;
 import com.wish.rd.bootstrap.persistence.mapper.RdTaskMapper;
 import com.wish.rd.bootstrap.persistence.mapper.RdTaskStatusEventMapper;
 import com.wish.rd.bootstrap.threading.RequirementStageCommandFactory;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wish.rd.engine.agent.model.AgentRole;
+import com.wish.rd.engine.requirement.audit.AuditedTaskStatePolicyBootstrap;
+import com.wish.rd.engine.requirement.audit.AuditedTaskStateStore;
 import com.wish.rd.engine.requirement.job.model.RequirementStageCommand;
 import com.wish.rd.engine.requirement.policy.RequirementPolicyTransactionPort;
 import com.wish.rd.engine.requirement.policy.model.ApproveRequirementPolicyCommand;
@@ -31,6 +35,7 @@ import com.wish.rd.rag.runtime.model.RdRequirementTask;
 import com.wish.rd.rag.runtime.model.RdTaskEventTrigger;
 import com.wish.rd.rag.runtime.model.RdTaskStatus;
 import java.util.Objects;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
@@ -49,6 +54,7 @@ public class PostgresRequirementPolicyTransactionAdapter implements RequirementP
     private static final String RESUME_STAGE = "APPROVAL_RESUME";
     private static final String POLICY_EVALUATE_STAGE = "POLICY_EVALUATE";
     private static final String POLICY_APPLY_STAGE = "POLICY_APPLY";
+    private static final ObjectMapper JSON = new ObjectMapper();
 
     private final RequirementPolicyRunMapper policyMapper;
     private final RdTaskMapper taskMapper;
@@ -56,6 +62,7 @@ public class PostgresRequirementPolicyTransactionAdapter implements RequirementP
     private final RequirementStageCommandMapper commandMapper;
     private final RequirementStageCommandFactory commandFactory;
     private final SnowflakeIdGenerator idGenerator;
+    private final AuditedTaskStateStore auditedTaskStateStore;
 
     /** Creates the transactional approval producer from its PostgreSQL mappers and command factory. */
     public PostgresRequirementPolicyTransactionAdapter(
@@ -66,12 +73,26 @@ public class PostgresRequirementPolicyTransactionAdapter implements RequirementP
             RequirementStageCommandFactory commandFactory,
             SnowflakeIdGenerator idGenerator
     ) {
+        this(policyMapper, taskMapper, eventMapper, commandMapper, commandFactory, idGenerator, null);
+    }
+
+    @Autowired
+    public PostgresRequirementPolicyTransactionAdapter(
+            RequirementPolicyRunMapper policyMapper,
+            RdTaskMapper taskMapper,
+            RdTaskStatusEventMapper eventMapper,
+            RequirementStageCommandMapper commandMapper,
+            RequirementStageCommandFactory commandFactory,
+            SnowflakeIdGenerator idGenerator,
+            AuditedTaskStateStore auditedTaskStateStore
+    ) {
         this.policyMapper = Objects.requireNonNull(policyMapper, "policyMapper must not be null");
         this.taskMapper = Objects.requireNonNull(taskMapper, "taskMapper must not be null");
         this.eventMapper = Objects.requireNonNull(eventMapper, "eventMapper must not be null");
         this.commandMapper = Objects.requireNonNull(commandMapper, "commandMapper must not be null");
         this.commandFactory = Objects.requireNonNull(commandFactory, "commandFactory must not be null");
         this.idGenerator = Objects.requireNonNull(idGenerator, "idGenerator must not be null");
+        this.auditedTaskStateStore = auditedTaskStateStore;
     }
 
     /**
@@ -347,6 +368,9 @@ public class PostgresRequirementPolicyTransactionAdapter implements RequirementP
                 RequirementPolicyRunState.POLICY_DECIDED.name(), ledger.ledgerVersion()) != 1) {
             throw new IllegalStateException("policy-apply ledger compare-and-set failed: " + ledger.id());
         }
+        if (disposition == RequirementPolicyApplyDisposition.ALLOWED) {
+            initializeAuditedState(task, nextVersion, nextFence);
+        }
         return new RequirementPolicyApplyResult(consumed, completed, disposition, next, nextVersion, nextFence);
     }
 
@@ -364,6 +388,7 @@ public class PostgresRequirementPolicyTransactionAdapter implements RequirementP
         RequirementStageCommand next = null;
         if (disposition == RequirementPolicyApplyDisposition.ALLOWED) {
             next = findExactFirstRoleContinuation(ledger, task);
+            initializeAuditedState(task, ledger.boundTaskVersion(), ledger.boundFencingToken());
         } else {
             requireNoFirstRoleContinuation(ledger.taskId());
         }
@@ -814,6 +839,7 @@ public class PostgresRequirementPolicyTransactionAdapter implements RequirementP
                 RequirementPolicyRunState.APPROVED.name(), ledger.ledgerVersion()) != 1) {
             throw new IllegalStateException("approval-resume policy ledger compare-and-set failed: " + ledger.id());
         }
+        initializeAuditedState(task, nextVersion, nextFence);
         return new RequirementPolicyResumeResult(applied, completed, next, nextVersion, nextFence);
     }
 
@@ -832,6 +858,7 @@ public class PostgresRequirementPolicyTransactionAdapter implements RequirementP
         RequirementStageCommand next = toCommand(continuationRow);
         requireContinuationIdentity(next, task, ledger.taskId(), ledger.boundTaskVersion(), ledger.boundFencingToken(),
                 firstRole, firstStage, ledger.id(), true);
+        initializeAuditedState(task, ledger.boundTaskVersion(), ledger.boundFencingToken());
         return new RequirementPolicyResumeResult(ledger, current, next,
                 ledger.boundTaskVersion(), ledger.boundFencingToken());
     }
@@ -1149,5 +1176,62 @@ public class PostgresRequirementPolicyTransactionAdapter implements RequirementP
         String normalized = safe(value);
         if (normalized.isBlank()) throw new IllegalArgumentException(field + " must not be blank");
         return normalized;
+    }
+
+    private void initializeAuditedState(RdTaskRow row, long version, long fence) {
+        if (auditedTaskStateStore == null) {
+            return;
+        }
+        new AuditedTaskStatePolicyBootstrap(auditedTaskStateStore)
+                .initializeIfAbsent(toRequirementTask(row, RdTaskStatus.EXECUTING, version, fence));
+    }
+
+    private RdRequirementTask toRequirementTask(
+            RdTaskRow row, RdTaskStatus status, long version, long fence
+    ) {
+        return new RdRequirementTask(
+                PostgresPersistenceSupport.idString(row.id),
+                safe(row.taskType),
+                safe(row.sourceType),
+                safe(row.sourceId),
+                safe(row.sourceUrl),
+                safe(row.priority),
+                status,
+                safe(row.title),
+                safe(row.projectId),
+                safe(row.projectKey),
+                safe(row.projectName),
+                safe(row.repositoryUrl),
+                safe(row.repoOwner),
+                safe(row.repoName),
+                safe(row.baseBranch),
+                safe(row.workBranch),
+                safe(row.expectedResult),
+                row.acceptanceCriteriaJson == null || row.acceptanceCriteriaJson.isBlank()
+                        ? "[]" : row.acceptanceCriteriaJson,
+                safe(row.promptSnapshot),
+                safe(row.executionResultJson),
+                safe(row.pullRequestUrl),
+                safe(row.errorMessage),
+                PostgresPersistenceSupport.toEpochMillis(row.createdAt),
+                PostgresPersistenceSupport.toEpochMillis(row.updatedAt),
+                row.paused != null && row.paused,
+                row.tokenBudgetOverride == null ? 0L : row.tokenBudgetOverride,
+                version,
+                fence,
+                hostAssertionBundle(row)
+        );
+    }
+
+    private static JsonNode hostAssertionBundle(RdTaskRow row) {
+        if (row.hostAssertionBundleJson == null || row.hostAssertionBundleJson.isBlank()) {
+            return null;
+        }
+        try {
+            JsonNode parsed = JSON.readTree(row.hostAssertionBundleJson);
+            return parsed == null || parsed.isNull() ? null : parsed;
+        } catch (Exception exception) {
+            throw new IllegalStateException("stored Host assertion task input is invalid", exception);
+        }
     }
 }

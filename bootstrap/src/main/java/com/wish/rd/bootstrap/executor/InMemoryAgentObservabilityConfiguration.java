@@ -6,6 +6,8 @@ import com.wish.rd.engine.agent.impl.InMemoryAgentStageArtifactStore;
 import com.wish.rd.engine.agent.impl.InMemoryAgentStageRunStore;
 import com.wish.rd.engine.requirement.verify.HostVerificationStore;
 import com.wish.rd.engine.requirement.verify.impl.InMemoryHostVerificationStore;
+import com.wish.rd.engine.requirement.audit.AuditedTaskStateStore;
+import com.wish.rd.engine.requirement.audit.impl.InMemoryAuditedTaskStateStore;
 import com.wish.rd.exec.repair.pi.AgentPrivateArtifactIndex;
 import com.wish.rd.exec.repair.pi.impl.InMemoryAgentPrivateArtifactIndex;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
@@ -80,6 +82,12 @@ public class InMemoryAgentObservabilityConfiguration {
     @ConditionalOnMissingBean(HostVerificationStore.class)
     HostVerificationStore hostVerificationStore() {
         return new InMemoryHostVerificationStore();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(AuditedTaskStateStore.class)
+    AuditedTaskStateStore auditedTaskStateStore() {
+        return new InMemoryAuditedTaskStateStore();
     }
 
     @Bean

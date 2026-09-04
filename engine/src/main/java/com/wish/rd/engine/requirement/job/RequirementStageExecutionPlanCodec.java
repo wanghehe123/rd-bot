@@ -7,7 +7,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wish.rd.engine.requirement.job.model.RequirementStageExecutionPlan;
 import com.wish.rd.engine.requirement.policy.CanonicalJsonSha256;
 
-/** Canonical, digest-verified codec for durable v1/v2 stage execution plans. */
+/** Canonical, digest-verified codec for durable v1/v2/v3 stage execution plans. */
 public final class RequirementStageExecutionPlanCodec {
     private static final ObjectMapper MAPPER = new ObjectMapper()
             .disable(MapperFeature.AUTO_DETECT_IS_GETTERS)

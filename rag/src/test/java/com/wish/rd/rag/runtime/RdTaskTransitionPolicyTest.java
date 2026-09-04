@@ -17,6 +17,7 @@ class RdTaskTransitionPolicyTest {
         assertDoesNotThrow(() -> allow(RdTaskType.REQUIREMENT, RdTaskStatus.PLAN_GENERATED, RdTaskStatus.WAITING_POLICY));
         assertDoesNotThrow(() -> allow(RdTaskType.REQUIREMENT, RdTaskStatus.WAITING_POLICY, RdTaskStatus.WAITING_APPROVAL));
         assertDoesNotThrow(() -> allow(RdTaskType.REQUIREMENT, RdTaskStatus.REPORTING, RdTaskStatus.COMPLETED));
+        assertDoesNotThrow(() -> allow(RdTaskType.REQUIREMENT, RdTaskStatus.REPORTING, RdTaskStatus.FAILED_NEEDS_HUMAN));
         assertDoesNotThrow(() -> allow(RdTaskType.REQUIREMENT, RdTaskStatus.FAILED_NEEDS_HUMAN, RdTaskStatus.RECOVERING));
         assertDoesNotThrow(() -> allow(RdTaskType.REQUIREMENT, RdTaskStatus.CANCELLED, RdTaskStatus.RECOVERING));
         assertDoesNotThrow(() -> allow(RdTaskType.REQUIREMENT, RdTaskStatus.RECOVERING, RdTaskStatus.EXECUTING));
