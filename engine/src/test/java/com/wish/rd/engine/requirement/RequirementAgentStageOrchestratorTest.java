@@ -14,8 +14,13 @@ import com.wish.rd.engine.requirement.model.RequirementPolicyDecision;
 import com.wish.rd.engine.requirement.model.RequirementExecutionRequest;
 import com.wish.rd.engine.requirement.model.RequirementExecutionProfileResolution;
 import com.wish.rd.engine.requirement.verify.HostVerificationPort;
+import com.wish.rd.engine.requirement.verify.impl.InMemoryHostVerificationStore;
+import com.wish.rd.engine.requirement.verify.model.HostVerificationArtifact;
 import com.wish.rd.engine.requirement.verify.model.HostVerificationRun;
 import com.wish.rd.engine.requirement.verify.model.HostVerificationStatus;
+import com.wish.rd.engine.requirement.audit.AuditedRecordStatus;
+import com.wish.rd.engine.requirement.audit.AuditedTaskStatePolicyBootstrap;
+import com.wish.rd.engine.requirement.audit.impl.InMemoryAuditedTaskStateStore;
 import com.wish.rd.engine.agent.AgentStageRunStore;
 import com.wish.rd.engine.agent.impl.InMemoryAgentStageRunStore;
 import com.wish.rd.engine.agent.AgentStageArtifactStore;
@@ -729,6 +734,26 @@ class RequirementAgentStageOrchestratorTest {
     }
 
     @Test
+    void buildAgentPrompt_lists_frozen_current_criteriaIds_for_pi_v2_qa() {
+        AgentWorkflowPlan plan = AgentWorkflowPlan.production();
+        OrchestratorTestHarness harness = new OrchestratorTestHarness()
+                .prestageRoles(plan.roles())
+                .prestageRoleContexts(plan.roles());
+        harness.orchestrator.setExecutionProfileResolver(new QaRemediationV2ProfileResolver());
+
+        RequirementExecutionResult result = harness.orchestrator.run(
+                plan, harness.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION, null);
+
+        assertTrue(result.success(), result.errorMessage());
+        String qaPrompt = harness.executor.lastPromptByRole.get(AgentRole.QA_AGENT);
+        assertNotNull(qaPrompt, "QA prompt should be captured");
+        assertTrue(qaPrompt.contains("CURRENT 项必须带 criteriaId"), qaPrompt);
+        assertTrue(qaPrompt.contains("冻结集合"), qaPrompt);
+        assertTrue(qaPrompt.contains("REGRESSION 项可不带 criteriaId"), qaPrompt);
+        assertTrue(qaPrompt.contains("（空）") || qaPrompt.contains("AC-"), qaPrompt);
+    }
+
+    @Test
     void buildAgentPrompt_requires_only_hostAssertionResultEchoes_for_qa() {
         AgentWorkflowPlan plan = AgentWorkflowPlan.production();
         OrchestratorTestHarness harness = new OrchestratorTestHarness()
@@ -778,6 +803,34 @@ class RequirementAgentStageOrchestratorTest {
                 codingPrompt,
                 harness.executor.lastPromptByRole.get(AgentRole.QA_AGENT));
         assertTrue(codingPrompt.contains("\"facts\""), codingPrompt);
+    }
+
+    @Test
+    void scopedRetrievalDoesNotPrefetchLegacyExperienceWhenRecorderIsConfigured() {
+        WorkflowExperienceStore experienceStore = org.mockito.Mockito.mock(WorkflowExperienceStore.class);
+        org.mockito.Mockito.when(experienceStore.searchReusable(
+                        org.mockito.ArgumentMatchers.anyString(),
+                        org.mockito.ArgumentMatchers.anyString(),
+                        org.mockito.ArgumentMatchers.anyInt()))
+                .thenThrow(new AssertionError("legacy experience prefetch must not bypass scoped retrieval"));
+        AgentWorkflowPlan plan = AgentWorkflowPlanFixtures.reviewArchitectCodingWithRetrieval();
+        OrchestratorTestHarness harness = new OrchestratorTestHarness(experienceStore)
+                .prestageRoles(plan.roles())
+                .prestageRoleContexts(plan.roles());
+        harness.orchestrator.setRetrievalRecorder(new RequirementContextRetrievalRecorder(
+                new com.wish.rd.rag.retrieval.run.RetrievalRunLifecycle(
+                        new com.wish.rd.rag.retrieval.run.impl.InMemoryRetrievalRunStore(),
+                        () -> "run-1",
+                        () -> 100L)));
+
+        RequirementExecutionResult result = harness.orchestrator.run(
+                plan, harness.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION, null);
+
+        org.mockito.Mockito.verify(experienceStore, org.mockito.Mockito.never()).searchReusable(
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyInt());
+        assertNotNull(result);
     }
 
     @Test
@@ -837,6 +890,32 @@ class RequirementAgentStageOrchestratorTest {
     }
 
     @Test
+    void productionHostVerifySuccessWritesAuditRunThenDispatchesQa() {
+        AgentWorkflowPlan plan = AgentWorkflowPlan.production();
+        OrchestratorTestHarness harness = new OrchestratorTestHarness()
+                .prestageRoles(plan.roles())
+                .prestageRoleContexts(plan.roles());
+        InMemoryAuditedTaskStateStore audited = new InMemoryAuditedTaskStateStore();
+        InMemoryHostVerificationStore verifyStore = new InMemoryHostVerificationStore();
+        new AuditedTaskStatePolicyBootstrap(audited)
+                .initializeIfAbsent(harness.task.withConcurrency(1L, 1L));
+        harness.orchestrator.setAuditedTaskStateStore(audited);
+        harness.orchestrator.setHostVerificationStore(verifyStore);
+        harness.hostVerificationPort.persistTo(verifyStore);
+
+        RequirementExecutionResult result = harness.orchestrator.run(
+                plan, harness.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION, null);
+
+        assertTrue(result.success(), result.errorMessage());
+        assertEquals(1, audited.listAuditRuns(harness.task.taskId()).size());
+        assertEquals(AuditedRecordStatus.COMPLETED,
+                audited.head(harness.task.taskId()).orElseThrow().record("GATE-BUILD").status());
+        assertEquals(AuditedRecordStatus.COMPLETED,
+                audited.head(harness.task.taskId()).orElseThrow().record("GATE-STATIC").status());
+        assertEquals(1, harness.executor.executedRoleCount(AgentRole.QA_AGENT));
+    }
+
+    @Test
     void coding_success_and_docs_only_verify_dispatches_qa() {
         AgentWorkflowPlan plan = AgentWorkflowPlan.production();
         OrchestratorTestHarness harness = new OrchestratorTestHarness()
@@ -850,6 +929,96 @@ class RequirementAgentStageOrchestratorTest {
 
         assertTrue(result.success(), result.errorMessage());
         assertEquals(1, harness.executor.executedRoleCount(AgentRole.QA_AGENT));
+    }
+
+    @Test
+    void reusedCodingStageRestoresCompletePublicationResultBase() throws Exception {
+        AgentWorkflowPlan plan = AgentWorkflowPlan.production();
+        String codingJson = """
+                {"status":"SUCCESS","summary":"implemented","prBody":"narrative",
+                 "changedFiles":["src/App.java"],"testCommands":["./mvnw test"],
+                 "testStatus":"PASSED","riskLevel":"LOW"}
+                """;
+        String qaJson = successfulQaResultJson();
+
+        OrchestratorTestHarness reused = new OrchestratorTestHarness()
+                .prestageRoles(plan.roles())
+                .prestageRoleContexts(plan.roles());
+        reused.executor.qaSuccessResultOverride = qaJson;
+        for (AgentRole role : List.of(AgentRole.REQUIREMENT_REVIEWER, AgentRole.SOLUTION_ARCHITECT)) {
+            reused.stageRunStore.save(makeStageRun(reused.task.taskId(), role, 1)
+                    .withStatus(AgentStageStatus.SUCCEEDED, "", "", System.currentTimeMillis()));
+        }
+        AgentStageRun codingStage = makeStageRun(reused.task.taskId(), AgentRole.CODING_AGENT, 1)
+                .withResultArtifactId("coding-result-1", System.currentTimeMillis())
+                .withStatus(AgentStageStatus.SUCCEEDED, "", "", System.currentTimeMillis());
+        reused.stageRunStore.save(codingStage);
+        reused.artifactStore.save(new AgentStageArtifact(
+                "coding-result-1", codingStage.stageRunId(), reused.task.taskId(), AgentRole.CODING_AGENT,
+                "RESULT_JSON", "", "coding", "{\"prBody\":\"" + "x".repeat(20_000),
+                "hash", "{}", System.currentTimeMillis()
+        ));
+        reused.artifactStore.save(new AgentStageArtifact(
+                "coding-publication-1", codingStage.stageRunId(), reused.task.taskId(), AgentRole.CODING_AGENT,
+                RequirementPublicationFactsProjection.ARTIFACT_TYPE, "", "coding publication facts",
+                codingJson, "projection-hash", "{}", System.currentTimeMillis() + 1L
+        ));
+
+        RequirementExecutionResult reusedResult = reused.orchestrator.run(
+                plan, reused.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION, null);
+
+        assertTrue(reusedResult.success(), reusedResult.errorMessage());
+        assertEquals(0, reused.executor.executedRoleCount(AgentRole.CODING_AGENT));
+        JsonNode root = new ObjectMapper().readTree(reusedResult.resultJson());
+        assertEquals("src/App.java", root.path("changedFiles").get(0).asText());
+        assertEquals("./mvnw test", root.path("testCommands").get(0).asText());
+        assertEquals("PASSED", root.path("testStatus").asText());
+        assertEquals("LOW", root.path("riskLevel").asText());
+        assertEquals("narrative", root.path("prBody").asText());
+
+        OrchestratorTestHarness continuous = new OrchestratorTestHarness()
+                .prestageRoles(plan.roles())
+                .prestageRoleContexts(plan.roles());
+        continuous.executor.codingResultOverride = codingJson;
+        continuous.executor.qaSuccessResultOverride = qaJson;
+        RequirementExecutionResult continuousResult = continuous.orchestrator.run(
+                plan, continuous.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION, null);
+        RequirementDeliveryPublicationViewAssembler assembler =
+                new RequirementDeliveryPublicationViewAssembler();
+        assertEquals(assembler.assemble(continuousResult.resultJson()).coding(),
+                assembler.assemble(reusedResult.resultJson()).coding());
+        assertEquals(assembler.assemble(continuousResult.resultJson()).qa(),
+                assembler.assemble(reusedResult.resultJson()).qa());
+    }
+
+    @Test
+    void codingSuccessPersistsCompletePublicationFactsBeyondResultPreviewLimit() throws Exception {
+        AgentWorkflowPlan plan = AgentWorkflowPlan.production();
+        String codingJson = "{\"prBody\":\"" + "x".repeat(21_000) + "\"," +
+                "\"changedFiles\":[\"src/App.java\"],\"testCommands\":[\"./mvnw test\"]," +
+                "\"testStatus\":\"PASSED\",\"riskLevel\":\"LOW\"}";
+        OrchestratorTestHarness harness = new OrchestratorTestHarness()
+                .prestageRoles(plan.roles())
+                .prestageRoleContexts(plan.roles());
+        harness.executor.codingResultOverride = codingJson;
+        harness.executor.qaSuccessResultOverride = successfulQaResultJson();
+
+        RequirementExecutionResult result = harness.orchestrator.run(
+                plan, harness.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION, null);
+
+        assertTrue(result.success(), result.errorMessage());
+        AgentStageArtifact projection = harness.artifactStore.listByTask(harness.task.taskId()).stream()
+                .filter(artifact -> artifact.role() == AgentRole.CODING_AGENT)
+                .filter(artifact -> RequirementPublicationFactsProjection.ARTIFACT_TYPE
+                        .equals(artifact.artifactType()))
+                .findFirst()
+                .orElseThrow();
+        JsonNode facts = new ObjectMapper().readTree(projection.contentPreview());
+        assertEquals("src/App.java", facts.path("changedFiles").get(0).asText());
+        assertEquals("./mvnw test", facts.path("testCommands").get(0).asText());
+        assertEquals("PASSED", facts.path("testStatus").asText());
+        assertEquals("LOW", facts.path("riskLevel").asText());
+        assertEquals(21_000, facts.path("prBody").asText().length());
     }
 
     @Test
@@ -1065,7 +1234,6 @@ class RequirementAgentStageOrchestratorTest {
                         roleContextBuilder, roleContextPackageStore,
                         SnowflakeIdGenerator.defaultGenerator()::nextIdString, 18_000);
         final AgentWorkflowAlertSinkPort alertSink = new RecordingAlertSink();
-        final WorkflowExperienceStore experienceStore = WorkflowExperienceStore.noop();
         final RecordingExecutor executor = new RecordingExecutor();
         final RequirementExecutionProfileResolverPort executionProfileResolver = new SnapshotProfileResolver();
         final RagStreamTaskRegistry taskRegistry = RagStreamTaskRegistry.inMemory();
@@ -1074,6 +1242,10 @@ class RequirementAgentStageOrchestratorTest {
         final RequirementAgentStageOrchestrator orchestrator;
 
         OrchestratorTestHarness() {
+            this(WorkflowExperienceStore.noop());
+        }
+
+        OrchestratorTestHarness(WorkflowExperienceStore experienceStore) {
             this.orchestrator = new RequirementAgentStageOrchestrator(
                     stageRunStore,
                     artifactStore,
@@ -1186,6 +1358,7 @@ class RequirementAgentStageOrchestratorTest {
         boolean qaAgentFailsWithRemediation = false;
         String qaFailureResultJson = "";
         String codingResultOverride = null;
+        String qaSuccessResultOverride = null;
 
         @Override
         public RequirementExecutionResult execute(RequirementExecutionRequest request) {
@@ -1209,6 +1382,12 @@ class RequirementAgentStageOrchestratorTest {
                         request.role().name() + " 完成",
                         "",
                         codingResultOverride
+                );
+            }
+            if (request.role() == AgentRole.QA_AGENT
+                    && qaSuccessResultOverride != null && !qaSuccessResultOverride.isBlank()) {
+                return RequirementExecutionResult.success(
+                        request.taskId(), request.role().name() + " 完成", "", qaSuccessResultOverride
                 );
             }
             String resultJson = switch (request.role()) {
@@ -1341,11 +1520,27 @@ class RequirementAgentStageOrchestratorTest {
         );
     }
 
+    private static String successfulQaResultJson() {
+        return """
+                {"status":"PASSED","summary":"current and regression passed",
+                 "failureCategory":"NONE","retryRecommendation":"NONE",
+                 "browserValidation":{"required":false,"performed":false,"decisionSource":"NOT_APPLICABLE","baseUrl":"","browser":"chromium","viewports":[]},
+                 "acceptanceResults":[
+                   {"criteria":"current","scope":"CURRENT","command":"./mvnw test","status":"PASSED","exitCode":0,"durationMillis":1,"logArtifactId":"qa/current.log","evidenceArtifactIds":["qa/current.log"]},
+                   {"criteria":"regression","scope":"REGRESSION","command":"./mvnw test","status":"PASSED","exitCode":0,"durationMillis":1,"logArtifactId":"qa/regression.log","evidenceArtifactIds":["qa/regression.log"]}
+                 ],"evidenceManifestArtifactId":"qa/manifest.json"}
+                """;
+    }
+
     private static void assertCodingPromptOwnsHostVerifyAndQaDoesNot(String codingPrompt, String qaPrompt) {
         assertNotNull(codingPrompt, "coding prompt should be captured");
         assertTrue(codingPrompt.contains("宿主会在本阶段成功后"), codingPrompt);
         assertTrue(codingPrompt.contains("`testStatus` 只是交接信息，不是放行依据"), codingPrompt);
         assertTrue(codingPrompt.contains("不要删 `/work/cache` 或 `node_modules`"), codingPrompt);
+        assertTrue(codingPrompt.contains("credential-relay 隔离网"), codingPrompt);
+        assertTrue(codingPrompt.contains("EAI_AGAIN"), codingPrompt);
+        assertTrue(codingPrompt.contains("testStatus=SKIPPED"), codingPrompt);
+        assertFalse(codingPrompt.contains("安装失败时保留诊断并停止"), codingPrompt);
         assertNotNull(qaPrompt, "QA prompt should be captured");
         assertFalse(qaPrompt.contains("宿主会在本阶段成功后"), qaPrompt);
         assertFalse(qaPrompt.contains("BUILD/STATIC"), qaPrompt);
@@ -1392,10 +1587,11 @@ class RequirementAgentStageOrchestratorTest {
      * Scripted host-verify port. Default outcome is {@link HostVerificationStatus#SUCCEEDED}
      * so existing D-plan tests keep dispatching QA.
      */
-    static final class FakeHostVerificationPort implements HostVerificationPort {
+        static final class FakeHostVerificationPort implements HostVerificationPort {
         final AtomicInteger verifyCalls = new AtomicInteger();
         final List<Integer> seenRemediationCounts = new CopyOnWriteArrayList<>();
         private final List<HostVerificationRun> outcomes = new CopyOnWriteArrayList<>();
+        private InMemoryHostVerificationStore persistStore;
 
         FakeHostVerificationPort() {
             outcomes.add(hostVerify(HostVerificationStatus.SUCCEEDED, "", ""));
@@ -1404,6 +1600,11 @@ class RequirementAgentStageOrchestratorTest {
         FakeHostVerificationPort withOutcomes(HostVerificationRun... runs) {
             outcomes.clear();
             outcomes.addAll(List.of(runs));
+            return this;
+        }
+
+        FakeHostVerificationPort persistTo(InMemoryHostVerificationStore store) {
+            this.persistStore = store;
             return this;
         }
 
@@ -1417,7 +1618,7 @@ class RequirementAgentStageOrchestratorTest {
             int index = verifyCalls.getAndIncrement();
             seenRemediationCounts.add(remediationCountAlreadyUsed);
             HostVerificationRun template = outcomes.get(Math.min(index, outcomes.size() - 1));
-            return new HostVerificationRun(
+            HostVerificationRun run = new HostVerificationRun(
                     "verify-" + (index + 1),
                     task.taskId(),
                     codingStage.stageRunId(),
@@ -1432,6 +1633,21 @@ class RequirementAgentStageOrchestratorTest {
                     1L,
                     2L
             );
+            if (persistStore != null) {
+                persistStore.create(run);
+                if (run.status() == HostVerificationStatus.SUCCEEDED
+                        || run.status() == HostVerificationStatus.SKIPPED_DOCS_ONLY) {
+                    persistStore.appendArtifact(new HostVerificationArtifact(
+                            "build-" + run.runId(), task.taskId(), run.runId(), "VERIFY_BUILD_LOG",
+                            "verify-evidence/build.log", "s3://verify/build.log", "text/plain", 12L,
+                            "sha256:" + "a".repeat(64), 2L));
+                    persistStore.appendArtifact(new HostVerificationArtifact(
+                            "static-" + run.runId(), task.taskId(), run.runId(), "VERIFY_STATIC_LOG",
+                            "verify-evidence/static.log", "s3://verify/static.log", "text/plain", 12L,
+                            "sha256:" + "b".repeat(64), 2L));
+                }
+            }
+            return run;
         }
     }
 

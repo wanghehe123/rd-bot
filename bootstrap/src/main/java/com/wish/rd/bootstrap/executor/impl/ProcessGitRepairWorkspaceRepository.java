@@ -147,7 +147,10 @@ public class ProcessGitRepairWorkspaceRepository implements RepairWorkspaceRepos
         String commitSha = runGit(List.of(GIT_BINARY, "-C", repoDirectory.toString(), "rev-parse", "HEAD"))
                 .stdout()
                 .strip();
-        runGit(List.of(GIT_BINARY, "-C", repoDirectory.toString(), "push", "-u", "origin", command.workBranch()));
+        runGit(List.of(GIT_BINARY, "-C", repoDirectory.toString(), "config", "http.version", "HTTP/1.1"));
+        runGit(List.of(GIT_BINARY, "-C", repoDirectory.toString(), "config", "http.postBuffer", "524288000"));
+        runGitRetryingTransientNetwork(List.of(
+                GIT_BINARY, "-C", repoDirectory.toString(), "push", "-u", "origin", command.workBranch()));
 
         Map<String, String> metadata = new LinkedHashMap<>();
         metadata.put("pushed", "true");
@@ -173,12 +176,51 @@ public class ProcessGitRepairWorkspaceRepository implements RepairWorkspaceRepos
         ));
         String porcelain = status.stdout();
         String summary = porcelain.isBlank() ? "" : repositoryStateSummary(porcelain);
+        TrackedTreeSnapshot tracked = trackedTreeSnapshot(repoDirectory);
         return new RepositoryState(
                 true,
                 porcelain.isBlank(),
                 contentLevelFingerprint(repoDirectory, porcelain),
-                summary
+                summary,
+                tracked.headSha(),
+                tracked.trackedTreeSha256(),
+                tracked.trackedFileCount()
         );
+    }
+
+    private TrackedTreeSnapshot trackedTreeSnapshot(Path repoDirectory) throws IOException {
+        String headSha = "";
+        try {
+            headSha = runGit(List.of(GIT_BINARY, "-C", repoDirectory.toString(), "rev-parse", "HEAD"))
+                    .stdout()
+                    .strip();
+        } catch (IOException ignored) {
+            // Empty or corrupt repos still expose a tracked-tree hash when ls-files works.
+        }
+        CommandResult listed = runGit(List.of(
+                GIT_BINARY, "-C", repoDirectory.toString(), "ls-files", "-z"));
+        int count = 0;
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            for (String path : listed.stdout().split("\0", -1)) {
+                if (path.isBlank()) {
+                    continue;
+                }
+                count++;
+                digest.update(path.getBytes(StandardCharsets.UTF_8));
+                digest.update((byte) 0);
+                Path file = repoDirectory.resolve(path);
+                if (Files.isRegularFile(file)) {
+                    digest.update(Files.readAllBytes(file));
+                }
+            }
+            return new TrackedTreeSnapshot(headSha, "sha256:" + HexFormat.of().formatHex(digest.digest()), count);
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 is unavailable", exception);
+        }
+    }
+
+    private record TrackedTreeSnapshot(String headSha, String trackedTreeSha256, int trackedFileCount) {
     }
 
     /**
@@ -285,10 +327,12 @@ public class ProcessGitRepairWorkspaceRepository implements RepairWorkspaceRepos
     }
 
     /**
-     * Retries clone/fetch a bounded number of times when the host TLS stack drops GitHub
-     * ({@code SSL_ERROR_SYSCALL} / {@code unable to access}). Clash/TUN blips must not
-     * fail a whole Agent role on the first handshake. Failed clones empty the destination
-     * so the next attempt (or operator retry) is not blocked by leftover files.
+     * Retries clone/fetch/push a bounded number of times when the host TLS stack drops GitHub
+     * ({@code SSL_ERROR_SYSCALL} / {@code GnuTLS recv error} / {@code unable to access}).
+     * Clash/TUN blips must not fail a whole Agent role or publication on the first handshake.
+     * Failed clones empty the destination so the next attempt (or operator retry) is not blocked
+     * by leftover files. Push retries must not empty {@code repo/} — the local commit is the
+     * idempotent unit.
      */
     private CommandResult runGitRetryingTransientNetwork(List<String> argv) throws IOException {
         Path cloneDestination = cloneDestination(argv);
@@ -328,11 +372,13 @@ public class ProcessGitRepairWorkspaceRepository implements RepairWorkspaceRepos
             return false;
         }
         return normalized.contains("SSL_ERROR_SYSCALL")
+                || normalized.contains("GnuTLS recv error")
                 || normalized.contains("unable to access")
                 || normalized.contains("Could not resolve host")
                 || normalized.contains("The remote end hung up")
                 || normalized.contains("RPC failed")
-                || normalized.contains("Connection reset by peer");
+                || normalized.contains("Connection reset by peer")
+                || normalized.contains("TLS connection was non-properly terminated");
     }
 
     private static Path cloneDestination(List<String> argv) {
@@ -366,7 +412,9 @@ public class ProcessGitRepairWorkspaceRepository implements RepairWorkspaceRepos
     }
 
     private CommandResult executeGit(List<String> argv) throws IOException {
-        Process process = new ProcessBuilder(argv).start();
+        ProcessBuilder processBuilder = new ProcessBuilder(argv);
+        processBuilder.environment().put("GIT_TERMINAL_PROMPT", "0");
+        Process process = processBuilder.start();
         CompletableFuture<String> stdout = readAsync(process.getInputStream());
         CompletableFuture<String> stderr = readAsync(process.getErrorStream());
         try {

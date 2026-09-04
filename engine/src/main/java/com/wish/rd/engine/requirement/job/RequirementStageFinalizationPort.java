@@ -23,6 +23,47 @@ import java.util.Optional;
  */
 public interface RequirementStageFinalizationPort {
 
+    /** Host-owned memory registration intent; an empty kind is the compatibility no-op. */
+    record ProjectMemoryOperationDraft(String operationId, String projectId, String kind, String sourceIdentity,
+                                       String sourceContentHash, String extractorVersion, String schemaVersion) {
+        public static final String KIND_STAGE_FINALIZATION = "STAGE_FINALIZATION";
+        public static final String KIND_SKIPPED_BY_POLICY = "SKIPPED_BY_POLICY";
+        private static final String POLICY_SKIP_EXTRACTOR = "NONE";
+
+        public static ProjectMemoryOperationDraft none() {
+            return new ProjectMemoryOperationDraft("", "", "", "", "", "", "");
+        }
+
+        public static ProjectMemoryOperationDraft stageCapture(
+                String operationId,
+                String projectId,
+                String sourceIdentity,
+                String sourceContentHash,
+                String extractorVersion,
+                String schemaVersion
+        ) {
+            return new ProjectMemoryOperationDraft(
+                    operationId, projectId, KIND_STAGE_FINALIZATION, sourceIdentity,
+                    sourceContentHash, extractorVersion, schemaVersion);
+        }
+
+        public static ProjectMemoryOperationDraft skippedByPolicy(
+                String operationId,
+                String projectId,
+                String sourceIdentity,
+                String sourceContentHash,
+                String schemaVersion
+        ) {
+            return new ProjectMemoryOperationDraft(
+                    operationId, projectId, KIND_SKIPPED_BY_POLICY, sourceIdentity,
+                    sourceContentHash, POLICY_SKIP_EXTRACTOR, schemaVersion);
+        }
+
+        public boolean enabled() {
+            return kind != null && !kind.isBlank();
+        }
+    }
+
     /**
      * Persists a recoverable marker before the stage executor can mutate its task.
      *
@@ -291,6 +332,7 @@ public interface RequirementStageFinalizationPort {
      * @param umbrellaJob claimed legacy job, or null when absent
      * @param jobDisposition required umbrella job change
      * @param nowEpochMillis Host timestamp
+     * @param memoryOperation deterministic memory operation or policy-skip marker registered in this transaction
      */
     record FinalizationCommand(
             RequirementStageFinalization marker,
@@ -301,7 +343,8 @@ public interface RequirementStageFinalizationPort {
             RequirementDeliveryJob umbrellaJob,
             JobDisposition jobDisposition,
             TaskMutationDisposition taskMutationDisposition,
-            long nowEpochMillis
+            long nowEpochMillis,
+            ProjectMemoryOperationDraft memoryOperation
     ) {
         /** Compatibility constructor for existing focused tests while callers migrate to plans. */
         public FinalizationCommand(
@@ -311,7 +354,23 @@ public interface RequirementStageFinalizationPort {
                 TaskMutationDisposition taskMutationDisposition, long nowEpochMillis
         ) {
             this(marker, stageCommand, leaseOwner, legacyPlan(marker, outcome), nextCommand, umbrellaJob,
-                    jobDisposition, taskMutationDisposition, nowEpochMillis);
+                    jobDisposition, taskMutationDisposition, nowEpochMillis, ProjectMemoryOperationDraft.none());
+        }
+
+        /** Compatibility constructor for callers that have not yet bound memory capture. */
+        public FinalizationCommand(
+                RequirementStageFinalization marker,
+                RequirementStageCommand stageCommand,
+                String leaseOwner,
+                RequirementStageExecutionPlan plan,
+                RequirementStageCommand nextCommand,
+                RequirementDeliveryJob umbrellaJob,
+                JobDisposition jobDisposition,
+                TaskMutationDisposition taskMutationDisposition,
+                long nowEpochMillis
+        ) {
+            this(marker, stageCommand, leaseOwner, plan, nextCommand, umbrellaJob, jobDisposition,
+                    taskMutationDisposition, nowEpochMillis, ProjectMemoryOperationDraft.none());
         }
 
         /** Normalizes nullable finalization inputs to explicit safe values. */
@@ -331,6 +390,7 @@ public interface RequirementStageFinalizationPort {
             taskMutationDisposition = taskMutationDisposition == null
                     ? TaskMutationDisposition.APPLY : taskMutationDisposition;
             nowEpochMillis = Math.max(0L, nowEpochMillis);
+            memoryOperation = memoryOperation == null ? ProjectMemoryOperationDraft.none() : memoryOperation;
         }
 
         /** Derives the legacy result projection only for advisory job compatibility. */

@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wish.rd.engine.agent.model.AgentRole;
 import com.wish.rd.engine.agent.model.AgentStageRun;
+import com.wish.rd.engine.requirement.audit.AcceptanceCriteriaIds;
 import com.wish.rd.engine.requirement.model.RequirementExecutionProfileResolution;
 import com.wish.rd.engine.retry.model.TaskRetryCheckpoint;
 import com.wish.rd.rag.context.model.RoleContextEvidence;
@@ -78,7 +79,7 @@ final class RoleExecutionInputManifestBuilder {
                 roleContext.packageId(),
                 AgentManifestCanonicalJson.contentHash(taskBaselineFingerprint(task, roleContext))
         ),
-        evidenceEntries(roleContext),
+        evidenceEntries(roleContext, role, task),
         handoffEntries(upstreamResultJson, role),
         recoveryEntry(recoveryContent, recoveryCheckpoint),
         runtimeContextPolicy,
@@ -91,6 +92,13 @@ final class RoleExecutionInputManifestBuilder {
         stage.promptArtifactId(),
         expectedArtifactIds == null ? List.of() : List.copyOf(expectedArtifactIds)
     );
+  }
+
+  private static String evidenceFactKind(RoleContextEvidence evidence) {
+    if (evidence != null && "PROJECT_MEMORY".equalsIgnoreCase(evidence.sourceType())) {
+      return "UNTRUSTED_PROJECT_MEMORY";
+    }
+    return "DECLARED";
   }
 
   private static RuntimeContextPolicyMode resolveContextPolicyMode(
@@ -130,17 +138,34 @@ final class RoleExecutionInputManifestBuilder {
     );
   }
 
-  private static List<RoleExecutionEvidenceEntry> evidenceEntries(RoleContextPackage roleContext) {
+  private static List<RoleExecutionEvidenceEntry> evidenceEntries(
+      RoleContextPackage roleContext,
+      AgentRole role,
+      RdRequirementTask task
+  ) {
     List<RoleExecutionEvidenceEntry> entries = new ArrayList<>();
     for (RoleContextEvidence evidence : roleContext.evidence()) {
       entries.add(new RoleExecutionEvidenceEntry(
               evidence.evidenceId(),
               evidence.sourceType(),
-              "DECLARED",
+              evidenceFactKind(evidence),
               evidence.contentHash(),
               AgentManifestCanonicalJson.contentHash(evidence.summary()),
               false,
               evidence.selectionReason()
+      ));
+    }
+    if (role == AgentRole.QA_AGENT) {
+      String json = AcceptanceCriteriaIds.canonicalJson(AcceptanceCriteriaIds.ofJson(
+              task == null ? "[]" : task.acceptanceCriteriaJson()));
+      entries.add(new RoleExecutionEvidenceEntry(
+              AcceptanceCriteriaIds.ATTACHMENT_FILENAME,
+              AcceptanceCriteriaIds.EVIDENCE_SOURCE_TYPE,
+              "DECLARED",
+              AgentManifestCanonicalJson.contentHash(json),
+              AgentManifestCanonicalJson.contentHash(json),
+              false,
+              "frozen acceptance-criteria ids for PI-v2 CURRENT criteriaId lockstep"
       ));
     }
     return List.copyOf(entries);

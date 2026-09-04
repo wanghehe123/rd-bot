@@ -1,0 +1,72 @@
+# Cloud server profile (106.55.13.166) — copy to bootstrap/src/main/resources/application-local.yaml on the server.
+# Infrastructure binds to localhost on the VM; do not commit secrets.
+#
+#   cp deploy/cloud-server/application-local.example.yaml \
+#      bootstrap/src/main/resources/application-local.yaml
+#
+# Start backend:
+#   cd ~/RD-Bot
+#   export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+#   SPRING_PROFILES_ACTIVE=local \
+#   SPRING_CONFIG_ADDITIONAL_LOCATION=optional:file:./bootstrap/src/main/resources/application-local.yaml \
+#     ./mvnw -pl bootstrap spring-boot:run
+
+spring:
+  datasource:
+    url: jdbc:postgresql://127.0.0.1:5432/rdbot?client_encoding=UTF8
+    username: postgres
+    password: postgres
+  data:
+    redis:
+      host: 127.0.0.1
+      port: 6379
+
+rustfs:
+  url: http://127.0.0.1:9000
+  bucket: biz
+  access-key-id: rustfsadmin
+  secret-access-key: rustfsadmin
+
+server:
+  port: 8080
+
+rd:
+  knowledge:
+    store: postgres
+  requirement-delivery:
+    audited-writeback:
+      gate-mode: SHADOW
+  storage:
+    mode: s3
+  distributed-lock:
+    mode: redisson
+  repair:
+    queue:
+      mode: redis-stream
+    ticket:
+      provider: mock
+      auto-execute:
+        enabled: false
+    acceptance:
+      enabled: false
+  executor:
+    agent-runtime:
+      enabled: false
+    docker:
+      enabled: true
+      git:
+        enabled: false
+    mock:
+      enabled: false
+  github:
+    merge-sync:
+      enabled: false
+    code-platform:
+      mode: mock
+  ticket:
+    write-back:
+      enabled: true
+      mode: mock
+  feishu:
+    im:
+      enabled: false

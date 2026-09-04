@@ -12,6 +12,7 @@ const KnowledgeChunksPage = lazy(() => import("@/pages/admin/knowledge/Knowledge
 const OpenVikingKnowledgePage = lazy(() => import("@/pages/admin/knowledge/OpenVikingKnowledgePage").then((module) => ({ default: module.OpenVikingKnowledgePage })));
 const ProjectListPage = lazy(() => import("@/pages/admin/project/ProjectListPage").then((module) => ({ default: module.ProjectListPage })));
 const AgentStrategyPage = lazy(() => import("@/pages/admin/project/AgentStrategyPage").then((module) => ({ default: module.AgentStrategyPage })));
+const ProjectMemoryPage = lazy(() => import("@/pages/admin/project/ProjectMemoryPage").then((module) => ({ default: module.ProjectMemoryPage })));
 const RdTaskListPage = lazy(() => import("@/pages/admin/rdtask/RdTaskListPage").then((module) => ({ default: module.RdTaskListPage })));
 const RdTaskDetailPage = lazy(() => import("@/pages/admin/rdtask/RdTaskDetailPage").then((module) => ({ default: module.RdTaskDetailPage })));
 const UserListPage = lazy(() => import("./pages/AdminPages").then((module) => ({ default: module.UserListPage })));
@@ -46,6 +47,7 @@ export function App() {
             <Route path="knowledge/:kbId/docs/:docId" element={<KnowledgeChunksPage />} />
             <Route path="projects" element={<ProjectListPage />} />
             <Route path="projects/:projectId/agent-strategy" element={<AgentStrategyPage />} />
+            <Route path="projects/:projectId/memories" element={<ProjectMemoryPage />} />
             <Route path="rd-tasks" element={<RdTaskListPage />} />
             <Route path="rd-tasks/:taskId" element={<RdTaskDetailPage />} />
             <Route path="users" element={<UserListPage />} />

@@ -217,6 +217,9 @@ public final class FairRequirementDeliveryClaimPlanner {
                 || normalizedStage.startsWith("PUBLICATION:")) {
             return Set.of(ScheduleResourceClass.PROVIDER);
         }
+        if ("HOST_VERIFY".equals(normalizedStage)) {
+            return Set.of(ScheduleResourceClass.PROVIDER, ScheduleResourceClass.DOCKER);
+        }
         if (normalizedStage.startsWith("ROLE_EXECUTION:")) {
             if (normalizedRole.contains("QA")) {
                 return Set.of(

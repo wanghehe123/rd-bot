@@ -23,7 +23,7 @@ test("normalized protocol exposes v2 snapshot and injection events", () => {
   assert.ok(EVENT_TYPES.includes("STATE_CONTEXT_INJECTED"));
 });
 import { canonicalizeStateV2, hashStateV2 } from "../src/agent-state-v2-codec.mjs";
-import { validateResult, validateRoleResult } from "../src/result-tool.mjs";
+import { validateResult, validateRoleResult, loadFrozenAcceptanceCriteriaIds } from "../src/result-tool.mjs";
 import * as resultTool from "../src/result-tool.mjs";
 import { classifyDocsOnlyChange, DOCS_ONLY_DECISION } from "../src/docs-only.mjs";
 import {
@@ -32,7 +32,7 @@ import {
 } from "../src/resource-loader.mjs";
 import { EventSink, createObservabilityExtension, executionPrompt, writeRuntimeContextManifest } from "../src/rd-pi-bridge.mjs";
 import * as bridge from "../src/rd-pi-bridge.mjs";
-
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { mkdtemp, mkdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -536,7 +536,7 @@ test("accepts an explicit PI-v2 QA remediation request independent of failureCat
   }];
 
   assert.deepEqual(validateRoleResult(
-    "QA_AGENT", report, undefined, {}, [], undefined, true,
+    "QA_AGENT", report, undefined, {}, [], undefined, true, ["ac-current-1"],
   ), []);
 });
 
@@ -552,7 +552,7 @@ test("rejects malformed or contradictory PI-v2 QA remediation requests", () => {
   };
   passed.bugFindings = [];
   const passedErrors = validateRoleResult(
-    "QA_AGENT", passed, undefined, {}, [], undefined, true,
+    "QA_AGENT", passed, undefined, {}, [], undefined, true, ["ac-current-1"],
   );
   assert.ok(passedErrors.some((error) => error.includes("status FAILED")));
   assert.ok(passedErrors.some((error) => error.includes("unknown bug finding")));
@@ -574,11 +574,50 @@ test("rejects malformed or contradictory PI-v2 QA remediation requests", () => {
     evidenceArtifactIds: ["qa-evidence/commands/current.log"], suspectedFiles: [],
   }];
   const declinedErrors = validateRoleResult(
-    "QA_AGENT", declined, undefined, {}, [], undefined, true,
+    "QA_AGENT", declined, undefined, {}, [], undefined, true, ["ac-current-1"],
   );
   assert.ok(declinedErrors.some((error) => error.includes("requested=false requires bugFindings to be empty")));
 
   assert.deepEqual(validateRoleResult("QA_AGENT", completeQaReport("qa-evidence/commands/current.log")), []);
+});
+
+test("PI-v2 CURRENT acceptanceResults require a frozen criteriaId; REGRESSION may omit it", () => {
+  const frozen = ["AC-001"];
+  const report = piV2PassedQaReport();
+  const missing = validateRoleResult(
+    "QA_AGENT", report, undefined, {}, [], undefined, true, frozen,
+  );
+  assert.ok(missing.some((error) => error.includes("acceptanceResults[0].criteriaId")
+      && error.includes("frozen AC-%03d")), missing.join("; "));
+
+  report.acceptanceResults[0].criteriaId = "AC-999";
+  const unknown = validateRoleResult(
+    "QA_AGENT", report, undefined, {}, [], undefined, true, frozen,
+  );
+  assert.ok(unknown.some((error) => error.includes("not in the frozen acceptance-criteria set")),
+      unknown.join("; "));
+
+  report.acceptanceResults[0].criteriaId = "AC-001";
+  assert.deepEqual(validateRoleResult(
+    "QA_AGENT", report, undefined, {}, [], undefined, true, frozen,
+  ), []);
+});
+
+test("loads frozen CURRENT criteriaIds from the read-only /work/input attachment", () => {
+  const root = mkdtempSync(join(tmpdir(), "rd-frozen-ac-"));
+  try {
+    writeFileSync(join(root, "acceptance-criteria-ids.json"), JSON.stringify(["AC-001", "AC-002"]));
+    assert.deepEqual(loadFrozenAcceptanceCriteriaIds(root), ["AC-001", "AC-002"]);
+    mkdirSync(join(root, "attachments"));
+    writeFileSync(
+      join(root, "attachments", "acceptance-criteria-ids.json"),
+      JSON.stringify(["AC-003"]),
+    );
+    // Direct file wins over attachments/.
+    assert.deepEqual(loadFrozenAcceptanceCriteriaIds(root), ["AC-001", "AC-002"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("accepts Host assertion contracts only for QA requests", () => {
@@ -913,6 +952,18 @@ function completeQaReport(evidencePath) {
       acceptanceResult("regression stays green", "REGRESSION"),
     ],
   };
+}
+
+function piV2PassedQaReport() {
+  const report = completeQaReport("qa-evidence/commands/current.log");
+  report.remediationRequest = {
+    requested: false,
+    targetRole: "",
+    reason: "no product defect",
+    bugFindingIds: [],
+  };
+  report.bugFindings = [];
+  return report;
 }
 
 function hostAssertionContracts() {

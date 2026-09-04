@@ -12,6 +12,7 @@ package com.wish.rd.engine.requirement.model;
  * @param workBranch         工作分支
  * @param deliveryResultJson 已通过复核的交付结果 JSON
  * @param operationId        publication operation id for PR body marker / open-PR reuse
+ * @param pullRequestBody    engine 已验证并生成的最终 PR 正文
  */
 public record RequirementPullRequestPublishCommand(
         String taskId,
@@ -22,7 +23,8 @@ public record RequirementPullRequestPublishCommand(
         String baseBranch,
         String workBranch,
         String deliveryResultJson,
-        String operationId
+        String operationId,
+        String pullRequestBody
 ) {
 
     public RequirementPullRequestPublishCommand(
@@ -35,7 +37,23 @@ public record RequirementPullRequestPublishCommand(
             String workBranch,
             String deliveryResultJson
     ) {
-        this(taskId, title, repositoryUrl, repoOwner, repoName, baseBranch, workBranch, deliveryResultJson, "");
+        this(taskId, title, repositoryUrl, repoOwner, repoName, baseBranch, workBranch,
+                deliveryResultJson, "", "");
+    }
+
+    public RequirementPullRequestPublishCommand(
+            String taskId,
+            String title,
+            String repositoryUrl,
+            String repoOwner,
+            String repoName,
+            String baseBranch,
+            String workBranch,
+            String deliveryResultJson,
+            String operationId
+    ) {
+        this(taskId, title, repositoryUrl, repoOwner, repoName, baseBranch, workBranch,
+                deliveryResultJson, operationId, "");
     }
 
     public RequirementPullRequestPublishCommand {
@@ -50,6 +68,7 @@ public record RequirementPullRequestPublishCommand(
                 ? "{}"
                 : deliveryResultJson.strip();
         operationId = safe(operationId);
+        pullRequestBody = safe(pullRequestBody);
     }
 
     private static String safe(String value) {

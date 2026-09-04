@@ -26,6 +26,7 @@ import com.wish.rd.engine.agent.WorkflowExperienceStore;
 import com.wish.rd.engine.agent.model.WorkflowExperienceType;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
 import com.wish.rd.rag.context.impl.InMemoryRoleContextPackageStore;
+import com.wish.rd.rag.context.ProjectMemoryUntrustedContext;
 import com.wish.rd.rag.context.RoleContextBuilder;
 import com.wish.rd.rag.context.model.RoleContextEvidence;
 import com.wish.rd.rag.retrieval.run.model.RetrievalConsumerType;
@@ -61,6 +62,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.stream.Collectors;
 import com.wish.rd.engine.requirement.model.AgentWorkflowPlan;
 import com.wish.rd.engine.requirement.model.RequirementContextPackage;
@@ -75,6 +77,7 @@ import com.wish.rd.engine.requirement.job.model.PiQaRemediationIntent;
 import com.wish.rd.engine.requirement.policy.CanonicalJsonSha256;
 import com.wish.rd.engine.requirement.remediation.model.AgentRemediationKind;
 import com.wish.rd.engine.requirement.model.RequirementDeliveryReviewResult;
+import com.wish.rd.engine.requirement.model.RequirementDeliveryPublicationView;
 import com.wish.rd.engine.requirement.model.RequirementExecutionRequest;
 import com.wish.rd.engine.requirement.model.RequirementExecutionResult;
 import com.wish.rd.engine.requirement.model.RequirementExecutionProfileResolution;
@@ -105,6 +108,37 @@ import com.wish.rd.engine.requirement.policy.model.RequirementPolicyEvaluationPr
 import com.wish.rd.engine.requirement.policy.RequirementPolicyRunStore;
 import com.wish.rd.engine.requirement.policy.model.RequirementPolicyRun;
 import com.wish.rd.engine.requirement.verify.HostVerificationPort;
+import com.wish.rd.engine.requirement.audit.HostVerifySubject;
+import com.wish.rd.engine.requirement.audit.InMemoryEvidenceRefResolver;
+import com.wish.rd.engine.requirement.verify.HostVerificationStore;
+import com.wish.rd.engine.requirement.verify.model.HostVerificationArtifact;
+import com.wish.rd.engine.requirement.verify.model.HostVerificationRun;
+import com.wish.rd.engine.requirement.verify.model.HostVerificationStatus;
+import com.wish.rd.engine.retry.HostVerifyFailureJson;
+import com.wish.rd.engine.requirement.audit.AcceptanceCriteriaIds;
+import com.wish.rd.engine.requirement.audit.AuditCompletion;
+import com.wish.rd.engine.requirement.audit.AuditIntegrity;
+import com.wish.rd.engine.requirement.audit.AuditMutation;
+import com.wish.rd.engine.requirement.audit.AuditRun;
+import com.wish.rd.engine.requirement.audit.AuditedCompletionGate;
+import com.wish.rd.engine.requirement.audit.AuditedRecord;
+import com.wish.rd.engine.requirement.audit.AuditedRecordStatus;
+import com.wish.rd.engine.requirement.audit.AuditedStateMutation;
+import com.wish.rd.engine.requirement.audit.AuditedTaskState;
+import com.wish.rd.engine.requirement.audit.AuditedTaskStateCodec;
+import com.wish.rd.engine.requirement.audit.AuditedTaskStateInitializer;
+import com.wish.rd.engine.requirement.audit.AuditedTaskStatePolicyBootstrap;
+import com.wish.rd.engine.requirement.audit.AuditedTaskStateStore;
+import com.wish.rd.engine.requirement.audit.AuditedWritebackGateMode;
+import com.wish.rd.engine.requirement.audit.CompletionBinding;
+import com.wish.rd.engine.requirement.audit.CompletionGateDecision;
+import com.wish.rd.engine.requirement.audit.ContractAuditVerdict;
+import com.wish.rd.engine.requirement.audit.DeterministicAuditor;
+import com.wish.rd.engine.requirement.audit.EvidenceRef;
+import com.wish.rd.engine.requirement.audit.EvidenceRefResolverPort;
+import com.wish.rd.engine.requirement.audit.EvidenceSourceKind;
+import com.wish.rd.engine.requirement.audit.RoleClaimExtractor;
+import com.wish.rd.engine.requirement.audit.RoleClaimSubject;
 import com.wish.rd.engine.requirement.policy.model.RequirementPolicyRunState;
 import com.wish.rd.engine.provider.ProviderSideEffectStatusPort;
 import com.wish.rd.rag.project.agent.model.AgentExecutionProfileSnapshot;
@@ -149,6 +183,10 @@ public class RequirementDeliveryEngine {
     private final WorkflowExperienceStore experienceStore;
     private final RequirementDeliveryReviewer deliveryReviewer;
     private final RequirementPullRequestPublisherPort pullRequestPublisher;
+    private final RequirementDeliveryPublicationViewAssembler publicationViewAssembler =
+            new RequirementDeliveryPublicationViewAssembler();
+    private final RequirementPullRequestBodyRenderer pullRequestBodyRenderer =
+            new RequirementPullRequestBodyRenderer();
     // Set-once via optional setter injection; defaults to a skipped no-op so the many
     // existing constructors and tests keep their behavior unchanged when no branch
     // publisher is wired. The bootstrap adapter pushes the reviewed work branch here
@@ -168,6 +206,12 @@ public class RequirementDeliveryEngine {
     private ProviderSideEffectStatusPort providerSideEffectStatusPort =
             ProviderSideEffectStatusPort.unavailable();
     private HostVerificationPort hostVerificationPort = HostVerificationPort.noop();
+    private AuditedTaskStateStore auditedTaskStateStore;
+    private AuditedWritebackGateMode auditedWritebackGateMode = AuditedWritebackGateMode.ENFORCE;
+    private EvidenceRefResolverPort evidenceRefResolver;
+    private final AuditedTaskStateCodec auditedTaskStateCodec = new AuditedTaskStateCodec();
+    private HostVerificationStore hostVerificationStore;
+    private final LatestSucceededStageLocator latestSucceededStageLocator = new LatestSucceededStageLocator();
     private RequirementAgentStageOrchestrator stageOrchestrator;
     private InterruptedStageRecoveryService interruptedStageRecoveryService;
     private RequirementPolicyRunStore requirementPolicyRunStore;
@@ -308,6 +352,50 @@ public class RequirementDeliveryEngine {
         if (this.stageOrchestrator != null) {
             this.stageOrchestrator.setHostVerificationPort(hostVerificationPort);
         }
+    }
+
+    /**
+     * Optional Host audited-state store. When present, ROLE_EXECUTION success plans carry
+     * {@code UNTRUSTED} claims writeback and the legacy {@code executeStage} path persists the
+     * same mutation directly.
+     *
+     * @param auditedTaskStateStore store when present
+     */
+    @Autowired(required = false)
+    public void setAuditedTaskStateStore(AuditedTaskStateStore auditedTaskStateStore) {
+        this.auditedTaskStateStore = auditedTaskStateStore;
+    }
+
+    /**
+     * Optional completion-gate mode. Defaults to {@link AuditedWritebackGateMode#ENFORCE}.
+     *
+     * @param auditedWritebackGateMode gate mode when present
+     */
+    @Autowired(required = false)
+    public void setAuditedWritebackGateMode(AuditedWritebackGateMode auditedWritebackGateMode) {
+        this.auditedWritebackGateMode = auditedWritebackGateMode == null
+                ? AuditedWritebackGateMode.ENFORCE
+                : auditedWritebackGateMode;
+    }
+
+    /**
+     * Optional evidence URI resolver used by {@link AuditedCompletionGate}.
+     *
+     * @param evidenceRefResolver resolver when present
+     */
+    @Autowired(required = false)
+    public void setEvidenceRefResolver(EvidenceRefResolverPort evidenceRefResolver) {
+        this.evidenceRefResolver = evidenceRefResolver;
+    }
+
+    /**
+     * Optional host-verification artifact store used to bind {@code HOST_VERIFY} evidence URIs.
+     *
+     * @param hostVerificationStore store when present
+     */
+    @Autowired(required = false)
+    public void setHostVerificationStore(HostVerificationStore hostVerificationStore) {
+        this.hostVerificationStore = hostVerificationStore;
     }
 
     /**
@@ -1117,6 +1205,7 @@ public class RequirementDeliveryEngine {
             case "POLICY" -> planPolicyStage(task, command);
             case String roleStage when roleStage.startsWith("ROLE_EXECUTION:") ->
                     planRoleExecutionStage(task, command, parseRoleStage(roleStage));
+            case "HOST_VERIFY" -> planHostVerifyStage(task, command);
             case "DETERMINISTIC_REVIEW" -> planDeterministicReviewStage(task, command);
             case "AI_REVIEW" -> planAiReviewStage(task, command);
             case "PUBLICATION" -> planPublicationStage(task, command, false);
@@ -1267,9 +1356,13 @@ public class RequirementDeliveryEngine {
         // applies the returned task mutation atomically with the command completion.
         ensureRequirementStages(task);
         ensureRoleContexts(task, materials, null);
-        String qaProductRemediationJson = command.remediationKind() == AgentRemediationKind.QA_PRODUCT_FIX
+        String qaProductRemediationJson =
+                (command.remediationKind() == AgentRemediationKind.QA_PRODUCT_FIX
+                        || command.remediationKind() == AgentRemediationKind.HOST_VERIFY_FIX)
                 && role == AgentRole.CODING_AGENT ? command.remediationRequestJson() : "";
-        String qaProductRemediationHash = command.remediationKind() == AgentRemediationKind.QA_PRODUCT_FIX
+        String qaProductRemediationHash =
+                (command.remediationKind() == AgentRemediationKind.QA_PRODUCT_FIX
+                        || command.remediationKind() == AgentRemediationKind.HOST_VERIFY_FIX)
                 && role == AgentRole.CODING_AGENT ? command.remediationRequestHash() : "";
         String qaProtocolRetryPrompt = command.remediationKind() == AgentRemediationKind.QA_PROTOCOL_RETRY
                 && role == AgentRole.QA_AGENT ? protocolRetryPrompt(command.remediationRequestJson()) : "";
@@ -1333,9 +1426,254 @@ public class RequirementDeliveryEngine {
         }
         mutations.add(RequirementTaskMutation.snapshotUpdate(
                 RdTaskStatus.EXECUTING, "", execution.resultJson(), execution.pullRequestUrl(), "", ""));
-        return plan(task, command, mutations,
-                CommandDisposition.SUCCEEDED,
-                roleContinuation(role));
+        return attachRoleClaims(
+                plan(task, command, mutations, CommandDisposition.SUCCEEDED, roleContinuation(role)),
+                task,
+                command,
+                role,
+                execution.resultJson());
+    }
+
+    private RequirementStageExecutionPlan planHostVerifyStage(
+            RdRequirementTask task,
+            RequirementStageCommand command
+    ) {
+        boolean checkpointRecovery = task.status() == RdTaskStatus.RECOVERING
+                && !command.retryCheckpointId().isBlank();
+        if (task.status() != RdTaskStatus.EXECUTING && !checkpointRecovery) {
+            throw new IllegalStateException("host-verify command task is not executing: " + command.commandId());
+        }
+        if (hostVerificationPort == null) {
+            throw new IllegalStateException("host verification executor is unavailable: " + command.commandId());
+        }
+        AgentStageRun codingStage = latestSucceededStageLocator.require(
+                stageRunStore.listByTask(task.taskId()), AgentRole.CODING_AGENT, task.taskId());
+        int usedFixes = usedHostVerifyFixRounds(task.taskId(), "");
+        HostVerificationRun verification;
+        try {
+            verification = hostVerificationPort.verify(
+                    task, codingStage, boundedRolePlan(AgentRole.CODING_AGENT), usedFixes);
+        } catch (RuntimeException failed) {
+            throw new IllegalStateException("host verification executor failed: " + command.commandId(), failed);
+        }
+        if (verification == null || verification.status() == null) {
+            throw new IllegalStateException("host verification returned no result: " + command.commandId());
+        }
+        usedFixes = usedHostVerifyFixRounds(task.taskId(), verification.runId());
+        int nextCodingAttempt = codingStage.attemptNo() + 1;
+        boolean productDefect = "PRODUCT_DEFECT".equalsIgnoreCase(verification.failureCategory());
+        boolean failed = verification.status() == HostVerificationStatus.FAILED_RETRYABLE
+                || verification.status() == HostVerificationStatus.FAILED_NEEDS_HUMAN;
+        if (failed && productDefect && usedFixes < AgentRemediationKind.HOST_VERIFY_FIX.maximumRounds()
+                && nextCodingAttempt <= MAX_ROLE_ATTEMPTS) {
+            PiQaRemediationIntent intent = buildHostVerifyFixIntent(
+                    task, command, codingStage, verification, usedFixes + 1, nextCodingAttempt);
+            if (intent != null) {
+                RequirementStageExecutionPlan planned = plan(
+                        task,
+                        command,
+                        hostVerifyMutations(checkpointRecovery, RequirementTaskMutation.snapshotUpdate(
+                                RdTaskStatus.EXECUTING, "", hostVerifyResultJson(verification), "", "", "")),
+                        CommandDisposition.SUCCEEDED,
+                        ContinuationSpec.terminal(),
+                        ExternalEffectReceipt.none(),
+                        intent);
+                return attachHostVerifyAudit(planned, task, command, codingStage, verification);
+            }
+        }
+        if (verification.status() == HostVerificationStatus.SUCCEEDED
+                || verification.status() == HostVerificationStatus.SKIPPED_DOCS_ONLY) {
+            RequirementStageExecutionPlan planned = plan(
+                    task,
+                    command,
+                    hostVerifyMutations(checkpointRecovery, RequirementTaskMutation.snapshotUpdate(
+                            RdTaskStatus.EXECUTING, "", hostVerifyResultJson(verification), "", "", "")),
+                    CommandDisposition.SUCCEEDED,
+                    new ContinuationSpec(AgentRole.QA_AGENT.name(), "ROLE_EXECUTION:" + AgentRole.QA_AGENT.name()));
+            return attachHostVerifyAudit(planned, task, command, codingStage, verification);
+        }
+        String resultJson = hostVerifyFailureJson(verification);
+        return attachHostVerifyAudit(
+                plan(task, command,
+                        hostVerifyMutations(checkpointRecovery, mutation(
+                                RdTaskStatus.EXECUTING, RdTaskStatus.FAILED_NEEDS_HUMAN,
+                                "", resultJson, "", firstNonBlank(verification.errorMessage(), "host verification failed"))),
+                        CommandDisposition.TERMINAL_FAILURE,
+                        ContinuationSpec.terminal()),
+                task, command, codingStage, verification);
+    }
+
+    private List<RequirementTaskMutation> hostVerifyMutations(
+            boolean checkpointRecovery,
+            RequirementTaskMutation outcome
+    ) {
+        List<RequirementTaskMutation> mutations = new ArrayList<>();
+        if (checkpointRecovery) {
+            mutations.add(mutation(RdTaskStatus.RECOVERING, RdTaskStatus.EXECUTING, "", "", "", ""));
+        }
+        mutations.add(outcome);
+        return List.copyOf(mutations);
+    }
+
+    private RequirementStageExecutionPlan attachHostVerifyAudit(
+            RequirementStageExecutionPlan planned,
+            RdRequirementTask task,
+            RequirementStageCommand command,
+            AgentStageRun codingStage,
+            HostVerificationRun verification
+    ) {
+        if (auditedTaskStateStore == null) {
+            throw new IllegalStateException("audited task state store is unavailable for HOST_VERIFY: "
+                    + command.commandId());
+        }
+        AuditedTaskStateCodec codec = new AuditedTaskStateCodec();
+        AuditedTaskState head = auditedTaskStateStore.head(task.taskId())
+                .orElseGet(() -> new AuditedTaskStateInitializer(codec).initialize(task));
+        String auditRunId = idGenerator.nextIdString();
+        HostVerifyEvidence evidence = hostVerifyEvidence(auditRunId, verification);
+        AuditMutation mutation = new DeterministicAuditor(codec).auditHostVerify(
+                head,
+                new HostVerifySubject(
+                        auditRunId,
+                        command.commandId(),
+                        codingStage.stageRunId(),
+                        verification.status(),
+                        verification.docsOnly(),
+                        evidence.buildRefs(),
+                        evidence.staticRefs(),
+                        Math.max(command.updatedAtEpochMillis(), command.createdAtEpochMillis())),
+                evidence.resolver());
+        return planned.withAuditedStateMutation(mutation.toPlanMutation());
+    }
+
+    private HostVerifyEvidence hostVerifyEvidence(String auditRunId, HostVerificationRun verification) {
+        InMemoryEvidenceRefResolver resolver = new InMemoryEvidenceRefResolver();
+        List<HostVerificationArtifact> artifacts = hostVerificationStore == null
+                ? List.of()
+                : hostVerificationStore.listArtifacts(verification.runId());
+        List<EvidenceRef> build = new ArrayList<>();
+        List<EvidenceRef> stat = new ArrayList<>();
+        for (HostVerificationArtifact artifact : artifacts) {
+            EvidenceRef ref = new EvidenceRef(
+                    auditRunId,
+                    EvidenceSourceKind.HOST_VERIFICATION,
+                    "host-verification://artifacts/" + artifact.artifactId(),
+                    artifact.sha256());
+            resolver.put(ref);
+            String type = artifact.artifactType().toUpperCase(Locale.ROOT);
+            if (type.contains("STATIC")) {
+                stat.add(ref);
+            } else if (type.contains("DOCS")) {
+                build.add(ref);
+                stat.add(ref);
+            } else {
+                build.add(ref);
+            }
+        }
+        boolean success = verification.status() == HostVerificationStatus.SUCCEEDED
+                || verification.status() == HostVerificationStatus.SKIPPED_DOCS_ONLY;
+        if (success && (build.isEmpty() || stat.isEmpty())) {
+            throw new IllegalStateException("HOST_VERIFY success requires persisted BUILD/STATIC evidence: "
+                    + verification.runId());
+        }
+        return new HostVerifyEvidence(resolver, build, stat);
+    }
+
+    private int usedHostVerifyFixRounds(String taskId, String excludeRunId) {
+        if (hostVerificationStore == null) {
+            return 0;
+        }
+        String excluded = excludeRunId == null ? "" : excludeRunId.strip();
+        return (int) hostVerificationStore.listByTask(taskId).stream()
+                .filter(run -> "PRODUCT_DEFECT".equalsIgnoreCase(run.failureCategory()))
+                .filter(run -> excluded.isBlank() || !excluded.equals(run.runId()))
+                .count();
+    }
+
+    private PiQaRemediationIntent buildHostVerifyFixIntent(
+            RdRequirementTask task,
+            RequirementStageCommand command,
+            AgentStageRun codingStage,
+            HostVerificationRun verification,
+            int remediationNo,
+            int targetCodingAttempt
+    ) {
+        try {
+            HostVerifyRemediationPackageBuilder.Package request = new HostVerifyRemediationPackageBuilder().build(
+                    verification.runId(),
+                    codingStage.stageRunId(),
+                    remediationNo,
+                    verification.failureCategory(),
+                    verification.errorMessage());
+            String codingStageId = idGenerator.nextIdString();
+            String roundId = idGenerator.nextIdString();
+            String firstCommandId = idGenerator.nextIdString();
+            AgentExecutionProfileSnapshot codingSnapshot = executionProfileResolver.prepareSnapshot(
+                    task, AgentRole.CODING_AGENT, codingStageId, targetCodingAttempt,
+                    AgentRuntimeCapability.PI_QA_REMEDIATION_V2);
+            RequirementExecutionProfileResolution sourceResolution = executionProfileResolver.resolve(
+                    task, AgentRole.CODING_AGENT, codingStage.stageRunId(), codingStage.attemptNo());
+            return new PiQaRemediationIntent(
+                    PiQaRemediationIntent.PROTOCOL,
+                    task.taskId(),
+                    codingStage.stageRunId(),
+                    command.commandId(),
+                    CanonicalJsonSha256.digest(hostVerifyResultJson(verification)),
+                    command.taskVersion(),
+                    command.fencingToken(),
+                    AgentRemediationKind.HOST_VERIFY_FIX,
+                    remediationNo,
+                    roundId,
+                    request.attachment().content(),
+                    request.requestHash(),
+                    codingStageId,
+                    targetCodingAttempt,
+                    "",
+                    0,
+                    firstCommandId,
+                    profileClaim(sourceResolution.snapshotJson()),
+                    preparedProfile(codingSnapshot),
+                    null,
+                    "",
+                    "",
+                    verification.runId());
+        } catch (RuntimeException invalid) {
+            log.warn("HOST_VERIFY_FIX declined: intent construction failed taskId={} runId={}",
+                    task.taskId(), verification.runId(), invalid);
+            return null;
+        }
+    }
+
+    private static String hostVerifyResultJson(HostVerificationRun verification) {
+        boolean skipped = verification.status() == HostVerificationStatus.SKIPPED_DOCS_ONLY;
+        return """
+                {"status":%s,"docsOnly":%s,"hostVerificationRunId":%s,"failureCategory":%s}
+                """.formatted(
+                jsonQuote(skipped ? "SKIPPED" : verification.status().name()),
+                verification.docsOnly(),
+                jsonQuote(verification.runId()),
+                jsonQuote(verification.failureCategory())).strip();
+    }
+
+    private static String hostVerifyFailureJson(HostVerificationRun verification) {
+        return """
+                {"status":"NEEDS_HUMAN","failurePhase":%s,"failedVerificationRunId":%s,"failureCategory":%s}
+                """.formatted(
+                jsonQuote(HostVerifyFailureJson.STAGE),
+                jsonQuote(verification.runId()),
+                jsonQuote(verification.failureCategory())).strip();
+    }
+
+    private static String jsonQuote(String value) {
+        String normalized = value == null ? "" : value;
+        return "\"" + normalized.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+    }
+
+    private record HostVerifyEvidence(
+            InMemoryEvidenceRefResolver resolver,
+            List<EvidenceRef> buildRefs,
+            List<EvidenceRef> staticRefs
+    ) {
     }
 
     private PiQaRemediationIntent buildPiQaRemediationIntent(
@@ -1527,7 +1865,7 @@ public class RequirementDeliveryEngine {
     ) {
         requireDeliveryStageStatus(task, command, RdTaskStatus.EXECUTING);
         RequirementExecutionResult execution = recoverExecutionResult(task);
-        RequirementDeliveryReviewResult review = deliveryReviewer.review(task.taskId(), execution.resultJson());
+        RequirementDeliveryReviewResult review = reviewPublicationView(task.taskId(), execution.resultJson());
         String reviewedResultJson = withDeliveryReviewJson(execution.resultJson(), review);
         List<RequirementTaskMutation> mutations = new ArrayList<>();
         mutations.add(mutation(task.status(), RdTaskStatus.VALIDATING, "", execution.resultJson(), "", ""));
@@ -1536,10 +1874,20 @@ public class RequirementDeliveryEngine {
                     "", "delivery review failed: " + review.reason()));
             return plan(task, command, mutations, CommandDisposition.TERMINAL_FAILURE, ContinuationSpec.terminal());
         }
+        CompletionGateDecision gate = evaluateAuditedCompletion(task);
+        if (!gate.supportsCompletion()) {
+            RequirementDeliveryReviewResult gated = RequirementDeliveryReviewResult.rejected(
+                    task.taskId(), auditedGateReason(gate));
+            String gatedJson = withDeliveryReviewJson(execution.resultJson(), gated);
+            mutations.add(mutation(RdTaskStatus.VALIDATING, RdTaskStatus.REJECTED, "", gatedJson,
+                    "", "delivery review failed: " + gated.reason()));
+            return plan(task, command, mutations, CommandDisposition.TERMINAL_FAILURE, ContinuationSpec.terminal());
+        }
         mutations.add(RequirementTaskMutation.snapshotUpdate(
                 RdTaskStatus.VALIDATING, "", reviewedResultJson, "", "", ""));
-        return plan(task, command, mutations, CommandDisposition.SUCCEEDED,
+        RequirementStageExecutionPlan approved = plan(task, command, mutations, CommandDisposition.SUCCEEDED,
                 new ContinuationSpec("REQUIREMENT_DELIVERY", "AI_REVIEW"));
+        return attachShadowBlockers(approved, task, command, gate);
     }
 
     private RequirementStageExecutionPlan planAiReviewStage(
@@ -1547,6 +1895,18 @@ public class RequirementDeliveryEngine {
             RequirementStageCommand command
     ) {
         requireDeliveryStageStatus(task, command, RdTaskStatus.VALIDATING);
+        RequirementDeliveryReviewResult deterministicReview = validateExistingDeliveryReview(
+                task.taskId(), task.executionResultJson());
+        if (!deterministicReview.approved()) {
+            String rejectedResultJson = withDeliveryReviewJson(task.executionResultJson(), deterministicReview);
+            RdTaskStatus rejectedStatus = task.status() == RdTaskStatus.RECOVERING
+                    ? RdTaskStatus.FAILED_NEEDS_HUMAN
+                    : RdTaskStatus.REJECTED;
+            return plan(task, command, List.of(mutation(
+                            task.status(), rejectedStatus, "", rejectedResultJson, "",
+                            "delivery review failed: " + deterministicReview.reason())),
+                    CommandDisposition.TERMINAL_FAILURE, ContinuationSpec.terminal());
+        }
         if (aiDeliveryReviewEngine == null || !aiDeliveryReviewEngine.isEnabled()) {
             return plan(task, command, List.of(), CommandDisposition.SUCCEEDED,
                     new ContinuationSpec("REQUIREMENT_DELIVERY", "PUBLICATION"));
@@ -1597,6 +1957,15 @@ public class RequirementDeliveryEngine {
                 && publishStatus != RdTaskStatus.PR_CREATING) {
             throw new IllegalStateException("publication command has unsupported task status: " + task.status());
         }
+        CompletionGateDecision gate = evaluateAuditedCompletion(task);
+        if (!gate.supportsCompletion()) {
+            return publicationFailurePlan(task, command, mutations, reviewedResultJson,
+                    auditedGateReason(gate), true);
+        }
+        if (gate.shadowWouldReject()) {
+            log.warn("audited completion gate would reject publication taskId={} gaps={}",
+                    task.taskId(), gate.gapRecordIds());
+        }
         if (publishStatus != RdTaskStatus.PR_CREATING) {
             mutations.add(mutation(publishStatus, RdTaskStatus.PR_CREATING, "", reviewedResultJson, "", ""));
             publishStatus = RdTaskStatus.PR_CREATING;
@@ -1613,6 +1982,12 @@ public class RequirementDeliveryEngine {
         if (operationId.isBlank()) {
             return publicationFailurePlan(task, command, mutations, reviewedResultJson,
                     "publication requires a candidate-patch operation id", true);
+        }
+        try {
+            finalPullRequestBody(task, reviewedResultJson);
+        } catch (IllegalArgumentException exception) {
+            return publicationFailurePlan(task, command, mutations, reviewedResultJson,
+                    "publication view invalid: " + safe(exception.getMessage()), true);
         }
         preparePublicationIntent(task, reviewedResultJson);
         PublicationRemotePlan remotePlan = resolvePublicationRemotePlan(task, reviewedResultJson);
@@ -1737,8 +2112,17 @@ public class RequirementDeliveryEngine {
             RequirementStageCommand command
     ) {
         requireStageStatus(task, command, RdTaskStatus.REPORTING);
-        return plan(task, command, List.of(mutation(task.status(), RdTaskStatus.COMPLETED, "", "", "", "")),
+        CompletionGateDecision gate = evaluateAuditedCompletion(task);
+        if (!gate.supportsCompletion()) {
+            return plan(task, command, List.of(mutation(
+                            task.status(), RdTaskStatus.FAILED_NEEDS_HUMAN, "", task.executionResultJson(),
+                            task.pullRequestUrl(), auditedGateReason(gate))),
+                    CommandDisposition.TERMINAL_FAILURE, ContinuationSpec.terminal());
+        }
+        RequirementStageExecutionPlan completed = plan(
+                task, command, List.of(mutation(task.status(), RdTaskStatus.COMPLETED, "", "", "", "")),
                 CommandDisposition.SUCCEEDED, ContinuationSpec.terminal());
+        return attachCompletionBinding(completed, task, command, gate);
     }
 
     private void requireStageStatus(
@@ -1771,6 +2155,9 @@ public class RequirementDeliveryEngine {
     }
 
     private ContinuationSpec roleContinuation(AgentRole role) {
+        if (role == AgentRole.CODING_AGENT) {
+            return new ContinuationSpec("REQUIREMENT_DELIVERY", "HOST_VERIFY");
+        }
         List<AgentRole> deliveryOrder = AgentRole.requirementDeliveryOrder();
         int roleIndex = deliveryOrder.indexOf(role);
         if (roleIndex < 0) {
@@ -1785,6 +2172,282 @@ public class RequirementDeliveryEngine {
 
     private List<TaskMaterial> taskMaterials(RdRequirementTask task) {
         return materialStore == null ? List.of() : materialStore.listByTask(task.taskId());
+    }
+
+    private RequirementStageExecutionPlan attachRoleClaims(
+            RequirementStageExecutionPlan plan,
+            RdRequirementTask task,
+            RequirementStageCommand command,
+            AgentRole role,
+            String resultJson
+    ) {
+        AuditMutation mutation = roleClaimMutation(task, command, role, resultJson);
+        return mutation == null ? plan : plan.withAuditedStateMutation(mutation.toPlanMutation());
+    }
+
+    private void persistLegacyRoleClaims(
+            RdRequirementTask task,
+            RequirementStageCommand command,
+            AgentRole role,
+            String resultJson
+    ) {
+        if (auditedTaskStateStore == null) {
+            return;
+        }
+        if (auditedTaskStateStore.head(task.taskId()).isEmpty()) {
+            new AuditedTaskStatePolicyBootstrap(auditedTaskStateStore).initializeIfAbsent(task);
+        }
+        AuditMutation mutation = roleClaimMutation(task, command, role, resultJson);
+        if (mutation == null) {
+            return;
+        }
+        auditedTaskStateStore.appendRevision(
+                mutation.nextState().stateVersion(), mutation.nextState(), mutation.auditRun());
+    }
+
+    private AuditMutation roleClaimMutation(
+            RdRequirementTask task,
+            RequirementStageCommand command,
+            AgentRole role,
+            String resultJson
+    ) {
+        if (auditedTaskStateStore == null) {
+            return null;
+        }
+        AuditedTaskStateCodec codec = new AuditedTaskStateCodec();
+        AuditedTaskState head = auditedTaskStateStore.head(task.taskId())
+                .orElseGet(() -> new AuditedTaskStateInitializer(codec).initialize(task));
+        AgentStageRun latest = latestStageOrNull(stageRunStore.listByTask(task.taskId()), role);
+        String stageRunId = latest == null || latest.stageRunId().isBlank()
+                ? command.commandId()
+                : latest.stageRunId();
+        long now = Math.max(command.updatedAtEpochMillis(), command.createdAtEpochMillis());
+        RoleClaimSubject subject = RoleClaimExtractor.fromResultJson(
+                idGenerator.nextIdString(),
+                command.commandId(),
+                stageRunId,
+                role.name(),
+                resultJson,
+                now);
+        return new DeterministicAuditor(codec).recordClaims(head, subject);
+    }
+
+    private AuditedWritebackGateMode gateMode() {
+        return auditedWritebackGateMode == null ? AuditedWritebackGateMode.ENFORCE : auditedWritebackGateMode;
+    }
+
+    private EvidenceRefResolverPort completionResolver() {
+        return evidenceRefResolver != null ? evidenceRefResolver : ref -> {
+            if (ref == null) {
+                throw new IllegalArgumentException("evidence ref must not be null");
+            }
+        };
+    }
+
+    private CompletionGateDecision evaluateAuditedCompletion(RdRequirementTask task) {
+        if (auditedTaskStateStore == null) {
+            return new CompletionGateDecision(true, List.of(), false);
+        }
+        Optional<AuditedTaskState> head = auditedTaskStateStore.head(task.taskId());
+        if (head.isEmpty()) {
+            boolean enforce = gateMode() == AuditedWritebackGateMode.ENFORCE;
+            return new CompletionGateDecision(!enforce, List.of("audited-state"), true);
+        }
+        List<AuditRun> runs = auditedTaskStateStore.listAuditRuns(task.taskId());
+        AuditRun latest = runs.isEmpty()
+                ? new AuditRun(
+                        "placeholder-" + task.taskId(),
+                        task.taskId(),
+                        "",
+                        "HOST_VERIFY",
+                        "placeholder-" + task.taskId(),
+                        AuditCompletion.INCOMPLETE,
+                        AuditIntegrity.CLEAN,
+                        ContractAuditVerdict.ALIGNED,
+                        List.of(),
+                        List.of(),
+                        List.of(),
+                        List.of(),
+                        List.of(),
+                        0L)
+                : runs.get(runs.size() - 1);
+        return new AuditedCompletionGate(completionResolver()).evaluate(head.get(), latest, gateMode());
+    }
+
+    private static String auditedGateReason(CompletionGateDecision gate) {
+        return "audited completion gate: " + String.join(",", gate.gapRecordIds());
+    }
+
+    private RequirementStageExecutionPlan attachShadowBlockers(
+            RequirementStageExecutionPlan plan,
+            RdRequirementTask task,
+            RequirementStageCommand command,
+            CompletionGateDecision gate
+    ) {
+        AuditedStateMutation mutation = shadowBlockerMutation(task, command, gate);
+        if (mutation == null) {
+            return plan;
+        }
+        log.warn("audited completion gate would reject taskId={} gaps={}", task.taskId(), gate.gapRecordIds());
+        return plan.withAuditedStateMutation(mutation);
+    }
+
+    private void persistShadowBlockers(RdRequirementTask task, String stage, CompletionGateDecision gate) {
+        if (auditedTaskStateStore == null || !gate.shadowWouldReject()) {
+            return;
+        }
+        RequirementStageCommand synthetic = RequirementStageCommand.pending(
+                idGenerator.nextIdString(), task.taskId(), task.version(), task.fencingToken(),
+                "REQUIREMENT_DELIVERY", stage, 0, 3, 0L,
+                com.wish.rd.engine.scheduling.model.ScheduleResourceClass.GENERIC,
+                "_default", "", task.priority(), System.currentTimeMillis());
+        AuditedStateMutation mutation = shadowBlockerMutation(task, synthetic, gate);
+        if (mutation == null) {
+            return;
+        }
+        log.warn("audited completion gate would reject taskId={} gaps={}", task.taskId(), gate.gapRecordIds());
+        auditedTaskStateStore.appendRevision(
+                mutation.expectedStateVersion(), mutation.nextState(), mutation.auditRun());
+    }
+
+    private AuditedStateMutation shadowBlockerMutation(
+            RdRequirementTask task,
+            RequirementStageCommand command,
+            CompletionGateDecision gate
+    ) {
+        if (auditedTaskStateStore == null || !gate.shadowWouldReject()) {
+            return null;
+        }
+        Optional<AuditedTaskState> headOpt = auditedTaskStateStore.head(task.taskId());
+        if (headOpt.isEmpty()) {
+            return null;
+        }
+        AuditedTaskState head = headOpt.get();
+        String auditRunId = idGenerator.nextIdString();
+        AuditRun run = new AuditRun(
+                auditRunId,
+                task.taskId(),
+                "",
+                command.stage(),
+                command.commandId(),
+                AuditCompletion.INCOMPLETE,
+                AuditIntegrity.CLEAN,
+                ContractAuditVerdict.ALIGNED,
+                List.of(),
+                List.of(),
+                List.of(),
+                gate.gapRecordIds(),
+                List.of(),
+                Math.max(command.updatedAtEpochMillis(), command.createdAtEpochMillis()));
+        AuditedTaskState next = auditedTaskStateCodec.seal(new AuditedTaskState(
+                head.taskId(),
+                head.stateVersion() + 1L,
+                "",
+                head.contractRef(),
+                head.records(),
+                auditRunId));
+        return new AuditMutation(run, next).toPlanMutation();
+    }
+
+    private RequirementStageExecutionPlan attachCompletionBinding(
+            RequirementStageExecutionPlan plan,
+            RdRequirementTask task,
+            RequirementStageCommand command,
+            CompletionGateDecision gate
+    ) {
+        if (auditedTaskStateStore == null) {
+            return plan;
+        }
+        Optional<AuditedTaskState> headOpt = auditedTaskStateStore.head(task.taskId());
+        if (headOpt.isEmpty()) {
+            throw new IllegalStateException("audited state head is missing for completion: " + task.taskId());
+        }
+        AuditMutation mutation = completeArtPr(headOpt.get(), task, command, gate);
+        CompletionBinding binding = new CompletionBinding(
+                task.taskId(),
+                mutation.auditRun().auditRunId(),
+                mutation.nextState().stateVersion(),
+                mutation.nextState().stateHash());
+        return plan.withAuditedStateMutation(mutation.toPlanMutation().withCompletionBinding(binding));
+    }
+
+    private void persistCompletionBinding(RdRequirementTask task, CompletionGateDecision gate) {
+        if (auditedTaskStateStore == null) {
+            return;
+        }
+        Optional<AuditedTaskState> headOpt = auditedTaskStateStore.head(task.taskId());
+        if (headOpt.isEmpty()) {
+            throw new IllegalStateException("audited state head is missing for completion: " + task.taskId());
+        }
+        RequirementStageCommand synthetic = RequirementStageCommand.pending(
+                idGenerator.nextIdString(), task.taskId(), task.version(), task.fencingToken(),
+                "REQUIREMENT_DELIVERY", "COMPLETION", 0, 3, 0L,
+                com.wish.rd.engine.scheduling.model.ScheduleResourceClass.GENERIC,
+                "_default", "", task.priority(), System.currentTimeMillis());
+        AuditMutation mutation = completeArtPr(headOpt.get(), task, synthetic, gate);
+        auditedTaskStateStore.appendRevision(
+                mutation.nextState().stateVersion(), mutation.nextState(), mutation.auditRun());
+        auditedTaskStateStore.bindCompletion(
+                task.taskId(),
+                mutation.auditRun().auditRunId(),
+                mutation.nextState().stateVersion(),
+                mutation.nextState().stateHash());
+    }
+
+    private AuditMutation completeArtPr(
+            AuditedTaskState head,
+            RdRequirementTask task,
+            RequirementStageCommand command,
+            CompletionGateDecision gate
+    ) {
+        String auditRunId = idGenerator.nextIdString();
+        String uri = "publication://ledger/"
+                + (task.pullRequestUrl().isBlank() ? task.taskId() : task.pullRequestUrl());
+        EvidenceRef evidence = new EvidenceRef(
+                auditRunId,
+                EvidenceSourceKind.PUBLICATION_LEDGER,
+                uri,
+                CanonicalJsonSha256.digest("{\"uri\":" + json(uri) + "}"));
+        InMemoryEvidenceRefResolver resolver = new InMemoryEvidenceRefResolver();
+        resolver.put(evidence);
+        resolver.requireResolvable(evidence);
+        List<AuditedRecord> records = new ArrayList<>(head.records());
+        boolean replaced = false;
+        for (int index = 0; index < records.size(); index++) {
+            AuditedRecord record = records.get(index);
+            if ("ART-PR".equals(record.id())) {
+                records.set(index, record.withStatus(AuditedRecordStatus.COMPLETED, List.of(evidence), ""));
+                replaced = true;
+                break;
+            }
+        }
+        if (!replaced) {
+            throw new IllegalStateException("ART-PR record is missing: " + task.taskId());
+        }
+        List<String> blockers = gate.shadowWouldReject() ? gate.gapRecordIds() : List.of();
+        AuditRun run = new AuditRun(
+                auditRunId,
+                task.taskId(),
+                "",
+                "COMPLETION",
+                command.commandId(),
+                blockers.isEmpty() ? AuditCompletion.COMPLETE : AuditCompletion.INCOMPLETE,
+                AuditIntegrity.CLEAN,
+                ContractAuditVerdict.ALIGNED,
+                List.of("ART-PR"),
+                List.of(),
+                List.of(),
+                blockers,
+                List.of(uri),
+                Math.max(command.updatedAtEpochMillis(), command.createdAtEpochMillis()));
+        AuditedTaskState next = auditedTaskStateCodec.seal(new AuditedTaskState(
+                head.taskId(),
+                head.stateVersion() + 1L,
+                "",
+                head.contractRef(),
+                records,
+                auditRunId));
+        return new AuditMutation(run, next);
     }
 
     private RequirementStageExecutionPlan plan(
@@ -1899,6 +2562,7 @@ public class RequirementDeliveryEngine {
         }
         // A role command owns exactly one newly-dispatched role. The task remains EXECUTING until
         // the final role has completed and the dedicated review command advances it.
+        persistLegacyRoleClaims(task, command, role, execution.resultJson());
         RdRequirementTask persisted = taskRegistry.transitionRequirementFenced(
                 task,
                 task.status(),
@@ -2013,7 +2677,7 @@ public class RequirementDeliveryEngine {
                 ? task
                 : taskRegistry.transitionRequirementFenced(
                         task, RdTaskStatus.VALIDATING, "", execution.resultJson(), "", "");
-        RequirementDeliveryReviewResult reviewResult = deliveryReviewer.review(
+        RequirementDeliveryReviewResult reviewResult = reviewPublicationView(
                 validating.taskId(), execution.resultJson());
         String reviewedResultJson = withDeliveryReviewJson(execution.resultJson(), reviewResult);
         if (!reviewResult.approved()) {
@@ -2027,11 +2691,38 @@ public class RequirementDeliveryEngine {
                     "",
                     "delivery review failed: " + reviewResult.reason()));
         }
+        CompletionGateDecision gate = evaluateAuditedCompletion(validating);
+        if (!gate.supportsCompletion()) {
+            RequirementDeliveryReviewResult gated = RequirementDeliveryReviewResult.rejected(
+                    validating.taskId(), auditedGateReason(gate));
+            publishDeliveryReviewAlert(validating.taskId(), execution.pullRequestUrl(), gated);
+            captureDeliveryReviewFailureExperience(validating.taskId(), gated, execution);
+            return stageResult(taskRegistry.transitionRequirementFenced(
+                    validating,
+                    RdTaskStatus.REJECTED,
+                    "",
+                    withDeliveryReviewJson(execution.resultJson(), gated),
+                    "",
+                    "delivery review failed: " + gated.reason()));
+        }
+        persistShadowBlockers(validating, "DETERMINISTIC_REVIEW", gate);
         return stageResult(taskRegistry.transitionRequirementFenced(
                 validating, RdTaskStatus.VALIDATING, "", reviewedResultJson, "", ""));
     }
 
     private RequirementDeliveryResult executeAiReviewStage(RdRequirementTask task) {
+        RequirementDeliveryReviewResult deterministicReview = validateExistingDeliveryReview(
+                task.taskId(), task.executionResultJson());
+        if (!deterministicReview.approved()) {
+            publishDeliveryReviewAlert(task.taskId(), task.pullRequestUrl(), deterministicReview);
+            RdTaskStatus rejectedStatus = task.status() == RdTaskStatus.RECOVERING
+                    ? RdTaskStatus.FAILED_NEEDS_HUMAN
+                    : RdTaskStatus.REJECTED;
+            return stageResult(taskRegistry.transitionRequirementFenced(
+                    task, rejectedStatus, "",
+                    withDeliveryReviewJson(task.executionResultJson(), deterministicReview), "",
+                    "delivery review failed: " + deterministicReview.reason()));
+        }
         if (aiDeliveryReviewEngine == null || !aiDeliveryReviewEngine.isEnabled()) {
             return stageResult(task);
         }
@@ -2060,6 +2751,16 @@ public class RequirementDeliveryEngine {
     }
 
     private RequirementDeliveryResult executePublicationStage(RdRequirementTask task) {
+        CompletionGateDecision gate = evaluateAuditedCompletion(task);
+        if (!gate.supportsCompletion()) {
+            return stageResult(taskRegistry.transitionRequirementFenced(
+                    task, RdTaskStatus.FAILED_NEEDS_HUMAN, "", task.executionResultJson(),
+                    task.pullRequestUrl(), auditedGateReason(gate)));
+        }
+        if (gate.shadowWouldReject()) {
+            log.warn("audited completion gate would reject publication taskId={} gaps={}",
+                    task.taskId(), gate.gapRecordIds());
+        }
         RequirementExecutionResult execution = RequirementExecutionResult.success(
                 task.taskId(), "bounded publication", task.pullRequestUrl(), task.executionResultJson());
         // The publication adapter owns the remote idempotency protocol. This call is intentionally
@@ -2107,6 +2808,13 @@ public class RequirementDeliveryEngine {
         if (task.status() == RdTaskStatus.COMPLETED) {
             return stageResult(task);
         }
+        CompletionGateDecision gate = evaluateAuditedCompletion(task);
+        if (!gate.supportsCompletion()) {
+            return stageResult(taskRegistry.transitionRequirementFenced(
+                    task, RdTaskStatus.FAILED_NEEDS_HUMAN, "", task.executionResultJson(),
+                    task.pullRequestUrl(), auditedGateReason(gate)));
+        }
+        persistCompletionBinding(task, gate);
         return stageResult(taskRegistry.transitionRequirementFenced(
                 task, RdTaskStatus.COMPLETED, "", task.executionResultJson(),
                 task.pullRequestUrl(), ""));
@@ -2115,6 +2823,47 @@ public class RequirementDeliveryEngine {
     private RequirementDeliveryResult stageResult(RdRequirementTask task) {
         return new RequirementDeliveryResult(
                 task.taskId(), task.status(), task.pullRequestUrl(), task.executionResultJson(), task.errorMessage());
+    }
+
+    private RequirementDeliveryReviewResult reviewPublicationView(String taskId, String deliveryResultJson) {
+        try {
+            RequirementDeliveryPublicationView view = publicationViewAssembler.assemble(deliveryResultJson);
+            RequirementDeliveryReviewResult result = deliveryReviewer.review(taskId, view);
+            return result.approved() ? result.withFactsHash(view.publicationFactsHash()) : result;
+        } catch (IllegalArgumentException exception) {
+            return RequirementDeliveryReviewResult.rejected(
+                    taskId, "publication view invalid: " + safe(exception.getMessage()));
+        }
+    }
+
+    private RequirementDeliveryReviewResult validateExistingDeliveryReview(
+            String taskId,
+            String deliveryResultJson
+    ) {
+        try {
+            RequirementDeliveryPublicationView view = publicationViewAssembler.assemble(deliveryResultJson);
+            RequirementDeliveryPublicationView.DeliveryReview review = view.deliveryReview();
+            if (!review.approved()) {
+                return RequirementDeliveryReviewResult.rejected(
+                        taskId, "existing deliveryReview.approved must be true for AI review retry");
+            }
+            if (!"DELIVERY_REVIEWER".equals(review.reviewer())) {
+                return RequirementDeliveryReviewResult.rejected(
+                        taskId, "existing deliveryReview.reviewer must be DELIVERY_REVIEWER for AI review retry");
+            }
+            if (!taskId.equals(review.taskId())) {
+                return RequirementDeliveryReviewResult.rejected(
+                        taskId, "existing deliveryReview.taskId does not match task");
+            }
+            if (!view.publicationFactsHash().equals(review.factsHash())) {
+                return RequirementDeliveryReviewResult.rejected(
+                        taskId, "existing deliveryReview.factsHash does not match publication facts");
+            }
+            return RequirementDeliveryReviewResult.approved(taskId, review.factsHash());
+        } catch (IllegalArgumentException exception) {
+            return RequirementDeliveryReviewResult.rejected(
+                    taskId, "publication view invalid: " + safe(exception.getMessage()));
+        }
     }
 
     private RequirementDeliveryResult validateAndPublish(
@@ -2127,10 +2876,8 @@ public class RequirementDeliveryEngine {
         String deterministicReviewJson = existingDeliveryReviewJson(executionResult.resultJson());
         String reviewedResultJson = executionResult.resultJson();
         if (!skipDeterministicReview) {
-        RequirementDeliveryReviewResult reviewResult = deliveryReviewer.review(
-                requirementTask.taskId(),
-                executionResult.resultJson()
-        );
+        RequirementDeliveryReviewResult reviewResult = reviewPublicationView(
+                requirementTask.taskId(), executionResult.resultJson());
         if (!reviewResult.approved()) {
             // VALIDATING -> REJECTED：复核不通过则直接阻断，保留复核快照用于复盘。
             publishDeliveryReviewAlert(requirementTask.taskId(), executionResult.pullRequestUrl(), reviewResult);
@@ -2150,6 +2897,20 @@ public class RequirementDeliveryEngine {
         }
             deterministicReviewJson = reviewResult.toJson();
             reviewedResultJson = withDeliveryReviewJson(executionResult.resultJson(), reviewResult);
+        } else {
+            RequirementDeliveryReviewResult existingReview = validateExistingDeliveryReview(
+                    requirementTask.taskId(), executionResult.resultJson());
+            if (!existingReview.approved()) {
+                publishDeliveryReviewAlert(requirementTask.taskId(), executionResult.pullRequestUrl(), existingReview);
+                RdRequirementTask rejected = taskRegistry.markRequirementRejected(
+                        requirementTask.taskId(),
+                        "delivery review failed: " + existingReview.reason(),
+                        withDeliveryReviewJson(executionResult.resultJson(), existingReview));
+                return new RequirementDeliveryResult(
+                        rejected.taskId(), rejected.status(), "",
+                        rejected.executionResultJson(), rejected.errorMessage());
+            }
+            deterministicReviewJson = existingDeliveryReviewJson(executionResult.resultJson());
         }
         if (aiDeliveryReviewEngine != null && aiDeliveryReviewEngine.isEnabled()) {
             AiReviewRun aiReviewRun = aiDeliveryReviewEngine.review(
@@ -2200,21 +2961,12 @@ public class RequirementDeliveryEngine {
                 reviewedExecutionResult.resultJson()
         );
         captureDeliveryExperience(requirementTask.taskId(), reviewedExecutionResult);
-        // REPORTING -> COMPLETED：全部阶段完成，返回完整交付结果。
-        RdRequirementTask completed = taskRegistry.markRequirementCompleted(
-                requirementTask.taskId(),
-                reviewedExecutionResult.pullRequestUrl(),
-                reviewedExecutionResult.resultJson()
-        );
-        publishTaskLifecycleAlert(completed.taskId(), AgentWorkflowAlertType.TASK_COMPLETED,
-                "需求交付已完成", "打开任务详情并检查 PR 与交付报告");
-        return new RequirementDeliveryResult(
-                completed.taskId(),
-                completed.status(),
-                completed.pullRequestUrl(),
-                completed.executionResultJson(),
-                completed.errorMessage()
-        );
+        RequirementDeliveryResult completed = executeCompletionStage(requirementTask);
+        if (completed.status() == RdTaskStatus.COMPLETED) {
+            publishTaskLifecycleAlert(completed.taskId(), AgentWorkflowAlertType.TASK_COMPLETED,
+                    "需求交付已完成", "打开任务详情并检查 PR 与交付报告");
+        }
+        return completed;
     }
 
     /**
@@ -2243,6 +2995,14 @@ public class RequirementDeliveryEngine {
         if (patchOnlyDelivery) {
             publication = RequirementPullRequestPublication.success(requirementTask.taskId(), "", "", "{}");
         } else {
+            try {
+                finalPullRequestBody(requirementTask, reviewedResultJson);
+            } catch (IllegalArgumentException exception) {
+                RequirementDeliveryResult blocked = blockPublication(
+                        requirementTask, reviewedResultJson,
+                        "publication view invalid: " + safe(exception.getMessage()), true);
+                return PublicationStageOutcome.failure(blocked);
+            }
             preparePublicationIntent(requirementTask, reviewedResultJson);
             PublicationRemotePlan plan = resolvePublicationRemotePlan(requirementTask, reviewedResultJson);
             if (plan.blockedReason() != null) {
@@ -2375,6 +3135,15 @@ public class RequirementDeliveryEngine {
         if (patchOnlyDelivery) {
             publication = RequirementPullRequestPublication.success(publishing.taskId(), "", "", "{}");
         } else {
+            try {
+                finalPullRequestBody(publishing, reviewedResultJson);
+            } catch (IllegalArgumentException exception) {
+                return blockPublication(
+                        publishing,
+                        reviewedResultJson,
+                        "publication view invalid: " + safe(exception.getMessage()),
+                        true);
+            }
             preparePublicationIntent(publishing, reviewedResultJson);
             PublicationRemotePlan plan = resolvePublicationRemotePlan(publishing, reviewedResultJson);
             if (plan.blockedReason() != null) {
@@ -2411,11 +3180,12 @@ public class RequirementDeliveryEngine {
         RdRequirementTask reporting = taskRegistry.markRequirementReporting(
                 committed.taskId(), published.resultJson());
         captureDeliveryExperience(reporting.taskId(), published);
-        RdRequirementTask completed = taskRegistry.markRequirementCompleted(
-                reporting.taskId(), published.pullRequestUrl(), published.resultJson());
-        publishTaskLifecycleAlert(completed.taskId(), AgentWorkflowAlertType.TASK_COMPLETED,
-                "需求交付已完成", "打开任务详情并检查 PR 与交付报告");
-        return currentResult(completed);
+        RequirementDeliveryResult completed = executeCompletionStage(reporting);
+        if (completed.status() == RdTaskStatus.COMPLETED) {
+            publishTaskLifecycleAlert(completed.taskId(), AgentWorkflowAlertType.TASK_COMPLETED,
+                    "需求交付已完成", "打开任务详情并检查 PR 与交付报告");
+        }
+        return completed;
     }
 
     private RequirementDeliveryResult currentResult(RdRequirementTask task) {
@@ -2559,6 +3329,9 @@ public class RequirementDeliveryEngine {
             long collectedAtEpochMillis
     ) {
         List<TaskMaterial> contextMaterials = new ArrayList<>(materials == null ? List.of() : materials);
+        if (retrievalRecorder != null) {
+            return List.copyOf(contextMaterials);
+        }
         String query = experienceSearchQuery(task);
         experienceStore.searchReusable(query, task == null ? "" : task.taskId(), 100).stream()
                 .filter(experience -> sameProjectExperience(task, experience))
@@ -2934,6 +3707,8 @@ public class RequirementDeliveryEngine {
 
     private RequirementPullRequestPublication publishPullRequest(RdRequirementTask task, String reviewedResultJson) {
         try {
+            String operationId = publicationOperationId(task, reviewedResultJson);
+            String pullRequestBody = finalPullRequestBody(task, reviewedResultJson);
             return pullRequestPublisher.publish(new RequirementPullRequestPublishCommand(
                     task.taskId(),
                     task.title(),
@@ -2943,7 +3718,8 @@ public class RequirementDeliveryEngine {
                     task.baseBranch(),
                     workBranch(task),
                     reviewedResultJson,
-                    publicationOperationId(task, reviewedResultJson)
+                    operationId,
+                    pullRequestBody
             ));
         } catch (RuntimeException exception) {
             return RequirementPullRequestPublication.failure(
@@ -2951,6 +3727,19 @@ public class RequirementDeliveryEngine {
                     "pull request publisher exception: " + safe(exception.getMessage())
             );
         }
+    }
+
+    private String finalPullRequestBody(RdRequirementTask task, String reviewedResultJson) {
+        RequirementDeliveryPublicationView view = publicationViewAssembler.assemble(reviewedResultJson);
+        AuditedTaskState auditedHead = auditedTaskStateStore == null
+                ? null
+                : auditedTaskStateStore.head(task.taskId()).orElse(null);
+        return pullRequestBodyRenderer.render(
+                task.taskId(),
+                publicationOperationId(task, reviewedResultJson),
+                task.title(),
+                view,
+                auditedHead);
     }
 
     /**
@@ -3250,6 +4039,9 @@ public class RequirementDeliveryEngine {
                 || normalized.contains("connection reset")
                 || normalized.contains("connection refused")
                 || normalized.contains("temporarily unavailable")
+                || normalized.contains("gnutls")
+                || normalized.contains("ssl_error_syscall")
+                || normalized.contains("tls connection was non-properly terminated")
                 || normalized.contains("503")
                 || normalized.contains("502")
                 || normalized.contains("504")
@@ -3587,8 +4379,29 @@ public class RequirementDeliveryEngine {
                 artifactMetadata(stage, "RESULT_JSON", resultJson),
                 now
         ));
+        capturePublicationFactsArtifact(stage, resultJson, now + 1L);
         captureExecutorStageArtifacts(stage, resultJson, now);
         return stageRunStore.save(stage.withResultArtifactId(artifact.artifactId(), now));
+    }
+
+    private void capturePublicationFactsArtifact(AgentStageRun stage, String resultJson, long now) {
+        String projection = RequirementPublicationFactsProjection.from(stage.role(), resultJson);
+        if (projection.isBlank()) {
+            return;
+        }
+        artifactStore.saveImmutable(new AgentStageArtifact(
+                idGenerator.nextIdString(),
+                stage.stageRunId(),
+                stage.taskId(),
+                stage.role(),
+                RequirementPublicationFactsProjection.ARTIFACT_TYPE,
+                artifactUri(stage, "publication-facts"),
+                stage.role().name() + " publication facts",
+                projection,
+                sha256(projection),
+                artifactMetadata(stage, RequirementPublicationFactsProjection.ARTIFACT_TYPE, projection),
+                now
+        ));
     }
 
     private void captureExecutorStageArtifacts(AgentStageRun stage, String resultJson, long now) {
@@ -4224,6 +5037,8 @@ public class RequirementDeliveryEngine {
 
                 %s
 
+                %s
+
                 # 上游交接摘要
                 %s
 
@@ -4243,12 +5058,13 @@ public class RequirementDeliveryEngine {
                 roleInstruction(role),
                 roleContextJson(roleContext),
                 repositoryDiscoveryPromptSection(roleContext),
+                projectMemoryUntrustedPromptSection(roleContext),
                 upstreamHandoffPromptSection(role, upstreamResultJson),
                 budgetEstimatePromptSection(role, task),
                 lightweightDeliveryPromptSection(role, task),
                 recoveryPromptSection,
                 buildPrompt(task, materials, context, plan, policyDecision),
-                roleOutputContract(role)
+                roleOutputContract(role, task)
         ).strip();
     }
 
@@ -4477,8 +5293,9 @@ public class RequirementDeliveryEngine {
             case CODING_AGENT -> """
                     - 根据需求评审和方案执行代码修改。
                     - 上游环境备忘视为已验证事实直接沿用，不要重复探测；本轮新发现的环境事实（含可用的测试执行方式）追加写入 result.json 的 environmentNotes，供 QA 直接沿用。
-                    - 依赖树和 /work/cache 是当前任务与重试共享的状态：不得删除 node_modules、package-lock.json 或 /work/cache。先检查现有依赖；仅在依赖确实缺失时执行一次与 lockfile 匹配的安装。安装失败时保留诊断并停止重复清理、重复安装或绕过包管理器的手工下载。
-                    - Next.js 服务验收必须使用生产模式：执行 npm run build && npm run start；不得以 npm run dev 作为交付验证服务。
+                    - 本容器在 credential-relay 隔离网上，不能访问 npm/pypi/GitHub。依赖由宿主预装到 /work/repo 与 /work/cache。禁止探测公网 DNS（含 8.8.8.8），禁止把 EAI_AGAIN/ENOTCACHED 当成需要人工恢复的交付失败。
+                    - 依赖树和 /work/cache 是当前任务与重试共享的状态：不得删除 node_modules、package-lock.json 或 /work/cache。先用已有依赖；隔离网内不要执行 npm install。若依赖仍缺失：保留诊断、写入 environmentNotes，代码改动完成后 status=SUCCESS 且 testStatus=SKIPPED。宿主会在本阶段成功后重跑安装、构建、仓库测试和静态检查。`testStatus` 只是交接信息，不是放行依据。
+                    - 若 node_modules 已就绪，Next.js 服务验收必须使用生产模式：执行 npm run build && npm run start；不得以 npm run dev 作为交付验证服务。
                     - HTTP 请求必须设置不超过 30 秒的请求超时；启动服务和每个 bash 命令都必须有有限 deadline。超时后停止临时服务、保留日志，并提交 FAILED 结构化结果；不得无限等待。
                     - 该阶段只负责代码修改和交付候选证据，不创建 PR。
                     - 使用已安装的 role-handoff-document Skill，把变更、已执行测试、风险和 QA 注意事项写入 /work/output/handoff/next.md；预算见 context.json 的 roleHandoffMaxTokens。
@@ -4510,7 +5327,7 @@ public class RequirementDeliveryEngine {
         };
     }
 
-    private String roleOutputContract(AgentRole role) {
+    private String roleOutputContract(AgentRole role, RdRequirementTask task) {
         return switch (role) {
             case REQUIREMENT_REVIEWER -> """
                     必须调用 rd_submit_result 恰好一次，提交下面这个完整 JSON 对象（字段都在根上）。不要只在对话里打印 JSON，也不要自己写 result.json：
@@ -4573,7 +5390,7 @@ public class RequirementDeliveryEngine {
                       }
                     }
                     """.strip();
-            case QA_AGENT -> """
+            case QA_AGENT -> ("""
                     必须调用 rd_submit_result 恰好一次，提交下面这个完整 JSON 对象（字段都在根上）。不要只在对话里打印 JSON，也不要自己写 result.json：
                     {
                       "status": "PASSED|FAILED|SKIPPED",
@@ -4590,6 +5407,7 @@ public class RequirementDeliveryEngine {
                       },
                       "acceptanceResults": [
                         {
+                          "criteriaId": "CURRENT 必填，必须属于冻结集合 AC-%03d；REGRESSION 可省略",
                           "criteria": "对应验收标准",
                           "scope": "CURRENT|REGRESSION",
                           "command": "真实执行命令",
@@ -4609,7 +5427,8 @@ public class RequirementDeliveryEngine {
                         }
                       ]
                     }
-                    """.strip();
+                    """ + "\n" + AcceptanceCriteriaIds.promptFrozenSetClause(
+                            AcceptanceCriteriaIds.ofJson(task == null ? "[]" : task.acceptanceCriteriaJson()))).strip();
             default -> throw new IllegalArgumentException("unsupported requirement role: " + role);
         };
     }
@@ -4627,6 +5446,19 @@ public class RequirementDeliveryEngine {
                 evidenceJson(roleContext.evidence()),
                 jsonArray(roleContext.omittedEvidenceIds())
         ).strip();
+    }
+
+    private String projectMemoryUntrustedPromptSection(RoleContextPackage roleContext) {
+        if (roleContext == null || roleContext.evidence().isEmpty()) {
+            return "";
+        }
+        List<RoleContextEvidence> memoryEvidence = roleContext.evidence().stream()
+                .filter(evidence -> "PROJECT_MEMORY".equalsIgnoreCase(evidence.sourceType()))
+                .toList();
+        if (memoryEvidence.isEmpty()) {
+            return "";
+        }
+        return ProjectMemoryUntrustedContext.render(memoryEvidence);
     }
 
     /**
@@ -5061,8 +5893,14 @@ public class RequirementDeliveryEngine {
                 .toList();
         AgentStageArtifact resultArtifact = stageArtifacts.stream()
                 .filter(artifact -> artifact.artifactId().equals(stage.resultArtifactId())
-                        || "RESULT_JSON".equals(artifact.artifactType()))
-                .max(Comparator.comparingLong(AgentStageArtifact::createdAtEpochMillis))
+                        || "RESULT_JSON".equals(artifact.artifactType())
+                        || (stage.role() == AgentRole.CODING_AGENT
+                        && RequirementPublicationFactsProjection.ARTIFACT_TYPE.equals(artifact.artifactType())))
+                .max(Comparator
+                        .comparingInt((AgentStageArtifact artifact) ->
+                                RequirementPublicationFactsProjection.ARTIFACT_TYPE.equals(artifact.artifactType())
+                                        ? 1 : 0)
+                        .thenComparingLong(AgentStageArtifact::createdAtEpochMillis))
                 .orElse(null);
         Map<String, Object> reused = new LinkedHashMap<>();
         reused.put("role", stage.role().name());
@@ -5301,6 +6139,16 @@ public class RequirementDeliveryEngine {
                 ? RequirementDeliveryReviewResult.rejected("", "delivery review result missing").toJson()
                 : reviewResult.toJson();
         String normalized = resultJson == null ? "" : resultJson.strip();
+        try {
+            JsonNode parsed = OBJECT_MAPPER.readTree(normalized);
+            JsonNode review = OBJECT_MAPPER.readTree(reviewJson);
+            if (parsed instanceof ObjectNode object && review != null && review.isObject()) {
+                object.set("deliveryReview", review);
+                return OBJECT_MAPPER.writeValueAsString(object);
+            }
+        } catch (JsonProcessingException ignored) {
+            // 保留下方兼容包装，使非法旧快照仍能留下可诊断的审核结论。
+        }
         String appended = "\"deliveryReview\":" + reviewJson;
         if (normalized.startsWith("{") && normalized.endsWith("}")) {
             String body = normalized.substring(1, normalized.length() - 1).strip();

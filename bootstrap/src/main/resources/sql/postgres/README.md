@@ -33,6 +33,8 @@ Scripts are applied in **numeric** `pN_` order (then filename). `p10` runs after
 | 16 | `p16_model_provider_credentials.sql` |
 | 17 | `p17_fix_tool_policy_seed_hashes.sql` |
 | 18 | `p18_pi_agent_state_and_remediation.sql` |
+| 19 | `p19_project_agent_memory.sql` |
+| 20 | `p20_task_audited_state.sql` |
 
 Skip `README.md` and any non-`.sql` files.
 
@@ -41,6 +43,13 @@ execution-profile capability column, the live Agent-state projection, and the du
 `QA_PRODUCT_FIX` / `QA_PROTOCOL_RETRY` remediation ledger. Remediation commands carry a
 round identity that is mutually exclusive with normal and retry-checkpoint generations;
 historical rows remain normal commands and historical profiles default to no capabilities.
+
+`p19_project_agent_memory.sql` adds project-scoped Agent Memory revisions, sources, and
+operations. PostgreSQL remains the canonical store.
+
+`p20_task_audited_state.sql` adds Host audited-state heads/revisions/audit runs/completion
+bindings, and relaxes `rd_agent_remediation_rounds.kind` to accept `HOST_VERIFY_FIX`
+while keeping `remediation_no BETWEEN 1 AND 2` for product-fix and host-verify-fix kinds.
 
 ## Bootstrap
 

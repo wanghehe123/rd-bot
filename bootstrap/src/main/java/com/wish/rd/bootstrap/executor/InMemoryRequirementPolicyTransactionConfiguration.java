@@ -1,5 +1,6 @@
 package com.wish.rd.bootstrap.executor;
 
+import com.wish.rd.engine.requirement.audit.AuditedTaskStateStore;
 import com.wish.rd.engine.requirement.job.RequirementStageCommandStore;
 import com.wish.rd.engine.requirement.policy.RequirementPolicyRunStore;
 import com.wish.rd.engine.requirement.policy.RequirementPolicyTransactionPort;
@@ -7,6 +8,7 @@ import com.wish.rd.engine.requirement.policy.impl.InMemoryRequirementPolicyTrans
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
 import com.wish.rd.rag.runtime.RdTaskStatusEventStore;
 import com.wish.rd.rag.runtime.RdTaskStore;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -34,6 +36,7 @@ public class InMemoryRequirementPolicyTransactionConfiguration {
      * @param events 任务状态事件存储
      * @param commands 阶段命令存储
      * @param ids 共享雪花 ID 生成器
+     * @param auditedTaskStateStore 审计状态存储（内存模式由观测配置提供）
      * @return 内存模式策略事务端口
      */
     @Bean
@@ -43,8 +46,10 @@ public class InMemoryRequirementPolicyTransactionConfiguration {
             RdTaskStore tasks,
             RdTaskStatusEventStore events,
             RequirementStageCommandStore commands,
-            SnowflakeIdGenerator ids
+            SnowflakeIdGenerator ids,
+            ObjectProvider<AuditedTaskStateStore> auditedTaskStateStore
     ) {
-        return new InMemoryRequirementPolicyTransactionAdapter(policyRuns, tasks, events, commands, ids);
+        return new InMemoryRequirementPolicyTransactionAdapter(
+                policyRuns, tasks, events, commands, ids, auditedTaskStateStore.getIfAvailable());
     }
 }

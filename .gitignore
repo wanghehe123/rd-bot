@@ -70,6 +70,8 @@ docs/superpowers/specs/*
 !docs/superpowers/specs/2026-08-13-wp7-shadow-retrieval-evaluation-report.md
 !docs/superpowers/specs/2026-08-21-hangzhou-backend-migration-review.md
 !docs/superpowers/specs/2026-08-13-waimai-corpus-rag-comparison-report.md
+!docs/superpowers/specs/2026-09-03-rd-bot-mea-transformation-plan.md
+!docs/superpowers/specs/2026-09-03-rd-bot-mea-agent-handoff.md
 
 # ===== 生成产物 / 本地输出 =====
 lark-output/
@@ -82,6 +84,7 @@ outputs/
 feishu-wiki-auth.png
 
 # ===== 本地环境与密钥 =====
+sk/env.yaml
 *.env
 *.local
 application-local.yml

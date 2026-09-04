@@ -4,9 +4,11 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wish.rd.engine.agent.model.AgentRole;
+import com.wish.rd.engine.requirement.audit.AcceptanceCriteriaIds;
 import com.wish.rd.engine.requirement.model.RequirementExecutionRequest;
 import com.wish.rd.engine.requirement.model.RequirementExecutionResult;
 import com.wish.rd.engine.requirement.RequirementExecutorPort;
+import com.wish.rd.rag.project.agent.model.AgentManifestCanonicalJson;
 import com.wish.rd.exec.repair.code.CodePlatformPort;
 import com.wish.rd.exec.repair.execution.model.RepairArtifact;
 import com.wish.rd.exec.repair.execution.model.RepairExecutionResult;
@@ -460,6 +462,19 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
                     attachment.content().getBytes(java.nio.charset.StandardCharsets.UTF_8)
             ));
         }
+        if (request.role() == AgentRole.QA_AGENT) {
+            String json = AcceptanceCriteriaIds.canonicalJson(
+                    AcceptanceCriteriaIds.of(acceptanceCriteria(request.task())));
+            boolean duplicate = attachments.stream().anyMatch(existing ->
+                    AcceptanceCriteriaIds.ATTACHMENT_FILENAME.equals(existing.filename()));
+            if (!duplicate) {
+                attachments.add(new com.wish.rd.exec.repair.execution.model.RepairInputAttachment(
+                        AcceptanceCriteriaIds.ATTACHMENT_FILENAME,
+                        "application/json; charset=utf-8",
+                        json.getBytes(java.nio.charset.StandardCharsets.UTF_8)
+                ));
+            }
+        }
         return List.copyOf(attachments);
     }
 
@@ -564,6 +579,13 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
         if (!request.contextPolicyJson().isBlank()) {
             context.put("contextPolicyJson", request.contextPolicyJson());
         }
+        attachments.stream()
+                .filter(attachment -> AcceptanceCriteriaIds.ATTACHMENT_FILENAME.equals(attachment.filename()))
+                .findFirst()
+                .ifPresent(attachment -> context.put(
+                        "frozenAcceptanceCriteriaIdsHash",
+                        AgentManifestCanonicalJson.contentHash(
+                                new String(attachment.content(), java.nio.charset.StandardCharsets.UTF_8))));
         if (!request.initialAgentStateProtocol().isBlank()) {
             context.put("initialAgentStateProtocol", request.initialAgentStateProtocol());
             context.put("initialAgentStateJson", request.initialAgentStateJson());
@@ -1109,8 +1131,9 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
         try {
             String json = OBJECT_MAPPER.writeValueAsString(expandedAgentResult(repairResult.rawResultJson()));
             boolean remediationV2Enabled = qaRemediationV2Enabled(request);
+            List<String> frozenCriteriaIds = AcceptanceCriteriaIds.of(acceptanceCriteria(request.task()));
             AgentRoleResultValidation validation = AGENT_ROLE_RESULT_VALIDATOR.validate(
-                    "QA_AGENT", json, remediationV2Enabled
+                    "QA_AGENT", json, remediationV2Enabled, frozenCriteriaIds
             );
             if (!validation.valid()) {
                 return "QA evidence protocol invalid: " + String.join("; ", validation.errors());
@@ -1120,7 +1143,8 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
                     repairResult.artifacts(),
                     acceptanceCriteria(request.task()),
                     candidateChangedFilesFromMetadata(repairResult.dockerMetadataJson()),
-                    remediationV2Enabled
+                    remediationV2Enabled,
+                    frozenCriteriaIds
             );
             if (!evidenceValidation.valid()) {
                 return "QA evidence bundle invalid: " + String.join("; ", evidenceValidation.errors());

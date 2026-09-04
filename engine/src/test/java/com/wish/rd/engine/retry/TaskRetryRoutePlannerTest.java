@@ -70,8 +70,7 @@ class TaskRetryRoutePlannerTest {
         assertRoute(point(TaskFailurePhase.PR_PUBLICATION, null, "PUBLICATION:operation-1", "policy-1", "operation-1"),
                 "REQUIREMENT_DELIVERY", "PUBLICATION:operation-1", null, List.of());
         assertRoute(point(TaskFailurePhase.HOST_VERIFY, AgentRole.CODING_AGENT, "HOST_VERIFY", "policy-1", ""),
-                "CODING_AGENT", "ROLE_EXECUTION:CODING_AGENT", TaskRetryAttemptKind.AGENT_STAGE,
-                List.of(AgentRole.CODING_AGENT, AgentRole.QA_AGENT));
+                "REQUIREMENT_DELIVERY", "HOST_VERIFY", null, List.of(AgentRole.QA_AGENT));
     }
 
     @Test

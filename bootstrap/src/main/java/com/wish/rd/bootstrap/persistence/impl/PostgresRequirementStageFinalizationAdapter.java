@@ -31,6 +31,9 @@ import com.wish.rd.bootstrap.persistence.mapper.RequirementPublicationMapper;
 import com.wish.rd.bootstrap.persistence.mapper.TaskFailureProvenanceMapper;
 import com.wish.rd.bootstrap.persistence.mapper.TaskRetryAttemptBindingMapper;
 import com.wish.rd.bootstrap.persistence.mapper.TaskRetryCheckpointMapper;
+import com.wish.rd.engine.project.memory.ProjectMemoryFinalizationRegistrar;
+import com.wish.rd.engine.requirement.audit.AuditedCompletionBindingGuard;
+import com.wish.rd.engine.requirement.audit.AuditedStateMutation;
 import com.wish.rd.engine.requirement.job.RequirementStageFinalizationPort;
 import com.wish.rd.engine.requirement.job.RequirementStageExecutionPlanCodec;
 import com.wish.rd.engine.requirement.job.model.RequirementDeliveryJob;
@@ -48,6 +51,7 @@ import com.wish.rd.engine.retry.model.TaskRetryCheckpointStatus;
 import com.wish.rd.engine.retry.model.TaskRetryFailureProvenance;
 import com.wish.rd.engine.scheduling.model.ScheduleResourceClass;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
+import com.wish.rd.rag.project.memory.ProjectMemoryOperationStore;
 import com.wish.rd.rag.runtime.model.RdRequirementTask;
 import com.wish.rd.rag.runtime.model.RdTaskStatus;
 import org.springframework.beans.factory.ObjectProvider;
@@ -89,6 +93,8 @@ public class PostgresRequirementStageFinalizationAdapter implements RequirementS
     private final AgentExecutionProfileMapper executionProfileMapper;
     private final PiRemediationFinalizationWriter remediationWriter;
     private final AgentRemediationRoundMapper remediationRoundMapper;
+    private final ProjectMemoryOperationStore memoryOperationStore;
+    private final AuditedStateFinalizationWriter auditedStateWriter;
 
     /** Advisory-lock namespace distinct from fair stage admission. */
     static final long REMEDIATION_TASK_LOCK_NAMESPACE = 0x5049_524D_4C4B_0000L;
@@ -217,7 +223,9 @@ public class PostgresRequirementStageFinalizationAdapter implements RequirementS
             ObjectProvider<TaskRetryAttemptBindingMapper> attemptBindingMapperProvider,
             ObjectProvider<AgentExecutionProfileMapper> executionProfileMapperProvider,
             ObjectProvider<PiRemediationFinalizationWriter> remediationWriterProvider,
-            ObjectProvider<AgentRemediationRoundMapper> remediationRoundMapperProvider
+            ObjectProvider<AgentRemediationRoundMapper> remediationRoundMapperProvider,
+            ObjectProvider<ProjectMemoryOperationStore> memoryOperationStoreProvider,
+            ObjectProvider<AuditedStateFinalizationWriter> auditedStateWriterProvider
     ) {
         this(finalizationMapper, stageCommandMapper, jobMapper, taskMapper, taskStatusEventMapper,
                 eventIdGenerator, publicationMapper, policyRunMapper, agentStageRunMapper,
@@ -226,7 +234,9 @@ public class PostgresRequirementStageFinalizationAdapter implements RequirementS
                 attemptBindingMapperProvider == null ? null : attemptBindingMapperProvider.getIfAvailable(),
                 executionProfileMapperProvider == null ? null : executionProfileMapperProvider.getIfAvailable(),
                 remediationWriterProvider == null ? null : remediationWriterProvider.getIfAvailable(),
-                remediationRoundMapperProvider == null ? null : remediationRoundMapperProvider.getIfAvailable());
+                remediationRoundMapperProvider == null ? null : remediationRoundMapperProvider.getIfAvailable(),
+                memoryOperationStoreProvider == null ? null : memoryOperationStoreProvider.getIfAvailable(),
+                auditedStateWriterProvider == null ? null : auditedStateWriterProvider.getIfAvailable());
     }
 
     /**
@@ -316,6 +326,57 @@ public class PostgresRequirementStageFinalizationAdapter implements RequirementS
             PiRemediationFinalizationWriter remediationWriter,
             AgentRemediationRoundMapper remediationRoundMapper
     ) {
+        this(finalizationMapper, stageCommandMapper, jobMapper, taskMapper, taskStatusEventMapper,
+                eventIdGenerator, publicationMapper, policyRunMapper, agentStageRunMapper,
+                failureProvenanceMapper, checkpointMapper, attemptBindingMapper, executionProfileMapper,
+                remediationWriter, remediationRoundMapper, null);
+    }
+
+    /** Full constructor for focused remediation and project-memory finalization tests. */
+    public PostgresRequirementStageFinalizationAdapter(
+            RequirementStageFinalizationMapper finalizationMapper,
+            RequirementStageCommandMapper stageCommandMapper,
+            RequirementDeliveryJobMapper jobMapper,
+            RdTaskMapper taskMapper,
+            RdTaskStatusEventMapper taskStatusEventMapper,
+            SnowflakeIdGenerator eventIdGenerator,
+            RequirementPublicationMapper publicationMapper,
+            RequirementPolicyRunMapper policyRunMapper,
+            RdAgentStageRunMapper agentStageRunMapper,
+            TaskFailureProvenanceMapper failureProvenanceMapper,
+            TaskRetryCheckpointMapper checkpointMapper,
+            TaskRetryAttemptBindingMapper attemptBindingMapper,
+            AgentExecutionProfileMapper executionProfileMapper,
+            PiRemediationFinalizationWriter remediationWriter,
+            AgentRemediationRoundMapper remediationRoundMapper,
+            ProjectMemoryOperationStore memoryOperationStore
+    ) {
+        this(finalizationMapper, stageCommandMapper, jobMapper, taskMapper, taskStatusEventMapper,
+                eventIdGenerator, publicationMapper, policyRunMapper, agentStageRunMapper,
+                failureProvenanceMapper, checkpointMapper, attemptBindingMapper, executionProfileMapper,
+                remediationWriter, remediationRoundMapper, memoryOperationStore, null);
+    }
+
+    /** Full constructor including audited-state writeback for focused tests. */
+    public PostgresRequirementStageFinalizationAdapter(
+            RequirementStageFinalizationMapper finalizationMapper,
+            RequirementStageCommandMapper stageCommandMapper,
+            RequirementDeliveryJobMapper jobMapper,
+            RdTaskMapper taskMapper,
+            RdTaskStatusEventMapper taskStatusEventMapper,
+            SnowflakeIdGenerator eventIdGenerator,
+            RequirementPublicationMapper publicationMapper,
+            RequirementPolicyRunMapper policyRunMapper,
+            RdAgentStageRunMapper agentStageRunMapper,
+            TaskFailureProvenanceMapper failureProvenanceMapper,
+            TaskRetryCheckpointMapper checkpointMapper,
+            TaskRetryAttemptBindingMapper attemptBindingMapper,
+            AgentExecutionProfileMapper executionProfileMapper,
+            PiRemediationFinalizationWriter remediationWriter,
+            AgentRemediationRoundMapper remediationRoundMapper,
+            ProjectMemoryOperationStore memoryOperationStore,
+            AuditedStateFinalizationWriter auditedStateWriter
+    ) {
         this.finalizationMapper = Objects.requireNonNull(finalizationMapper, "finalizationMapper must not be null");
         this.stageCommandMapper = Objects.requireNonNull(stageCommandMapper, "stageCommandMapper must not be null");
         this.jobMapper = Objects.requireNonNull(jobMapper, "jobMapper must not be null");
@@ -332,6 +393,8 @@ public class PostgresRequirementStageFinalizationAdapter implements RequirementS
         this.executionProfileMapper = executionProfileMapper;
         this.remediationWriter = remediationWriter;
         this.remediationRoundMapper = remediationRoundMapper;
+        this.memoryOperationStore = memoryOperationStore;
+        this.auditedStateWriter = auditedStateWriter;
     }
 
     /**
@@ -604,7 +667,11 @@ public class PostgresRequirementStageFinalizationAdapter implements RequirementS
             throw new IllegalStateException("stage finalization marker changed: " + marker.commandId());
         }
 
+        ProjectMemoryFinalizationRegistrar.registerIfPresent(memoryOperationStore, command.memoryOperation());
+
         boolean deferRetryableMutation = defersRetryableMutation(command);
+        AuditedCompletionBindingGuard.requireBindingIfCompleted(command.plan(), auditedStateWriter != null);
+        applyAuditedStateMutation(command.plan());
         applyTaskMutation(command, lockedMarker);
         RequirementPublicationRow publicationReceipt = lockPublicationReceipt(command.plan(), marker.taskId());
 
@@ -1146,7 +1213,8 @@ public class PostgresRequirementStageFinalizationAdapter implements RequirementS
     ) {
         RequirementStageCommand stageCommand = command.stageCommand();
         if (command.taskMutationDisposition() != TaskMutationDisposition.APPLY
-                || !stageCommand.stage().startsWith("ROLE_EXECUTION:")
+                || (!HostVerifyFailureJson.STAGE.equals(stageCommand.stage())
+                && !stageCommand.stage().startsWith("ROLE_EXECUTION:"))
                 || (finalized.outcomeStatus() != RdTaskStatus.FAILED_RETRYABLE
                 && finalized.outcomeStatus() != RdTaskStatus.FAILED_NEEDS_HUMAN)) {
             return false;
@@ -1287,11 +1355,16 @@ public class PostgresRequirementStageFinalizationAdapter implements RequirementS
             throw new IllegalStateException("terminal publication failure requires a publication receipt: "
                     + stageCommand.commandId());
         }
+        String policyRunId;
         if (stageCommand.policyRunId().isBlank()) {
-            // checkpoint 重试链（TaskRetryRoutePlanner）派生的交付命令不带 policyRunId。
-            // 失败溯源是补充审计：缺失关联时跳过记录而不是让 finalize 回滚——
-            // 否则命令永远卡在 RUNNING，重试 API 也会因歧义拒绝（2026-08-23 真机）。
-            return;
+            // checkpoint 重试链曾派生不带 policyRunId 的 PUBLICATION 命令。
+            // 优先回落到 checkpoint.sourcePolicyRunId；两边都空才跳过溯源，避免 finalize 回滚卡死 RUNNING。
+            policyRunId = inheritedCheckpointPolicyRunId(stageCommand);
+            if (policyRunId.isBlank()) {
+                return;
+            }
+        } else {
+            policyRunId = stageCommand.policyRunId();
         }
         RequirementPublicationRow publication = publicationMapper.selectByOperationIdForUpdate(receipt.operationId());
         if (publication == null
@@ -1301,7 +1374,7 @@ public class PostgresRequirementStageFinalizationAdapter implements RequirementS
                     + stageCommand.commandId());
         }
         RequirementPolicyRunRow policy = policyRunMapper.findById(
-                PostgresPersistenceSupport.parseId(stageCommand.policyRunId()));
+                PostgresPersistenceSupport.parseId(policyRunId));
         if (policy == null || policy.taskId == null
                 || policy.taskId.longValue() != PostgresPersistenceSupport.parseId(stageCommand.taskId())
                 || safe(policy.planDigest).isBlank()) {
@@ -1331,6 +1404,21 @@ public class PostgresRequirementStageFinalizationAdapter implements RequirementS
             throw new IllegalStateException("terminal publication failure provenance conflicts: "
                     + stageCommand.commandId());
         }
+    }
+
+    private String inheritedCheckpointPolicyRunId(RequirementStageCommand stageCommand) {
+        if (checkpointMapper == null || stageCommand.retryCheckpointId().isBlank()) {
+            return "";
+        }
+        TaskRetryCheckpointRow checkpoint = checkpointMapper.lockByIdForUpdate(
+                PostgresPersistenceSupport.parseId(stageCommand.retryCheckpointId()));
+        if (checkpoint == null
+                || checkpoint.sourcePolicyRunId == null
+                || checkpoint.taskId == null
+                || checkpoint.taskId.longValue() != PostgresPersistenceSupport.parseId(stageCommand.taskId())) {
+            return "";
+        }
+        return PostgresPersistenceSupport.idString(checkpoint.sourcePolicyRunId);
     }
 
     /**
@@ -1507,6 +1595,17 @@ public class PostgresRequirementStageFinalizationAdapter implements RequirementS
             throw new IllegalStateException("publication receipt payload cannot be decoded: " + receipt.operationId(),
                     exception);
         }
+    }
+
+    private void applyAuditedStateMutation(RequirementStageExecutionPlan plan) {
+        AuditedStateMutation mutation = plan.auditedStateMutation();
+        if (mutation == null) {
+            return;
+        }
+        if (auditedStateWriter == null) {
+            throw new IllegalStateException("audited state finalization writer is unavailable: " + plan.taskId());
+        }
+        auditedStateWriter.apply(mutation);
     }
 
     private void applyTaskMutation(FinalizationCommand command, RequirementStageFinalization marker) {

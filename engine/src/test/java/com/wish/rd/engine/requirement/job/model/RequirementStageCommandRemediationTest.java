@@ -69,6 +69,27 @@ class RequirementStageCommandRemediationTest {
                 "source-stage-89", request, "sha256:" + "0".repeat(64), 1L));
     }
 
+    @Test
+    void shouldAcceptHostVerifyFixRoundsIndependentlyAndRejectAThird() {
+        RequirementStageCommand first = RequirementStageCommand.remediationPending(
+                "201", "1", 7L, 3L, "CODING_AGENT", "ROLE_EXECUTION:CODING_AGENT", 3, 1000L,
+                ScheduleResourceClass.PROVIDER, Set.of(ScheduleResourceClass.PROVIDER), "project", "provider",
+                "P1", "", "301", AgentRemediationKind.HOST_VERIFY_FIX, 1,
+                "coding-source", "{\"reason\":\"hv\"}", digest("{\"reason\":\"hv\"}"), 1L);
+        RequirementStageCommand second = RequirementStageCommand.remediationPending(
+                "202", "1", 7L, 3L, "CODING_AGENT", "ROLE_EXECUTION:CODING_AGENT", 3, 1000L,
+                ScheduleResourceClass.PROVIDER, Set.of(ScheduleResourceClass.PROVIDER), "project", "provider",
+                "P1", "", "302", AgentRemediationKind.HOST_VERIFY_FIX, 2,
+                "coding-source-2", "{\"reason\":\"hv2\"}", digest("{\"reason\":\"hv2\"}"), 1L);
+        assertEquals(AgentRemediationKind.HOST_VERIFY_FIX, first.remediationKind());
+        assertEquals(2, second.remediationNo());
+        assertThrows(IllegalArgumentException.class, () -> RequirementStageCommand.remediationPending(
+                "203", "1", 7L, 3L, "CODING_AGENT", "ROLE_EXECUTION:CODING_AGENT", 3, 1000L,
+                ScheduleResourceClass.PROVIDER, Set.of(ScheduleResourceClass.PROVIDER), "project", "provider",
+                "P1", "", "303", AgentRemediationKind.HOST_VERIFY_FIX, 3,
+                "coding-source-3", "{\"reason\":\"hv3\"}", digest("{\"reason\":\"hv3\"}"), 1L));
+    }
+
     private static RequirementStageCommand remediation(String commandId, String roundId, String role) {
         return RequirementStageCommand.remediationPending(
                 commandId, "1", 7L, 3L, role, "ROLE_EXECUTION:" + role, 3, 1000L,

@@ -18,8 +18,19 @@ import org.springframework.beans.factory.ObjectProvider;
 
 /** Supplies the local durable-job store only when no production adapter is configured. */
 @Configuration
-@EnableConfigurationProperties(RequirementDeliverySchedulingProperties.class)
+@EnableConfigurationProperties({
+        RequirementDeliverySchedulingProperties.class,
+        RequirementDeliveryAuditedWritebackProperties.class
+})
 public class RequirementDeliveryJobConfiguration {
+
+    @Bean
+    @ConditionalOnMissingBean(com.wish.rd.engine.requirement.audit.AuditedWritebackGateMode.class)
+    com.wish.rd.engine.requirement.audit.AuditedWritebackGateMode auditedWritebackGateMode(
+            RequirementDeliveryAuditedWritebackProperties properties
+    ) {
+        return properties.getGateMode();
+    }
 
     @Bean
     @ConditionalOnMissingBean(RequirementDeliveryJobStore.class)
@@ -48,7 +59,8 @@ public class RequirementDeliveryJobConfiguration {
             RdTaskStatusEventStore eventStore,
             SnowflakeIdGenerator idGenerator,
             ObjectProvider<RequirementPublicationStore> publicationStoreProvider,
-            ObjectProvider<com.wish.rd.engine.requirement.policy.RequirementPolicyRunStore> policyRunStoreProvider
+            ObjectProvider<com.wish.rd.engine.requirement.policy.RequirementPolicyRunStore> policyRunStoreProvider,
+            ObjectProvider<com.wish.rd.engine.requirement.audit.AuditedTaskStateStore> auditedTaskStateStoreProvider
     ) {
         return new InMemoryRequirementStageFinalizationPort(
                 stageCommandStore,
@@ -57,6 +69,12 @@ public class RequirementDeliveryJobConfiguration {
                 new CoordinatedRdTaskStatePersistence(taskStore, eventStore),
                 idGenerator,
                 publicationStoreProvider.getIfAvailable(),
-                policyRunStoreProvider.getIfAvailable());
+                policyRunStoreProvider.getIfAvailable(),
+                null,
+                null,
+                null,
+                null,
+                null,
+                auditedTaskStateStoreProvider.getIfAvailable());
     }
 }

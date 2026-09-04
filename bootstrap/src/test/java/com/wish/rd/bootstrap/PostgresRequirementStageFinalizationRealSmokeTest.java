@@ -47,7 +47,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p>Run with {@code -Drd.integration.stage-finalization.enabled=true} against throwaway
  * PostgreSQL on {@code 127.0.0.1:55432}. {@link PostgresClasspathSchemaInitializer} applies
- * {@code p0}/{@code p1}/{@code p4}/{@code p8}/{@code p18} before context refresh.
+ * {@code p0}/{@code p1}/{@code p4}/{@code p8}/{@code p18}/{@code p19} before context refresh.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE, properties = {
         "rd.knowledge.store=postgres",

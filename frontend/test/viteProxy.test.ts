@@ -124,7 +124,9 @@ test("only bypasses real task SPA routes while proxying nested task content APIs
     "/admin/rd-tasks/7480495920010891264/audit-content",
     "/admin/rd-tasks/7480495920010891264/role-prompts",
     "/admin/rd-tasks/7480495920010891264/host-verifications",
-    "/admin/rd-tasks/7480495920010891264/host-verifications/2/evidence/9/content"
+    "/admin/rd-tasks/7480495920010891264/host-verifications/2/evidence/9/content",
+    "/admin/rd-tasks/7480495920010891264/audited-state",
+    "/admin/rd-tasks/7480495920010891264/audit-runs"
   ]) {
     assert.equal(bypass?.(navigation(apiPath)), undefined, `${apiPath} must reach Spring Boot`);
   }
@@ -189,6 +191,39 @@ test("OpenViking service and SPA route stay aligned with the 12 nested admin API
     assert.match(service, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), fragment);
   }
   assert.doesNotMatch(service, /\/admin\/knowledge\/\$\{kbId\}\/openviking/);
+});
+
+test("bypasses project memory SPA HTML while JSON memory APIs still hit Spring Boot", () => {
+  type ProxyEntry = {
+    target?: string;
+    bypass?: (request: {
+      method?: string;
+      url?: string;
+      headers: Record<string, string>;
+    }) => string | undefined;
+  };
+  const proxy = viteConfig.server?.proxy as Record<string, string | ProxyEntry> | undefined;
+  const projects = proxy?.["/admin/projects"] as ProxyEntry;
+  assert.equal(projects.target, "http://127.0.0.1:18080");
+  const bypass = projects.bypass;
+  assert.equal(typeof bypass, "function");
+  assert.equal(
+    bypass?.({ method: "GET", url: "/admin/projects/1/memories", headers: { accept: "text/html" } }),
+    "/admin/projects/1/memories"
+  );
+  for (const apiPath of [
+    "/admin/projects/1/memories",
+    "/admin/projects/1/memories/memory-1",
+    "/admin/projects/1/memories/memory-1/confirm",
+    "/admin/projects/1/memories/memory-1/invalidate",
+    "/admin/projects/1/memories/memory-1/soft-delete"
+  ]) {
+    assert.equal(
+      bypass?.({ method: "GET", url: apiPath, headers: { accept: "application/json" } }),
+      undefined,
+      `${apiPath} must reach Spring Boot`
+    );
+  }
 });
 
 test("bypasses project agent-strategy SPA HTML while JSON agent-strategies still hit Spring Boot", () => {

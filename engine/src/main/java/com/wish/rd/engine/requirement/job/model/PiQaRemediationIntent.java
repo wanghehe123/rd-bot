@@ -33,11 +33,46 @@ public record PiQaRemediationIntent(
         PreparedProfileSnapshot codingProfile,
         PreparedProfileSnapshot qaProfile,
         String protocolFailureReceiptJson,
-        String protocolFailureReceiptHash
+        String protocolFailureReceiptHash,
+        String hostVerificationRunId
 ) {
     public static final String PROTOCOL = "rd-pi-qa-remediation-intent/v2";
     private static final int MAX_EMBEDDED_JSON_BYTES = 65_536;
     private static final ObjectMapper MAPPER = new ObjectMapper();
+
+    /**
+     * QA-kind constructor that leaves {@code hostVerificationRunId} blank.
+     */
+    public PiQaRemediationIntent(
+            String protocol,
+            String sourceTaskId,
+            String sourceStageRunId,
+            String sourceCommandId,
+            String sourceResultHash,
+            long sourceTaskVersion,
+            long sourceFencingToken,
+            AgentRemediationKind kind,
+            int remediationNo,
+            String roundId,
+            String requestJson,
+            String requestHash,
+            String targetCodingStageRunId,
+            int targetCodingAttemptNo,
+            String targetQaStageRunId,
+            int targetQaAttemptNo,
+            String firstCommandId,
+            ExecutionProfileClaim sourceProfile,
+            PreparedProfileSnapshot codingProfile,
+            PreparedProfileSnapshot qaProfile,
+            String protocolFailureReceiptJson,
+            String protocolFailureReceiptHash
+    ) {
+        this(protocol, sourceTaskId, sourceStageRunId, sourceCommandId, sourceResultHash,
+                sourceTaskVersion, sourceFencingToken, kind, remediationNo, roundId, requestJson, requestHash,
+                targetCodingStageRunId, targetCodingAttemptNo, targetQaStageRunId, targetQaAttemptNo,
+                firstCommandId, sourceProfile, codingProfile, qaProfile,
+                protocolFailureReceiptJson, protocolFailureReceiptHash, "");
+    }
 
     public PiQaRemediationIntent {
         protocol = require(protocol, "protocol");
@@ -63,28 +98,49 @@ public record PiQaRemediationIntent(
         requestHash = requireDigest(requestHash, "requestHash", true);
         requireHash(requestJson, requestHash, "requestHash");
         targetCodingStageRunId = safe(targetCodingStageRunId);
-        targetQaStageRunId = require(targetQaStageRunId, "targetQaStageRunId");
         firstCommandId = require(firstCommandId, "firstCommandId");
-        if (targetQaAttemptNo < 1 || targetQaAttemptNo > 3) {
-            throw new IllegalArgumentException("target QA attempt must be between 1 and 3");
-        }
-        if (sourceProfile == null || qaProfile == null) {
-            throw new IllegalArgumentException("source and QA profile claims are required");
+        hostVerificationRunId = safe(hostVerificationRunId);
+        if (sourceProfile == null) {
+            throw new IllegalArgumentException("source profile claim is required");
         }
         sourceProfile.requirePiRemediationCapability();
-        if (kind == AgentRemediationKind.QA_PRODUCT_FIX) {
+        if (kind == AgentRemediationKind.HOST_VERIFY_FIX) {
+            hostVerificationRunId = require(hostVerificationRunId, "hostVerificationRunId");
             targetCodingStageRunId = require(targetCodingStageRunId, "targetCodingStageRunId");
             if (targetCodingAttemptNo < 1 || targetCodingAttemptNo > 3 || codingProfile == null) {
-                throw new IllegalArgumentException("product fix requires a bounded Coding target");
+                throw new IllegalArgumentException("host-verify fix requires a bounded Coding target");
             }
-        } else if (!targetCodingStageRunId.isEmpty() || targetCodingAttemptNo != 0 || codingProfile != null) {
-            throw new IllegalArgumentException("protocol retry must not carry a Coding target");
+            targetQaStageRunId = safe(targetQaStageRunId);
+            if (!targetQaStageRunId.isEmpty() || targetQaAttemptNo != 0 || qaProfile != null) {
+                throw new IllegalArgumentException("host-verify fix must not create a QA target");
+            }
+        } else {
+            if (!hostVerificationRunId.isEmpty()) {
+                throw new IllegalArgumentException("QA remediation must not carry a host verification run");
+            }
+            targetQaStageRunId = require(targetQaStageRunId, "targetQaStageRunId");
+            if (targetQaAttemptNo < 1 || targetQaAttemptNo > 3) {
+                throw new IllegalArgumentException("target QA attempt must be between 1 and 3");
+            }
+            if (qaProfile == null) {
+                throw new IllegalArgumentException("source and QA profile claims are required");
+            }
+            if (kind == AgentRemediationKind.QA_PRODUCT_FIX) {
+                targetCodingStageRunId = require(targetCodingStageRunId, "targetCodingStageRunId");
+                if (targetCodingAttemptNo < 1 || targetCodingAttemptNo > 3 || codingProfile == null) {
+                    throw new IllegalArgumentException("product fix requires a bounded Coding target");
+                }
+            } else if (!targetCodingStageRunId.isEmpty() || targetCodingAttemptNo != 0 || codingProfile != null) {
+                throw new IllegalArgumentException("protocol retry must not carry a Coding target");
+            }
         }
         if (codingProfile != null) {
             codingProfile.requireTarget(sourceTaskId, targetCodingStageRunId, "CODING_AGENT",
                     targetCodingAttemptNo);
         }
-        qaProfile.requireTarget(sourceTaskId, targetQaStageRunId, "QA_AGENT", targetQaAttemptNo);
+        if (qaProfile != null) {
+            qaProfile.requireTarget(sourceTaskId, targetQaStageRunId, "QA_AGENT", targetQaAttemptNo);
+        }
         protocolFailureReceiptJson = safe(protocolFailureReceiptJson);
         protocolFailureReceiptHash = safe(protocolFailureReceiptHash);
         if (protocolFailureReceiptJson.isEmpty() != protocolFailureReceiptHash.isEmpty()) {
@@ -114,7 +170,7 @@ public record PiQaRemediationIntent(
         }
         String nextJson = requestJson;
         String nextHash = requestHash;
-        if (kind == AgentRemediationKind.QA_PRODUCT_FIX) {
+        if (kind == AgentRemediationKind.QA_PRODUCT_FIX || kind == AgentRemediationKind.HOST_VERIFY_FIX) {
             try {
                 var payload = (com.fasterxml.jackson.databind.node.ObjectNode) MAPPER.readTree(requestJson);
                 payload.put("remediationNo", assignedNo);
@@ -129,7 +185,7 @@ public record PiQaRemediationIntent(
                 sourceTaskVersion, sourceFencingToken, kind, assignedNo, roundId, nextJson, nextHash,
                 targetCodingStageRunId, targetCodingAttemptNo, targetQaStageRunId, targetQaAttemptNo,
                 firstCommandId, sourceProfile, codingProfile, qaProfile,
-                protocolFailureReceiptJson, protocolFailureReceiptHash);
+                protocolFailureReceiptJson, protocolFailureReceiptHash, hostVerificationRunId);
     }
 
     public record ExecutionProfileClaim(

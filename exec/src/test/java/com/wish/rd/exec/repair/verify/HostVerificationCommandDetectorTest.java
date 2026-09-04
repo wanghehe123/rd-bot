@@ -127,6 +127,84 @@ class HostVerificationCommandDetectorTest {
     }
 
     @Test
+    void shouldDetectNestedClientAndServerBuildWithoutRootBuildScript() throws Exception {
+        Files.writeString(repository.resolve("package.json"), """
+                {
+                  "scripts": {
+                    "install:all": "cd server && npm install && cd ../client && npm install",
+                    "dev": "vite",
+                    "start": "node server/index.js",
+                    "seed": "node seed.js"
+                  }
+                }
+                """);
+        Files.createDirectories(repository.resolve("client"));
+        Files.createDirectories(repository.resolve("server"));
+        Files.writeString(repository.resolve("client/package.json"), """
+                {
+                  "scripts": {
+                    "dev": "vite",
+                    "build": "tsc && vite build"
+                  }
+                }
+                """);
+        Files.writeString(repository.resolve("server/package.json"), """
+                {
+                  "scripts": {
+                    "dev": "tsx watch src/index.ts",
+                    "build": "tsc"
+                  }
+                }
+                """);
+        Files.writeString(repository.resolve("client/tsconfig.json"), "{}");
+        Files.writeString(repository.resolve("server/tsconfig.json"), "{}");
+
+        HostVerificationCommandSet commands = detector.detect(
+                repository,
+                List.of("client/src/pages/customer/Home.tsx")
+        );
+
+        assertEquals(
+                List.of(
+                        "npm --prefix server install",
+                        "npm --prefix server run build",
+                        "npm --prefix client install",
+                        "npm --prefix client run build"
+                ),
+                commands.buildCommands()
+        );
+        assertTrue(commands.staticCommands().isEmpty());
+        assertFalse(commands.staticCommands().stream().anyMatch(command -> command.contains("tsc --noEmit")));
+        assertFalse(commands.buildCommands().stream().anyMatch(command ->
+                command.contains("npm run dev") || command.contains("cd ")));
+        assertFalse(commands.ambiguous());
+        assertFalse(commands.docsOnly());
+        assertFalse(commands.buildCommandsDeclared());
+    }
+
+    @Test
+    void shouldStayAmbiguousWhenRootOnlyHasInstallAllAndDev() throws Exception {
+        Files.writeString(repository.resolve("package.json"), """
+                {
+                  "scripts": {
+                    "install:all": "echo install",
+                    "dev": "vite",
+                    "start": "node server.js",
+                    "seed": "node seed.js"
+                  }
+                }
+                """);
+
+        HostVerificationCommandSet commands = detector.detect(repository, List.of("src/App.tsx"));
+
+        assertTrue(commands.ambiguous());
+        assertTrue(commands.buildCommands().isEmpty());
+        assertFalse(commands.buildCommands().stream().anyMatch(command ->
+                command.contains("npm run dev") || command.contains("install:all")));
+        assertTrue(commands.reason().toLowerCase().contains("cannot detect"));
+    }
+
+    @Test
     void shouldSkipDetectionWhenChangedFilesAreDocsOnly() throws Exception {
         Files.writeString(repository.resolve("package.json"), """
                 {

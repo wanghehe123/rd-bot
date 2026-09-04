@@ -1,5 +1,17 @@
 package com.wish.rd.engine.requirement.job;
 
+import com.wish.rd.engine.requirement.audit.AuditCompletion;
+import com.wish.rd.engine.requirement.audit.AuditIntegrity;
+import com.wish.rd.engine.requirement.audit.AuditRun;
+import com.wish.rd.engine.requirement.audit.AuditedContractRef;
+import com.wish.rd.engine.requirement.audit.AuditedRecord;
+import com.wish.rd.engine.requirement.audit.AuditedRecordKind;
+import com.wish.rd.engine.requirement.audit.AuditedRecordStatus;
+import com.wish.rd.engine.requirement.audit.AuditedStateMutation;
+import com.wish.rd.engine.requirement.audit.AuditedTaskState;
+import com.wish.rd.engine.requirement.audit.AuditedTaskStateCodec;
+import com.wish.rd.engine.requirement.audit.ContractAuditVerdict;
+import com.wish.rd.engine.requirement.audit.impl.InMemoryAuditedTaskStateStore;
 import com.wish.rd.engine.agent.impl.InMemoryAgentStageArtifactStore;
 import com.wish.rd.engine.agent.impl.InMemoryAgentStageRunStore;
 import com.wish.rd.engine.agent.model.AgentRole;
@@ -47,6 +59,9 @@ import com.wish.rd.engine.retry.model.TaskRetryFailureProvenance;
 import com.wish.rd.engine.scheduling.model.ScheduleResourceClass;
 import com.wish.rd.engine.scheduling.model.RequirementDeliverySchedulingPolicy;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
+import com.wish.rd.rag.project.memory.impl.InMemoryProjectMemoryOperationStore;
+import com.wish.rd.rag.project.memory.model.ProjectMemoryOperation;
+import com.wish.rd.rag.project.memory.model.ProjectMemoryOperationKey;
 import com.wish.rd.rag.runtime.impl.CoordinatedRdTaskStatePersistence;
 import com.wish.rd.rag.runtime.impl.InMemoryRdTaskStatusEventStore;
 import com.wish.rd.rag.runtime.impl.InMemoryRdTaskStore;
@@ -61,6 +76,7 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -73,6 +89,268 @@ import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 
 class InMemoryRequirementStageFinalizationPortTest {
+
+    @Test
+    void projectMemoryOperationDraftDefaultsToNoOperationUntilCaptureIsBound() {
+        assertFalse(RequirementStageFinalizationPort.ProjectMemoryOperationDraft.none().enabled());
+    }
+
+    @Test
+    void registersProjectMemoryOperationInsideFinalizationBoundary() {
+        long now = 1_784_810_000_000L;
+        InMemoryProjectMemoryOperationStore memoryOperations = new InMemoryProjectMemoryOperationStore();
+        InMemoryRdTaskStore taskStore = new InMemoryRdTaskStore();
+        InMemoryRdTaskStatusEventStore events = new InMemoryRdTaskStatusEventStore();
+        taskStore.saveRequirementTask(RdRequirementTask.created("task-memory", new CreateRequirementTaskCommand(
+                "Task title", "P1", "https://example.invalid/repo.git", "owner", "repo", "main",
+                "deliver", List.of("criterion"), false), now));
+        InMemoryRequirementStageCommandStore commands = new InMemoryRequirementStageCommandStore();
+        RequirementStageCommand pending = RequirementStageCommand.pending(
+                "command-memory", "task-memory", 0L, 1L, "REQUIREMENT_DELIVERY", "MATERIAL_COLLECTING",
+                0, 3, now + 60_000L, ScheduleResourceClass.GENERIC, "101", "", "P1", now);
+        commands.enqueue(pending);
+        RequirementStageCommand claimed = commands.claim(pending.commandId(), "worker-1", now, 30_000L)
+                .orElseThrow();
+        InMemoryRequirementStageFinalizationPort finalizer = new InMemoryRequirementStageFinalizationPort(
+                commands, new InMemoryRequirementDeliveryJobStore(), taskStore,
+                new CoordinatedRdTaskStatePersistence(taskStore, events),
+                new SnowflakeIdGenerator(1, 1, () -> now), null, null, null, null, null, null,
+                memoryOperations);
+        RequirementStageExecutionPlan plan = new RequirementStageExecutionPlan(
+                RequirementStageExecutionPlan.CURRENT_SCHEMA_VERSION,
+                "task-memory", 0L, 1L, RdTaskStatus.CREATED,
+                List.of(RequirementTaskMutation.statusTransition(
+                        RdTaskStatus.CREATED, RdTaskStatus.MATERIAL_COLLECTING, "", "{}", "", "", "captured")),
+                CommandDisposition.SUCCEEDED, ContinuationSpec.terminal(), ExternalEffectReceipt.none());
+        RequirementStageFinalization marker = finalizer.recordOutcome(
+                finalizer.prepare(claimed, "worker-1", RdTaskStatus.CREATED, now),
+                claimed, "worker-1", plan, now + 1L);
+        String contentHash = "c".repeat(64);
+        RequirementStageFinalizationPort.ProjectMemoryOperationDraft draft =
+                RequirementStageFinalizationPort.ProjectMemoryOperationDraft.stageCapture(
+                        "op-1", "101", "stage-run-1", contentHash, "extractor-1", "schema-1");
+
+        finalizer.finalize(new RequirementStageFinalizationPort.FinalizationCommand(
+                marker, claimed, "worker-1", plan, null, null,
+                RequirementStageFinalizationPort.JobDisposition.NONE,
+                RequirementStageFinalizationPort.TaskMutationDisposition.APPLY, now + 2L, draft));
+
+        ProjectMemoryOperation registered = memoryOperations.findByKey(
+                ProjectMemoryOperationKey.sha256("101", "STAGE_FINALIZATION", "stage-run-1",
+                        contentHash, "extractor-1", "schema-1")).orElseThrow();
+        assertEquals("op-1", registered.operationId());
+        assertEquals(RequirementStageCommand.Status.SUCCEEDED,
+                commands.findById(claimed.commandId()).orElseThrow().status());
+        assertEquals(RdTaskStatus.MATERIAL_COLLECTING,
+                taskStore.findRequirementTask("task-memory").orElseThrow().status());
+    }
+
+    @Test
+    void projectMemoryOperationReplayIsIdempotentWhenFinalizationRetriesAfterCommandFailure() {
+        long now = 1_784_810_100_000L;
+        InMemoryProjectMemoryOperationStore memoryOperations = new InMemoryProjectMemoryOperationStore();
+        InMemoryRdTaskStore taskStore = new InMemoryRdTaskStore();
+        InMemoryRdTaskStatusEventStore events = new InMemoryRdTaskStatusEventStore();
+        taskStore.saveRequirementTask(RdRequirementTask.created("task-memory-replay", new CreateRequirementTaskCommand(
+                "Task title", "P1", "https://example.invalid/repo.git", "owner", "repo", "main",
+                "deliver", List.of("criterion"), false), now));
+        InMemoryRequirementStageCommandStore durableCommands = new InMemoryRequirementStageCommandStore();
+        FailOnceCompletionCommandStore commands = new FailOnceCompletionCommandStore(durableCommands);
+        RequirementStageCommand pending = RequirementStageCommand.pending(
+                "command-memory-replay", "task-memory-replay", 0L, 1L, "REQUIREMENT_DELIVERY", "MATERIAL_COLLECTING",
+                0, 3, now + 60_000L, ScheduleResourceClass.GENERIC, "101", "", "P1", now);
+        durableCommands.enqueue(pending);
+        RequirementStageCommand claimed = durableCommands.claim(pending.commandId(), "worker-1", now, 30_000L)
+                .orElseThrow();
+        InMemoryRequirementStageFinalizationPort finalizer = new InMemoryRequirementStageFinalizationPort(
+                commands, new InMemoryRequirementDeliveryJobStore(), taskStore,
+                new CoordinatedRdTaskStatePersistence(taskStore, events),
+                new SnowflakeIdGenerator(1, 1, () -> now), null, null, null, null, null, null,
+                memoryOperations);
+        RequirementStageExecutionPlan plan = new RequirementStageExecutionPlan(
+                RequirementStageExecutionPlan.CURRENT_SCHEMA_VERSION,
+                "task-memory-replay", 0L, 1L, RdTaskStatus.CREATED,
+                List.of(RequirementTaskMutation.statusTransition(
+                        RdTaskStatus.CREATED, RdTaskStatus.MATERIAL_COLLECTING, "", "{}", "", "", "")),
+                CommandDisposition.SUCCEEDED, ContinuationSpec.terminal(), ExternalEffectReceipt.none());
+        RequirementStageFinalization marker = finalizer.recordOutcome(
+                finalizer.prepare(claimed, "worker-1", RdTaskStatus.CREATED, now),
+                claimed, "worker-1", plan, now + 1L);
+        String contentHash = "d".repeat(64);
+        RequirementStageFinalizationPort.ProjectMemoryOperationDraft draft =
+                RequirementStageFinalizationPort.ProjectMemoryOperationDraft.stageCapture(
+                        "op-replay", "101", "stage-run-2", contentHash, "extractor-1", "schema-1");
+        RequirementStageFinalizationPort.FinalizationCommand finalizeCommand =
+                new RequirementStageFinalizationPort.FinalizationCommand(
+                        marker, claimed, "worker-1", plan, null, null,
+                        RequirementStageFinalizationPort.JobDisposition.NONE,
+                        RequirementStageFinalizationPort.TaskMutationDisposition.APPLY, now + 2L, draft);
+
+        commands.failNextCompletion();
+        assertThrows(IllegalStateException.class, () -> finalizer.finalize(finalizeCommand));
+        assertTrue(memoryOperations.findByKey(ProjectMemoryOperationKey.sha256(
+                "101", "STAGE_FINALIZATION", "stage-run-2", contentHash, "extractor-1", "schema-1")).isPresent());
+
+        RequirementStageCommand reclaimed = durableCommands.claim(
+                claimed.commandId(), "worker-2", now + 30_001L, 30_000L).orElseThrow();
+        finalizer.finalize(new RequirementStageFinalizationPort.FinalizationCommand(
+                marker, reclaimed, "worker-2", plan, null, null,
+                RequirementStageFinalizationPort.JobDisposition.NONE,
+                RequirementStageFinalizationPort.TaskMutationDisposition.ALREADY_APPLIED, now + 30_002L, draft));
+
+        assertEquals(RequirementStageCommand.Status.SUCCEEDED,
+                durableCommands.findById(claimed.commandId()).orElseThrow().status());
+        assertEquals("op-replay", memoryOperations.findByKey(ProjectMemoryOperationKey.sha256(
+                "101", "STAGE_FINALIZATION", "stage-run-2", contentHash, "extractor-1", "schema-1"))
+                .orElseThrow().operationId());
+    }
+
+    @Test
+    void projectMemoryOperationMismatchFailsClosedBeforeCompletingCommand() {
+        long now = 1_784_810_200_000L;
+        InMemoryProjectMemoryOperationStore memoryOperations = new InMemoryProjectMemoryOperationStore();
+        String contentHash = "e".repeat(64);
+        String operationKey = ProjectMemoryOperationKey.sha256(
+                "101", "STAGE_FINALIZATION", "stage-run-3", contentHash, "extractor-1", "schema-1");
+        memoryOperations.register(new ProjectMemoryOperation(
+                "existing-op", "102", "STAGE_FINALIZATION", "stage-run-3", contentHash,
+                "extractor-1", "schema-1", operationKey));
+        InMemoryRdTaskStore taskStore = new InMemoryRdTaskStore();
+        InMemoryRdTaskStatusEventStore events = new InMemoryRdTaskStatusEventStore();
+        taskStore.saveRequirementTask(RdRequirementTask.created("task-memory-mismatch", new CreateRequirementTaskCommand(
+                "Task title", "P1", "https://example.invalid/repo.git", "owner", "repo", "main",
+                "deliver", List.of("criterion"), false), now));
+        InMemoryRequirementStageCommandStore commands = new InMemoryRequirementStageCommandStore();
+        RequirementStageCommand pending = RequirementStageCommand.pending(
+                "command-memory-mismatch", "task-memory-mismatch", 0L, 1L, "REQUIREMENT_DELIVERY", "MATERIAL_COLLECTING",
+                0, 3, now + 60_000L, ScheduleResourceClass.GENERIC, "101", "", "P1", now);
+        commands.enqueue(pending);
+        RequirementStageCommand claimed = commands.claim(pending.commandId(), "worker-1", now, 30_000L)
+                .orElseThrow();
+        InMemoryRequirementStageFinalizationPort finalizer = new InMemoryRequirementStageFinalizationPort(
+                commands, new InMemoryRequirementDeliveryJobStore(), taskStore,
+                new CoordinatedRdTaskStatePersistence(taskStore, events),
+                new SnowflakeIdGenerator(1, 1, () -> now), null, null, null, null, null, null,
+                memoryOperations);
+        RequirementStageExecutionPlan plan = new RequirementStageExecutionPlan(
+                RequirementStageExecutionPlan.CURRENT_SCHEMA_VERSION,
+                "task-memory-mismatch", 0L, 1L, RdTaskStatus.CREATED,
+                List.of(RequirementTaskMutation.statusTransition(
+                        RdTaskStatus.CREATED, RdTaskStatus.MATERIAL_COLLECTING, "", "{}", "", "", "")),
+                CommandDisposition.SUCCEEDED, ContinuationSpec.terminal(), ExternalEffectReceipt.none());
+        RequirementStageFinalization marker = finalizer.recordOutcome(
+                finalizer.prepare(claimed, "worker-1", RdTaskStatus.CREATED, now),
+                claimed, "worker-1", plan, now + 1L);
+        RequirementStageFinalizationPort.ProjectMemoryOperationDraft draft =
+                RequirementStageFinalizationPort.ProjectMemoryOperationDraft.stageCapture(
+                        "op-mismatch", "101", "stage-run-3", contentHash, "extractor-1", "schema-1");
+
+        assertThrows(IllegalStateException.class, () -> finalizer.finalize(
+                new RequirementStageFinalizationPort.FinalizationCommand(
+                        marker, claimed, "worker-1", plan, null, null,
+                        RequirementStageFinalizationPort.JobDisposition.NONE,
+                        RequirementStageFinalizationPort.TaskMutationDisposition.APPLY, now + 2L, draft)));
+
+        assertEquals(RequirementStageCommand.Status.RUNNING,
+                commands.findById(claimed.commandId()).orElseThrow().status());
+        assertEquals(RdTaskStatus.CREATED,
+                taskStore.findRequirementTask("task-memory-mismatch").orElseThrow().status());
+        assertEquals(List.of(), events.listByTask("task-memory-mismatch"));
+    }
+
+    @Test
+    void skippedByPolicyRegistersDeterministicMarkerWithoutExtractorPayload() {
+        long now = 1_784_810_300_000L;
+        InMemoryProjectMemoryOperationStore memoryOperations = new InMemoryProjectMemoryOperationStore();
+        InMemoryRdTaskStore taskStore = new InMemoryRdTaskStore();
+        InMemoryRdTaskStatusEventStore events = new InMemoryRdTaskStatusEventStore();
+        taskStore.saveRequirementTask(RdRequirementTask.created("task-memory-skip", new CreateRequirementTaskCommand(
+                "Task title", "P1", "https://example.invalid/repo.git", "owner", "repo", "main",
+                "deliver", List.of("criterion"), false), now));
+        InMemoryRequirementStageCommandStore commands = new InMemoryRequirementStageCommandStore();
+        RequirementStageCommand pending = RequirementStageCommand.pending(
+                "command-memory-skip", "task-memory-skip", 0L, 1L, "REQUIREMENT_DELIVERY", "MATERIAL_COLLECTING",
+                0, 3, now + 60_000L, ScheduleResourceClass.GENERIC, "101", "", "P1", now);
+        commands.enqueue(pending);
+        RequirementStageCommand claimed = commands.claim(pending.commandId(), "worker-1", now, 30_000L)
+                .orElseThrow();
+        InMemoryRequirementStageFinalizationPort finalizer = new InMemoryRequirementStageFinalizationPort(
+                commands, new InMemoryRequirementDeliveryJobStore(), taskStore,
+                new CoordinatedRdTaskStatePersistence(taskStore, events),
+                new SnowflakeIdGenerator(1, 1, () -> now), null, null, null, null, null, null,
+                memoryOperations);
+        RequirementStageExecutionPlan plan = new RequirementStageExecutionPlan(
+                RequirementStageExecutionPlan.CURRENT_SCHEMA_VERSION,
+                "task-memory-skip", 0L, 1L, RdTaskStatus.CREATED,
+                List.of(RequirementTaskMutation.statusTransition(
+                        RdTaskStatus.CREATED, RdTaskStatus.MATERIAL_COLLECTING, "", "{}", "", "", "")),
+                CommandDisposition.SUCCEEDED, ContinuationSpec.terminal(), ExternalEffectReceipt.none());
+        RequirementStageFinalization marker = finalizer.recordOutcome(
+                finalizer.prepare(claimed, "worker-1", RdTaskStatus.CREATED, now),
+                claimed, "worker-1", plan, now + 1L);
+        String contentHash = "f".repeat(64);
+        RequirementStageFinalizationPort.ProjectMemoryOperationDraft draft =
+                RequirementStageFinalizationPort.ProjectMemoryOperationDraft.skippedByPolicy(
+                        "op-skip", "101", "stage-run-4", contentHash, "schema-1");
+
+        finalizer.finalize(new RequirementStageFinalizationPort.FinalizationCommand(
+                marker, claimed, "worker-1", plan, null, null,
+                RequirementStageFinalizationPort.JobDisposition.NONE,
+                RequirementStageFinalizationPort.TaskMutationDisposition.APPLY, now + 2L, draft));
+
+        ProjectMemoryOperation registered = memoryOperations.findByKey(ProjectMemoryOperationKey.sha256(
+                "101", RequirementStageFinalizationPort.ProjectMemoryOperationDraft.KIND_SKIPPED_BY_POLICY,
+                "stage-run-4", contentHash, "NONE", "schema-1")).orElseThrow();
+        assertEquals("op-skip", registered.operationId());
+        assertEquals(RequirementStageFinalizationPort.ProjectMemoryOperationDraft.KIND_SKIPPED_BY_POLICY,
+                registered.kind());
+    }
+
+    @Test
+    void committedDeliverySurvivesWhenOnlyTheAsyncWorkerWouldFailLater() {
+        long now = 1_784_810_400_000L;
+        InMemoryProjectMemoryOperationStore memoryOperations = new InMemoryProjectMemoryOperationStore();
+        InMemoryRdTaskStore taskStore = new InMemoryRdTaskStore();
+        InMemoryRdTaskStatusEventStore events = new InMemoryRdTaskStatusEventStore();
+        taskStore.saveRequirementTask(RdRequirementTask.created("task-memory-worker", new CreateRequirementTaskCommand(
+                "Task title", "P1", "https://example.invalid/repo.git", "owner", "repo", "main",
+                "deliver", List.of("criterion"), false), now));
+        InMemoryRequirementStageCommandStore commands = new InMemoryRequirementStageCommandStore();
+        RequirementStageCommand pending = RequirementStageCommand.pending(
+                "command-memory-worker", "task-memory-worker", 0L, 1L, "REQUIREMENT_DELIVERY", "MATERIAL_COLLECTING",
+                0, 3, now + 60_000L, ScheduleResourceClass.GENERIC, "101", "", "P1", now);
+        commands.enqueue(pending);
+        RequirementStageCommand claimed = commands.claim(pending.commandId(), "worker-1", now, 30_000L)
+                .orElseThrow();
+        InMemoryRequirementStageFinalizationPort finalizer = new InMemoryRequirementStageFinalizationPort(
+                commands, new InMemoryRequirementDeliveryJobStore(), taskStore,
+                new CoordinatedRdTaskStatePersistence(taskStore, events),
+                new SnowflakeIdGenerator(1, 1, () -> now), null, null, null, null, null, null,
+                memoryOperations);
+        RequirementStageExecutionPlan plan = new RequirementStageExecutionPlan(
+                RequirementStageExecutionPlan.CURRENT_SCHEMA_VERSION,
+                "task-memory-worker", 0L, 1L, RdTaskStatus.CREATED,
+                List.of(RequirementTaskMutation.statusTransition(
+                        RdTaskStatus.CREATED, RdTaskStatus.MATERIAL_COLLECTING, "", "{}", "", "", "")),
+                CommandDisposition.SUCCEEDED, ContinuationSpec.terminal(), ExternalEffectReceipt.none());
+        RequirementStageFinalization marker = finalizer.recordOutcome(
+                finalizer.prepare(claimed, "worker-1", RdTaskStatus.CREATED, now),
+                claimed, "worker-1", plan, now + 1L);
+        String contentHash = "a".repeat(64);
+        RequirementStageFinalizationPort.ProjectMemoryOperationDraft draft =
+                RequirementStageFinalizationPort.ProjectMemoryOperationDraft.stageCapture(
+                        "op-worker", "101", "stage-run-5", contentHash, "extractor-1", "schema-1");
+
+        finalizer.finalize(new RequirementStageFinalizationPort.FinalizationCommand(
+                marker, claimed, "worker-1", plan, null, null,
+                RequirementStageFinalizationPort.JobDisposition.NONE,
+                RequirementStageFinalizationPort.TaskMutationDisposition.APPLY, now + 2L, draft));
+
+        assertEquals(RequirementStageCommand.Status.SUCCEEDED,
+                commands.findById(claimed.commandId()).orElseThrow().status());
+        assertTrue(memoryOperations.findByKey(ProjectMemoryOperationKey.sha256(
+                "101", "STAGE_FINALIZATION", "stage-run-5", contentHash, "extractor-1", "schema-1")).isPresent());
+    }
 
     @Test
     void policyEvaluateContinuationCreatesPlanReadyLedgerBeforeCommandIsExposed() {
@@ -957,6 +1235,180 @@ class InMemoryRequirementStageFinalizationPortTest {
         assertEquals(first.failedTask().version(), second.failedTask().version());
         assertEquals(first.failedTask().fencingToken(), second.failedTask().fencingToken());
         assertEquals(1, fixture.events.listByTask(fixture.taskId).size());
+    }
+
+    @Test
+    void finalizeWritesAuditedStateBeforeTaskCasAndReplaysSameHash() {
+        long now = 1_784_920_000_000L;
+        String taskId = "task-audit-writeback";
+        InMemoryRdTaskStore taskStore = new InMemoryRdTaskStore();
+        InMemoryRdTaskStatusEventStore events = new InMemoryRdTaskStatusEventStore();
+        taskStore.saveRequirementTask(RdRequirementTask.created(taskId, new CreateRequirementTaskCommand(
+                "Task title", "P1", "https://example.invalid/repo.git", "owner", "repo", "main",
+                "deliver", List.of("criterion"), false), now));
+        InMemoryRequirementStageCommandStore commands = new InMemoryRequirementStageCommandStore();
+        RequirementStageCommand pending = RequirementStageCommand.pending(
+                "command-audit", taskId, 0L, 1L, "REQUIREMENT_DELIVERY", "MATERIAL_COLLECTING",
+                0, 3, now + 60_000L, ScheduleResourceClass.GENERIC, "101", "", "P1", now);
+        commands.enqueue(pending);
+        RequirementStageCommand claimed = commands.claim(pending.commandId(), "worker-1", now, 30_000L)
+                .orElseThrow();
+        InMemoryAuditedTaskStateStore audited = new InMemoryAuditedTaskStateStore();
+        InMemoryRequirementStageFinalizationPort finalizer = new InMemoryRequirementStageFinalizationPort(
+                commands, new InMemoryRequirementDeliveryJobStore(), taskStore,
+                new CoordinatedRdTaskStatePersistence(taskStore, events),
+                new SnowflakeIdGenerator(1, 1, () -> now), null, null, null, null, null, null, null,
+                audited);
+        AuditedStateMutation mutation = auditedMutation(taskId, claimed.commandId(), "AC-001");
+        RequirementStageExecutionPlan plan = new RequirementStageExecutionPlan(
+                RequirementStageExecutionPlan.CURRENT_SCHEMA_VERSION,
+                taskId, 0L, 1L, RdTaskStatus.CREATED,
+                List.of(RequirementTaskMutation.statusTransition(
+                        RdTaskStatus.CREATED, RdTaskStatus.MATERIAL_COLLECTING, "", "{}", "", "", "captured")),
+                CommandDisposition.SUCCEEDED, ContinuationSpec.terminal(), ExternalEffectReceipt.none())
+                .withAuditedStateMutation(mutation);
+        RequirementStageFinalization marker = finalizer.recordOutcome(
+                finalizer.prepare(claimed, "worker-1", RdTaskStatus.CREATED, now),
+                claimed, "worker-1", plan, now + 1L);
+        RequirementStageFinalizationPort.FinalizationResult first = finalizer.finalize(
+                new RequirementStageFinalizationPort.FinalizationCommand(
+                        marker, claimed, "worker-1", plan, null, null,
+                        RequirementStageFinalizationPort.JobDisposition.NONE,
+                        RequirementStageFinalizationPort.TaskMutationDisposition.APPLY, now + 2L));
+        assertEquals(RequirementStageFinalization.State.FINALIZED, first.finalization().state());
+        assertEquals(mutation.nextState().stateHash(), audited.head(taskId).orElseThrow().stateHash());
+        assertEquals(RdTaskStatus.MATERIAL_COLLECTING, taskStore.findRequirementTask(taskId).orElseThrow().status());
+
+        AuditedTaskState replayed = audited.appendRevision(
+                mutation.expectedStateVersion(), mutation.nextState(), mutation.auditRun());
+        assertEquals(mutation.nextState().stateHash(), replayed.stateHash());
+        assertEquals(1, audited.listAuditRuns(taskId).size());
+    }
+
+    @Test
+    void conflictingAuditedStateHashKeepsOutcomeRecordedAndSkipsTaskCas() {
+        long now = 1_784_920_100_000L;
+        String taskId = "task-audit-conflict";
+        InMemoryRdTaskStore taskStore = new InMemoryRdTaskStore();
+        InMemoryRdTaskStatusEventStore events = new InMemoryRdTaskStatusEventStore();
+        taskStore.saveRequirementTask(RdRequirementTask.created(taskId, new CreateRequirementTaskCommand(
+                "Task title", "P1", "https://example.invalid/repo.git", "owner", "repo", "main",
+                "deliver", List.of("criterion"), false), now));
+        InMemoryRequirementStageCommandStore commands = new InMemoryRequirementStageCommandStore();
+        RequirementStageCommand pending = RequirementStageCommand.pending(
+                "command-audit-conflict", taskId, 0L, 1L, "REQUIREMENT_DELIVERY", "MATERIAL_COLLECTING",
+                0, 3, now + 60_000L, ScheduleResourceClass.GENERIC, "101", "", "P1", now);
+        commands.enqueue(pending);
+        RequirementStageCommand claimed = commands.claim(pending.commandId(), "worker-1", now, 30_000L)
+                .orElseThrow();
+        InMemoryAuditedTaskStateStore audited = new InMemoryAuditedTaskStateStore();
+        AuditedStateMutation existing = auditedMutation(taskId, "prior-command", "AC-001");
+        audited.appendRevision(existing.expectedStateVersion(), existing.nextState(), existing.auditRun());
+        AuditedStateMutation conflict = auditedMutation(taskId, claimed.commandId(), "AC-002");
+        InMemoryRequirementStageFinalizationPort finalizer = new InMemoryRequirementStageFinalizationPort(
+                commands, new InMemoryRequirementDeliveryJobStore(), taskStore,
+                new CoordinatedRdTaskStatePersistence(taskStore, events),
+                new SnowflakeIdGenerator(1, 1, () -> now), null, null, null, null, null, null, null,
+                audited);
+        RequirementStageExecutionPlan plan = new RequirementStageExecutionPlan(
+                RequirementStageExecutionPlan.CURRENT_SCHEMA_VERSION,
+                taskId, 0L, 1L, RdTaskStatus.CREATED,
+                List.of(RequirementTaskMutation.statusTransition(
+                        RdTaskStatus.CREATED, RdTaskStatus.MATERIAL_COLLECTING, "", "{}", "", "", "captured")),
+                CommandDisposition.SUCCEEDED, ContinuationSpec.terminal(), ExternalEffectReceipt.none())
+                .withAuditedStateMutation(conflict);
+        RequirementStageFinalization marker = finalizer.recordOutcome(
+                finalizer.prepare(claimed, "worker-1", RdTaskStatus.CREATED, now),
+                claimed, "worker-1", plan, now + 1L);
+        IllegalStateException thrown = assertThrows(IllegalStateException.class, () -> finalizer.finalize(
+                new RequirementStageFinalizationPort.FinalizationCommand(
+                        marker, claimed, "worker-1", plan, null, null,
+                        RequirementStageFinalizationPort.JobDisposition.NONE,
+                        RequirementStageFinalizationPort.TaskMutationDisposition.APPLY, now + 2L)));
+        assertTrue(thrown.getMessage().toLowerCase().contains("hash"));
+        assertEquals(RequirementStageFinalization.State.OUTCOME_RECORDED,
+                finalizer.findLatestPrepared(claimed.commandId()).orElseThrow().state());
+        assertEquals(RdTaskStatus.CREATED, taskStore.findRequirementTask(taskId).orElseThrow().status());
+        assertEquals(existing.nextState().stateHash(), audited.head(taskId).orElseThrow().stateHash());
+    }
+
+    @Test
+    void completedPlanWithoutBindingIsRejectedAndLeavesMarkerOutcomeRecorded() {
+        long now = 1_784_920_200_000L;
+        String taskId = "task-audit-missing-binding";
+        InMemoryRdTaskStore taskStore = new InMemoryRdTaskStore();
+        InMemoryRdTaskStatusEventStore events = new InMemoryRdTaskStatusEventStore();
+        RdRequirementTask created = RdRequirementTask.created(taskId, new CreateRequirementTaskCommand(
+                "Task title", "P1", "https://example.invalid/repo.git", "owner", "repo", "main",
+                "deliver", List.of("criterion"), false), now);
+        taskStore.saveRequirementTask(created.withState(
+                RdTaskStatus.REPORTING, "", "{}", "https://example.test/pull/1", "", now)
+                .withConcurrency(1L, 1L));
+        InMemoryRequirementStageCommandStore commands = new InMemoryRequirementStageCommandStore();
+        RequirementStageCommand pending = RequirementStageCommand.pending(
+                "command-completion", taskId, 1L, 1L, "REQUIREMENT_DELIVERY", "COMPLETION",
+                0, 3, now + 60_000L, ScheduleResourceClass.GENERIC, "101", "", "P1", now);
+        commands.enqueue(pending);
+        RequirementStageCommand claimed = commands.claim(pending.commandId(), "worker-1", now, 30_000L)
+                .orElseThrow();
+        InMemoryAuditedTaskStateStore audited = new InMemoryAuditedTaskStateStore();
+        InMemoryRequirementStageFinalizationPort finalizer = new InMemoryRequirementStageFinalizationPort(
+                commands, new InMemoryRequirementDeliveryJobStore(), taskStore,
+                new CoordinatedRdTaskStatePersistence(taskStore, events),
+                new SnowflakeIdGenerator(1, 1, () -> now), null, null, null, null, null, null, null,
+                audited);
+        RequirementStageExecutionPlan plan = new RequirementStageExecutionPlan(
+                RequirementStageExecutionPlan.CURRENT_SCHEMA_VERSION,
+                taskId, 1L, 1L, RdTaskStatus.REPORTING,
+                List.of(RequirementTaskMutation.statusTransition(
+                        RdTaskStatus.REPORTING, RdTaskStatus.COMPLETED, "", "{}", "", "", "done")),
+                CommandDisposition.SUCCEEDED, ContinuationSpec.terminal(), ExternalEffectReceipt.none());
+        RequirementStageFinalization marker = finalizer.recordOutcome(
+                finalizer.prepare(claimed, "worker-1", RdTaskStatus.REPORTING, now),
+                claimed, "worker-1", plan, now + 1L);
+        IllegalStateException thrown = assertThrows(IllegalStateException.class, () -> finalizer.finalize(
+                new RequirementStageFinalizationPort.FinalizationCommand(
+                        marker, claimed, "worker-1", plan, null, null,
+                        RequirementStageFinalizationPort.JobDisposition.NONE,
+                        RequirementStageFinalizationPort.TaskMutationDisposition.APPLY, now + 2L)));
+        assertTrue(thrown.getMessage().toLowerCase().contains("binding"));
+        assertEquals(RequirementStageFinalization.State.OUTCOME_RECORDED,
+                finalizer.findLatestPrepared(claimed.commandId()).orElseThrow().state());
+        assertEquals(RdTaskStatus.REPORTING, taskStore.findRequirementTask(taskId).orElseThrow().status());
+    }
+
+    private static AuditedStateMutation auditedMutation(String taskId, String commandId, String recordId) {
+        AuditedTaskState next = new AuditedTaskStateCodec().seal(new AuditedTaskState(
+                taskId,
+                1L,
+                "",
+                new AuditedContractRef("sha256:" + "c".repeat(64), 1L, 1L),
+                List.of(new AuditedRecord(
+                        recordId,
+                        AuditedRecordKind.REQUIREMENT,
+                        true,
+                        "criterion " + recordId,
+                        AuditedRecordStatus.PENDING,
+                        List.of(),
+                        "",
+                        "")),
+                "audit-" + commandId));
+        AuditRun run = new AuditRun(
+                "audit-" + commandId,
+                taskId,
+                "stage-1",
+                "HOST_VERIFY",
+                commandId,
+                AuditCompletion.INCOMPLETE,
+                AuditIntegrity.CLEAN,
+                ContractAuditVerdict.ALIGNED,
+                List.of(),
+                List.of(recordId),
+                List.of(),
+                List.of(),
+                List.of(),
+                1_700_000_000_000L);
+        return new AuditedStateMutation(run, next, next.stateVersion());
     }
 
     private static final class FakeRecoveryTaskPort implements com.wish.rd.engine.retry.TaskRetryTaskPort {

@@ -1483,6 +1483,14 @@ public class RequirementDeliveryDispatchService {
             if (existing == null || existing.status() != RequirementStageCommand.Status.SUCCEEDED) {
                 return new StageTarget(role.name(), stage);
             }
+            if (role == AgentRole.CODING_AGENT) {
+                RequirementStageCommand hostVerify = stageCommandStore
+                        .find(taskId, "REQUIREMENT_DELIVERY", "HOST_VERIFY")
+                        .orElse(null);
+                if (hostVerify == null || hostVerify.status() != RequirementStageCommand.Status.SUCCEEDED) {
+                    return new StageTarget("REQUIREMENT_DELIVERY", "HOST_VERIFY");
+                }
+            }
         }
         return new StageTarget("REQUIREMENT_DELIVERY", "DETERMINISTIC_REVIEW");
     }
@@ -1535,6 +1543,10 @@ public class RequirementDeliveryDispatchService {
     ) {
         if (completed.stage().startsWith("ROLE_EXECUTION:")) {
             AgentRole currentRole = parseRole(completed.stage());
+            if (currentRole == AgentRole.CODING_AGENT) {
+                return newCommand(completed.taskId(), completed, "REQUIREMENT_DELIVERY",
+                        "HOST_VERIFY", nowEpochMillis);
+            }
             List<AgentRole> roles = AgentRole.requirementDeliveryOrder();
             int nextIndex = roles.indexOf(currentRole) + 1;
             if (nextIndex < roles.size()) {
@@ -1544,6 +1556,10 @@ public class RequirementDeliveryDispatchService {
             }
             return newCommand(completed.taskId(), completed, "REQUIREMENT_DELIVERY",
                     "DETERMINISTIC_REVIEW", nowEpochMillis);
+        }
+        if ("HOST_VERIFY".equals(completed.stage())) {
+            return newCommand(completed.taskId(), completed, AgentRole.QA_AGENT.name(),
+                    "ROLE_EXECUTION:" + AgentRole.QA_AGENT.name(), nowEpochMillis);
         }
         String nextStage = switch (completed.stage()) {
             case "DETERMINISTIC_REVIEW" -> "AI_REVIEW";

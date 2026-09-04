@@ -44,6 +44,9 @@ CREATED → PREPARING → BUILDING → STATIC_CHECKING → SUCCEEDED
 
 `RequirementAgentStageOrchestrator` 在 `CODING_AGENT` 成功且即将处理 `QA_AGENT` 之前调用 `HostVerificationPort.verify(...)`。engine 禁止直接起进程或 Docker。
 
+**Durable-path ownership（2026-09-03，`mea-audit-only-writeback` 对齐）：**
+本决定的 orchestrator 插入点只覆盖 legacy `executeAgentStages(AgentWorkflowPlan.production())`。生产逐条 command 路径使用 `RequirementDeliveryEngine.boundedRolePlan`，其中 `hostVerifyRemediationEnabled=false`，因此 orchestrator 内循环不会在 durable 派发上跑 BUILD/STATIC。**durable 路径由 `mea-audit-only-writeback` 的 `HOST_VERIFY` command 承接**：`roleContinuation(CODING_AGENT)` → `("REQUIREMENT_DELIVERY","HOST_VERIFY")`，该 command 调用同一 `HostVerificationPort.verify`，不改本 change 的 D1/D3/D4/D6/D7。本 change 在 durable 路径落地前不要 archive 为「生产路径已由 orchestrator 门覆盖」。
+
 bootstrap 适配器：
 
 1. 从 Coding 成功 attempt 取宿主已校验的 `candidate-patch.diff`。

@@ -9,13 +9,24 @@ import com.wish.rd.engine.retrieval.model.RetrievalScope;
 import com.wish.rd.framework.convention.model.RetrievedChunk;
 import com.wish.rd.rag.project.RdProjectService;
 import com.wish.rd.rag.project.model.RdProject;
-import com.wish.rd.rag.runtime.model.RdRequirementTask;
+import com.wish.rd.rag.project.memory.ProjectMemoryModeService;
+import com.wish.rd.rag.project.memory.ProjectMemorySearchPort;
+import com.wish.rd.rag.project.memory.ProjectMemorySearchResult;
+import com.wish.rd.rag.project.memory.impl.InMemoryProjectMemoryModeStore;
+import com.wish.rd.rag.project.memory.model.ProjectMemoryMode;
+import com.wish.rd.rag.project.memory.model.ProjectMemorySearchHit;
 import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
+import com.wish.rd.rag.runtime.model.RdRequirementTask;
 import com.wish.rd.rag.vector.VectorStore;
+import org.springframework.beans.factory.ObjectProvider;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Map;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.Locale;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -128,6 +139,170 @@ class ProjectScopedRequirementKnowledgeSearchAdapterTest {
         ));
     }
 
+    @Test
+    void sharesTotalBudgetAcrossKnowledgeProjectMemoryAndLegacyExperience() {
+        VectorStore vectorStore = mock(VectorStore.class);
+        RdProjectService projectService = mock(RdProjectService.class);
+        ProjectMemorySearchPort memorySearchPort = mock(ProjectMemorySearchPort.class);
+        when(projectService.get("101")).thenReturn(enabledProject("101"));
+        RetrievedChunk code = new RetrievedChunk(
+                "chunk-1", "ProductController.save persists product", "kb-waimai", "code-snippet",
+                "ProductController.java", 0.8d, Map.of("path", "src/ProductController.java")
+        );
+        when(vectorStore.vectorSearch(anyString(), anyCollection(), anyInt())).thenReturn(List.of(code));
+        when(vectorStore.keywordSearch(anyString(), anyCollection(), anyInt())).thenReturn(List.of(code));
+        when(memorySearchPort.search(any())).thenReturn(new ProjectMemorySearchResult(List.of(
+                new ProjectMemorySearchHit("44", 3L, "101", "CODING_AGENT", true, true, true, 0.9, "build compile", "m".repeat(64))
+        ), 1));
+        ProjectMemoryModeService modeService = dualReadModeService();
+        ProjectScopedRequirementKnowledgeSearchAdapter adapter = adapter(
+                vectorStore, projectService, WorkflowExperienceStore.noop(), null, memorySearchPort, modeService
+        );
+
+        var result = adapter.search(
+                numericProjectTask(), AgentRole.CODING_AGENT, "build",
+                new RetrievalScope(List.of("kb-waimai"), "example/waimai", true, ""), 4
+        );
+
+        assertEquals(2, result.candidates().size());
+        assertTrue(result.candidates().stream().anyMatch(item ->
+                item.sourceUri().startsWith("rd-memory://projects/101/memories/44/revisions/3")));
+        assertTrue(result.channels().stream().anyMatch(item ->
+                item.channel().equals("ProjectMemory") && item.candidateCount() == 1));
+    }
+
+    @Test
+    void defaultOffModeDoesNotInjectProjectMemory() {
+        VectorStore vectorStore = mock(VectorStore.class);
+        RdProjectService projectService = mock(RdProjectService.class);
+        when(projectService.get("101")).thenReturn(enabledProject("101"));
+        RetrievedChunk code = new RetrievedChunk(
+                "chunk-1", "ProductController.save persists product", "kb-waimai", "code-snippet",
+                "ProductController.java", 0.8d, Map.of("path", "src/ProductController.java")
+        );
+        when(vectorStore.vectorSearch(anyString(), anyCollection(), anyInt())).thenReturn(List.of(code));
+        when(vectorStore.keywordSearch(anyString(), anyCollection(), anyInt())).thenReturn(List.of(code));
+        ProjectMemorySearchPort memorySearchPort = request -> new ProjectMemorySearchResult(List.of(
+                new ProjectMemorySearchHit("44", 3L, "101", "CODING_AGENT", true, true, true, 0.9,
+                        "build compile", "m".repeat(64))
+        ), 1);
+        ProjectMemoryModeService modeService = new ProjectMemoryModeService(new InMemoryProjectMemoryModeStore());
+        ProjectScopedRequirementKnowledgeSearchAdapter adapter = adapter(
+                vectorStore, projectService, WorkflowExperienceStore.noop(), null, memorySearchPort, modeService
+        );
+
+        var result = adapter.search(
+                numericProjectTask(), AgentRole.CODING_AGENT, "build",
+                new RetrievalScope(List.of("kb-waimai"), "example/waimai", true, ""), 4
+        );
+
+        assertEquals(1, result.candidates().size());
+        assertFalse(result.candidates().stream().anyMatch(item -> item.sourceUri().contains("rd-memory://")));
+    }
+
+    @Test
+    void shadowReadModeAuditsProjectMemoryWithoutInjectingIt() {
+        VectorStore vectorStore = mock(VectorStore.class);
+        RdProjectService projectService = mock(RdProjectService.class);
+        when(projectService.get("101")).thenReturn(enabledProject("101"));
+        RetrievedChunk code = new RetrievedChunk(
+                "chunk-1", "ProductController.save persists product", "kb-waimai", "code-snippet",
+                "ProductController.java", 0.8d, Map.of("path", "src/ProductController.java")
+        );
+        when(vectorStore.vectorSearch(anyString(), anyCollection(), anyInt())).thenReturn(List.of(code));
+        when(vectorStore.keywordSearch(anyString(), anyCollection(), anyInt())).thenReturn(List.of(code));
+        ProjectMemorySearchPort memorySearchPort = request -> new ProjectMemorySearchResult(List.of(
+                new ProjectMemorySearchHit("44", 3L, "101", "CODING_AGENT", true, true, true, 0.9,
+                        "build compile", "m".repeat(64))
+        ), 1);
+        ProjectMemoryModeService modeService = new ProjectMemoryModeService(new InMemoryProjectMemoryModeStore());
+        modeService.updatePolicy("101", ProjectMemoryMode.SHADOW);
+        ProjectScopedRequirementKnowledgeSearchAdapter adapter = adapter(
+                vectorStore, projectService, WorkflowExperienceStore.noop(), null, memorySearchPort, modeService
+        );
+
+        var result = adapter.search(
+                numericProjectTask(), AgentRole.CODING_AGENT, "build",
+                new RetrievalScope(List.of("kb-waimai"), "example/waimai", true, ""), 4
+        );
+
+        assertEquals(1, result.candidates().size());
+        assertTrue(result.channels().stream().anyMatch(item ->
+                item.channel().equals("ProjectMemory")
+                        && item.candidateCount() == 1
+                        && "SHADOW_AUDIT".equals(item.errorCategory())));
+    }
+
+    @Test
+    void dedupesAcrossChannelsByContentHashAndSourceUri() {
+        VectorStore vectorStore = mock(VectorStore.class);
+        RdProjectService projectService = mock(RdProjectService.class);
+        String lesson = "shared lesson";
+        RetrievedChunk duplicateKnowledge = new RetrievedChunk(
+                "chunk-dup", lesson, "kb-waimai", "code-snippet",
+                "ProductController.java", 0.8d, Map.of("path", "src/ProductController.java")
+        );
+        when(vectorStore.vectorSearch(anyString(), anyCollection(), anyInt())).thenReturn(List.of(duplicateKnowledge));
+        when(vectorStore.keywordSearch(anyString(), anyCollection(), anyInt())).thenReturn(List.of(duplicateKnowledge));
+        String normalizedHash = sha256Hex(lesson);
+        ProjectMemorySearchPort memorySearchPort = request -> new ProjectMemorySearchResult(List.of(
+                new ProjectMemorySearchHit("44", 3L, "101", "CODING_AGENT", true, true, true, 0.9,
+                        lesson, normalizedHash)
+        ), 1);
+        ProjectScopedRequirementKnowledgeSearchAdapter adapter = adapter(
+                vectorStore, projectService, WorkflowExperienceStore.noop(), null, memorySearchPort, dualReadModeService()
+        );
+        when(projectService.get("101")).thenReturn(enabledProject("101"));
+
+        var result = adapter.search(
+                numericProjectTask(), AgentRole.CODING_AGENT, "shared",
+                new RetrievalScope(List.of("kb-waimai"), "example/waimai", true, ""), 8
+        );
+
+        assertEquals(1, result.candidates().size());
+    }
+
+    private ProjectScopedRequirementKnowledgeSearchAdapter adapter(
+            VectorStore vectorStore,
+            RdProjectService projectService,
+            WorkflowExperienceStore experienceStore,
+            RagStreamTaskRegistry taskRegistry,
+            ProjectMemorySearchPort memorySearchPort,
+            ProjectMemoryModeService modeService
+    ) {
+        @SuppressWarnings("unchecked")
+        ObjectProvider<ProjectMemorySearchPort> memoryProvider = mock(ObjectProvider.class);
+        when(memoryProvider.getIfAvailable()).thenReturn(memorySearchPort);
+        @SuppressWarnings("unchecked")
+        ObjectProvider<ProjectMemoryModeService> modeProvider = mock(ObjectProvider.class);
+        when(modeProvider.getIfAvailable()).thenReturn(modeService);
+        return new ProjectScopedRequirementKnowledgeSearchAdapter(
+                vectorStore, projectService, experienceStore, taskRegistry, memoryProvider, modeProvider);
+    }
+
+    private static ProjectMemoryModeService dualReadModeService() {
+        ProjectMemoryModeService service = new ProjectMemoryModeService(new InMemoryProjectMemoryModeStore());
+        service.updatePolicy("101", ProjectMemoryMode.DUAL_READ);
+        return service;
+    }
+
+    private static RdProject enabledProject(String projectId) {
+        return new RdProject(
+                projectId, "waimai", "Waimai", "", "https://github.com/example/waimai",
+                "example", "waimai", "main", true, false, 1L, 1L, "kb-waimai"
+        );
+    }
+
+    private RdRequirementTask numericProjectTask() {
+        return new RdRequirementTask(
+                "task-101", "REQUIREMENT", "ADMIN", "", "", "P1", null,
+                "Product management", "101", "waimai", "Waimai",
+                "https://github.com/example/waimai", "example", "waimai", "main", "",
+                "admin saves product", "[\"API returns 200\"]", "", "{}", "", "",
+                1L, 1L, false
+        );
+    }
+
     private RdRequirementTask task() {
         return new RdRequirementTask(
                 "task-1", "REQUIREMENT", "ADMIN", "", "", "P1", null,
@@ -159,5 +334,19 @@ class ProjectScopedRequirementKnowledgeSearchAdapterTest {
                 role, type, "Product save", "ProductController save lesson",
                 "{\"summary\":\"product save\"}", true, false, true, 1L
         );
+    }
+
+    private static String sha256Hex(String value) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8));
+            StringBuilder output = new StringBuilder();
+            for (byte item : digest) {
+                output.append(String.format(Locale.ROOT, "%02x", item));
+            }
+            return output.toString();
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 unavailable", exception);
+        }
     }
 }

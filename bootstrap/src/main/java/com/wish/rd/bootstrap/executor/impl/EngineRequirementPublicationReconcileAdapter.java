@@ -116,13 +116,27 @@ public final class EngineRequirementPublicationReconcileAdapter
 
     private static boolean markersMatch(String prBody, String taskId, String operationId) {
         String body = safe(prBody);
-        if (taskId.isBlank() || !body.contains("taskId: " + taskId)) {
+        if (taskId.isBlank() || !taskId.equals(markerValue(body, "taskId"))) {
             return false;
         }
         if (operationId.isBlank()) {
             return true;
         }
-        return body.contains("operationId: " + operationId);
+        return operationId.equals(markerValue(body, "operationId"));
+    }
+
+    private static String markerValue(String body, String key) {
+        String prefix = "- " + key + ":";
+        for (String line : safe(body).lines().toList()) {
+            String normalized = line.strip();
+            if (!normalized.startsWith(prefix)) continue;
+            String value = normalized.substring(prefix.length()).strip();
+            if (value.length() >= 2 && value.startsWith("`") && value.endsWith("`")) {
+                value = value.substring(1, value.length() - 1).strip();
+            }
+            return value;
+        }
+        return "";
     }
 
     private static int parsePullRequestNumber(String value) {

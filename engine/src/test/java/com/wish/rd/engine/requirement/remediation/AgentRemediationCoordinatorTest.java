@@ -39,6 +39,24 @@ class AgentRemediationCoordinatorTest {
     }
 
     @Test
+    void shouldBoundHostVerifyFixesIndependentlyOfProductFixes() {
+        assertEquals(1, coordinator.claim(hostVerify("hv-1", "coding-stage-1", 2)).remediationNo());
+        assertEquals(1, coordinator.claim(product("round-1", "qa-stage-1", 2, 2)).remediationNo());
+        assertEquals(2, coordinator.claim(hostVerify("hv-2", "coding-stage-2", 3)).remediationNo());
+        assertThrows(AgentRemediationLimitExceededException.class,
+                () -> coordinator.claim(hostVerify("hv-3", "coding-stage-3", 3)));
+        assertEquals(2, coordinator.claim(product("round-2", "qa-stage-2", 3, 3)).remediationNo());
+    }
+
+    @Test
+    void shouldRejectHostVerifyFixAttemptsBeyondHardRoleLimit() {
+        assertThrows(IllegalArgumentException.class,
+                () -> coordinator.claim(hostVerify("hv", "coding-stage", 4)));
+        assertThrows(IllegalArgumentException.class,
+                () -> coordinator.claim(hostVerifyQa("hv", "coding-stage", 2)));
+    }
+
+    @Test
     void shouldRejectAttemptsBeyondHardRoleLimit() {
         assertThrows(IllegalArgumentException.class,
                 () -> coordinator.claim(product("round", "qa-stage", 4, 2)));
@@ -79,6 +97,40 @@ class AgentRemediationCoordinatorTest {
                 "qa-" + roundId, qaAttempt,
                 "command-" + roundId,
                 "{\"kind\":\"missing-result\"}", "sha256:" + "4".repeat(64),
+                1000L
+        );
+    }
+
+    private static AgentRemediationRoundStore.ClaimDraft hostVerify(
+            String roundId,
+            String sourceStageRunId,
+            int codingAttempt
+    ) {
+        return new AgentRemediationRoundStore.ClaimDraft(
+                roundId, "task-1", AgentRemediationKind.HOST_VERIFY_FIX,
+                sourceStageRunId, "command-" + sourceStageRunId,
+                "sha256:" + "5".repeat(64), 7L, 3L,
+                "coding-" + roundId, codingAttempt,
+                "", 0,
+                "command-" + roundId,
+                "{\"reason\":\"host verify defect\"}", "sha256:" + "6".repeat(64),
+                1000L
+        );
+    }
+
+    private static AgentRemediationRoundStore.ClaimDraft hostVerifyQa(
+            String roundId,
+            String sourceStageRunId,
+            int codingAttempt
+    ) {
+        return new AgentRemediationRoundStore.ClaimDraft(
+                roundId, "task-1", AgentRemediationKind.HOST_VERIFY_FIX,
+                sourceStageRunId, "command-" + sourceStageRunId,
+                "sha256:" + "5".repeat(64), 7L, 3L,
+                "coding-" + roundId, codingAttempt,
+                "qa-" + roundId, 2,
+                "command-" + roundId,
+                "{\"reason\":\"host verify defect\"}", "sha256:" + "6".repeat(64),
                 1000L
         );
     }

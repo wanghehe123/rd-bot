@@ -1,5 +1,9 @@
 package com.wish.rd.engine.requirement.policy.impl;
 
+import com.wish.rd.engine.requirement.audit.AuditedTaskState;
+import com.wish.rd.engine.requirement.audit.AuditedTaskStateInitializer;
+import com.wish.rd.engine.requirement.audit.AuditedTaskStateCodec;
+import com.wish.rd.engine.requirement.audit.impl.InMemoryAuditedTaskStateStore;
 import com.wish.rd.engine.requirement.job.impl.InMemoryRequirementStageCommandStore;
 import com.wish.rd.engine.requirement.job.model.RequirementStageCommand;
 import com.wish.rd.engine.requirement.policy.model.ApproveRequirementPolicyCommand;
@@ -24,6 +28,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Exercises the bounded, same-JVM policy transaction compatibility path. */
 class InMemoryRequirementPolicyTransactionAdapterTest {
@@ -71,6 +76,12 @@ class InMemoryRequirementPolicyTransactionAdapterTest {
         assertEquals("REQUIREMENT_REVIEWER", applied.nextCommand().role());
         assertEquals("run-1", applied.nextCommand().policyRunId());
         assertEquals(applied, fixture.adapter.consumePolicyApply(apply, "any-replay-owner", NOW + 2L));
+        AuditedTaskState head = fixture.audited.head("task-1").orElseThrow();
+        assertEquals(1L, head.stateVersion());
+        assertEquals(6, head.records().size());
+        assertEquals(head.stateHash(), fixture.audited.initializeIfAbsent(
+                new AuditedTaskStateInitializer(new AuditedTaskStateCodec()).initialize(
+                        fixture.tasks.findRequirementTask("task-1").orElseThrow())).stateHash());
     }
 
     @Test
@@ -78,6 +89,7 @@ class InMemoryRequirementPolicyTransactionAdapterTest {
         Fixture fixture = fixture("WAITING_APPROVAL");
         var evaluated = fixture.adapter.recordEvaluation(fixture.decision, claim(fixture.commands, fixture.evaluation, "worker"), "worker", NOW);
         var waiting = fixture.adapter.consumePolicyApply(claim(fixture.commands, evaluated.policyApplyCommand(), "worker"), "worker", NOW + 1L);
+        assertTrue(fixture.audited.head("task-1").isEmpty());
         ApproveRequirementPolicyCommand approval = new ApproveRequirementPolicyCommand(
                 "task-1", "run-1", waiting.taskVersion(), waiting.fencingToken(), fixture.planDigest,
                 fixture.policyDigest, "approval-1", "APPROVED", "approved locally");
@@ -89,6 +101,22 @@ class InMemoryRequirementPolicyTransactionAdapterTest {
         assertEquals(RdTaskStatus.EXECUTING, fixture.tasks.findRequirementTask("task-1").orElseThrow().status());
         assertEquals("run-1", resumed.nextCommand().policyRunId());
         assertEquals(resumed, fixture.adapter.consumeApproval(resume, "other-replay-owner", NOW + 4L));
+        assertEquals(1L, fixture.audited.head("task-1").orElseThrow().stateVersion());
+        assertEquals(6, fixture.audited.head("task-1").orElseThrow().records().size());
+    }
+
+    @Test
+    void shouldFailClosedWhenAuditedContractRefMismatchesOnAllow() {
+        Fixture fixture = fixture("ALLOWED");
+        RdRequirementTask other = RdRequirementTask.created("task-1", new CreateRequirementTaskCommand(
+                "deliver", "P1", "repo", "owner", "repo", "main", "done", List.of("other"), false), NOW)
+                .withState(RdTaskStatus.PLAN_GENERATED, "", "{}", "", "", NOW).withConcurrency(5L, 7L);
+        fixture.audited.initializeIfAbsent(new AuditedTaskStateInitializer(new AuditedTaskStateCodec()).initialize(other));
+        var evaluated = fixture.adapter.recordEvaluation(fixture.decision, claim(fixture.commands, fixture.evaluation, "worker"), "worker", NOW);
+        RequirementStageCommand apply = claim(fixture.commands, evaluated.policyApplyCommand(), "worker");
+        IllegalStateException failure = assertThrows(IllegalStateException.class,
+                () -> fixture.adapter.consumePolicyApply(apply, "worker", NOW + 1L));
+        assertTrue(failure.getMessage().contains("contractRef"));
     }
 
     @Test
@@ -129,7 +157,8 @@ class InMemoryRequirementPolicyTransactionAdapterTest {
                 .withState(RdTaskStatus.PLAN_GENERATED, "", "{}", "", "", NOW).withConcurrency(5L, 7L);
         tasks.saveRequirementTask(task);
         InMemoryRequirementPolicyTransactionAdapter adapter = new InMemoryRequirementPolicyTransactionAdapter(
-                runs, tasks, new InMemoryRdTaskStatusEventStore(), commands, ids);
+                runs, tasks, new InMemoryRdTaskStatusEventStore(), commands, ids,
+                new InMemoryAuditedTaskStateStore());
         String plan = "{\"plan\":true}";
         String policy = "{\"policyAction\":\"WAITING_APPROVAL\",\"reason\":\"review\"}";
         String planDigest = RequirementPolicyRun.canonicalJsonDigest(plan);
@@ -175,7 +204,8 @@ class InMemoryRequirementPolicyTransactionAdapterTest {
                 .withState(RdTaskStatus.PLAN_GENERATED, "", "{}", "", "", NOW).withConcurrency(5L, 7L);
         tasks.saveRequirementTask(task);
         InMemoryRequirementPolicyTransactionAdapter adapter = new InMemoryRequirementPolicyTransactionAdapter(
-                runs, tasks, new InMemoryRdTaskStatusEventStore(), commands, ids);
+                runs, tasks, new InMemoryRdTaskStatusEventStore(), commands, ids,
+                new InMemoryAuditedTaskStateStore());
         String plan = "{\"plan\":true}";
         String digest = RequirementPolicyRun.canonicalJsonDigest(plan);
         String policy = "{\"policyAction\":\"ALLOWED\",\"reason\":\"safe\"}";
@@ -214,8 +244,9 @@ class InMemoryRequirementPolicyTransactionAdapterTest {
         commands.enqueue(evaluation);
         RecordRequirementPolicyDecisionCommand decision = new RecordRequirementPolicyDecisionCommand(
                 "run-1", "task-1", 5L, 7L, planDigest, policyJson, policyDigest, action);
-        return new Fixture(new InMemoryRequirementPolicyTransactionAdapter(runs, tasks, events, commands, ids),
-                tasks, commands, evaluation, decision, planDigest, policyDigest);
+        InMemoryAuditedTaskStateStore audited = new InMemoryAuditedTaskStateStore();
+        return new Fixture(new InMemoryRequirementPolicyTransactionAdapter(runs, tasks, events, commands, ids, audited),
+                tasks, commands, audited, evaluation, decision, planDigest, policyDigest);
     }
 
     private static RequirementStageCommand claim(InMemoryRequirementStageCommandStore store, RequirementStageCommand command, String owner) {
@@ -256,6 +287,7 @@ class InMemoryRequirementPolicyTransactionAdapterTest {
             InMemoryRequirementPolicyTransactionAdapter adapter,
             InMemoryRdTaskStore tasks,
             InMemoryRequirementStageCommandStore commands,
+            InMemoryAuditedTaskStateStore audited,
             RequirementStageCommand evaluation,
             RecordRequirementPolicyDecisionCommand decision,
             String planDigest,

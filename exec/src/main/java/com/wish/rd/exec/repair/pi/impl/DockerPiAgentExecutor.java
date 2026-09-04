@@ -26,6 +26,7 @@ import com.wish.rd.exec.repair.execution.model.RepairArtifact;
 import com.wish.rd.exec.repair.execution.model.RepairArtifactType;
 import com.wish.rd.exec.repair.execution.model.RepairExecutionResult;
 import com.wish.rd.exec.repair.execution.model.RepairExecutionStatus;
+import com.wish.rd.exec.repair.execution.model.RepairInputAttachment;
 import com.wish.rd.exec.repair.execution.model.RepairJobCommand;
 import com.wish.rd.exec.repair.qa.QaExecutionMetadataKeys;
 import com.wish.rd.exec.repair.qa.QaNpmInstallPlan;
@@ -100,7 +101,7 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
     private static final Set<String> READ_ONLY_REPO_ROLES = Set.of(
             "REQUIREMENT_REVIEWER", "SOLUTION_ARCHITECT"
     );
-    private static final long QA_NPM_PROVISION_TIMEOUT_MILLIS = 600_000L;
+    private static final long QA_NPM_PROVISION_TIMEOUT_MILLIS = 1_200_000L;
     private static final long DEFAULT_EXECUTION_TIMEOUT_MILLIS = 60L * 60L * 1000L;
     private static final long DEFAULT_BASH_COMMAND_TIMEOUT_MILLIS = 15L * 60L * 1000L;
     /** 默认沿用历史硬编码值；小内存宿主经 RD_EXECUTOR_PI_MEMORY_LIMIT 收口，防止 QA 突发把宿主 OOM。 */
@@ -386,6 +387,7 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         RepairWorkspace workspace = null;
         EventCapture eventCapture = null;
         Map<String, String> repositoryMetadata = new LinkedHashMap<>();
+        Map<String, String> qaExecutionMetadata = new LinkedHashMap<>();
         try {
             JsonNode snapshotJson = parseSnapshot(snapshot);
             ProviderSpec provider = provider(snapshotJson);
@@ -401,8 +403,8 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                 materializeResources(snapshot, workspace.inputDirectory());
                 materializeSkills(snapshot.role(), workspace.inputDirectory());
                 QaProvision qaProvision = provisionQaInputs(command, snapshot, workspace);
-                // Host docs-only validation reads dockerMetadataJson only — never github/repo metadata.
-                Map<String, String> qaExecutionMetadata = qaExecutionMetadata(qaProvision);
+                // Host docs-only validation and workspace fingerprints read dockerMetadataJson only.
+                qaExecutionMetadata.putAll(qaExecutionMetadata(qaProvision));
                 String inputManifestJson = text(command.contextJson().get("inputManifestJson"));
                 PiRequestV2Materializer.materializeInputManifest(workspace.inputDirectory(), inputManifestJson);
                 Path requestPath = workspace.inputDirectory().resolve("request.json").normalize();
@@ -427,6 +429,9 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                 if (provisionFailure != null) {
                     return withRepositoryMetadata(provisionFailure, repositoryMetadata);
                 }
+                recordQaWorkspaceFingerprint(
+                        command, snapshot, workspace, qaExecutionMetadata,
+                        QaExecutionMetadataKeys.WORKSPACE_FINGERPRINT_BEFORE_JSON);
                 ContainerRunRequest containerRequest = containerRequest(
                         command,
                         snapshot,
@@ -435,17 +440,25 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                         provider
                 );
                 eventCapture = new EventCapture(snapshot, containerRequest.containerName(), eventSink);
-                ContainerRunResult runResult = streamingRunner.run(containerRequest, eventCapture.listener());
-            if (runResult == null) {
-                return failed(
-                        RepairExecutionStatus.FAILED,
-                        "Pi container runner returned no result.",
-                        "PI_CONTAINER",
-                        "container runner returned null result",
-                        baseMetadata(snapshot, provider, null)
-                );
-            }
-            eventCapture.finish();
+                ContainerRunResult runResult;
+                try {
+                    runResult = streamingRunner.run(containerRequest, eventCapture.listener());
+                } finally {
+                    recordQaWorkspaceFingerprint(
+                            command, snapshot, workspace, qaExecutionMetadata,
+                            QaExecutionMetadataKeys.WORKSPACE_FINGERPRINT_AFTER_JSON);
+                    applyQaWorkspaceIntegrity(qaExecutionMetadata);
+                }
+                if (runResult == null) {
+                    return failed(
+                            RepairExecutionStatus.FAILED,
+                            "Pi container runner returned no result.",
+                            "PI_CONTAINER",
+                            "container runner returned null result",
+                            mergeMetadata(baseMetadata(snapshot, provider, null), qaExecutionMetadata)
+                    );
+                }
+                eventCapture.finish();
             List<RepairArtifact> artifacts = withRuntimeMeasurement(
                     workspace.outputDirectory(),
                     collectArtifacts(workspace.outputDirectory()),
@@ -553,7 +566,7 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                         "Pi emitted an invalid normalized event stream.",
                         "PI_EVENT_PROTOCOL",
                         safeError(eventCapture.protocolFailure),
-                        baseMetadata(snapshot, null, workspace)
+                        mergeMetadata(baseMetadata(snapshot, null, workspace), qaExecutionMetadata)
                 );
             }
             String category = exception instanceof IOException ? "PI_CONTAINER" : "PI_RUNTIME";
@@ -562,7 +575,7 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                     "Pi execution failed before a valid result was produced.",
                     category,
                     safeError(exception),
-                    baseMetadata(snapshot, null, workspace)
+                    mergeMetadata(baseMetadata(snapshot, null, workspace), qaExecutionMetadata)
             );
         }
     }
@@ -1081,6 +1094,7 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                 QA_PROFILE_DETECTOR.toJson(profile, candidateChangedFiles),
                 StandardCharsets.UTF_8
         );
+        materializeFrozenAcceptanceCriteriaIds(command, workspace);
         Path hubSkill = workspace.inputDirectory().resolve("skills")
                 .resolve("qa-playwright-cli")
                 .resolve("SKILL.md")
@@ -1089,6 +1103,25 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         // Prefer Skill Hub materialization under skills/; keep qa-skill/ as legacy fallback.
         boolean legacyWritten = !hubPresent && writeQaSkillDocument(workspace.inputDirectory());
         return new QaProvision(profile, hubPresent, legacyWritten, candidateChangedFiles);
+    }
+
+    private static void materializeFrozenAcceptanceCriteriaIds(
+            RepairJobCommand command,
+            RepairWorkspace workspace
+    ) throws IOException {
+        if (command == null || command.attachments() == null) {
+            return;
+        }
+        for (RepairInputAttachment attachment : command.attachments()) {
+            if (!"acceptance-criteria-ids.json".equals(attachment.filename())) {
+                continue;
+            }
+            Files.write(
+                    workspace.inputDirectory().resolve("acceptance-criteria-ids.json"),
+                    attachment.content()
+            );
+            return;
+        }
     }
 
     private static boolean writeQaSkillDocument(Path inputDirectory) {
@@ -1239,6 +1272,9 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                 environment.put("RD_QA_SKILL_FILE", "/work/input/qa-skill/SKILL.md");
             }
         }
+        if (configuration.credentialRelayEnabled() && "CODING_AGENT".equals(snapshot.role())) {
+            environment.put("npm_config_offline", "true");
+        }
     }
 
     private static String jsonArrayText(List<String> values) {
@@ -1297,10 +1333,10 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
             QaProvision qaProvision,
             StreamingContainerRunnerPort streamingRunner
     ) {
-        if (!"QA_AGENT".equals(snapshot.role())
-                || !QaNpmInstallPlan.required(workspace.repoDirectory(), qaProvision.profile())) {
+        if (!shouldProvisionNpmDependencies(snapshot, workspace, qaProvision)) {
             return null;
         }
+        String roleLabel = "QA_AGENT".equals(snapshot.role()) ? "QA" : "Coding";
         ContainerRunRequest request = npmProvisionRequest(command, snapshot, workspace);
         ContainerRunResult result;
         try {
@@ -1308,9 +1344,9 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         } catch (IOException exception) {
             return failed(
                     RepairExecutionStatus.FAILED,
-                    "QA dependency provision failed.",
+                    roleLabel + " dependency provision failed.",
                     "ENVIRONMENT",
-                    "QA npm provision could not start: " + safeError(exception),
+                    roleLabel + " npm provision could not start: " + safeError(exception),
                     baseMetadata(snapshot, null, workspace)
             );
         }
@@ -1320,13 +1356,29 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                     : containerFailureMessage(result, result.stderr());
             return failed(
                     RepairExecutionStatus.FAILED,
-                    "QA dependency provision failed.",
+                    roleLabel + " dependency provision failed.",
                     "ENVIRONMENT",
-                    "QA npm provision exited before the isolated agent started: " + detail,
+                    roleLabel + " npm provision exited before the isolated agent started: " + detail,
                     baseMetadata(snapshot, null, workspace)
             );
         }
         return null;
+    }
+
+    private boolean shouldProvisionNpmDependencies(
+            AgentExecutionProfileSnapshot snapshot,
+            RepairWorkspace workspace,
+            QaProvision qaProvision
+    ) {
+        if ("QA_AGENT".equals(snapshot.role())) {
+            return QaNpmInstallPlan.required(
+                    workspace.repoDirectory(),
+                    qaProvision == null ? null : qaProvision.profile()
+            );
+        }
+        return "CODING_AGENT".equals(snapshot.role())
+                && configuration.credentialRelayEnabled()
+                && QaNpmInstallPlan.requiredForCoding(workspace.repoDirectory());
     }
 
     private ContainerRunRequest npmProvisionRequest(
@@ -1342,7 +1394,10 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         Map<String, String> environment = new LinkedHashMap<>();
         environment.put("npm_config_cache", CONTAINER_CACHE + "/npm");
         environment.put("NODE_ENV", "development");
-        String image = configuration.qaImage().isBlank() ? configuration.image() : configuration.qaImage();
+        QaNpmInstallPlan.copyHostNpmRegistry(environment, System.getenv());
+        String image = "QA_AGENT".equals(snapshot.role()) && !configuration.qaImage().isBlank()
+                ? configuration.qaImage()
+                : configuration.image();
         String networkMode = configuration.networkMode().isBlank() ? "bridge" : configuration.networkMode();
         return new ContainerRunRequest(
                 safeContainerName(command.taskId()) + "-deps",
@@ -1357,11 +1412,15 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                 workspace.outputDirectory(),
                 false,
                 "",
-                QA_NPM_PROVISION_TIMEOUT_MILLIS,
+                npmProvisionTimeoutMillis(),
                 piSecurityPolicy(false, 1024),
                 null,
                 "sh"
         );
+    }
+
+    private long npmProvisionTimeoutMillis() {
+        return Math.max(QA_NPM_PROVISION_TIMEOUT_MILLIS, configuration.bashCommandTimeoutMillis());
     }
 
     private ContainerNetworkPlan relayNetworkPlan(
@@ -2266,6 +2325,64 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         return Map.copyOf(metadata);
     }
 
+    private static Map<String, String> mergeMetadata(
+            Map<String, String> base,
+            Map<String, String> extra
+    ) {
+        Map<String, String> merged = new LinkedHashMap<>(base == null ? Map.of() : base);
+        if (extra != null) {
+            merged.putAll(extra);
+        }
+        return merged;
+    }
+
+    private void recordQaWorkspaceFingerprint(
+            RepairJobCommand command,
+            AgentExecutionProfileSnapshot snapshot,
+            RepairWorkspace workspace,
+            Map<String, String> qaExecutionMetadata,
+            String key
+    ) {
+        if (!"QA_AGENT".equals(snapshot.role()) || qaExecutionMetadata == null) {
+            return;
+        }
+        RepairWorkspaceRepositoryPort.RepositoryState state;
+        try {
+            state = workspaceRepository.repositoryState(command, workspace);
+        } catch (IOException | RuntimeException ignored) {
+            return;
+        }
+        if (state == null || !state.supported()) {
+            return;
+        }
+        try {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("headSha", state.headSha());
+            body.put("trackedTreeSha256", state.trackedTreeSha256());
+            body.put("trackedFileCount", state.trackedFileCount());
+            qaExecutionMetadata.put(key, OBJECT_MAPPER.writeValueAsString(body));
+        } catch (JsonProcessingException ignored) {
+            // Missing keys fail closed as SUSPECT in the auditor.
+        }
+    }
+
+    private static void applyQaWorkspaceIntegrity(Map<String, String> qaExecutionMetadata) {
+        if (qaExecutionMetadata == null) {
+            return;
+        }
+        String before = qaExecutionMetadata.get(QaExecutionMetadataKeys.WORKSPACE_FINGERPRINT_BEFORE_JSON);
+        String after = qaExecutionMetadata.get(QaExecutionMetadataKeys.WORKSPACE_FINGERPRINT_AFTER_JSON);
+        if (before == null || before.isBlank() || after == null || after.isBlank()) {
+            return;
+        }
+        qaExecutionMetadata.put(
+                QaExecutionMetadataKeys.WORKSPACE_INTEGRITY,
+                before.equals(after)
+                        ? QaExecutionMetadataKeys.WORKSPACE_INTEGRITY_CLEAN
+                        : QaExecutionMetadataKeys.WORKSPACE_INTEGRITY_VIOLATION
+        );
+    }
+
     private static Map<String, String> dockerMetadata(
             ContainerRunRequest request,
             ContainerRunResult result,
@@ -2550,10 +2667,50 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
     }
 
     private static String containerFailureMessage(ContainerRunResult result, String streamError) {
-        String detail = text(streamError);
         String exit = "container exited with code " + result.exitCode();
-        if (detail.isBlank()) return exit;
-        return detail.length() > 500 ? detail.substring(0, 500) + "..." : detail + " (" + exit + ")";
+        boolean timedOut = "true".equalsIgnoreCase(result.metadata().getOrDefault("timedOut", ""));
+        String prefix = timedOut
+                ? "timed out after " + result.durationMillis() + "ms (" + exit + ")"
+                : exit;
+        String detail = stripLeadingNpmNoise(text(streamError));
+        if (detail.isBlank()) {
+            return prefix;
+        }
+        if (detail.length() > 400) {
+            detail = timedOut
+                    ? "..." + detail.substring(detail.length() - 400)
+                    : detail.substring(0, 400) + "...";
+        }
+        return prefix + ": " + detail;
+    }
+
+    private static String stripLeadingNpmNoise(String stderr) {
+        if (stderr.isBlank()) {
+            return "";
+        }
+        String[] lines = stderr.split("\\R", -1);
+        int start = 0;
+        while (start < lines.length) {
+            String trimmed = lines[start].strip();
+            if (trimmed.isEmpty()
+                    || trimmed.startsWith("npm notice")
+                    || trimmed.startsWith("npm warn deprecated")) {
+                start++;
+                continue;
+            }
+            break;
+        }
+        if (start >= lines.length) {
+            return "";
+        }
+        StringBuilder kept = new StringBuilder();
+        for (int i = start; i < lines.length; i++) {
+            if (!kept.isEmpty()) {
+                kept.append('\n');
+            }
+            kept.append(lines[i]);
+        }
+        return kept.toString().strip();
     }
 
     private boolean repositoryPublishRequired(RepairJobCommand command) {

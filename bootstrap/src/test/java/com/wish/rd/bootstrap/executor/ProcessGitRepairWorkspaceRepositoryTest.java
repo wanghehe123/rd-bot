@@ -37,6 +37,36 @@ class ProcessGitRepairWorkspaceRepositoryTest {
         assertFalse(ProcessGitRepairWorkspaceRepository.isTransientNetworkFailure(
                 "fatal: unable to access 'https://github.com/example/repo/': "
                         + "The requested URL returned error: 401"));
+        assertTrue(ProcessGitRepairWorkspaceRepository.isTransientNetworkFailure(
+                "git command failed exitCode=128 command=git -C /tmp/repo push -u origin requirement/1 "
+                        + "stderr=fatal: unable to access 'https://github.com/example/repo/': "
+                        + "GnuTLS recv error (-110): The TLS connection was non-properly terminated."));
+    }
+
+    @Test
+    void shouldDisableGitTerminalPromptOnHostCli() throws Exception {
+        String source = Files.readString(Path.of(
+                "src/main/java/com/wish/rd/bootstrap/executor/impl/ProcessGitRepairWorkspaceRepository.java"));
+        assertTrue(source.contains("GIT_TERMINAL_PROMPT"));
+        assertTrue(source.contains("processBuilder.environment().put(\"GIT_TERMINAL_PROMPT\", \"0\")"));
+    }
+
+    @Test
+    void shouldRetryTransientTlsDropsOnWorkBranchPushWithoutClearingTheRepo() throws Exception {
+        String source = Files.readString(Path.of(
+                "src/main/java/com/wish/rd/bootstrap/executor/impl/ProcessGitRepairWorkspaceRepository.java"));
+        int publish = source.indexOf("public RepositoryOperationResult publish(");
+        int next = source.indexOf("public RepositoryState repositoryState(");
+        assertTrue(publish > 0 && next > publish, "publish method bounds");
+        String body = source.substring(publish, next);
+        assertTrue(body.contains("runGitRetryingTransientNetwork"), body);
+        assertTrue(body.contains("\"push\""), body);
+        assertTrue(body.contains("http.version"), body);
+        assertTrue(body.contains("HTTP/1.1"), body);
+        assertTrue(body.contains("http.postBuffer"), body);
+        int retry = body.indexOf("runGitRetryingTransientNetwork");
+        int push = body.indexOf("\"push\"");
+        assertTrue(retry > 0 && push > retry, "push must go through the transient-network retry helper");
     }
 
     @TempDir
@@ -402,6 +432,57 @@ class ProcessGitRepairWorkspaceRepositoryTest {
         RepairWorkspaceRepositoryPort.RepositoryState mutated = repository.repositoryState(command, workspace);
         assertNotEquals(baseline.fingerprint(), mutated.fingerprint(),
                 "real content mutation must change the repository fingerprint");
+    }
+
+    @Test
+    void repositoryStateIgnoresGitignoredBuildArtifactsAndTracksHeadAndFileContent() throws Exception {
+        assumeTrue(gitAvailable(), "git CLI is required");
+        Path seedRepository = temporaryDirectory.resolve("seed");
+        Path remoteRepository = temporaryDirectory.resolve("remote.git");
+        createSeedRepository(seedRepository, remoteRepository);
+        Files.writeString(seedRepository.resolve(".gitignore"), ".next/\nnode_modules/\n", StandardCharsets.UTF_8);
+        git(seedRepository, "add", ".gitignore");
+        git(seedRepository, "commit", "-m", "ignore build artifacts");
+        git(seedRepository, "push", remoteRepository.toString(), "HEAD:main");
+
+        RepairWorkspaceFactory factory = new RepairWorkspaceFactory(
+                temporaryDirectory.resolve("workspaces"),
+                "{\"type\":\"object\"}"
+        );
+        RepairJobCommand command = command(remoteRepository.toString());
+        RepairWorkspace workspace = factory.create(command);
+        ProcessGitRepairWorkspaceRepository repository =
+                new ProcessGitRepairWorkspaceRepository(new DockerExecutorProperties());
+        repository.prepare(command, workspace);
+
+        RepairWorkspaceRepositoryPort.RepositoryState baseline = repository.repositoryState(command, workspace);
+        assertFalse(baseline.headSha().isBlank(), baseline.headSha());
+        assertTrue(baseline.trackedTreeSha256().startsWith("sha256:"), baseline.trackedTreeSha256());
+        assertTrue(baseline.trackedFileCount() >= 2, String.valueOf(baseline.trackedFileCount()));
+
+        Files.createDirectories(workspace.repoDirectory().resolve(".next/cache"));
+        Files.writeString(workspace.repoDirectory().resolve(".next/cache/trace"), "build", StandardCharsets.UTF_8);
+        Files.createDirectories(workspace.repoDirectory().resolve("node_modules/pkg"));
+        Files.writeString(
+                workspace.repoDirectory().resolve("node_modules/pkg/index.js"),
+                "module.exports = 1;\n",
+                StandardCharsets.UTF_8
+        );
+        RepairWorkspaceRepositoryPort.RepositoryState ignored = repository.repositoryState(command, workspace);
+        assertEquals(baseline.headSha(), ignored.headSha());
+        assertEquals(baseline.trackedTreeSha256(), ignored.trackedTreeSha256());
+        assertEquals(baseline.trackedFileCount(), ignored.trackedFileCount());
+
+        Files.writeString(workspace.repoDirectory().resolve("README.md"), "# mutated\n", StandardCharsets.UTF_8);
+        RepairWorkspaceRepositoryPort.RepositoryState mutated = repository.repositoryState(command, workspace);
+        assertEquals(baseline.headSha(), mutated.headSha());
+        assertNotEquals(baseline.trackedTreeSha256(), mutated.trackedTreeSha256());
+
+        git(workspace.repoDirectory(), "add", "README.md");
+        git(workspace.repoDirectory(), "commit", "-m", "mutate tracked file");
+        RepairWorkspaceRepositoryPort.RepositoryState committed = repository.repositoryState(command, workspace);
+        assertNotEquals(baseline.headSha(), committed.headSha());
+        assertEquals(mutated.trackedTreeSha256(), committed.trackedTreeSha256());
     }
 
     @Test

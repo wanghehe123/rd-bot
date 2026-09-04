@@ -9,6 +9,7 @@ import com.wish.rd.engine.retry.TaskRetryTaskPort;
 import com.wish.rd.engine.retry.model.InitializeRequirementRetryCommand;
 import com.wish.rd.engine.retry.model.RequirementRetryDispatchResult;
 import com.wish.rd.engine.retry.model.TaskRetryCheckpoint;
+import com.wish.rd.engine.retry.model.TaskRetryRoute;
 import com.wish.rd.rag.runtime.model.RdRequirementTask;
 
 import java.util.Set;
@@ -53,8 +54,7 @@ public class InMemoryRequirementRetryDispatchTransactionAdapter implements Requi
         request.plannedBindings().forEach(bindingStore::save);
         RdRequirementTask recovering = taskPort.markRecovering(
                 request.checkpoint().taskId(), "checkpoint-bound retry: " + request.route().firstStage());
-        String policyRunId = request.route().primaryAttemptKind()
-                == com.wish.rd.engine.retry.model.TaskRetryAttemptKind.AGENT_STAGE
+        String policyRunId = inheritsSourcePolicyRunId(request.route())
                 ? request.checkpoint().sourcePolicyRunId()
                 : "";
         RequirementStageCommand requestedCommand = RequirementStageCommand.pending(
@@ -86,6 +86,14 @@ public class InMemoryRequirementRetryDispatchTransactionAdapter implements Requi
             throw new IllegalStateException("retry checkpoint replay command identity differs from requested route");
         }
         return new RequirementRetryDispatchResult(checkpoint, command, true);
+    }
+
+    private static boolean inheritsSourcePolicyRunId(TaskRetryRoute route) {
+        if (route.primaryAttemptKind() == com.wish.rd.engine.retry.model.TaskRetryAttemptKind.AGENT_STAGE) {
+            return true;
+        }
+        String stage = route.firstStage() == null ? "" : route.firstStage();
+        return "HOST_VERIFY".equals(stage) || stage.startsWith("PUBLICATION");
     }
 
     private static void requireExactCommand(RequirementStageCommand requested, RequirementStageCommand effective) {

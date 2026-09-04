@@ -37,18 +37,29 @@ public record AgentRemediationRound(
             throw new IllegalArgumentException("invalid source fencing identity");
         }
         targetCodingStageRunId = safe(targetCodingStageRunId);
-        targetQaStageRunId = require(targetQaStageRunId, "targetQaStageRunId");
         firstCommandId = require(firstCommandId, "firstCommandId");
-        if (targetQaAttemptNo < 1 || targetQaAttemptNo > 3) {
-            throw new IllegalArgumentException("target QA attempt must be between 1 and 3");
-        }
-        if (kind == AgentRemediationKind.QA_PRODUCT_FIX) {
+        if (kind == AgentRemediationKind.HOST_VERIFY_FIX) {
             targetCodingStageRunId = require(targetCodingStageRunId, "targetCodingStageRunId");
             if (targetCodingAttemptNo < 1 || targetCodingAttemptNo > 3) {
                 throw new IllegalArgumentException("target Coding attempt must be between 1 and 3");
             }
-        } else if (!targetCodingStageRunId.isEmpty() || targetCodingAttemptNo != 0) {
-            throw new IllegalArgumentException("protocol retry must not target Coding");
+            targetQaStageRunId = safe(targetQaStageRunId);
+            if (!targetQaStageRunId.isEmpty() || targetQaAttemptNo != 0) {
+                throw new IllegalArgumentException("host-verify fix must not target QA");
+            }
+        } else {
+            targetQaStageRunId = require(targetQaStageRunId, "targetQaStageRunId");
+            if (targetQaAttemptNo < 1 || targetQaAttemptNo > 3) {
+                throw new IllegalArgumentException("target QA attempt must be between 1 and 3");
+            }
+            if (kind == AgentRemediationKind.QA_PRODUCT_FIX) {
+                targetCodingStageRunId = require(targetCodingStageRunId, "targetCodingStageRunId");
+                if (targetCodingAttemptNo < 1 || targetCodingAttemptNo > 3) {
+                    throw new IllegalArgumentException("target Coding attempt must be between 1 and 3");
+                }
+            } else if (!targetCodingStageRunId.isEmpty() || targetCodingAttemptNo != 0) {
+                throw new IllegalArgumentException("protocol retry must not target Coding");
+            }
         }
         requestJson = require(requestJson, "requestJson");
         if (requestJson.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 65_536) {

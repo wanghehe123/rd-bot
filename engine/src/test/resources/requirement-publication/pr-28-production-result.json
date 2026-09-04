@@ -1,0 +1,76 @@
+{
+  "status": "SUCCESS",
+  "multiAgentStatus": "SUCCESS",
+  "summary": "完成外卖接单页的订单筛选与状态展示",
+  "multiAgentStages": [
+    {
+      "role": "REQUIREMENT_REVIEWER",
+      "success": true,
+      "resultJson": {"status": "SUCCESS"}
+    },
+    {
+      "role": "SOLUTION_ARCHITECT",
+      "success": true,
+      "resultJson": {"status": "SUCCESS"}
+    },
+    {
+      "role": "CODING_AGENT",
+      "success": true,
+      "resultJson": {
+        "summary": "实现订单筛选、空态和移动端布局",
+        "prBody": "实现了外卖接单页，并补充验证。",
+        "changedFiles": [
+          "src/pages/OrderAcceptPage.tsx",
+          "src/pages/OrderAcceptPage.test.tsx"
+        ],
+        "testCommands": [
+          "npm run test -- OrderAcceptPage",
+          "npm run build"
+        ],
+        "testStatus": "PASSED",
+        "riskLevel": "LOW"
+      }
+    },
+    {
+      "role": "QA_AGENT",
+      "success": true,
+      "resultJson": {
+        "status": "PASSED",
+        "summary": "当前需求和回归验收通过",
+        "failureCategory": "NONE",
+        "retryRecommendation": "NONE",
+        "browserValidation": {
+          "required": false,
+          "performed": false,
+          "decisionSource": "NOT_APPLICABLE",
+          "baseUrl": "",
+          "browser": "chromium",
+          "viewports": []
+        },
+        "acceptanceResults": [
+          {
+            "criteria": "订单筛选可用",
+            "scope": "CURRENT",
+            "command": "npm run test -- OrderAcceptPage",
+            "status": "PASSED",
+            "exitCode": 0,
+            "durationMillis": 1210,
+            "logArtifactId": "qa-evidence/commands/current.log",
+            "evidenceArtifactIds": ["qa-evidence/screenshots/order-filter-desktop.png"]
+          },
+          {
+            "criteria": "既有订单列表回归",
+            "scope": "REGRESSION",
+            "command": "npm run test",
+            "status": "PASSED",
+            "exitCode": 0,
+            "durationMillis": 2450,
+            "logArtifactId": "qa-evidence/commands/regression.log",
+            "evidenceArtifactIds": ["qa-evidence/traces/regression.zip"]
+          }
+        ],
+        "evidenceManifestArtifactId": "qa-evidence/manifest.json"
+      }
+    }
+  ]
+}

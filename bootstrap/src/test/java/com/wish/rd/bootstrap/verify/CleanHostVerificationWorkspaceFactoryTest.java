@@ -75,6 +75,7 @@ class CleanHostVerificationWorkspaceFactoryTest {
         assertEquals("true", command.contextJson().get("hostVerificationReplay"));
         assertEquals("true", command.policyJson().get("applyCandidatePatch"));
         assertEquals("LOCAL_ONLY", command.policyJson().get("repositoryDeliveryMode"));
+        assertEquals("requirement/9001", command.workBranch());
         assertFalse(command.policyJson().containsKey("cleanCache"));
         assertFalse(command.policyJson().containsKey("deleteNodeModules"));
 

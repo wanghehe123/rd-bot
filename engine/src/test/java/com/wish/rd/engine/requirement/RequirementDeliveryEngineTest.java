@@ -39,6 +39,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.ArrayList;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -48,14 +49,26 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+import com.wish.rd.engine.requirement.audit.AuditedRecordStatus;
+import com.wish.rd.engine.requirement.audit.AuditedTaskState;
+import com.wish.rd.engine.requirement.audit.impl.InMemoryAuditedTaskStateStore;
+import com.wish.rd.engine.requirement.policy.RequirementPolicyRunStore;
+import com.wish.rd.engine.requirement.policy.model.RequirementPolicyRun;
+import com.wish.rd.engine.requirement.policy.model.RequirementPolicyRunState;
 import com.wish.rd.engine.requirement.model.RequirementDeliveryResult;
 import com.wish.rd.engine.requirement.model.RequirementDeliveryReviewResult;
+import com.wish.rd.engine.requirement.model.RequirementDeliveryPublicationView;
 import com.wish.rd.engine.requirement.job.model.CommandDisposition;
 import com.wish.rd.engine.requirement.job.model.RequirementStageCommand;
 import com.wish.rd.engine.requirement.job.model.RequirementStageExecutionPlan;
@@ -175,6 +188,11 @@ class RequirementDeliveryEngineTest {
         assertEquals(task.taskId(), pullRequestPublisher.command().taskId());
         assertEquals("requirement/" + task.taskId(), pullRequestPublisher.command().workBranch());
         assertTrue(pullRequestPublisher.command().deliveryResultJson().contains("\"deliveryReview\""));
+        assertTrue(pullRequestPublisher.command().pullRequestBody().contains("## Changes"));
+        assertTrue(pullRequestPublisher.command().pullRequestBody()
+                .contains("`src/main/java/com/example/OrderController.java`"));
+        assertTrue(pullRequestPublisher.command().pullRequestBody().contains("## Delivery Review"));
+        assertTrue(pullRequestPublisher.command().pullRequestBody().contains("Approved: **yes**"));
         assertTrue(captured.getFirst().prompt().contains("REQUIREMENT_REVIEWER"));
         assertTrue(captured.get(2).prompt().contains("用户可以在订单详情页点击催单。"));
         assertTrue(captured.get(3).upstreamResultJson().contains("CODING_AGENT"));
@@ -205,6 +223,9 @@ class RequirementDeliveryEngineTest {
         assertTrue(captured.get(2).prompt().contains("HTTP 请求必须设置不超过 30 秒的请求超时"));
         assertTrue(captured.get(2).prompt().contains("宿主会在本阶段成功后"));
         assertTrue(captured.get(2).prompt().contains("`testStatus` 只是交接信息，不是放行依据"));
+        assertTrue(captured.get(2).prompt().contains("credential-relay 隔离网"));
+        assertTrue(captured.get(2).prompt().contains("EAI_AGAIN"));
+        assertFalse(captured.get(2).prompt().contains("安装失败时保留诊断并停止"));
         assertTrue(captured.get(3).prompt().contains("\"acceptanceResults\""));
         assertFalse(captured.get(3).prompt().contains("BUILD/STATIC"));
         assertFalse(captured.get(3).prompt().contains("宿主会在本阶段成功后"));
@@ -217,6 +238,8 @@ class RequirementDeliveryEngineTest {
         assertTrue(captured.get(3).prompt().contains("\"hostAssertionResults\""));
         assertFalse(captured.get(3).prompt().contains("\"hostAssertionBundle\""));
         assertTrue(captured.get(3).prompt().contains("/work/input/qa-profile.json"));
+        assertTrue(captured.get(3).prompt().contains("CURRENT 项必须带 criteriaId"));
+        assertTrue(captured.get(3).prompt().contains("冻结集合"));
         assertTrue(captured.get(3).prompt().contains("docs-only"));
         assertTrue(captured.get(3).prompt().contains("DOCS_ONLY"));
         assertTrue(captured.get(3).prompt().contains("不得修改 /work/repo 中的跟踪文件"));
@@ -259,6 +282,160 @@ class RequirementDeliveryEngineTest {
                                 && entry.evidenceQuality() > 0.0d
                                 && !entry.applicableRoles().isEmpty()),
                 "new workflow experiences must carry repository scope, quality, and applicable roles");
+    }
+
+    @Test
+    void legacyRoleExecutionInitializesAuditedStateAndWritesUntrustedClaims() {
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(), new InMemoryRdTaskStatusEventStore(), generator());
+        RdRequirementTask task = registry.createRequirementTask(new CreateRequirementTaskCommand(
+                "legacy claims", "P1", "https://github.com/example/repo", "example", "repo", "main",
+                "result", List.of("works"), false));
+        String planJson = "{\"taskId\":\"" + task.taskId() + "\",\"implementationSteps\":[\"frozen\"],"
+                + "\"acceptanceCriteria\":[],\"suggestedValidationCommands\":[]}";
+        for (RdTaskStatus status : List.of(
+                RdTaskStatus.MATERIAL_COLLECTING, RdTaskStatus.MATERIAL_READY,
+                RdTaskStatus.CONTEXT_BUILDING, RdTaskStatus.CONTEXT_READY,
+                RdTaskStatus.PLAN_GENERATING, RdTaskStatus.PLAN_GENERATED,
+                RdTaskStatus.WAITING_POLICY, RdTaskStatus.EXECUTING)) {
+            task = registry.transitionRequirementFenced(task, status, "", planJson, "", "");
+        }
+        RequirementPolicyRun authorization = new RequirementPolicyRun(
+                "legacy-policy", task.taskId(), Math.subtractExact(task.version(), 2L),
+                Math.subtractExact(task.fencingToken(), 2L),
+                RequirementPolicyRun.canonicalizeJson(planJson),
+                RequirementPolicyRun.canonicalJsonDigest(RequirementPolicyRun.canonicalizeJson(planJson)),
+                RequirementPolicyRun.canonicalizeJson("{\"policyAction\":\"ALLOWED\",\"riskLevel\":\"LOW\",\"reason\":\"frozen\"}"),
+                RequirementPolicyRun.canonicalJsonDigest(RequirementPolicyRun.canonicalizeJson(
+                        "{\"policyAction\":\"ALLOWED\",\"riskLevel\":\"LOW\",\"reason\":\"frozen\"}")),
+                "ALLOWED", RequirementPolicyRunState.APPLIED, task.version(), task.fencingToken(),
+                null, null, "", "", "", 0L, "", "apply-command", 1L, 2L, 1L, 1L);
+        RequirementPolicyRunStore policies = mock(RequirementPolicyRunStore.class);
+        when(policies.findById(authorization.id())).thenReturn(Optional.of(authorization));
+        RequirementAgentStageOrchestrator orchestrator = mock(RequirementAgentStageOrchestrator.class);
+        when(orchestrator.run(any(), any(), anyList(), any(), any(), any(), isNull()))
+                .thenReturn(RequirementExecutionResult.success(
+                        task.taskId(),
+                        "coding complete",
+                        "",
+                        "{\"status\":\"SUCCESS\",\"testStatus\":\"PASSED\"}"));
+        InMemoryAuditedTaskStateStore audited = new InMemoryAuditedTaskStateStore();
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry, new InMemoryTaskMaterialStore(), request -> {
+                    throw new AssertionError("legacy role execution uses the stage orchestrator");
+                });
+        engine.setRequirementPolicyRunStore(policies);
+        engine.setStageOrchestrator(orchestrator);
+        engine.setAuditedTaskStateStore(audited);
+        RequirementStageCommand command = RequirementStageCommand.pending(
+                "legacy-coding-command", task.taskId(), task.version(), task.fencingToken(),
+                AgentRole.CODING_AGENT.name(), "ROLE_EXECUTION:CODING_AGENT", 0, 3,
+                System.currentTimeMillis() + 60_000L,
+                com.wish.rd.engine.scheduling.model.ScheduleResourceClass.PROVIDER,
+                Set.of(com.wish.rd.engine.scheduling.model.ScheduleResourceClass.PROVIDER),
+                "_default", "provider", "P1", authorization.id(), System.currentTimeMillis());
+
+        engine.executeStage(command);
+
+        AuditedTaskState head = audited.head(task.taskId()).orElseThrow();
+        assertEquals(2L, head.stateVersion());
+        assertEquals(AuditedRecordStatus.PENDING, head.record("GATE-BUILD").status());
+        assertTrue(head.records().stream().noneMatch(record -> record.status() == AuditedRecordStatus.COMPLETED));
+        assertTrue(head.records().stream().anyMatch(record ->
+                record.status() == AuditedRecordStatus.UNTRUSTED && record.text().contains("testStatus=PASSED")));
+        assertEquals(1, audited.listAuditRuns(task.taskId()).size());
+    }
+
+    @Test
+    void legacyDeterministicReviewRejectsFalseSuccessWhenGateBuildIsPending() {
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(), new InMemoryRdTaskStatusEventStore(), generator());
+        RdRequirementTask task = registry.createRequirementTask(new CreateRequirementTaskCommand(
+                "legacy false success", "P1", "https://github.com/example/repo", "example", "repo", "main",
+                "result", List.of("the change is accepted"), false));
+        String delivery = successfulDeliveryJsonForGate();
+        for (RdTaskStatus status : List.of(
+                RdTaskStatus.MATERIAL_COLLECTING, RdTaskStatus.MATERIAL_READY,
+                RdTaskStatus.CONTEXT_BUILDING, RdTaskStatus.CONTEXT_READY,
+                RdTaskStatus.PLAN_GENERATING, RdTaskStatus.PLAN_GENERATED,
+                RdTaskStatus.WAITING_POLICY)) {
+            task = registry.transitionRequirementFenced(task, status, "", delivery, "", "");
+        }
+        task = registry.transitionRequirementFenced(task, RdTaskStatus.EXECUTING, "", delivery, "", "");
+        InMemoryAuditedTaskStateStore audited = new InMemoryAuditedTaskStateStore();
+        new com.wish.rd.engine.requirement.audit.AuditedTaskStatePolicyBootstrap(audited)
+                .initializeIfAbsent(task);
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry, new InMemoryTaskMaterialStore(), request -> {
+                    throw new AssertionError("legacy review must not execute roles");
+                });
+        engine.setAuditedTaskStateStore(audited);
+        RequirementStageCommand command = RequirementStageCommand.pending(
+                "legacy-review-command", task.taskId(), task.version(), task.fencingToken(),
+                "REQUIREMENT_DELIVERY", "DETERMINISTIC_REVIEW", 0, 3,
+                System.currentTimeMillis() + 60_000L,
+                com.wish.rd.engine.scheduling.model.ScheduleResourceClass.GENERIC,
+                Set.of(com.wish.rd.engine.scheduling.model.ScheduleResourceClass.GENERIC),
+                "_default", "", "P1", System.currentTimeMillis());
+
+        RequirementDeliveryResult result = engine.executeStage(command);
+
+        assertEquals(RdTaskStatus.REJECTED, result.status());
+        assertTrue(result.errorMessage().contains("GATE-BUILD"), result.errorMessage());
+    }
+
+    @Test
+    void legacyCompletionFailsNeedsHumanWhenAuditedHeadIsDegraded() {
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(), new InMemoryRdTaskStatusEventStore(), generator());
+        RdRequirementTask task = registry.createRequirementTask(new CreateRequirementTaskCommand(
+                "legacy degraded completion", "P1", "https://github.com/example/repo", "example", "repo", "main",
+                "result", List.of("the change is accepted"), false));
+        String delivery = successfulDeliveryJsonForGate();
+        for (RdTaskStatus status : List.of(
+                RdTaskStatus.MATERIAL_COLLECTING, RdTaskStatus.MATERIAL_READY,
+                RdTaskStatus.CONTEXT_BUILDING, RdTaskStatus.CONTEXT_READY,
+                RdTaskStatus.PLAN_GENERATING, RdTaskStatus.PLAN_GENERATED,
+                RdTaskStatus.WAITING_POLICY, RdTaskStatus.EXECUTING,
+                RdTaskStatus.VALIDATING, RdTaskStatus.PR_CREATING, RdTaskStatus.COMMITTED,
+                RdTaskStatus.REPORTING)) {
+            task = registry.transitionRequirementFenced(task, status, "", delivery, "https://example.test/pull/1", "");
+        }
+        InMemoryAuditedTaskStateStore audited = new InMemoryAuditedTaskStateStore();
+        new com.wish.rd.engine.requirement.audit.AuditedTaskStatePolicyBootstrap(audited)
+                .initializeIfAbsent(task);
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry, new InMemoryTaskMaterialStore(), request -> {
+                    throw new AssertionError("legacy completion must not execute roles");
+                });
+        engine.setAuditedTaskStateStore(audited);
+        RequirementStageCommand command = RequirementStageCommand.pending(
+                "legacy-completion-command", task.taskId(), task.version(), task.fencingToken(),
+                "REQUIREMENT_DELIVERY", "COMPLETION", 0, 3,
+                System.currentTimeMillis() + 60_000L,
+                com.wish.rd.engine.scheduling.model.ScheduleResourceClass.GENERIC,
+                Set.of(com.wish.rd.engine.scheduling.model.ScheduleResourceClass.GENERIC),
+                "_default", "", "P1", System.currentTimeMillis());
+
+        RequirementDeliveryResult result = engine.executeStage(command);
+
+        assertEquals(RdTaskStatus.FAILED_NEEDS_HUMAN, result.status());
+        assertTrue(result.errorMessage().contains("GATE-BUILD"), result.errorMessage());
+    }
+
+    private static String successfulDeliveryJsonForGate() {
+        return """
+                {"status":"SUCCESS","multiAgentStatus":"SUCCESS",
+                "changedFiles":["src/App.java"],"testCommands":["./mvnw test"],"testStatus":"PASSED","riskLevel":"LOW",
+                "multiAgentStages":[
+                {"role":"REQUIREMENT_REVIEWER","success":true},
+                {"role":"SOLUTION_ARCHITECT","success":true},
+                {"role":"CODING_AGENT","success":true,"candidatePatch":{"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","bytes":1,"artifactUri":"s3://patch"},
+                 "resultJson":{"summary":"implemented","prBody":"body","changedFiles":["src/App.java"],"testCommands":["./mvnw test"],"testStatus":"PASSED","riskLevel":"LOW"}},
+                {"role":"QA_AGENT","success":true,"resultJson":{"status":"PASSED","failureCategory":"NONE","retryRecommendation":"NONE",
+                "browserValidation":{"required":false,"performed":false,"decisionSource":"NOT_APPLICABLE","baseUrl":"","browser":"chromium","viewports":[]},
+                "acceptanceResults":[{"criteria":"current","scope":"CURRENT","command":"test","status":"PASSED","exitCode":0,"durationMillis":0,"logArtifactId":"current.log","evidenceArtifactIds":["https://evidence.example/current"]},{"criteria":"regression","scope":"REGRESSION","command":"test","status":"PASSED","exitCode":0,"durationMillis":0,"logArtifactId":"regression.log","evidenceArtifactIds":["regression.log"]}],"evidenceManifestArtifactId":"manifest.json"}}]}
+                """;
     }
 
     @Test
@@ -1021,6 +1198,9 @@ class RequirementDeliveryEngineTest {
                 .findFirst()
                 .orElseThrow();
         assertEquals(20_000, codingResult.contentPreview().length());
+        assertTrue(artifactStore.listByTask(task.taskId()).stream()
+                .anyMatch(artifact -> artifact.role() == AgentRole.CODING_AGENT
+                        && RequirementPublicationFactsProjection.ARTIFACT_TYPE.equals(artifact.artifactType())));
         assertFalse(codingResult.contentPreview().contains("\"candidatePatch\""));
         assertTrue(artifactStore.listByTask(task.taskId()).stream()
                 .anyMatch(artifact -> artifact.role() == AgentRole.CODING_AGENT
@@ -1102,7 +1282,7 @@ class RequirementDeliveryEngineTest {
         RequirementDeliveryResult result = engine.submit(task.taskId());
 
         assertEquals(RdTaskStatus.COMPLETED, result.status(), result.errorMessage());
-        assertTrue(result.resultJson().contains("\"resultJsonTruncated\":true"), result.resultJson());
+        assertFalse(result.resultJson().contains("\"resultJsonTruncated\":true"), result.resultJson());
         assertTrue(result.resultJson().contains("\"approved\":true"), result.resultJson());
     }
 
@@ -1161,7 +1341,7 @@ class RequirementDeliveryEngineTest {
         RequirementDeliveryResult result = engine.submit(task.taskId());
 
         assertEquals(RdTaskStatus.REJECTED, result.status());
-        assertTrue(result.errorMessage().contains("CODING_AGENT delivery evidence is incomplete"),
+        assertTrue(result.errorMessage().contains("CODING_AGENT."),
                 result.errorMessage());
     }
 
@@ -1288,9 +1468,10 @@ class RequirementDeliveryEngineTest {
                                         {
                                           "status": "SUCCESS",
                                           "summary": "实现完成",
-                                          "changedFiles": "src/main/java/com/example/OrderController.java",
-                                          "testCommands": "./mvnw test",
+                                          "changedFiles": ["src/main/java/com/example/OrderController.java"],
+                                          "testCommands": ["./mvnw test"],
                                           "testStatus": "PASSED",
+                                          "riskLevel": "LOW",
                                           "testsFailed": 0,
                                           "validationExitCode": 0,
                                           "prBody": "## Summary\\n- implement requirement",
@@ -2199,8 +2380,10 @@ class RequirementDeliveryEngineTest {
                                         {
                                           "status": "SUCCESS",
                                           "summary": "实现完成",
-                                          "changedFiles": "src/main/java/com/example/OrderController.java",
-                                          "testSummary": "./mvnw test passed",
+                                          "changedFiles": ["src/main/java/com/example/OrderController.java"],
+                                          "testCommands": ["./mvnw test"],
+                                          "testStatus": "PASSED",
+                                          "riskLevel": "LOW",
                                           "prBody": "## Summary\\n- implement requirement",
                                           "dockerMetadata": {
                                             "provider": "claude-code-coding_agent",
@@ -2278,8 +2461,10 @@ class RequirementDeliveryEngineTest {
                                         {
                                           "status": "SUCCESS",
                                           "summary": "实现完成",
-                                          "changedFiles": "src/main/java/com/example/OrderController.java",
-                                          "testSummary": "./mvnw test passed",
+                                          "changedFiles": ["src/main/java/com/example/OrderController.java"],
+                                          "testCommands": ["./mvnw test"],
+                                          "testStatus": "PASSED",
+                                          "riskLevel": "LOW",
                                           "prBody": "## Summary\\n- implement requirement",
                                           "dockerMetadata": {
                                             "provider": "deepseek",
@@ -2359,7 +2544,7 @@ class RequirementDeliveryEngineTest {
             @Override
             public RequirementDeliveryReviewResult review(
                     String taskId,
-                    String deliveryResultJson
+                    RequirementDeliveryPublicationView publicationView
             ) {
                 return RequirementDeliveryReviewResult.rejected(taskId, "missing delivery review artifact");
             }
@@ -2432,9 +2617,7 @@ class RequirementDeliveryEngineTest {
                 "外卖页脚需求", "P1", "https://github.com/example/waimai.git",
                 "example", "waimai", "main", "给商家首页加页脚",
                 List.of("前端构建通过"), false));
-        String deliveryResultJson = """
-                {"status":"SUCCESS","pullRequestUrl":"","multiAgentStatus":"SUCCESS","multiAgentStages":[]}
-                """.strip();
+        String deliveryResultJson = validAggregatedDeliveryJson();
         InMemoryRdTaskStore taskStore = new InMemoryRdTaskStore();
         RdRequirementTask recovering = created.withState(
                 RdTaskStatus.RECOVERING, "", deliveryResultJson, "", "", System.currentTimeMillis());
@@ -2483,9 +2666,7 @@ class RequirementDeliveryEngineTest {
                 "外卖页脚需求", "P1", "https://github.com/example/waimai.git",
                 "example", "waimai", "main", "给商家首页加页脚",
                 List.of("前端构建通过"), false));
-        String deliveryResultJson = """
-                {"status":"SUCCESS","pullRequestUrl":"","multiAgentStatus":"SUCCESS","multiAgentStages":[]}
-                """.strip();
+        String deliveryResultJson = withApprovedReview(created.taskId(), validAggregatedDeliveryJson());
         InMemoryRdTaskStore taskStore = new InMemoryRdTaskStore();
         RdRequirementTask recovering = created.withState(
                 RdTaskStatus.RECOVERING, "", deliveryResultJson, "", "", System.currentTimeMillis());
@@ -2522,6 +2703,25 @@ class RequirementDeliveryEngineTest {
 
         assertEquals(CommandDisposition.SUCCEEDED, plan.commandDisposition());
         assertEquals("PUBLICATION", plan.continuation().stage());
+
+        String staleReviewJson = deliveryResultJson.replaceFirst(
+                "sha256:[0-9a-f]{64}", "sha256:stale");
+        RdRequirementTask staleReview = recovering.withState(
+                RdTaskStatus.RECOVERING, "", staleReviewJson, "", "", System.currentTimeMillis());
+        staleReview = taskStore.saveRequirementTask(staleReview);
+        RequirementStageCommand staleCommand = RequirementStageCommand.pending(
+                "cmd-ai-review-stale", created.taskId(), staleReview.version(), staleReview.fencingToken(),
+                "REQUIREMENT_DELIVERY", "AI_REVIEW", 0, 3,
+                System.currentTimeMillis() + 60_000L,
+                com.wish.rd.engine.scheduling.model.ScheduleResourceClass.GENERIC,
+                Set.of(com.wish.rd.engine.scheduling.model.ScheduleResourceClass.GENERIC),
+                "project-1", "", "P1", System.currentTimeMillis());
+
+        RequirementStageExecutionPlan blocked = engine.planStage(staleCommand);
+
+        assertEquals(CommandDisposition.TERMINAL_FAILURE, blocked.commandDisposition());
+        assertEquals(RdTaskStatus.FAILED_NEEDS_HUMAN, blocked.postStatus());
+        assertTrue(blocked.mutations().getLast().errorMessage().contains("factsHash"));
     }
 
     @Test
@@ -2947,10 +3147,43 @@ class RequirementDeliveryEngineTest {
     private RequirementDeliveryReviewer approvingReviewer() {
         return new RequirementDeliveryReviewer() {
             @Override
-            public RequirementDeliveryReviewResult review(String taskId, String deliveryResultJson) {
+            public RequirementDeliveryReviewResult review(
+                    String taskId,
+                    RequirementDeliveryPublicationView publicationView
+            ) {
                 return RequirementDeliveryReviewResult.approved(taskId);
             }
         };
+    }
+
+    private static String validAggregatedDeliveryJson() {
+        return """
+                {"status":"SUCCESS","pullRequestUrl":"","multiAgentStatus":"SUCCESS",
+                 "changedFiles":["src/App.java"],"testCommands":["./mvnw test"],"testStatus":"PASSED","riskLevel":"LOW",
+                 "multiAgentStages":[
+                   {"role":"REQUIREMENT_REVIEWER","success":true,"resultJson":{}},
+                   {"role":"SOLUTION_ARCHITECT","success":true,"resultJson":{}},
+                   {"role":"CODING_AGENT","success":true,"resultJson":{"changedFiles":["src/App.java"],"testCommands":["./mvnw test"],"testStatus":"PASSED","riskLevel":"LOW"}},
+                   {"role":"QA_AGENT","success":true,"resultJson":{
+                     "status":"PASSED","summary":"current and regression passed","failureCategory":"NONE","retryRecommendation":"NONE",
+                     "browserValidation":{"required":false,"performed":false,"decisionSource":"NOT_APPLICABLE","baseUrl":"","browser":"chromium","viewports":[]},
+                     "acceptanceResults":[
+                       {"criteria":"current","scope":"CURRENT","command":"./mvnw test","status":"PASSED","exitCode":0,"durationMillis":1,"logArtifactId":"qa/current.log","evidenceArtifactIds":["qa/current.log"]},
+                       {"criteria":"regression","scope":"REGRESSION","command":"./mvnw test","status":"PASSED","exitCode":0,"durationMillis":1,"logArtifactId":"qa/regression.log","evidenceArtifactIds":["qa/regression.log"]}
+                     ],"evidenceManifestArtifactId":"qa/manifest.json"}}
+                 ]}
+                """.strip();
+    }
+
+    private static String withApprovedReview(String taskId, String deliveryResultJson) {
+        String hash = new RequirementDeliveryPublicationViewAssembler()
+                .assemble(deliveryResultJson)
+                .publicationFactsHash();
+        String normalized = deliveryResultJson.strip();
+        return normalized.substring(0, normalized.length() - 1)
+                + ",\"deliveryReview\":{\"taskId\":\"" + taskId
+                + "\",\"reviewer\":\"DELIVERY_REVIEWER\",\"approved\":true,\"factsHash\":\""
+                + hash + "\"}}";
     }
 
     private String roleResultJson(AgentRole role) {
@@ -3110,7 +3343,10 @@ class RequirementDeliveryEngineTest {
                   "status": "SUCCESS",
                   "summary": "实现完成",
                   "prBody": "## Summary\\n- implement requirement",
-                  "changedFiles": "src/main/java/com/example/OrderController.java",
+                  "changedFiles": ["src/main/java/com/example/OrderController.java"],
+                  "testCommands": ["./mvnw test"],
+                  "testStatus": "PASSED",
+                  "riskLevel": "LOW",
                   "largeRaw": "%s"
                 }
                 """.formatted("x".repeat(20_500));
@@ -3133,8 +3369,10 @@ class RequirementDeliveryEngineTest {
                 {
                   "status": "SUCCESS",
                   "summary": "实现完成",
-                  "changedFiles": "src/main/java/com/example/OrderController.java",
-                  "testSummary": "./mvnw test passed",
+                  "changedFiles": ["src/main/java/com/example/OrderController.java"],
+                  "testCommands": ["./mvnw test"],
+                  "testStatus": "PASSED",
+                  "riskLevel": "LOW",
                   "prBody": "## Summary\\n- implement requirement",
                   "dockerMetadata": {
                     "provider": "%s",
@@ -3149,8 +3387,10 @@ class RequirementDeliveryEngineTest {
                 {
                   "status": "SUCCESS",
                   "summary": "实现完成",
-                  "changedFiles": "src/main/java/com/example/OrderController.java",
-                  "testSummary": "./mvnw test passed",
+                  "changedFiles": ["src/main/java/com/example/OrderController.java"],
+                  "testCommands": ["./mvnw test"],
+                  "testStatus": "PASSED",
+                  "riskLevel": "LOW",
                   "prBody": "## Summary\\n- implement requirement",
                   "stageArtifacts": [
                     {

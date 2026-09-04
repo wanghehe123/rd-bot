@@ -8,6 +8,7 @@ import com.wish.rd.bootstrap.persistence.mapper.AgentExecutionProfileSnapshotMap
 import com.wish.rd.bootstrap.persistence.mapper.AgentRemediationRoundMapper;
 import com.wish.rd.bootstrap.persistence.mapper.RdAgentStageRunMapper;
 import com.wish.rd.bootstrap.persistence.mapper.RequirementStageCommandMapper;
+import com.wish.rd.engine.requirement.HostVerifyRemediationPackageBuilder;
 import com.wish.rd.engine.requirement.job.RequirementStageExecutionPlanCodec;
 import com.wish.rd.engine.requirement.job.model.CommandDisposition;
 import com.wish.rd.engine.requirement.job.model.ContinuationSpec;
@@ -105,6 +106,36 @@ class PiRemediationFinalizationWriterTest {
         verify(rounds, never()).insertClaimed(any());
     }
 
+    @Test
+    void shouldCreateOnlyCodingTargetForHostVerifyFix() {
+        AgentRemediationRoundMapper rounds = mock(AgentRemediationRoundMapper.class);
+        RdAgentStageRunMapper stages = mock(RdAgentStageRunMapper.class);
+        AgentExecutionProfileSnapshotMapper snapshots = mock(AgentExecutionProfileSnapshotMapper.class);
+        RequirementStageCommandMapper commands = mock(RequirementStageCommandMapper.class);
+        PiQaRemediationIntent intent = hostVerifyIntent();
+        stubStage(stages, 702L, "CODING_AGENT", 2, "pi-remediation:9001:CODING_AGENT");
+        stubSnapshot(snapshots, intent.codingProfile());
+        AgentRemediationRoundRow round = round(intent);
+        round.targetQaStageRunId = null;
+        when(rounds.findBySourceForUpdate(701L, "HOST_VERIFY_FIX")).thenReturn(null, round);
+        when(rounds.findByTaskKindNoForUpdate(700L, "HOST_VERIFY_FIX", 1)).thenReturn(null);
+        when(rounds.markDispatched(eq(9001L), eq(704L), any())).thenReturn(1);
+        RequirementStageCommandRow commandRow = new RequirementStageCommandRow();
+        commandRow.id = 704L;
+        commandRow.remediationRoundId = 9001L;
+        when(commands.findById(704L)).thenReturn(commandRow);
+
+        RequirementStageCommand created = new PiRemediationFinalizationWriter(
+                rounds, stages, snapshots, commands).persist(
+                intent, plan(intent), hostVerifySourceCommand(), 100L);
+
+        assertEquals("CODING_AGENT", created.role());
+        assertEquals("ROLE_EXECUTION:CODING_AGENT", created.stage());
+        assertEquals(AgentRemediationKind.HOST_VERIFY_FIX, created.remediationKind());
+        verify(stages, org.mockito.Mockito.times(1)).insertIfAbsent(any(RdAgentStageRunRow.class));
+        verify(snapshots, org.mockito.Mockito.times(1)).insertIfAbsent(any(AgentExecutionProfileSnapshotRow.class));
+    }
+
     private static void stubStage(
             RdAgentStageRunMapper mapper, long id, String role, int attempt, String key
     ) {
@@ -148,6 +179,13 @@ class PiRemediationFinalizationWriterTest {
                 .claimed("worker", 1000L, 2L);
     }
 
+    private static RequirementStageCommand hostVerifySourceCommand() {
+        return RequirementStageCommand.pending(
+                "701", "700", 7L, 3L, "REQUIREMENT_DELIVERY", "HOST_VERIFY", 0, 3,
+                10_000L, ScheduleResourceClass.DOCKER, "project", "provider", "P1", 1L)
+                .claimed("worker", 1000L, 2L);
+    }
+
     private static RequirementStageExecutionPlan plan(PiQaRemediationIntent intent) {
         return new RequirementStageExecutionPlan(
                 2, "700", 7L, 3L, RdTaskStatus.EXECUTING, List.of(), CommandDisposition.SUCCEEDED,
@@ -167,6 +205,19 @@ class PiRemediationFinalizationWriterTest {
                 7L, 3L, AgentRemediationKind.QA_PRODUCT_FIX, 1, "9001",
                 request, RequirementStageExecutionPlanCodec.digest(request), "702", 2, "703", 2, "704",
                 qa, codingSnapshot, qaSnapshot, "", "");
+    }
+
+    private static PiQaRemediationIntent hostVerifyIntent() {
+        PiQaRemediationIntent.ExecutionProfileClaim coding = claim("a-coding", 5L);
+        PiQaRemediationIntent.PreparedProfileSnapshot codingSnapshot = prepared(
+                "snapshot-702", "702", "CODING_AGENT", 2, coding);
+        HostVerifyRemediationPackageBuilder.Package request = new HostVerifyRemediationPackageBuilder()
+                .build("verify-9", "701", 1, "PRODUCT_DEFECT", "BUILD exit 1: cannot find symbol Foo");
+        return new PiQaRemediationIntent(
+                PiQaRemediationIntent.PROTOCOL, "700", "701", "701", "sha256:" + "a".repeat(64),
+                7L, 3L, AgentRemediationKind.HOST_VERIFY_FIX, 1, "9001",
+                request.attachment().content(), request.requestHash(), "702", 2, "", 0, "704",
+                coding, codingSnapshot, null, "", "", "verify-9");
     }
 
     private static PiQaRemediationIntent.ExecutionProfileClaim claim(String id, long version) {

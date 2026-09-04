@@ -115,6 +115,7 @@ export function AdminLayout() {
     if (section === "traces" && parts.length > 2) items.push({ label: "链路详情" });
     if (section === "rd-tasks" && parts.length > 2) items.push({ label: "任务详情" });
     if (section === "projects" && parts.includes("agent-strategy")) items.push({ label: "Agent 执行策略" });
+    if (section === "projects" && parts.includes("memories")) items.push({ label: "项目记忆治理" });
     return items;
   }, [location.pathname]);
 

@@ -1,5 +1,16 @@
 package com.wish.rd.engine.requirement.job;
 
+import com.wish.rd.engine.requirement.audit.AuditCompletion;
+import com.wish.rd.engine.requirement.audit.AuditIntegrity;
+import com.wish.rd.engine.requirement.audit.AuditRun;
+import com.wish.rd.engine.requirement.audit.AuditedContractRef;
+import com.wish.rd.engine.requirement.audit.AuditedRecord;
+import com.wish.rd.engine.requirement.audit.AuditedRecordKind;
+import com.wish.rd.engine.requirement.audit.AuditedRecordStatus;
+import com.wish.rd.engine.requirement.audit.AuditedStateMutation;
+import com.wish.rd.engine.requirement.audit.AuditedTaskState;
+import com.wish.rd.engine.requirement.audit.AuditedTaskStateCodec;
+import com.wish.rd.engine.requirement.audit.ContractAuditVerdict;
 import com.wish.rd.engine.requirement.job.model.CommandDisposition;
 import com.wish.rd.engine.requirement.job.model.ContinuationSpec;
 import com.wish.rd.engine.requirement.job.model.ExternalEffectReceipt;
@@ -12,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -20,7 +32,7 @@ class RequirementStageExecutionPlanCodecTest {
     private final RequirementStageExecutionPlanCodec codec = new RequirementStageExecutionPlanCodec();
 
     @Test
-    void shouldDecodeLegacyV1AndRoundTripCanonicalV2Intent() {
+    void shouldDecodeLegacyV1AndRoundTripCanonicalCurrentIntent() {
         String legacy = "{\"schemaVersion\":1,\"taskId\":\"task-1\",\"expectedVersion\":7,"
                 + "\"expectedFencingToken\":3,\"expectedStatus\":\"EXECUTING\",\"mutations\":[],"
                 + "\"commandDisposition\":\"SUCCEEDED\",\"continuation\":{\"role\":\"\",\"stage\":\"\"},"
@@ -30,19 +42,49 @@ class RequirementStageExecutionPlanCodecTest {
                 legacy, RequirementStageExecutionPlanCodec.digest(legacy));
         assertEquals(1, decodedLegacy.schemaVersion());
         assertNull(decodedLegacy.piQaRemediationIntent());
+        assertNull(decodedLegacy.auditedStateMutation());
 
-        RequirementStageExecutionPlan v2 = new RequirementStageExecutionPlan(
+        RequirementStageExecutionPlan current = new RequirementStageExecutionPlan(
                 RequirementStageExecutionPlan.CURRENT_SCHEMA_VERSION,
                 "task-1", 7L, 3L, RdTaskStatus.EXECUTING, List.of(),
                 CommandDisposition.SUCCEEDED, ContinuationSpec.terminal(), ExternalEffectReceipt.none(),
                 intent());
-        String canonical = codec.encodeCanonical(v2);
+        String canonical = codec.encodeCanonical(current);
         RequirementStageExecutionPlan roundTrip = codec.decodeAndVerify(
                 "  " + canonical + "  ", RequirementStageExecutionPlanCodec.digest(canonical));
 
-        assertEquals(v2, roundTrip);
-        assertEquals(2, roundTrip.schemaVersion());
+        assertEquals(current, roundTrip);
+        assertEquals(3, roundTrip.schemaVersion());
         assertEquals(AgentRemediationKind.QA_PRODUCT_FIX, roundTrip.piQaRemediationIntent().kind());
+        assertNull(roundTrip.auditedStateMutation());
+    }
+
+    @Test
+    void shouldEncodeV3WritebackAndDecodeV2JsonWithoutMutation() {
+        RequirementStageExecutionPlan without = new RequirementStageExecutionPlan(
+                RequirementStageExecutionPlan.CURRENT_SCHEMA_VERSION,
+                "task-1", 7L, 3L, RdTaskStatus.EXECUTING, List.of(),
+                CommandDisposition.SUCCEEDED, ContinuationSpec.terminal(), ExternalEffectReceipt.none());
+        AuditedStateMutation mutation = auditedMutation("task-1", "cmd-audit", "AC-001");
+        RequirementStageExecutionPlan withWriteback = without.withAuditedStateMutation(mutation);
+        String withCanonical = codec.encodeCanonical(withWriteback);
+        String withoutCanonical = codec.encodeCanonical(without);
+        assertNotEquals(RequirementStageExecutionPlanCodec.digest(withoutCanonical),
+                RequirementStageExecutionPlanCodec.digest(withCanonical));
+        RequirementStageExecutionPlan decodedV3 = codec.decodeAndVerify(
+                withCanonical, RequirementStageExecutionPlanCodec.digest(withCanonical));
+        assertEquals(mutation.nextState().stateHash(), decodedV3.auditedStateMutation().nextState().stateHash());
+        assertEquals(mutation.auditRun().auditRunId(), decodedV3.auditedStateMutation().auditRun().auditRunId());
+
+        String v2 = "{\"schemaVersion\":2,\"taskId\":\"task-1\",\"expectedVersion\":7,"
+                + "\"expectedFencingToken\":3,\"expectedStatus\":\"EXECUTING\",\"mutations\":[],"
+                + "\"commandDisposition\":\"SUCCEEDED\",\"continuation\":{\"role\":\"\",\"stage\":\"\"},"
+                + "\"externalEffectReceipt\":{\"kind\":\"NONE\",\"operationId\":\"\","
+                + "\"durableState\":\"\",\"receiptJson\":\"{}\"},\"piQaRemediationIntent\":null}";
+        RequirementStageExecutionPlan decodedV2 = codec.decodeAndVerify(
+                v2, RequirementStageExecutionPlanCodec.digest(v2));
+        assertEquals(2, decodedV2.schemaVersion());
+        assertNull(decodedV2.auditedStateMutation());
     }
 
     @Test
@@ -101,5 +143,39 @@ class RequirementStageExecutionPlanCodecTest {
 
     private static String sha256Raw(String value) {
         return RequirementStageExecutionPlanCodec.digest(value).substring("sha256:".length());
+    }
+
+    private static AuditedStateMutation auditedMutation(String taskId, String commandId, String recordId) {
+        AuditedTaskState next = new AuditedTaskStateCodec().seal(new AuditedTaskState(
+                taskId,
+                1L,
+                "",
+                new AuditedContractRef("sha256:" + "c".repeat(64), 1L, 1L),
+                List.of(new AuditedRecord(
+                        recordId,
+                        AuditedRecordKind.REQUIREMENT,
+                        true,
+                        "criterion " + recordId,
+                        AuditedRecordStatus.PENDING,
+                        List.of(),
+                        "",
+                        "")),
+                "audit-" + commandId));
+        AuditRun run = new AuditRun(
+                "audit-" + commandId,
+                taskId,
+                "stage-1",
+                "HOST_VERIFY",
+                commandId,
+                AuditCompletion.INCOMPLETE,
+                AuditIntegrity.CLEAN,
+                ContractAuditVerdict.ALIGNED,
+                List.of(),
+                List.of(recordId),
+                List.of(),
+                List.of(),
+                List.of(),
+                1_700_000_000_000L);
+        return new AuditedStateMutation(run, next, next.stateVersion());
     }
 }

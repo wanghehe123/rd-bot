@@ -595,6 +595,76 @@ export const getRdTaskHostVerification = (taskId: string, runId: string): Promis
 export const hostVerificationContentUrl = (taskId: string, runId: string, artifactId: string) =>
   `/admin/rd-tasks/${taskId}/host-verifications/${runId}/evidence/${artifactId}/content`;
 
+export interface AuditedEvidenceRef {
+  auditRunId: string;
+  sourceKind: string;
+  uri: string;
+  sha256: string;
+}
+
+export interface AuditedRecord {
+  id: string;
+  kind: string;
+  blocking: boolean;
+  text: string;
+  status: string;
+  evidenceRefs: AuditedEvidenceRef[];
+  sourceStageRunId: string;
+  blockedReason: string;
+}
+
+export interface AuditedContractRef {
+  acceptanceCriteriaHash: string;
+  taskVersionAtFreeze: number;
+  fencingTokenAtFreeze: number;
+}
+
+export interface AuditedCompletionBinding {
+  auditRunId: string;
+  stateVersion: number;
+  stateHash: string;
+}
+
+export interface AuditedTaskState {
+  taskId: string;
+  projectId: string;
+  present: boolean;
+  stateVersion: number;
+  stateHash: string;
+  lastAuditRunId: string;
+  records: AuditedRecord[];
+  contractRef: AuditedContractRef | null;
+  completionBinding: AuditedCompletionBinding | null;
+}
+
+export interface AuditedTaskAuditRun {
+  auditRunId: string;
+  subjectStageRunId: string;
+  subjectRole: string;
+  commandId: string;
+  completion: string;
+  integrity: string;
+  contractAudit: string;
+  verified: string[];
+  missing: string[];
+  untrusted: string[];
+  blockers: string[];
+  sourceRefs: string[];
+  createdAtEpochMillis: number;
+}
+
+export interface AuditRunList {
+  taskId: string;
+  projectId: string;
+  runs: AuditedTaskAuditRun[];
+}
+
+export const getRdTaskAuditedState = (taskId: string): Promise<AuditedTaskState> =>
+  api.get<AuditedTaskState, AuditedTaskState>(`/admin/rd-tasks/${taskId}/audited-state`);
+
+export const getRdTaskAuditRuns = (taskId: string): Promise<AuditRunList> =>
+  api.get<AuditRunList, AuditRunList>(`/admin/rd-tasks/${taskId}/audit-runs`);
+
 export const addTextTaskMaterial = (
   taskId: string,
   payload: Omit<RequirementMaterialPayload, "sourceType" | "sourceUri"> & { content: string }

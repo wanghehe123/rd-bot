@@ -11,6 +11,8 @@ import { RelativeTime } from "@/components/RelativeTime";
 import { TaskFailureRecoveryWorkbench } from "@/components/admin/rdtask/TaskFailureRecoveryWorkbench";
 import { TaskRoleWorkbench, type RoleWorkbenchTab } from "@/components/admin/rdtask/TaskRoleWorkbench";
 import { HostVerificationCard } from "@/components/admin/rdtask/HostVerificationCard";
+import { AuditedTaskStateCard } from "@/components/admin/rdtask/AuditedTaskStateCard";
+import { auditedCoverage } from "@/pages/admin/rdtask/auditedTaskStatePresentation";
 import { getErrorMessage } from "@/utils/error";
 import { cn } from "@/lib/utils";
 import { createTaskRequestGuard, loadTaskDetailShell } from "@/pages/admin/rdtask/rdTaskDetailLoader";
@@ -31,6 +33,8 @@ import {
   getRdTaskMaterials,
   getRdTaskQaEvidence,
   getRdTaskHostVerifications,
+  getRdTaskAuditedState,
+  getRdTaskAuditRuns,
   getRdTaskTimeline,
   approveRdTask,
   pauseRdTask,
@@ -45,6 +49,8 @@ import {
   type TaskMaterial,
   type RdTaskQaEvidence,
   type HostVerificationList,
+  type AuditedTaskState,
+  type AuditRunList,
   type RdTaskStatusEvent
 } from "@/services/rdTaskService";
 import {
@@ -216,6 +222,10 @@ export function RdTaskDetailPage() {
   const [hostVerifications, setHostVerifications] = useState<HostVerificationList | null>(null);
   const [hostVerificationsError, setHostVerificationsError] = useState("");
   const [loadingHostVerifications, setLoadingHostVerifications] = useState(false);
+  const [auditedState, setAuditedState] = useState<AuditedTaskState | null>(null);
+  const [auditRuns, setAuditRuns] = useState<AuditRunList | null>(null);
+  const [auditedStateError, setAuditedStateError] = useState("");
+  const [loadingAuditedState, setLoadingAuditedState] = useState(false);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [approving, setApproving] = useState(false);
@@ -229,6 +239,7 @@ export function RdTaskDetailPage() {
   const recoveryLoadSeqRef = useRef(0);
   const aiReviewLoadSeqRef = useRef(0);
   const hostVerificationLoadSeqRef = useRef(0);
+  const auditedStateLoadSeqRef = useRef(0);
   const coreLoadSeqRef = useRef(0);
   const overviewLoadSeqRef = useRef(0);
   const retrievalDetailLoadSeqRef = useRef(0);
@@ -486,6 +497,34 @@ export function RdTaskDetailPage() {
     }
   }, [taskId]);
 
+  const loadAuditedStateData = useCallback(async () => {
+    const requestToken = requestGuardRef.current.capture(taskId);
+    const requestSeq = ++auditedStateLoadSeqRef.current;
+    setLoadingAuditedState(true);
+    try {
+      const [nextState, nextRuns] = await Promise.all([
+        getRdTaskAuditedState(taskId),
+        getRdTaskAuditRuns(taskId)
+      ]);
+      if (requestSeq !== auditedStateLoadSeqRef.current || !requestGuardRef.current.isCurrent(requestToken)) return;
+      setAuditedState(nextState);
+      setAuditRuns(nextRuns);
+      setAuditedStateError("");
+      setPanelErrors((current) => ({ ...current, auditedState: "" }));
+    } catch (error) {
+      if (requestSeq !== auditedStateLoadSeqRef.current || !requestGuardRef.current.isCurrent(requestToken)) return;
+      setAuditedState(null);
+      setAuditRuns(null);
+      const message = getErrorMessage(error, "加载已审计状态失败");
+      setAuditedStateError(message);
+      setPanelErrors((current) => ({ ...current, auditedState: message }));
+    } finally {
+      if (requestSeq === auditedStateLoadSeqRef.current && requestGuardRef.current.isCurrent(requestToken)) {
+        setLoadingAuditedState(false);
+      }
+    }
+  }, [taskId]);
+
   const loadRoleEvidenceData = useCallback(async (signature: string) => {
     const requestToken = requestGuardRef.current.capture(taskId);
     const requestSeq = ++roleEvidenceLoadSeqRef.current;
@@ -662,8 +701,8 @@ export function RdTaskDetailPage() {
         : selectedRoleTab === "evidence"
           ? loadRoleEvidenceData(rolePromptSignature)
           : loadFailureRecoveryData(taskSnapshot);
-    await Promise.all([refreshCore(true), loadHostVerificationsData(), panelRefresh]);
-  }, [loadFailureRecoveryData, loadHostVerificationsData, loadMaterialsData, loadRoleEvidenceData, refreshCore, refreshSupportingData, rolePromptSignature, selectedRoleTab, view]);
+    await Promise.all([refreshCore(true), loadHostVerificationsData(), loadAuditedStateData(), panelRefresh]);
+  }, [loadAuditedStateData, loadFailureRecoveryData, loadHostVerificationsData, loadMaterialsData, loadRoleEvidenceData, refreshCore, refreshSupportingData, rolePromptSignature, selectedRoleTab, view]);
 
   useEffect(() => {
     requestGuardRef.current.beginTask(taskId);
@@ -674,6 +713,7 @@ export function RdTaskDetailPage() {
     recoveryLoadSeqRef.current += 1;
     aiReviewLoadSeqRef.current += 1;
     hostVerificationLoadSeqRef.current += 1;
+    auditedStateLoadSeqRef.current += 1;
     coreLoadSeqRef.current += 1;
     retrievalDetailLoadSeqRef.current += 1;
     aiReviewDetailLoadSeqRef.current += 1;
@@ -692,6 +732,10 @@ export function RdTaskDetailPage() {
     setHostVerifications(null);
     setHostVerificationsError("");
     setLoadingHostVerifications(false);
+    setAuditedState(null);
+    setAuditRuns(null);
+    setAuditedStateError("");
+    setLoadingAuditedState(false);
     setRetrievalRuns([]);
     setAiReviews([]);
     setSelectedRetrievalRun(null);
@@ -717,6 +761,7 @@ export function RdTaskDetailPage() {
     setApprovalMessage("");
     void loadInitial();
     void loadHostVerificationsData();
+    void loadAuditedStateData();
     return () => {
       requestGuardRef.current.beginTask("");
       loadSeqRef.current += 1;
@@ -726,6 +771,7 @@ export function RdTaskDetailPage() {
       recoveryLoadSeqRef.current += 1;
       aiReviewLoadSeqRef.current += 1;
       hostVerificationLoadSeqRef.current += 1;
+      auditedStateLoadSeqRef.current += 1;
       coreLoadSeqRef.current += 1;
       overviewLoadSeqRef.current += 1;
       coreLoadInFlightRef.current = "";
@@ -733,7 +779,7 @@ export function RdTaskDetailPage() {
       retrievalDetailLoadSeqRef.current += 1;
       aiReviewDetailLoadSeqRef.current += 1;
     };
-  }, [loadHostVerificationsData, loadInitial, taskId]);
+  }, [loadAuditedStateData, loadHostVerificationsData, loadInitial, taskId]);
 
   useEffect(() => {
     if (view !== "roles") return;
@@ -1257,7 +1303,7 @@ export function RdTaskDetailPage() {
             </div>
           </div>
 
-          <TaskSummaryBand task={task} overview={executionOverview} />
+          <TaskSummaryBand task={task} overview={executionOverview} auditedState={auditedState} />
           <TaskViewNavigation view={view} onChange={(nextView) => updateWorkspaceQuery({ view: nextView })} />
 
           {view === "roles" ? (
@@ -1299,7 +1345,16 @@ export function RdTaskDetailPage() {
           ) : null}
 
           {view === "delivery" ? <PanelErrorsNotice errors={pickPanelErrors(panelErrors, ["materials"])} /> : null}
-          {view === "audit" ? <PanelErrorsNotice errors={pickPanelErrors(panelErrors, ["timeline", "qaEvidence", "retrievalRuns", "aiReviews", "failureRecovery"])} /> : null}
+          {view === "audit" ? <PanelErrorsNotice errors={pickPanelErrors(panelErrors, ["timeline", "qaEvidence", "retrievalRuns", "aiReviews", "failureRecovery", "auditedState"])} /> : null}
+
+          {view === "audit" ? (
+            <AuditedTaskStateCard
+              state={auditedState}
+              runs={auditRuns}
+              loading={loadingAuditedState}
+              error={auditedStateError}
+            />
+          ) : null}
 
           {view === "audit" ? (
             <HostVerificationCard
@@ -1644,7 +1699,16 @@ export function RdTaskDetailPage() {
   );
 }
 
-function TaskSummaryBand({ task, overview }: { task: RdTask; overview: RdTaskExecutionOverview | null }) {
+function TaskSummaryBand({
+  task,
+  overview,
+  auditedState
+}: {
+  task: RdTask;
+  overview: RdTaskExecutionOverview | null;
+  auditedState: AuditedTaskState | null;
+}) {
+  const coverage = auditedCoverage(auditedState?.records);
   return (
     <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm sm:p-5" aria-label="任务摘要">
       <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
@@ -1655,6 +1719,11 @@ function TaskSummaryBand({ task, overview }: { task: RdTask; overview: RdTaskExe
             <Badge variant="outline" className="border-slate-200 bg-slate-50 font-normal text-slate-600">
               {task.taskType === "REQUIREMENT" ? "需求交付" : "Bug 修复"}
             </Badge>
+            {auditedState?.present ? (
+              <Badge variant="outline" className="border-teal-200 bg-teal-50 font-medium text-teal-800">
+                {coverage.label}
+              </Badge>
+            ) : null}
             <span className="text-xs text-slate-300">·</span>
             <span className="font-mono text-xs font-semibold text-slate-600">{task.priority || "未设置优先级"}</span>
           </div>

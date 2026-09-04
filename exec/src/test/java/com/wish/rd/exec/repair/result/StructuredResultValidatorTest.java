@@ -241,6 +241,25 @@ class StructuredResultValidatorTest {
     }
 
     @Test
+    void legacyTestSummaryCannotReplacePublicationTestCommandsContract() {
+        StructuredResultValidation validation = validator.validate("""
+                {
+                  "status": "SUCCESS",
+                  "summary": "Fixed null pointer",
+                  "prBody": "Implementation and tests",
+                  "changedFiles": ["src/main/java/App.java"],
+                  "testSummary": "./mvnw test passed",
+                  "testStatus": "PASSED",
+                  "riskLevel": "LOW",
+                  "needHumanAction": false
+                }
+                """);
+
+        assertFalse(validation.valid());
+        assertTrue(validation.errors().contains("testCommands must be present"));
+    }
+
+    @Test
     void testCommandsMustBeArrayOfNonBlankStrings() {
         StructuredResultValidation scalar = validator.validate(validSuccessJson("""
                 "testCommands": "./mvnw test"

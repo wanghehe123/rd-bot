@@ -1,5 +1,16 @@
 package com.wish.rd.bootstrap.threading;
 
+import com.wish.rd.engine.requirement.audit.AuditCompletion;
+import com.wish.rd.engine.requirement.audit.AuditIntegrity;
+import com.wish.rd.engine.requirement.audit.AuditRun;
+import com.wish.rd.engine.requirement.audit.AuditedContractRef;
+import com.wish.rd.engine.requirement.audit.AuditedRecord;
+import com.wish.rd.engine.requirement.audit.AuditedRecordKind;
+import com.wish.rd.engine.requirement.audit.AuditedRecordStatus;
+import com.wish.rd.engine.requirement.audit.AuditedStateMutation;
+import com.wish.rd.engine.requirement.audit.AuditedTaskState;
+import com.wish.rd.engine.requirement.audit.AuditedTaskStateCodec;
+import com.wish.rd.engine.requirement.audit.ContractAuditVerdict;
 import com.wish.rd.engine.requirement.RequirementDeliveryEngine;
 import com.wish.rd.engine.requirement.job.RequirementStageCommandStore;
 import com.wish.rd.engine.requirement.job.RequirementDeliveryJobStore;
@@ -1522,7 +1533,8 @@ class RequirementDeliveryDispatchServiceTest {
                 com.wish.rd.engine.requirement.job.model.CommandDisposition.SUCCEEDED,
                 new com.wish.rd.engine.requirement.job.model.ContinuationSpec(
                         "REQUIREMENT_DELIVERY", "MATERIAL_READY"),
-                com.wish.rd.engine.requirement.job.model.ExternalEffectReceipt.none());
+                com.wish.rd.engine.requirement.job.model.ExternalEffectReceipt.none())
+                .withAuditedStateMutation(recoveryAuditedMutation(claimed.taskId(), claimed.commandId()));
         RequirementStageExecutor stageExecutor = mock(RequirementStageExecutor.class);
         RequirementStageFinalizationPort finalizer = mock(RequirementStageFinalizationPort.class);
         when(finalizer.findLatestPrepared(command.commandId())).thenReturn(Optional.of(marker));
@@ -1556,10 +1568,11 @@ class RequirementDeliveryDispatchServiceTest {
         verify(finalizer).decodeOutcomePlan(marker);
         org.mockito.ArgumentCaptor<RequirementStageFinalizationPort.FinalizationCommand> finalization =
                 org.mockito.ArgumentCaptor.forClass(RequirementStageFinalizationPort.FinalizationCommand.class);
-        verify(finalizer).finalize(finalization.capture());
+        verify(finalizer, org.mockito.Mockito.times(1)).finalize(finalization.capture());
         assertEquals("MATERIAL_READY", finalization.getValue().nextCommand().stage());
         assertEquals(plan.postVersion(), finalization.getValue().nextCommand().taskVersion());
         assertEquals(plan.postFencingToken(), finalization.getValue().nextCommand().fencingToken());
+        assertEquals(plan.auditedStateMutation(), finalization.getValue().plan().auditedStateMutation());
         verify(stageExecutor, never()).plan(any(RequirementStageCommand.class));
         verify(stageExecutor, never()).execute(any(RequirementStageCommand.class));
     }
@@ -1661,6 +1674,173 @@ class RequirementDeliveryDispatchServiceTest {
         assertEquals("policy-1", next.policyRunId());
         assertEquals(TaskRetryCheckpointStatus.DISPATCHED,
                 checkpoints.find(checkpointId).orElseThrow().status());
+    }
+
+    @Test
+    void codingSuccessContinuationEnqueuesHostVerifyWithDockerResources() {
+        long now = System.currentTimeMillis();
+        String taskId = "task-coding-host-verify";
+        InMemoryRequirementStageCommandStore commands = new InMemoryRequirementStageCommandStore();
+        RequirementStageCommand pending = RequirementStageCommand.pending(
+                "coding-command", taskId, 18L, 19L,
+                AgentRole.CODING_AGENT.name(), "ROLE_EXECUTION:CODING_AGENT",
+                0, 3, now + 3_600_000L, ScheduleResourceClass.DOCKER,
+                Set.of(ScheduleResourceClass.PROVIDER, ScheduleResourceClass.DOCKER),
+                "project-1", "provider", "P1", "policy-1", now);
+        commands.enqueue(pending);
+        RequirementStageCommand claimed = commands.claim(
+                pending.commandId(), "test-worker", now, 60_000L).orElseThrow();
+        RequirementStageExecutionPlan plan = new RequirementStageExecutionPlan(
+                RequirementStageExecutionPlan.CURRENT_SCHEMA_VERSION,
+                claimed.taskId(), claimed.taskVersion(), claimed.fencingToken(), RdTaskStatus.EXECUTING,
+                List.of(RequirementTaskMutation.snapshotUpdate(
+                        RdTaskStatus.EXECUTING, "", "{\"ok\":true}", "", "", "")),
+                com.wish.rd.engine.requirement.job.model.CommandDisposition.SUCCEEDED,
+                new com.wish.rd.engine.requirement.job.model.ContinuationSpec(
+                        "REQUIREMENT_DELIVERY", "HOST_VERIFY"),
+                com.wish.rd.engine.requirement.job.model.ExternalEffectReceipt.none());
+        RequirementStageFinalization marker = RequirementStageFinalization.prepared(
+                claimed, RdTaskStatus.EXECUTING, now);
+        RagStreamTaskRegistry registry = mock(RagStreamTaskRegistry.class);
+        when(registry.getTask(taskId)).thenReturn(
+                requirementTask(taskId, RdTaskStatus.EXECUTING).withConcurrency(18L, 19L));
+        RequirementStageExecutor stageExecutor = mock(RequirementStageExecutor.class);
+        when(stageExecutor.plan(claimed)).thenReturn(plan);
+        RequirementStageFinalizationPort finalizer = mock(RequirementStageFinalizationPort.class);
+        when(finalizer.findLatestPrepared(claimed.commandId())).thenReturn(Optional.empty());
+        when(finalizer.prepare(any(), any(), any(), anyLong())).thenReturn(marker);
+        when(finalizer.recordOutcome(any(), any(), any(), any(), anyLong())).thenReturn(marker);
+        when(finalizer.decodeOutcomePlan(any())).thenReturn(plan);
+        ArgumentCaptor<RequirementStageFinalizationPort.FinalizationCommand> finalization =
+                ArgumentCaptor.forClass(RequirementStageFinalizationPort.FinalizationCommand.class);
+        when(finalizer.finalize(finalization.capture())).thenAnswer(invocation -> {
+            RequirementStageFinalizationPort.FinalizationCommand command = invocation.getArgument(0);
+            RequirementDeliveryResult outcome = new RequirementDeliveryResult(
+                    taskId, RdTaskStatus.EXECUTING, "", "{\"ok\":true}", "");
+            return new RequirementStageFinalizationPort.FinalizationResult(
+                    marker.finalized(outcome, command.nextCommand() == null ? "" : command.nextCommand().commandId(),
+                            now + 1L),
+                    claimed.succeeded(now + 1L),
+                    command.nextCommand());
+        });
+        RequirementDeliveryDispatchService dispatcher = new RequirementDeliveryDispatchService(
+                mock(RequirementDeliveryEngine.class),
+                new TaskExecutorAdapter(runnable -> {
+                }),
+                new InMemoryRequirementDeliveryJobStore(),
+                SnowflakeIdGenerator.defaultGenerator(),
+                registry,
+                "test-worker",
+                3,
+                60_000L,
+                null,
+                null,
+                commands,
+                stageExecutor,
+                finalizer,
+                RequirementDeliverySchedulingPolicy.defaults(),
+                null);
+
+        invokeRunClaimedCommand(dispatcher, claimed, new CompletableFuture<>());
+
+        RequirementStageCommand next = finalization.getValue().nextCommand();
+        assertEquals("REQUIREMENT_DELIVERY", next.role());
+        assertEquals("HOST_VERIFY", next.stage());
+        assertEquals(ScheduleResourceClass.DOCKER, next.resourceClass());
+        assertEquals(Set.of(ScheduleResourceClass.PROVIDER, ScheduleResourceClass.DOCKER),
+                next.resourceRequirements());
+    }
+
+    @Test
+    void checkpointBoundCodingSuccessContinuesAsHostVerifyInfrastructureCommand() {
+        long now = System.currentTimeMillis();
+        String taskId = "task-checkpoint-host-verify";
+        String checkpointId = "401";
+        String codingBindingId = "501";
+        InMemoryRequirementStageCommandStore commands = new InMemoryRequirementStageCommandStore();
+        InMemoryTaskRetryCheckpointStore checkpoints = new InMemoryTaskRetryCheckpointStore();
+        InMemoryTaskRetryAttemptBindingStore bindings = new InMemoryTaskRetryAttemptBindingStore();
+        TaskRetryCheckpoint checkpoint = new TaskRetryCheckpoint(
+                checkpointId, taskId, TaskFailurePhase.HOST_VERIFY, AgentRole.CODING_AGENT,
+                "coding-1", "", "", 1, taskId + ":11:HOST_VERIFY:CODING_AGENT",
+                RdTaskStatus.FAILED_NEEDS_HUMAN, 11L, 12L,
+                "command-old", "HOST_VERIFY", "policy-1", "",
+                "sha256:" + "a".repeat(64), "", "", 0L, 0L, "", Long.parseLong(checkpointId),
+                "", List.of(), TaskRetryCheckpointStatus.CREATED, "host verify failed", "", now, now);
+        checkpoints.createOrGet(checkpoint);
+        checkpoints.dispatch(checkpointId, 18L, 19L, "coding-command", now);
+        bindings.save(new TaskRetryAttemptBinding(
+                codingBindingId, checkpointId, TaskRetryAttemptKind.AGENT_STAGE,
+                AgentRole.CODING_AGENT, "coding-2", "", 2, 0));
+        RequirementStageCommand pending = RequirementStageCommand.pending(
+                "coding-command", taskId, 18L, 19L,
+                AgentRole.CODING_AGENT.name(), "ROLE_EXECUTION:CODING_AGENT",
+                0, 3, now + 3_600_000L, ScheduleResourceClass.DOCKER,
+                Set.of(ScheduleResourceClass.DOCKER), "project-1", "provider", "P1",
+                "policy-1", checkpointId, Long.parseLong(checkpointId), codingBindingId, now);
+        commands.enqueue(pending);
+        RequirementStageCommand claimed = commands.claim(
+                pending.commandId(), "test-worker", now, 60_000L).orElseThrow();
+        RequirementStageExecutionPlan plan = new RequirementStageExecutionPlan(
+                RequirementStageExecutionPlan.CURRENT_SCHEMA_VERSION,
+                claimed.taskId(), claimed.taskVersion(), claimed.fencingToken(), RdTaskStatus.EXECUTING,
+                List.of(RequirementTaskMutation.snapshotUpdate(
+                        RdTaskStatus.EXECUTING, "", "{\"ok\":true}", "", "", "")),
+                com.wish.rd.engine.requirement.job.model.CommandDisposition.SUCCEEDED,
+                new com.wish.rd.engine.requirement.job.model.ContinuationSpec(
+                        "REQUIREMENT_DELIVERY", "HOST_VERIFY"),
+                com.wish.rd.engine.requirement.job.model.ExternalEffectReceipt.none());
+        RequirementStageFinalization marker = RequirementStageFinalization.prepared(
+                claimed, RdTaskStatus.EXECUTING, now);
+        RagStreamTaskRegistry registry = mock(RagStreamTaskRegistry.class);
+        when(registry.getTask(taskId)).thenReturn(
+                requirementTask(taskId, RdTaskStatus.EXECUTING).withConcurrency(18L, 19L));
+        RequirementStageExecutor stageExecutor = mock(RequirementStageExecutor.class);
+        when(stageExecutor.plan(claimed)).thenReturn(plan);
+        RequirementStageFinalizationPort finalizer = mock(RequirementStageFinalizationPort.class);
+        when(finalizer.findLatestPrepared(claimed.commandId())).thenReturn(Optional.empty());
+        when(finalizer.prepare(any(), any(), any(), anyLong())).thenReturn(marker);
+        when(finalizer.recordOutcome(any(), any(), any(), any(), anyLong())).thenReturn(marker);
+        when(finalizer.decodeOutcomePlan(any())).thenReturn(plan);
+        ArgumentCaptor<RequirementStageFinalizationPort.FinalizationCommand> finalization =
+                ArgumentCaptor.forClass(RequirementStageFinalizationPort.FinalizationCommand.class);
+        when(finalizer.finalize(finalization.capture())).thenAnswer(invocation -> {
+            RequirementStageFinalizationPort.FinalizationCommand command = invocation.getArgument(0);
+            RequirementDeliveryResult outcome = new RequirementDeliveryResult(
+                    taskId, RdTaskStatus.EXECUTING, "", "{\"ok\":true}", "");
+            return new RequirementStageFinalizationPort.FinalizationResult(
+                    marker.finalized(outcome, command.nextCommand() == null ? "" : command.nextCommand().commandId(),
+                            now + 1L),
+                    claimed.succeeded(now + 1L),
+                    command.nextCommand());
+        });
+        RequirementDeliveryDispatchService dispatcher = new RequirementDeliveryDispatchService(
+                mock(RequirementDeliveryEngine.class),
+                new TaskExecutorAdapter(runnable -> {
+                }),
+                new InMemoryRequirementDeliveryJobStore(),
+                SnowflakeIdGenerator.defaultGenerator(),
+                registry,
+                "test-worker",
+                3,
+                60_000L,
+                null,
+                checkpoints,
+                commands,
+                stageExecutor,
+                finalizer,
+                RequirementDeliverySchedulingPolicy.defaults(),
+                null,
+                bindings);
+
+        invokeRunClaimedCommand(dispatcher, claimed, new CompletableFuture<>());
+
+        RequirementStageCommand next = finalization.getValue().nextCommand();
+        assertEquals("REQUIREMENT_DELIVERY", next.role());
+        assertEquals("HOST_VERIFY", next.stage());
+        assertEquals(checkpointId, next.retryCheckpointId());
+        assertEquals("", next.targetRetryBindingId());
+        assertEquals(ScheduleResourceClass.DOCKER, next.resourceClass());
     }
 
     @Test
@@ -2153,6 +2333,40 @@ class RequirementDeliveryDispatchServiceTest {
 
     private static RdRequirementTask requirementTask(String taskId, RdTaskStatus status) {
         return requirementTask(taskId, "project-1", status);
+    }
+
+    private static AuditedStateMutation recoveryAuditedMutation(String taskId, String commandId) {
+        AuditedTaskState next = new AuditedTaskStateCodec().seal(new AuditedTaskState(
+                taskId,
+                1L,
+                "",
+                new AuditedContractRef("sha256:" + "c".repeat(64), 1L, 1L),
+                List.of(new AuditedRecord(
+                        "AC-001",
+                        AuditedRecordKind.REQUIREMENT,
+                        true,
+                        "criterion AC-001",
+                        AuditedRecordStatus.PENDING,
+                        List.of(),
+                        "",
+                        "")),
+                "audit-" + commandId));
+        AuditRun run = new AuditRun(
+                "audit-" + commandId,
+                taskId,
+                "stage-1",
+                "HOST_VERIFY",
+                commandId,
+                AuditCompletion.INCOMPLETE,
+                AuditIntegrity.CLEAN,
+                ContractAuditVerdict.ALIGNED,
+                List.of(),
+                List.of("AC-001"),
+                List.of(),
+                List.of(),
+                List.of(),
+                1_700_000_000_000L);
+        return new AuditedStateMutation(run, next, next.stateVersion());
     }
 
     private static RequirementStageCommand approvalResumeCommand(

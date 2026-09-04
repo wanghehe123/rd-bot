@@ -28,6 +28,16 @@ public final class AgentRemediationCoordinator {
 
     private static void validateAttempts(AgentRemediationRoundStore.ClaimDraft draft) {
         if (draft.kind() == null) throw new IllegalArgumentException("kind is required");
+        if (draft.kind() == AgentRemediationKind.HOST_VERIFY_FIX) {
+            if (draft.targetCodingAttemptNo() < 1 || draft.targetCodingAttemptNo() > MAX_ROLE_ATTEMPT_NO) {
+                throw new IllegalArgumentException("target Coding attempt must be between 1 and 3");
+            }
+            if (draft.targetQaAttemptNo() != 0
+                    || (draft.targetQaStageRunId() != null && !draft.targetQaStageRunId().isBlank())) {
+                throw new IllegalArgumentException("host-verify fix must not target QA");
+            }
+            return;
+        }
         if (draft.targetQaAttemptNo() < 1 || draft.targetQaAttemptNo() > MAX_ROLE_ATTEMPT_NO) {
             throw new IllegalArgumentException("target QA attempt must be between 1 and 3");
         }

@@ -10,6 +10,10 @@ import com.wish.rd.bootstrap.persistence.mapper.RequirementStageCommandMapper;
 import com.wish.rd.bootstrap.persistence.mapper.RdTaskMapper;
 import com.wish.rd.bootstrap.persistence.mapper.RdTaskStatusEventMapper;
 import com.wish.rd.bootstrap.threading.RequirementStageCommandFactory;
+import com.wish.rd.engine.requirement.audit.AuditedTaskState;
+import com.wish.rd.engine.requirement.audit.AuditedTaskStateCodec;
+import com.wish.rd.engine.requirement.audit.AuditedTaskStateInitializer;
+import com.wish.rd.engine.requirement.audit.impl.InMemoryAuditedTaskStateStore;
 import com.wish.rd.engine.requirement.job.model.RequirementStageCommand;
 import com.wish.rd.engine.requirement.policy.model.ApproveRequirementPolicyCommand;
 import com.wish.rd.engine.requirement.policy.model.RequirementPolicyApprovalResult;
@@ -25,6 +29,9 @@ import com.wish.rd.engine.requirement.policy.model.RequirementPolicyRunState;
 import com.wish.rd.engine.scheduling.model.RequirementDeliverySchedulingPolicy;
 import com.wish.rd.engine.scheduling.model.ScheduleResourceClass;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
+import com.wish.rd.rag.runtime.model.CreateRequirementTaskCommand;
+import com.wish.rd.rag.runtime.model.RdRequirementTask;
+import com.wish.rd.rag.runtime.model.RdTaskStatus;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.aop.support.AopUtils;
@@ -320,6 +327,7 @@ class PostgresRequirementPolicyTransactionAdapterTest {
         ordered.verify(fixture.commandMapper).enqueue(any());
         ordered.verify(fixture.commandMapper).find(201L, "REQUIREMENT_REVIEWER", "ROLE_EXECUTION:REQUIREMENT_REVIEWER");
         ordered.verify(fixture.policyMapper).compareAndSet(any(), eq("APPROVED"), eq(4L));
+        assertAuditedHead(fixture, 6);
         ArgumentCaptor<RequirementPolicyRunRow> ledger = ArgumentCaptor.forClass(RequirementPolicyRunRow.class);
         verify(fixture.policyMapper).compareAndSet(ledger.capture(), eq("APPROVED"), eq(4L));
         assertEquals("APPLIED", ledger.getValue().state);
@@ -373,6 +381,36 @@ class PostgresRequirementPolicyTransactionAdapterTest {
         ordered.verify(fixture.commandMapper).enqueue(any());
         ordered.verify(fixture.commandMapper).find(201L, "REQUIREMENT_REVIEWER", "ROLE_EXECUTION:REQUIREMENT_REVIEWER");
         ordered.verify(fixture.policyMapper).compareAndSet(any(), eq("POLICY_DECIDED"), eq(1L));
+        assertAuditedHead(fixture, 6);
+        String firstHash = fixture.audited.head("201").orElseThrow().stateHash();
+        when(fixture.policyMapper.lockForUpdate(101L)).thenReturn(policyRow(result.policyRun()));
+        when(fixture.taskMapper.lockByIdForUpdate(201L)).thenReturn(taskRow(7L, 9L, "EXECUTING"));
+        when(fixture.commandMapper.lockByIdForUpdate(902L)).thenReturn(commandRow(apply.succeeded(NOW)));
+        when(fixture.commandMapper.find(201L, "REQUIREMENT_REVIEWER", "ROLE_EXECUTION:REQUIREMENT_REVIEWER"))
+                .thenReturn(commandRow(continuation));
+        RequirementPolicyApplyResult replayed = fixture.adapter.consumePolicyApply(apply, "any-replay-owner", NOW);
+        assertEquals(RequirementPolicyApplyDisposition.ALLOWED, replayed.disposition());
+        assertEquals(firstHash, fixture.audited.head("201").orElseThrow().stateHash());
+        assertEquals(1L, fixture.audited.head("201").orElseThrow().stateVersion());
+    }
+
+    @Test
+    void consumePolicyApplyFailsClosedWhenAuditedContractRefMismatches() {
+        Fixture fixture = policyApplyFixture(decidedWithAction("ALLOWED"));
+        configureNonAllowedPolicyApply(fixture);
+        when(fixture.commandFactory.createPendingCommand(any(), any(Long.class), any(Long.class), any(), any(), any(), any(), any(), any(), any(Long.class)))
+                .thenReturn(firstRoleCommand(7L, 9L));
+        when(fixture.commandMapper.enqueue(any())).thenReturn(1);
+        when(fixture.commandMapper.find(201L, "REQUIREMENT_REVIEWER", "ROLE_EXECUTION:REQUIREMENT_REVIEWER"))
+                .thenReturn(commandRow(firstRoleCommand(7L, 9L)));
+        RdRequirementTask other = RdRequirementTask.created("201", new CreateRequirementTaskCommand(
+                "deliver", "P1", "repo", "owner", "repo", "main", "done", List.of("other"), false), NOW)
+                .withState(RdTaskStatus.EXECUTING, "", "{}", "", "", NOW).withConcurrency(7L, 9L);
+        fixture.audited.initializeIfAbsent(new AuditedTaskStateInitializer(new AuditedTaskStateCodec()).initialize(other));
+
+        IllegalStateException failure = assertThrows(IllegalStateException.class, () ->
+                fixture.adapter.consumePolicyApply(runningApplyCommand(6L, 8L, "worker-1"), "worker-1", NOW));
+        assertTrue(failure.getMessage().contains("contractRef"));
     }
 
     @Test
@@ -399,6 +437,8 @@ class PostgresRequirementPolicyTransactionAdapterTest {
         assertEquals(null, deniedResult.nextCommand());
         assertEquals(RequirementPolicyRunState.DENIED, deniedResult.policyRun().state());
         assertEquals("902", deniedResult.policyRun().consumedByCommandId());
+        assertTrue(waiting.audited.head("201").isEmpty());
+        assertTrue(denied.audited.head("201").isEmpty());
         ArgumentCaptor<RdTaskStatusEventRow> event = ArgumentCaptor.forClass(RdTaskStatusEventRow.class);
         verify(denied.eventMapper).insert(event.capture());
         assertEquals("FAILED_NEEDS_HUMAN", event.getValue().status);
@@ -789,12 +829,13 @@ class PostgresRequirementPolicyTransactionAdapterTest {
         RequirementStageCommandMapper commandMapper = mock(RequirementStageCommandMapper.class);
         RequirementStageCommandFactory commandFactory = mock(RequirementStageCommandFactory.class);
         RdTaskRow task = taskRow();
+        InMemoryAuditedTaskStateStore audited = new InMemoryAuditedTaskStateStore();
         when(policyMapper.lockForUpdate(101L)).thenReturn(policyRow(waiting()));
         when(taskMapper.lockByIdForUpdate(201L)).thenReturn(task);
         return new Fixture(
                 new PostgresRequirementPolicyTransactionAdapter(policyMapper, taskMapper, eventMapper,
-                        commandMapper, commandFactory, new SnowflakeIdGenerator(1L, 1L, () -> NOW)),
-                policyMapper, taskMapper, eventMapper, commandMapper, commandFactory, task);
+                        commandMapper, commandFactory, new SnowflakeIdGenerator(1L, 1L, () -> NOW), audited),
+                policyMapper, taskMapper, eventMapper, commandMapper, commandFactory, task, audited);
     }
 
     private static ApproveRequirementPolicyCommand command(String actor, String note) {
@@ -875,6 +916,7 @@ class PostgresRequirementPolicyTransactionAdapterTest {
         RdTaskRow row = new RdTaskRow();
         row.id = 201L; row.taskType = "REQUIREMENT"; row.status = status;
         row.version = version; row.fencingToken = fence; row.projectId = "project-1"; row.priority = "P1"; row.title = "title";
+        row.acceptanceCriteriaJson = "[\"works\"]";
         return row;
     }
 
@@ -1099,7 +1141,14 @@ class PostgresRequirementPolicyTransactionAdapterTest {
         return null;
     }
 
+    private static void assertAuditedHead(Fixture fixture, int recordCount) {
+        AuditedTaskState head = fixture.audited.head("201").orElseThrow();
+        assertEquals(1L, head.stateVersion());
+        assertEquals(recordCount, head.records().size());
+    }
+
     private record Fixture(PostgresRequirementPolicyTransactionAdapter adapter, RequirementPolicyRunMapper policyMapper,
                            RdTaskMapper taskMapper, RdTaskStatusEventMapper eventMapper, RequirementStageCommandMapper commandMapper,
-                           RequirementStageCommandFactory commandFactory, RdTaskRow task) { }
+                           RequirementStageCommandFactory commandFactory, RdTaskRow task,
+                           InMemoryAuditedTaskStateStore audited) { }
 }
