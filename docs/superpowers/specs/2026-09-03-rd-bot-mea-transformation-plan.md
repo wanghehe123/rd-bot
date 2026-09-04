@@ -1,7 +1,7 @@
 # RD-Bot × DreamX MEA 改造总体方案
 
 日期：2026-09-03
-状态：阶段 1 代码已落地（`openspec/changes/mea-audit-only-writeback/` tasks 0–11）；待 Docker 镜像重建（8.5）、云端 SHADOW/ENFORCE 真机（12.x）与归档。本文档的阶段 2–7 仍为规划。交给实现 Agent 的入口是 `docs/superpowers/specs/2026-09-03-rd-bot-mea-agent-handoff.md`。
+状态：阶段 1 代码已合入 `main`（2026-09-04 `d96b3c7d`）。云端 `gate-mode=SHADOW`；`DeterministicAuditor.auditQa` 生产未接线；tasks 8.5 / 12.x 未完成，**禁止归档**。阶段 2–7 仍为规划。下一个 Agent 入口：`docs/superpowers/plans/2026-09-04-mea-next-phases-waimai.md`。历史开工包：`docs/superpowers/specs/2026-09-03-rd-bot-mea-agent-handoff.md`。
 
 ## 0. 文档边界与证据分级
 
@@ -216,7 +216,7 @@ RD-Bot 的需求交付链路已经具备 MEA 所需的大部分「硬件」：�
 - 前置：`host-verification-pipeline` tasks 对齐与归档（或 design 记录承接）。
 - 退出：「Executor 虚报成功」测试与真机注入构建失败任务均被拒绝完成；`unaudited_claim_promoted_to_completed = 0`。
 - 验证命令：见该 change `design.md`「验证命令」。
-- **实现状态（2026-09-03）**：tasks 0–11 代码与聚焦测试已落地（PR 审计清单、只读管理 API、前端已审计面板、完成写入者守卫、RULE.md / AGENTS.md）。8.5 需本机 Docker daemon；12.x 需云端项目 `codex-run-test-waimai` 真机后才能归档。
+- **实现状态（2026-09-04）**：tasks 0–11 已合入 `main`（`d96b3c7d`）。云端 SHADOW 真机 `7501460334566313984` 走到 `COMPLETED` PR #31，但 `auditQa` 生产未接线，AC/QA/指纹门仍 PENDING。8.5 / 12.x 与接线步骤见 `docs/superpowers/plans/2026-09-04-mea-next-phases-waimai.md`。归档仍禁止，直到 ENFORCE 真机证明。
 
 ### 阶段 2：Fresh Executor episode
 
