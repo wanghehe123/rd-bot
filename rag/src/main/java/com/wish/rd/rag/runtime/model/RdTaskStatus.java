@@ -17,6 +17,8 @@ public enum RdTaskStatus {
     PLAN_GENERATED,
     WAITING_POLICY,
     WAITING_APPROVAL,
+    /** Operator material wait. Requirement graph only; not policy/token approval. */
+    WAITING_USER_INPUT,
     SEARCHING,
     EXECUTING,
     VALIDATING,

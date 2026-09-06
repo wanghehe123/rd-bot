@@ -501,6 +501,9 @@ function statusTone(status: string): string {
   if (status === "WAITING_APPROVAL" || status === "WAITING_POLICY") {
     return "is-warning";
   }
+  if (status === "WAITING_USER_INPUT") {
+    return "is-info";
+  }
   if (status === "COMMITTED" || status === "MERGED" || status === "COMPLETED") {
     return "is-success";
   }

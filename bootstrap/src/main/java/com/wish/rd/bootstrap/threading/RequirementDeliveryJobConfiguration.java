@@ -5,6 +5,8 @@ import com.wish.rd.engine.requirement.job.RequirementStageCommandStore;
 import com.wish.rd.engine.requirement.job.RequirementStageFinalizationPort;
 import com.wish.rd.engine.requirement.job.impl.InMemoryRequirementDeliveryJobStore;
 import com.wish.rd.engine.requirement.job.impl.InMemoryRequirementStageFinalizationPort;
+import com.wish.rd.engine.requirement.manager.ManagerDecisionStore;
+import com.wish.rd.engine.requirement.manager.impl.InMemoryManagerDecisionStore;
 import com.wish.rd.engine.requirement.publication.RequirementPublicationStore;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
 import com.wish.rd.rag.runtime.RdTaskStatusEventStore;
@@ -38,6 +40,12 @@ public class RequirementDeliveryJobConfiguration {
         return new InMemoryRequirementDeliveryJobStore();
     }
 
+    @Bean
+    @ConditionalOnMissingBean(ManagerDecisionStore.class)
+    ManagerDecisionStore inMemoryManagerDecisionStore() {
+        return new InMemoryManagerDecisionStore();
+    }
+
     /**
      * Supplies the single-runtime finalization contract only when PostgreSQL has not installed
      * its transactional boundary.
@@ -60,9 +68,10 @@ public class RequirementDeliveryJobConfiguration {
             SnowflakeIdGenerator idGenerator,
             ObjectProvider<RequirementPublicationStore> publicationStoreProvider,
             ObjectProvider<com.wish.rd.engine.requirement.policy.RequirementPolicyRunStore> policyRunStoreProvider,
-            ObjectProvider<com.wish.rd.engine.requirement.audit.AuditedTaskStateStore> auditedTaskStateStoreProvider
+            ObjectProvider<com.wish.rd.engine.requirement.audit.AuditedTaskStateStore> auditedTaskStateStoreProvider,
+            ObjectProvider<ManagerDecisionStore> managerDecisionStoreProvider
     ) {
-        return new InMemoryRequirementStageFinalizationPort(
+        InMemoryRequirementStageFinalizationPort port = new InMemoryRequirementStageFinalizationPort(
                 stageCommandStore,
                 jobStore,
                 taskStore,
@@ -76,5 +85,7 @@ public class RequirementDeliveryJobConfiguration {
                 null,
                 null,
                 auditedTaskStateStoreProvider.getIfAvailable());
+        port.setManagerDecisionStore(managerDecisionStoreProvider.getIfAvailable());
+        return port;
     }
 }

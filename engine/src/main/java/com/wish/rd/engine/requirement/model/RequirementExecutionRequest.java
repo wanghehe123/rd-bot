@@ -165,9 +165,11 @@ public record RequirementExecutionRequest(
         }
         if (!initialAgentStateAttachments.isEmpty() && !anyInitialState
                 && initialAgentStateAttachments.stream().anyMatch(attachment ->
-                !"attachments/qa-remediation/request.json".equals(attachment.path()))) {
+                !"attachments/qa-remediation/request.json".equals(attachment.path())
+                        && !"attachments/host-verify-remediation/request.json".equals(attachment.path())
+                        && !"attachments/manager-gap-fix/request.json".equals(attachment.path()))) {
             throw new IllegalArgumentException(
-                    "attachments without initial state are restricted to the Host QA remediation package");
+                    "attachments without initial state are restricted to Host remediation packages");
         }
     }
 

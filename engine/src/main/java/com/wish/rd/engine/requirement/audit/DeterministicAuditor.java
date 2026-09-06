@@ -5,9 +5,12 @@ import com.wish.rd.engine.requirement.verify.model.HostVerificationStatus;
 
 import java.text.Normalizer;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 /** Host-owned pure auditor. Executor JSON never promotes blocking records. */
 public final class DeterministicAuditor {
@@ -69,19 +72,92 @@ public final class DeterministicAuditor {
         if (subject == null) {
             throw new IllegalArgumentException("qa subject must not be null");
         }
+        return finishQa(
+                head,
+                subject,
+                new ArrayList<>(head.records()),
+                new ArrayList<>(),
+                resolver,
+                0L);
+    }
+
+    /**
+     * Records UNTRUSTED claims and applies QA evidence in one revision.
+     *
+     * @param head current state
+     * @param qaSubject QA evidence
+     * @param claims executor self-reports
+     * @param resolver evidence URI resolver
+     * @return mutation
+     */
+    public AuditMutation auditQaWithClaims(
+            AuditedTaskState head,
+            QaSubject qaSubject,
+            RoleClaimSubject claims,
+            EvidenceRefResolverPort resolver
+    ) {
+        requireHead(head);
+        if (qaSubject == null) {
+            throw new IllegalArgumentException("qa subject must not be null");
+        }
         List<AuditedRecord> records = new ArrayList<>(head.records());
+        List<String> untrusted = new ArrayList<>();
+        appendUntrustedClaims(records, claims, untrusted);
+        return finishQa(head, qaSubject, records, untrusted, resolver, claims.nowEpochMillis());
+    }
+
+    /**
+     * Records executor self-reports as {@code UNTRUSTED} facts without promoting gates.
+     *
+     * @param head current state
+     * @param subject claims
+     * @return mutation
+     */
+    public AuditMutation recordClaims(AuditedTaskState head, RoleClaimSubject subject) {
+        requireHead(head);
+        List<AuditedRecord> records = new ArrayList<>(head.records());
+        List<String> untrusted = new ArrayList<>();
+        appendUntrustedClaims(records, subject, untrusted);
+        return finish(head, subject.auditRunId(), subject.commandId(), subject.stageRunId(),
+                subject.role(), records, List.of(), untrusted, List.of(), AuditIntegrity.CLEAN,
+                subject.nowEpochMillis());
+    }
+
+    /**
+     * Host fingerprint evidence URI for a QA subject. Callers must register this before
+     * {@link #auditQa} / {@link #auditQaWithClaims} so the resolver can fail closed.
+     *
+     * @param taskId owning task
+     * @param subject QA subject with after-fingerprint
+     * @return fingerprint evidence ref
+     */
+    public static EvidenceRef qaWorkspaceFingerprintRef(String taskId, QaSubject subject) {
+        if (subject == null) {
+            throw new IllegalArgumentException("qa subject must not be null");
+        }
+        return fingerprintEvidence(taskId, subject);
+    }
+
+    private AuditMutation finishQa(
+            AuditedTaskState head,
+            QaSubject subject,
+            List<AuditedRecord> records,
+            List<String> untrusted,
+            EvidenceRefResolverPort resolver,
+            long nowEpochMillis
+    ) {
         List<String> verified = new ArrayList<>();
         AuditIntegrity integrity = integrityOf(subject);
         if (integrity == AuditIntegrity.VIOLATION) {
             replace(records, "GATE-WORKSPACE-INTEGRITY", head.record("GATE-WORKSPACE-INTEGRITY")
                     .withStatus(AuditedRecordStatus.BLOCKED, List.of(), "workspace integrity violation"));
             return finish(head, subject.auditRunId(), subject.commandId(), subject.qaStageRunId(),
-                    "QA_AGENT", records, verified, List.of(), List.of("GATE-WORKSPACE-INTEGRITY"),
-                    integrity, 0L);
+                    "QA_AGENT", records, verified, untrusted, List.of("GATE-WORKSPACE-INTEGRITY"),
+                    integrity, nowEpochMillis);
         }
         if (integrity == AuditIntegrity.SUSPECT) {
             return finish(head, subject.auditRunId(), subject.commandId(), subject.qaStageRunId(),
-                    "QA_AGENT", records, verified, List.of(), List.of(), integrity, 0L);
+                    "QA_AGENT", records, verified, untrusted, List.of(), integrity, nowEpochMillis);
         }
         EvidenceRef fingerprintRef = fingerprintEvidence(head.taskId(), subject);
         resolver.requireResolvable(fingerprintRef);
@@ -119,18 +195,14 @@ public final class DeterministicAuditor {
             }
         }
         return finish(head, subject.auditRunId(), subject.commandId(), subject.qaStageRunId(),
-                "QA_AGENT", records, verified, List.of(), List.of(), integrity, 0L);
+                "QA_AGENT", records, verified, untrusted, List.of(), integrity, nowEpochMillis);
     }
 
-    /**
-     * Records executor self-reports as {@code UNTRUSTED} facts without promoting gates.
-     *
-     * @param head current state
-     * @param subject claims
-     * @return mutation
-     */
-    public AuditMutation recordClaims(AuditedTaskState head, RoleClaimSubject subject) {
-        requireHead(head);
+    private static void appendUntrustedClaims(
+            List<AuditedRecord> records,
+            RoleClaimSubject subject,
+            List<String> untrusted
+    ) {
         if (subject == null) {
             throw new IllegalArgumentException("claim subject must not be null");
         }
@@ -139,9 +211,7 @@ public final class DeterministicAuditor {
             throw new IllegalArgumentException(
                     "claims must not exceed " + RoleClaimSubject.MAX_CLAIMS_PER_ATTEMPT + " per attempt");
         }
-        List<AuditedRecord> records = new ArrayList<>(head.records());
         int index = 1;
-        List<String> untrusted = new ArrayList<>();
         for (RoleClaim claim : subject.claims()) {
             String id = "CLAIM-" + subject.stageRunId() + "-" + index++;
             records.add(new AuditedRecord(
@@ -158,9 +228,6 @@ public final class DeterministicAuditor {
                     AuditedRecordStatus.UNTRUSTED, List.of(), subject.stageRunId(), ""));
             untrusted.add(id);
         }
-        return finish(head, subject.auditRunId(), subject.commandId(), subject.stageRunId(),
-                subject.role(), records, List.of(), untrusted, List.of(), AuditIntegrity.CLEAN,
-                subject.nowEpochMillis());
     }
 
     private AuditMutation finish(
@@ -288,10 +355,53 @@ public final class DeterministicAuditor {
 
     private static List<EvidenceRef> stamp(List<EvidenceRef> evidence, String auditRunId) {
         List<EvidenceRef> stamped = new ArrayList<>();
-        for (EvidenceRef ref : evidence) {
+        for (EvidenceRef ref : boundEvidence(evidence)) {
             stamped.add(new EvidenceRef(auditRunId, ref.sourceKind(), ref.uri(), ref.sha256()));
         }
         return List.copyOf(stamped);
+    }
+
+    /**
+     * {@link AuditedRecord} fail-closes above 16 refs. Browser QA often attaches a
+     * unique console/network/trace/screenshot set per CURRENT row; the GATE-QA-EVIDENCE
+     * union then exceeds the bound and used to crash honest ENFORCE tasks.
+     */
+    private static List<EvidenceRef> boundEvidence(List<EvidenceRef> evidence) {
+        if (evidence == null || evidence.isEmpty()) {
+            return List.of();
+        }
+        Map<String, EvidenceRef> unique = new LinkedHashMap<>();
+        for (EvidenceRef ref : evidence) {
+            if (ref != null) {
+                unique.putIfAbsent(ref.uri(), ref);
+            }
+        }
+        List<EvidenceRef> ordered = new ArrayList<>(unique.values());
+        if (ordered.size() <= AuditedRecord.MAX_EVIDENCE_REFS) {
+            return List.copyOf(ordered);
+        }
+        ordered.sort(Comparator.comparingInt(DeterministicAuditor::evidenceBundleRank));
+        return List.copyOf(ordered.subList(0, AuditedRecord.MAX_EVIDENCE_REFS));
+    }
+
+    private static int evidenceBundleRank(EvidenceRef ref) {
+        String uri = ref.uri().toLowerCase(Locale.ROOT);
+        if (uri.contains("qa-evidence/console/") || uri.contains("/console/")) {
+            return 0;
+        }
+        if (uri.contains("qa-evidence/network/") || uri.contains("/network/")) {
+            return 1;
+        }
+        if (uri.contains("traces") && uri.endsWith(".zip")) {
+            return 2;
+        }
+        if (uri.contains("desktop")) {
+            return 3;
+        }
+        if (uri.contains("mobile")) {
+            return 4;
+        }
+        return 5;
     }
 
     private static void replace(List<AuditedRecord> records, String id, AuditedRecord next) {

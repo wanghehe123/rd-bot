@@ -50,6 +50,14 @@ public class PostgresRequirementStageCommandStore implements RequirementStageCom
     }
 
     @Override
+    public Optional<RequirementStageCommand> findLatestAnyGeneration(String taskId, String role, String stage) {
+        RequirementStageCommandRow row = mapper.findLatestAnyGeneration(
+                PostgresPersistenceSupport.parseId(taskId), role == null ? "" : role,
+                stage == null ? "" : stage);
+        return Optional.ofNullable(row).map(this::toCommand);
+    }
+
+    @Override
     public Optional<RequirementStageCommand> find(
             String taskId, String role, String stage, String retryCheckpointId
     ) {

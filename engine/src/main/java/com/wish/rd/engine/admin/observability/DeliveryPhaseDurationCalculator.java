@@ -102,7 +102,7 @@ public final class DeliveryPhaseDurationCalculator {
             case "MATERIAL_READY", "CONTEXT_BUILDING" -> PHASE_CONTEXT;
             case "CONTEXT_READY", "PLAN_GENERATING" -> PHASE_PLAN;
             case "PLAN_GENERATED", "WAITING_POLICY", "WAITING_APPROVAL" -> PHASE_POLICY;
-            case "EXECUTING" -> PHASE_EXECUTION;
+            case "EXECUTING", "WAITING_USER_INPUT" -> PHASE_EXECUTION;
             case "VALIDATING" -> PHASE_VALIDATION;
             case "PR_CREATING", "COMMITTED", "MERGED" -> PHASE_PUBLICATION;
             case "REPORTING" -> PHASE_REPORTING;

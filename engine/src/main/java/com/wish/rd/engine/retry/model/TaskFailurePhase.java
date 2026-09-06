@@ -6,6 +6,7 @@ public enum TaskFailurePhase {
     CONTEXT,
     PLAN,
     POLICY,
+    MANAGER,
     RAG,
     AGENT_ROLE,
     HOST_VERIFY,

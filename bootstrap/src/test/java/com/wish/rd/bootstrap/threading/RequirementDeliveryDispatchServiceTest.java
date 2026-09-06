@@ -25,6 +25,11 @@ import com.wish.rd.engine.requirement.job.model.RequirementStageExecutionPlan;
 import com.wish.rd.engine.requirement.job.model.RequirementStageFinalization;
 import com.wish.rd.engine.requirement.job.model.RequirementTaskMutation;
 import com.wish.rd.engine.requirement.model.RequirementDeliveryResult;
+import com.wish.rd.engine.requirement.manager.ManagerDecision;
+import com.wish.rd.engine.requirement.manager.ManagerDecideStages;
+import com.wish.rd.engine.requirement.manager.ManagerRoute;
+import com.wish.rd.engine.requirement.manager.impl.InMemoryManagerDecisionStore;
+import com.wish.rd.engine.requirement.answer.UserAnswerResumeStages;
 import com.wish.rd.engine.requirement.policy.RequirementPolicyTransactionPort;
 import com.wish.rd.engine.requirement.policy.RequirementPolicyRunStore;
 import com.wish.rd.engine.requirement.policy.impl.InMemoryRequirementPolicyRunStore;
@@ -531,7 +536,8 @@ class RequirementDeliveryDispatchServiceTest {
 
         assertEquals(RequirementStageCommand.Status.FAILED_RETRYABLE,
                 commands.findById(legacy.commandId()).orElseThrow().status());
-        verifyNoInteractions(engine, stageExecutor, finalizer, registry);
+        verifyNoInteractions(engine, stageExecutor, finalizer);
+        verify(registry).getTask("legacy-policy-task");
         assertNoUmbrellaJobMutation(jobs);
     }
 
@@ -846,11 +852,14 @@ class RequirementDeliveryDispatchServiceTest {
         when(registry.getTask("initial-stale")).thenReturn(
                 requirementTask("initial-stale", RdTaskStatus.CREATED).withConcurrency(7L, 13L));
         RequirementStageCommandStore commands = mock(RequirementStageCommandStore.class);
-        when(commands.find("initial-stale", "REQUIREMENT_DELIVERY", "MATERIAL_COLLECTING")).thenReturn(
-                Optional.of(RequirementStageCommand.pending(
-                        "stale-initial", "initial-stale", 6L, 12L, "REQUIREMENT_DELIVERY",
-                        "MATERIAL_COLLECTING", 0, 3, 0L, ScheduleResourceClass.GENERIC,
-                        "project", "", "P1", 1L)));
+        Optional<RequirementStageCommand> staleInitial = Optional.of(RequirementStageCommand.pending(
+                "stale-initial", "initial-stale", 6L, 12L, "REQUIREMENT_DELIVERY",
+                "MATERIAL_COLLECTING", 0, 3, 0L, ScheduleResourceClass.GENERIC,
+                "project", "", "P1", 1L));
+        when(commands.find("initial-stale", "REQUIREMENT_DELIVERY", "MATERIAL_COLLECTING"))
+                .thenReturn(staleInitial);
+        when(commands.findLatestAnyGeneration("initial-stale", "REQUIREMENT_DELIVERY", "MATERIAL_COLLECTING"))
+                .thenReturn(staleInitial);
         RequirementDeliveryJobStore jobs = mock(RequirementDeliveryJobStore.class);
         RequirementDeliveryDispatchService dispatcher = new RequirementDeliveryDispatchService(
                 mock(RequirementDeliveryEngine.class), new TaskExecutorAdapter(new SyncTaskExecutor()), jobs,
@@ -979,8 +988,11 @@ class RequirementDeliveryDispatchServiceTest {
         RequirementStageCommandStore commands = mock(RequirementStageCommandStore.class);
         when(registry.getTask("continuation-stale")).thenReturn(
                 requirementTask("continuation-stale", RdTaskStatus.MATERIAL_COLLECTING).withConcurrency(7L, 13L));
+        Optional<RequirementStageCommand> staleContinuation = Optional.of(continuationPrevious());
         when(commands.find("continuation-stale", "REQUIREMENT_DELIVERY", "MATERIAL_READY"))
-                .thenReturn(Optional.of(continuationPrevious()));
+                .thenReturn(staleContinuation);
+        when(commands.findLatestAnyGeneration("continuation-stale", "REQUIREMENT_DELIVERY", "MATERIAL_READY"))
+                .thenReturn(staleContinuation);
 
         assertThrows(IllegalStateException.class, () -> invokeNewCommand(
                 continuationDispatcher(registry, commands), "continuation-stale", continuationPrevious(),
@@ -2210,6 +2222,93 @@ class RequirementDeliveryDispatchServiceTest {
         }
     }
 
+    @Test
+    void nextRoleTargetReadsManagerAuthorityInsteadOfWalkingIntoReview() {
+        long now = System.currentTimeMillis();
+        String taskId = "manager-reclaim";
+        InMemoryRequirementStageCommandStore commands = new InMemoryRequirementStageCommandStore();
+        commands.enqueue(succeededStage("reviewer-1", taskId, AgentRole.REQUIREMENT_REVIEWER.name(),
+                "ROLE_EXECUTION:REQUIREMENT_REVIEWER", now));
+        commands.enqueue(succeededStage("architect-1", taskId, AgentRole.SOLUTION_ARCHITECT.name(),
+                "ROLE_EXECUTION:SOLUTION_ARCHITECT", now));
+        commands.enqueue(succeededStage("coding-1", taskId, AgentRole.CODING_AGENT.name(),
+                "ROLE_EXECUTION:CODING_AGENT", now));
+        commands.enqueue(succeededStage("host-verify-1", taskId, "REQUIREMENT_DELIVERY", "HOST_VERIFY", now));
+        RagStreamTaskRegistry registry = mock(RagStreamTaskRegistry.class);
+        when(registry.getTask(taskId)).thenReturn(requirementTask(taskId, RdTaskStatus.EXECUTING));
+        RequirementDeliveryDispatchService dispatcher = continuationDispatcher(registry, commands);
+        dispatcher.setManagerDecisionStore(new InMemoryManagerDecisionStore());
+
+        Object afterHost = invokeNextRoleTarget(dispatcher, taskId);
+        assertEquals("REQUIREMENT_DELIVERY", stageTargetRole(afterHost));
+        assertEquals(ManagerDecideStages.forSource("host-verify-1"), stageTargetStage(afterHost));
+    }
+
+    @Test
+    void nextRoleTargetFollowsPersistedExecuteQaDecision() {
+        long now = System.currentTimeMillis();
+        String taskId = "manager-qa-reclaim";
+        InMemoryRequirementStageCommandStore commands = new InMemoryRequirementStageCommandStore();
+        commands.enqueue(succeededStage("reviewer-qa", taskId, AgentRole.REQUIREMENT_REVIEWER.name(),
+                "ROLE_EXECUTION:REQUIREMENT_REVIEWER", now));
+        commands.enqueue(succeededStage("architect-qa", taskId, AgentRole.SOLUTION_ARCHITECT.name(),
+                "ROLE_EXECUTION:SOLUTION_ARCHITECT", now));
+        commands.enqueue(succeededStage("coding-qa", taskId, AgentRole.CODING_AGENT.name(),
+                "ROLE_EXECUTION:CODING_AGENT", now));
+        commands.enqueue(succeededStage("host-verify-qa", taskId, "REQUIREMENT_DELIVERY", "HOST_VERIFY", now));
+        commands.enqueue(succeededStage("manager-hv", taskId, "REQUIREMENT_DELIVERY",
+                ManagerDecideStages.forSource("host-verify-qa"), now));
+        InMemoryManagerDecisionStore decisions = new InMemoryManagerDecisionStore();
+        decisions.insertIfAbsent(ManagerDecision.of(
+                taskId, 1, "host-verify-qa", 1L, "sha256:" + "d".repeat(64),
+                ManagerRoute.EXECUTE, List.of(), "", AgentRole.QA_AGENT.name(),
+                "host-verify succeeded; continue QA"));
+        RagStreamTaskRegistry registry = mock(RagStreamTaskRegistry.class);
+        when(registry.getTask(taskId)).thenReturn(requirementTask(taskId, RdTaskStatus.EXECUTING));
+        RequirementDeliveryDispatchService dispatcher = continuationDispatcher(registry, commands);
+        dispatcher.setManagerDecisionStore(decisions);
+
+        Object target = invokeNextRoleTarget(dispatcher, taskId);
+        assertEquals(AgentRole.QA_AGENT.name(), stageTargetRole(target));
+        assertEquals("ROLE_EXECUTION:QA_AGENT", stageTargetStage(target));
+    }
+
+    @Test
+    void nextStageForWaitingUserInputFailsClosed() {
+        RequirementDeliveryDispatchService dispatcher = continuationDispatcher(
+                mock(RagStreamTaskRegistry.class), new InMemoryRequirementStageCommandStore());
+        IllegalStateException failure = assertThrows(IllegalStateException.class,
+                () -> invokeNextStageFor(dispatcher, "waiting-input", RdTaskStatus.WAITING_USER_INPUT));
+        assertTrue(failure.getMessage().contains("WAITING_USER_INPUT"));
+    }
+
+    @Test
+    void pausedAndWaitingUserInputAreNotClaimableExceptAnswerResume() {
+        RagStreamTaskRegistry registry = mock(RagStreamTaskRegistry.class);
+        when(registry.getTask("paused-task"))
+                .thenReturn(requirementTask("paused-task", RdTaskStatus.EXECUTING).withPaused(true, 20L));
+        when(registry.getTask("waiting-task"))
+                .thenReturn(requirementTask("waiting-task", RdTaskStatus.WAITING_USER_INPUT));
+        RequirementDeliveryDispatchService dispatcher = continuationDispatcher(
+                registry, new InMemoryRequirementStageCommandStore());
+        RequirementStageCommand coding = RequirementStageCommand.pending(
+                "coding-paused", "paused-task", 10L, 20L, AgentRole.CODING_AGENT.name(),
+                "ROLE_EXECUTION:CODING_AGENT", 0, 3, 0L, ScheduleResourceClass.GENERIC,
+                "project-1", "", "P1", 1L);
+        RequirementStageCommand waitingCoding = RequirementStageCommand.pending(
+                "coding-waiting", "waiting-task", 10L, 20L, AgentRole.CODING_AGENT.name(),
+                "ROLE_EXECUTION:CODING_AGENT", 0, 3, 0L, ScheduleResourceClass.GENERIC,
+                "project-1", "", "P1", 1L);
+        RequirementStageCommand resume = RequirementStageCommand.pending(
+                "answer-resume", "waiting-task", 10L, 20L, "REQUIREMENT_DELIVERY",
+                UserAnswerResumeStages.forSource("source-1"), 0, 3, 0L, ScheduleResourceClass.GENERIC,
+                "project-1", "", "P1", 1L);
+
+        assertFalse(invokeIsClaimable(dispatcher, coding));
+        assertFalse(invokeIsClaimable(dispatcher, waitingCoding));
+        assertTrue(invokeIsClaimable(dispatcher, resume));
+    }
+
     private RequirementDeliveryDispatchService dispatcher(
             RequirementDeliveryEngine engine,
             InMemoryRequirementDeliveryJobStore store
@@ -2248,6 +2347,82 @@ class RequirementDeliveryDispatchServiceTest {
         return RequirementStageCommand.pending(
                 "previous", "continuation-positive", 2L, 5L, "REQUIREMENT_DELIVERY", "MATERIAL_COLLECTING",
                 0, 3, 60_000L, ScheduleResourceClass.GENERIC, "project", "", "P1", 1L);
+    }
+
+    private static RequirementStageCommand succeededStage(
+            String commandId, String taskId, String role, String stage, long now
+    ) {
+        return RequirementStageCommand.pending(
+                commandId, taskId, 10L, 20L, role, stage, 0, 3, now + 60_000L,
+                ScheduleResourceClass.GENERIC, "project-1", "", "P1", now)
+                .succeeded(now);
+    }
+
+    private static Object invokeNextRoleTarget(RequirementDeliveryDispatchService dispatcher, String taskId) {
+        try {
+            Method method = RequirementDeliveryDispatchService.class.getDeclaredMethod("nextRoleTarget", String.class);
+            method.setAccessible(true);
+            return method.invoke(dispatcher, taskId);
+        } catch (InvocationTargetException exception) {
+            if (exception.getCause() instanceof RuntimeException runtimeException) {
+                throw runtimeException;
+            }
+            throw new IllegalStateException(exception.getCause());
+        } catch (ReflectiveOperationException exception) {
+            throw new IllegalStateException(exception);
+        }
+    }
+
+    private static Object invokeNextStageFor(
+            RequirementDeliveryDispatchService dispatcher, String taskId, RdTaskStatus status
+    ) {
+        try {
+            Method method = RequirementDeliveryDispatchService.class.getDeclaredMethod(
+                    "nextStageFor", String.class, RdTaskStatus.class);
+            method.setAccessible(true);
+            return method.invoke(dispatcher, taskId, status);
+        } catch (InvocationTargetException exception) {
+            if (exception.getCause() instanceof RuntimeException runtimeException) {
+                throw runtimeException;
+            }
+            throw new IllegalStateException(exception.getCause());
+        } catch (ReflectiveOperationException exception) {
+            throw new IllegalStateException(exception);
+        }
+    }
+
+    private static boolean invokeIsClaimable(
+            RequirementDeliveryDispatchService dispatcher, RequirementStageCommand command
+    ) {
+        try {
+            Method method = RequirementDeliveryDispatchService.class.getDeclaredMethod(
+                    "isClaimableStageCommand", RequirementStageCommand.class);
+            method.setAccessible(true);
+            return (boolean) method.invoke(dispatcher, command);
+        } catch (InvocationTargetException exception) {
+            if (exception.getCause() instanceof RuntimeException runtimeException) {
+                throw runtimeException;
+            }
+            throw new IllegalStateException(exception.getCause());
+        } catch (ReflectiveOperationException exception) {
+            throw new IllegalStateException(exception);
+        }
+    }
+
+    private static String stageTargetRole(Object target) {
+        try {
+            return (String) target.getClass().getMethod("role").invoke(target);
+        } catch (ReflectiveOperationException exception) {
+            throw new IllegalStateException(exception);
+        }
+    }
+
+    private static String stageTargetStage(Object target) {
+        try {
+            return (String) target.getClass().getMethod("stage").invoke(target);
+        } catch (ReflectiveOperationException exception) {
+            throw new IllegalStateException(exception);
+        }
     }
 
     private static RequirementStageCommand invokeNewCommand(

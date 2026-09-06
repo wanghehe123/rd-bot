@@ -2586,6 +2586,12 @@ body {
   color: #9a5b06;
 }
 
+.dashboard-status-chip.is-info {
+  border-color: #d4c4f0;
+  background: #f6f2fc;
+  color: #6d28d9;
+}
+
 .dashboard-status-chip.is-success {
   border-color: #bce6cc;
   background: #eefaf2;

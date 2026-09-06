@@ -9,6 +9,7 @@ import com.wish.rd.bootstrap.persistence.mapper.AgentRemediationRoundMapper;
 import com.wish.rd.bootstrap.persistence.mapper.RdAgentStageRunMapper;
 import com.wish.rd.bootstrap.persistence.mapper.RequirementStageCommandMapper;
 import com.wish.rd.engine.requirement.HostVerifyRemediationPackageBuilder;
+import com.wish.rd.engine.requirement.ManagerGapFixPackageBuilder;
 import com.wish.rd.engine.requirement.job.RequirementStageExecutionPlanCodec;
 import com.wish.rd.engine.requirement.job.model.CommandDisposition;
 import com.wish.rd.engine.requirement.job.model.ContinuationSpec;
@@ -22,6 +23,15 @@ import com.wish.rd.rag.project.agent.model.AgentExecutionProfileSnapshot;
 import com.wish.rd.rag.runtime.model.RdTaskStatus;
 import org.junit.jupiter.api.Test;
 import org.mockito.InOrder;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+
+import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 import java.util.List;
 
@@ -36,6 +46,17 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class PiRemediationFinalizationWriterTest {
+
+    @Test
+    void shouldRegisterOnPostgresStoreNotOnMyBatisMapperBeanCondition() {
+        ConditionalOnProperty property = PiRemediationFinalizationWriter.class.getAnnotation(
+                ConditionalOnProperty.class);
+        assertNotNull(property);
+        assertArrayEquals(new String[]{"rd.knowledge.store"}, property.name());
+        assertEquals("postgres", property.havingValue());
+        assertNull(PiRemediationFinalizationWriter.class.getAnnotation(ConditionalOnBean.class),
+                "ConditionalOnBean(AgentRemediationRoundMapper) misses MyBatis mapper beans at condition time");
+    }
 
     @Test
     void shouldPersistTargetsSnapshotsLedgerAndFirstCommandUsingPreallocatedIdentity() {
@@ -136,6 +157,36 @@ class PiRemediationFinalizationWriterTest {
         verify(snapshots, org.mockito.Mockito.times(1)).insertIfAbsent(any(AgentExecutionProfileSnapshotRow.class));
     }
 
+    @Test
+    void shouldCreateOnlyCodingTargetForManagerGapFix() {
+        AgentRemediationRoundMapper rounds = mock(AgentRemediationRoundMapper.class);
+        RdAgentStageRunMapper stages = mock(RdAgentStageRunMapper.class);
+        AgentExecutionProfileSnapshotMapper snapshots = mock(AgentExecutionProfileSnapshotMapper.class);
+        RequirementStageCommandMapper commands = mock(RequirementStageCommandMapper.class);
+        PiQaRemediationIntent intent = managerGapFixIntent();
+        stubStage(stages, 702L, "CODING_AGENT", 2, "pi-remediation:9001:CODING_AGENT");
+        stubSnapshot(snapshots, intent.codingProfile());
+        AgentRemediationRoundRow round = round(intent);
+        round.targetQaStageRunId = null;
+        when(rounds.findBySourceForUpdate(701L, "MANAGER_GAP_FIX")).thenReturn(null, round);
+        when(rounds.findByTaskKindNoForUpdate(700L, "MANAGER_GAP_FIX", 1)).thenReturn(null);
+        when(rounds.markDispatched(eq(9001L), eq(704L), any())).thenReturn(1);
+        RequirementStageCommandRow commandRow = new RequirementStageCommandRow();
+        commandRow.id = 704L;
+        commandRow.remediationRoundId = 9001L;
+        when(commands.findById(704L)).thenReturn(commandRow);
+
+        RequirementStageCommand created = new PiRemediationFinalizationWriter(
+                rounds, stages, snapshots, commands).persist(
+                intent, plan(intent), sourceCommand(), 100L);
+
+        assertEquals("CODING_AGENT", created.role());
+        assertEquals("ROLE_EXECUTION:CODING_AGENT", created.stage());
+        assertEquals(AgentRemediationKind.MANAGER_GAP_FIX, created.remediationKind());
+        verify(stages, org.mockito.Mockito.times(1)).insertIfAbsent(any(RdAgentStageRunRow.class));
+        verify(snapshots, org.mockito.Mockito.times(1)).insertIfAbsent(any(AgentExecutionProfileSnapshotRow.class));
+    }
+
     private static void stubStage(
             RdAgentStageRunMapper mapper, long id, String role, int attempt, String key
     ) {
@@ -218,6 +269,19 @@ class PiRemediationFinalizationWriterTest {
                 7L, 3L, AgentRemediationKind.HOST_VERIFY_FIX, 1, "9001",
                 request.attachment().content(), request.requestHash(), "702", 2, "", 0, "704",
                 coding, codingSnapshot, null, "", "", "verify-9");
+    }
+
+    private static PiQaRemediationIntent managerGapFixIntent() {
+        PiQaRemediationIntent.ExecutionProfileClaim coding = claim("a-coding", 5L);
+        PiQaRemediationIntent.PreparedProfileSnapshot codingSnapshot = prepared(
+                "snapshot-702", "702", "CODING_AGENT", 2, coding);
+        ManagerGapFixPackageBuilder.Package request = new ManagerGapFixPackageBuilder()
+                .build(java.util.List.of("AC-001"), "只修复 AC-001", 1L, "sha256:" + "d".repeat(64), 1);
+        return new PiQaRemediationIntent(
+                PiQaRemediationIntent.PROTOCOL, "700", "701", "701", "sha256:" + "a".repeat(64),
+                7L, 3L, AgentRemediationKind.MANAGER_GAP_FIX, 1, "9001",
+                request.attachment().content(), request.requestHash(), "702", 2, "", 0, "704",
+                coding, codingSnapshot, null, "", "");
     }
 
     private static PiQaRemediationIntent.ExecutionProfileClaim claim(String id, long version) {

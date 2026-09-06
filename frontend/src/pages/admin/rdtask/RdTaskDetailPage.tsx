@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { Activity, CheckCircle2, ChevronLeft, Download, FileArchive, FileInput, FileText, GitPullRequest, History, Image as ImageIcon, Pause, Play, RotateCcw, ShieldCheck, TerminalSquare, Upload, UsersRound, X } from "lucide-react";
+import { Activity, CheckCircle2, ChevronLeft, Download, FileArchive, FileInput, FileText, GitPullRequest, History, Image as ImageIcon, MessageSquare, Pause, Play, RotateCcw, ShieldCheck, TerminalSquare, Upload, UsersRound, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -36,6 +36,7 @@ import {
   getRdTaskAuditedState,
   getRdTaskAuditRuns,
   getRdTaskTimeline,
+  answerRdTask,
   approveRdTask,
   pauseRdTask,
   resumeRdTask,
@@ -114,6 +115,7 @@ const EVENT_DOT_TONE: Record<string, string> = {
   PLAN_GENERATED: "bg-cyan-500",
   WAITING_POLICY: "bg-amber-500",
   WAITING_APPROVAL: "bg-orange-500",
+  WAITING_USER_INPUT: "bg-violet-600",
   SEARCHING: "bg-amber-500",
   EXECUTING: "bg-teal-500",
   VALIDATING: "bg-sky-500",
@@ -229,6 +231,9 @@ export function RdTaskDetailPage() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [approving, setApproving] = useState(false);
+  const [answering, setAnswering] = useState(false);
+  const [answerOpen, setAnswerOpen] = useState(false);
+  const [answerText, setAnswerText] = useState("");
   const [budgetApprovalOpen, setBudgetApprovalOpen] = useState(false);
   const [approvalMessage, setApprovalMessage] = useState("");
   const [uploading, setUploading] = useState(false);
@@ -990,6 +995,48 @@ export function RdTaskDetailPage() {
     }
   };
 
+  const handleAnswerTask = async () => {
+    if (!task) return;
+    const taskSnapshot = task;
+    const requestToken = requestGuardRef.current.capture(taskSnapshot.taskId);
+    if (!requestGuardRef.current.isCurrent(requestToken)) return;
+    const text = answerText.trim();
+    if (!text) {
+      toast.error("请填写补充信息");
+      return;
+    }
+    if (taskSnapshot.version == null
+        || taskSnapshot.fencingToken == null
+        || taskSnapshot.fencingToken <= 0
+        || !taskSnapshot.managerDecisionHash) {
+      toast.error("缺少 version / fencingToken / managerDecisionHash，无法提交回答");
+      return;
+    }
+    invalidateCoreLoad();
+    setAnswering(true);
+    try {
+      const updated = await answerRdTask(taskSnapshot.taskId, {
+        expectedTaskVersion: taskSnapshot.version,
+        expectedTaskFence: taskSnapshot.fencingToken,
+        decisionHash: taskSnapshot.managerDecisionHash,
+        answerRequestId: globalThis.crypto?.randomUUID?.() ?? `${taskSnapshot.taskId}-answer-${Date.now()}`,
+        answerText: text
+      });
+      if (!requestGuardRef.current.isCurrent(requestToken)) return;
+      setTask(updated);
+      await refreshAll(updated);
+      if (!requestGuardRef.current.isCurrent(requestToken)) return;
+      setAnswerOpen(false);
+      setAnswerText("");
+      toast.success("已提交补充信息，任务将从 Manager 决策续做");
+    } catch (error) {
+      if (!requestGuardRef.current.isCurrent(requestToken)) return;
+      toast.error(getErrorMessage(error, "提交补充信息失败"));
+    } finally {
+      if (requestGuardRef.current.isCurrent(requestToken)) setAnswering(false);
+    }
+  };
+
   const handleOpenFailureRecovery = async () => {
     if (!task) return;
     const taskSnapshot = task;
@@ -1298,6 +1345,12 @@ export function RdTaskDetailPage() {
                 <Button size="sm" onClick={() => setBudgetApprovalOpen(true)} disabled={approving}>
                   <CheckCircle2 className="mr-1.5 h-4 w-4 text-emerald-600" />
                   审批预算
+                </Button>
+              ) : null}
+              {canAnswerRequirement(task) ? (
+                <Button size="sm" onClick={() => setAnswerOpen(true)} disabled={answering}>
+                  <MessageSquare className="mr-1.5 h-4 w-4 text-violet-600" />
+                  提交补充信息
                 </Button>
               ) : null}
             </div>
@@ -1693,6 +1746,30 @@ export function RdTaskDetailPage() {
             </div>
           </DialogContent>
         </Dialog>
+        <Dialog open={answerOpen} onOpenChange={setAnswerOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>提交补充信息</DialogTitle>
+              <DialogDescription>
+                任务正在等待操作员材料（WAITING_USER_INPUT），与策略预算审批（WAITING_APPROVAL）不是同一状态。
+              </DialogDescription>
+            </DialogHeader>
+            <div>
+              <label className="mb-2 block text-sm font-medium">补充内容</label>
+              <textarea
+                value={answerText}
+                onChange={(event) => setAnswerText(event.target.value)}
+                className="min-h-[88px] w-full resize-y rounded-md border border-slate-200 px-3 py-2 text-sm"
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setAnswerOpen(false)} disabled={answering}>取消</Button>
+              <Button onClick={() => void handleAnswerTask()} disabled={answering || !answerText.trim()}>
+                {answering ? "提交中..." : "提交并继续"}
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
       </div>
     ) : null}
   </div>
@@ -1750,6 +1827,14 @@ function TaskSummaryBand({
         </dl>
       </div>
       {(() => {
+        if (task.status === "WAITING_USER_INPUT") {
+          return (
+            <div className="mt-4 flex items-start gap-2.5 rounded-lg border border-violet-200 bg-violet-50/90 p-3 text-sm text-violet-950">
+              <span className="font-semibold shrink-0">等待补充信息：</span>
+              <span className="break-words">{task.errorMessage || "Manager 需要操作员材料后才能继续。此状态不是策略预算审批。"}</span>
+            </div>
+          );
+        }
         const notice = taskStatusNotice(task);
         if (notice.kind === "recovery") {
           return (
@@ -2194,6 +2279,10 @@ function isTaskLevelRecovery(snapshot: TaskFailureRecoverySnapshot | null) {
 
 function canApproveRequirement(task: RdTask) {
   return !task.paused && task.status === "WAITING_APPROVAL";
+}
+
+function canAnswerRequirement(task: RdTask) {
+  return !task.paused && task.status === "WAITING_USER_INPUT";
 }
 
 function InfoField({

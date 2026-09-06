@@ -11,6 +11,7 @@ import com.wish.rd.bootstrap.persistence.mapper.RdTaskStatusEventMapper;
 import com.wish.rd.bootstrap.persistence.mapper.RequirementDeliveryJobMapper;
 import com.wish.rd.bootstrap.persistence.mapper.RequirementStageCommandMapper;
 import com.wish.rd.bootstrap.persistence.mapper.RequirementStageFinalizationMapper;
+import com.wish.rd.engine.requirement.HostVerifyRemediationPackageBuilder;
 import com.wish.rd.engine.requirement.job.RequirementStageExecutionPlanCodec;
 import com.wish.rd.engine.requirement.job.model.CommandDisposition;
 import com.wish.rd.engine.requirement.job.model.ContinuationSpec;
@@ -60,6 +61,37 @@ class PostgresRequirementStageFinalizationRemediationTest {
         ordered.verify(fixture.profiles).findForUpdate("z-qa");
         ordered.verify(fixture.commands).lockByIdForUpdate(701L);
         ordered.verify(fixture.markers).recordOutcomePrepared(any());
+    }
+
+    @Test
+    void shouldRecordHostVerifyFixOutcomeWithoutQaProfileLock() {
+        RequirementStageCommand command = RequirementStageCommand.pending(
+                "701", "700", 7L, 3L, "REQUIREMENT_DELIVERY", "HOST_VERIFY",
+                0, 3, 1000L, ScheduleResourceClass.DOCKER, "project", "provider", "P1", 1L)
+                .claimed("worker", 10_000L, 2L);
+        RequirementStageFinalization marker = RequirementStageFinalization.prepared(
+                command, RdTaskStatus.EXECUTING, 3L);
+        RequirementStageExecutionPlan plan = new RequirementStageExecutionPlan(
+                2, "700", 7L, 3L, RdTaskStatus.EXECUTING, List.of(),
+                CommandDisposition.SUCCEEDED, ContinuationSpec.terminal(), ExternalEffectReceipt.none(),
+                hostVerifyFixIntent());
+        RequirementStageFinalizationMapper markers = mock(RequirementStageFinalizationMapper.class);
+        RequirementStageCommandMapper commands = mock(RequirementStageCommandMapper.class);
+        AgentExecutionProfileMapper profiles = mock(AgentExecutionProfileMapper.class);
+        PostgresRequirementStageFinalizationAdapter adapter = new PostgresRequirementStageFinalizationAdapter(
+                markers, commands, mock(RequirementDeliveryJobMapper.class), mock(RdTaskMapper.class),
+                mock(RdTaskStatusEventMapper.class), SnowflakeIdGenerator.defaultGenerator(),
+                null, null, null, null, null, null, profiles);
+        when(markers.findForUpdate(anyLong(), anyInt())).thenReturn(markerRow(marker));
+        when(profiles.findForUpdate("a-coding")).thenReturn(profileRow("a-coding", 5L, List.of()));
+        when(commands.lockByIdForUpdate(701L)).thenReturn(commandRow(command));
+        when(markers.recordOutcomePrepared(any())).thenReturn(1);
+
+        adapter.recordOutcome(marker, command, "worker", plan, 10L);
+
+        verify(profiles).findForUpdate("a-coding");
+        verify(profiles, never()).findForUpdate("z-qa");
+        verify(markers).recordOutcomePrepared(any());
     }
 
     @Test
@@ -148,9 +180,28 @@ class PostgresRequirementStageFinalizationRemediationTest {
                 "702", 2, "703", 2, "704", source, coding, qa, "", "");
     }
 
+    private static PiQaRemediationIntent hostVerifyFixIntent() {
+        PiQaRemediationIntent.ExecutionProfileClaim coding = claim("a-coding", 5L, List.of());
+        String codingJson = snapshot("702", "CODING_AGENT", 2, coding);
+        PiQaRemediationIntent.PreparedProfileSnapshot codingSnapshot = prepared(
+                "snapshot-702", "702", "CODING_AGENT", 2, coding, codingJson);
+        HostVerifyRemediationPackageBuilder.Package request = new HostVerifyRemediationPackageBuilder()
+                .build("verify-9", "705", 1, "PRODUCT_DEFECT", "BUILD exit 1: cannot find symbol Foo");
+        return new PiQaRemediationIntent(
+                PiQaRemediationIntent.PROTOCOL, "700", "705", "701",
+                "sha256:" + "a".repeat(64), 7L, 3L, AgentRemediationKind.HOST_VERIFY_FIX, 1, "9001",
+                request.attachment().content(), request.requestHash(),
+                "702", 2, "", 0, "704", coding, codingSnapshot, null, "", "", "verify-9");
+    }
+
     private static PiQaRemediationIntent.ExecutionProfileClaim claim(String id, long version) {
-        return new PiQaRemediationIntent.ExecutionProfileClaim(
-                id, version, "PI", List.of("PI_QA_REMEDIATION_V2"));
+        return claim(id, version, List.of("PI_QA_REMEDIATION_V2"));
+    }
+
+    private static PiQaRemediationIntent.ExecutionProfileClaim claim(
+            String id, long version, List<String> capabilities
+    ) {
+        return new PiQaRemediationIntent.ExecutionProfileClaim(id, version, "PI", capabilities);
     }
 
     private static PiQaRemediationIntent.PreparedProfileSnapshot prepared(
@@ -164,19 +215,28 @@ class PostgresRequirementStageFinalizationRemediationTest {
     private static String snapshot(
             String stageId, String role, int attempt, PiQaRemediationIntent.ExecutionProfileClaim claim
     ) {
-        return "{\"attemptNo\":" + attempt + ",\"capabilities\":[\"PI_QA_REMEDIATION_V2\"],"
+        String capabilitiesJson = claim.capabilities().isEmpty()
+                ? "[]"
+                : "[\"" + String.join("\",\"", claim.capabilities()) + "\"]";
+        return "{\"attemptNo\":" + attempt + ",\"capabilities\":" + capabilitiesJson + ","
                 + "\"profileId\":\"" + claim.profileId() + "\",\"profileVersion\":" + claim.profileVersion()
                 + ",\"role\":\"" + role + "\",\"runtimeType\":\"PI\",\"stageRunId\":\""
                 + stageId + "\",\"taskId\":\"700\"}";
     }
 
     private static AgentExecutionProfileRow profileRow(String id, long version) {
+        return profileRow(id, version, List.of("PI_QA_REMEDIATION_V2"));
+    }
+
+    private static AgentExecutionProfileRow profileRow(String id, long version, List<String> capabilities) {
         AgentExecutionProfileRow row = new AgentExecutionProfileRow();
         row.profileId = id;
         row.version = version;
         row.runtimeType = "PI";
         row.enabled = true;
-        row.capabilitiesJson = "[\"PI_QA_REMEDIATION_V2\"]";
+        row.capabilitiesJson = capabilities.isEmpty()
+                ? "[]"
+                : "[\"" + String.join("\",\"", capabilities) + "\"]";
         return row;
     }
 

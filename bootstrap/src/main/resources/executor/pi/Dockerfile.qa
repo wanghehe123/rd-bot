@@ -23,7 +23,10 @@ COPY --from=browser-cache /ms-playwright /ms-playwright
 # Chromium plus curl/zip for service health checks and evidence bundling.
 # install-deps is still required on the slim Node base; playwright install is a
 # version/checksum check when /ms-playwright already contains the pinned browsers.
-RUN npm install -g "@playwright/cli@${PLAYWRIGHT_CLI_VERSION}" --registry=${NPM_REGISTRY} \
+# Apply DEBIAN_MIRROR before install-deps: Playwright apt-get otherwise hits
+# deb.debian.org (~20 kB/s from this VM) and ignores the later mirror RUN.
+RUN sed -i "s|deb.debian.org|${DEBIAN_MIRROR}|g" /etc/apt/sources.list.d/debian.sources 2>/dev/null || true \
+    && npm install -g "@playwright/cli@${PLAYWRIGHT_CLI_VERSION}" --registry=${NPM_REGISTRY} \
     && node /usr/local/lib/node_modules/@playwright/cli/node_modules/playwright/cli.js install-deps chromium \
     && for attempt in 1 2 3; do \
         PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT=120000 \

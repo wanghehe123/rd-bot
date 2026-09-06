@@ -103,7 +103,10 @@ public record PiQaRemediationIntent(
         if (sourceProfile == null) {
             throw new IllegalArgumentException("source profile claim is required");
         }
-        sourceProfile.requirePiRemediationCapability();
+        sourceProfile.requirePiRuntime();
+        if (kind != AgentRemediationKind.HOST_VERIFY_FIX && kind != AgentRemediationKind.MANAGER_GAP_FIX) {
+            sourceProfile.requirePiRemediationCapability();
+        }
         if (kind == AgentRemediationKind.HOST_VERIFY_FIX) {
             hostVerificationRunId = require(hostVerificationRunId, "hostVerificationRunId");
             targetCodingStageRunId = require(targetCodingStageRunId, "targetCodingStageRunId");
@@ -113,6 +116,18 @@ public record PiQaRemediationIntent(
             targetQaStageRunId = safe(targetQaStageRunId);
             if (!targetQaStageRunId.isEmpty() || targetQaAttemptNo != 0 || qaProfile != null) {
                 throw new IllegalArgumentException("host-verify fix must not create a QA target");
+            }
+        } else if (kind == AgentRemediationKind.MANAGER_GAP_FIX) {
+            if (!hostVerificationRunId.isEmpty()) {
+                throw new IllegalArgumentException("manager gap fix must not carry a host verification run");
+            }
+            targetCodingStageRunId = require(targetCodingStageRunId, "targetCodingStageRunId");
+            if (targetCodingAttemptNo < 1 || targetCodingAttemptNo > 3 || codingProfile == null) {
+                throw new IllegalArgumentException("manager gap fix requires a bounded Coding target");
+            }
+            targetQaStageRunId = safe(targetQaStageRunId);
+            if (!targetQaStageRunId.isEmpty() || targetQaAttemptNo != 0 || qaProfile != null) {
+                throw new IllegalArgumentException("manager gap fix must not create a QA target");
             }
         } else {
             if (!hostVerificationRunId.isEmpty()) {
@@ -140,6 +155,14 @@ public record PiQaRemediationIntent(
         }
         if (qaProfile != null) {
             qaProfile.requireTarget(sourceTaskId, targetQaStageRunId, "QA_AGENT", targetQaAttemptNo);
+        }
+        if (kind != AgentRemediationKind.HOST_VERIFY_FIX && kind != AgentRemediationKind.MANAGER_GAP_FIX) {
+            if (codingProfile != null) {
+                codingProfile.profile().requirePiRemediationCapability();
+            }
+            if (qaProfile != null) {
+                qaProfile.profile().requirePiRemediationCapability();
+            }
         }
         protocolFailureReceiptJson = safe(protocolFailureReceiptJson);
         protocolFailureReceiptHash = safe(protocolFailureReceiptHash);
@@ -170,7 +193,9 @@ public record PiQaRemediationIntent(
         }
         String nextJson = requestJson;
         String nextHash = requestHash;
-        if (kind == AgentRemediationKind.QA_PRODUCT_FIX || kind == AgentRemediationKind.HOST_VERIFY_FIX) {
+        if (kind == AgentRemediationKind.QA_PRODUCT_FIX
+                || kind == AgentRemediationKind.HOST_VERIFY_FIX
+                || kind == AgentRemediationKind.MANAGER_GAP_FIX) {
             try {
                 var payload = (com.fasterxml.jackson.databind.node.ObjectNode) MAPPER.readTree(requestJson);
                 payload.put("remediationNo", assignedNo);
@@ -203,8 +228,15 @@ public record PiQaRemediationIntent(
                     .distinct().sorted(Comparator.naturalOrder()).toList();
         }
 
+        void requirePiRuntime() {
+            if (!"PI".equals(runtimeType)) {
+                throw new IllegalArgumentException("remediation profile must be PI");
+            }
+        }
+
         void requirePiRemediationCapability() {
-            if (!"PI".equals(runtimeType) || !capabilities.contains("PI_QA_REMEDIATION_V2")) {
+            requirePiRuntime();
+            if (!capabilities.contains("PI_QA_REMEDIATION_V2")) {
                 throw new IllegalArgumentException("remediation profile must be PI with PI_QA_REMEDIATION_V2");
             }
         }
@@ -227,7 +259,7 @@ public record PiQaRemediationIntent(
             role = require(role, "role").toUpperCase(java.util.Locale.ROOT);
             if (attemptNo < 1 || attemptNo > 3) throw new IllegalArgumentException("attemptNo must be between 1 and 3");
             if (profile == null) throw new IllegalArgumentException("profile claim is required");
-            profile.requirePiRemediationCapability();
+            profile.requirePiRuntime();
             snapshotJson = canonicalBoundedJson(snapshotJson, "snapshotJson");
             snapshotHash = requireDigest(snapshotHash, "snapshotHash", false);
             if (!AgentExecutionProfileSnapshot.sha256(snapshotJson).equals(snapshotHash)) {

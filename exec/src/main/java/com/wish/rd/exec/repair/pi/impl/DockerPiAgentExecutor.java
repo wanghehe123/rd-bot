@@ -394,7 +394,9 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
             ToolPolicySpec toolPolicy = toolPolicy(snapshotJson);
             Path workspaceRoot = workspaceFactory.prepareWorkspaceRoot(command);
             try (WorkspaceExecutionLease ignored = acquireWorkspaceExecutionLease(workspaceRoot)) {
-                workspace = workspaceFactory.create(command);
+                workspace = "QA_AGENT".equals(snapshot.role())
+                        ? workspaceFactory.createProviderAttempt(command, snapshot.stageRunId())
+                        : workspaceFactory.create(command);
                 cleanOutputDirectory(workspace.outputDirectory());
                 repositoryMetadata.putAll(workspaceRepository.prepare(command, workspace).metadataJson());
                 // git prepare 以宿主 root 身份写入 repo 树；容器（uid 1000）需要读写全部内容

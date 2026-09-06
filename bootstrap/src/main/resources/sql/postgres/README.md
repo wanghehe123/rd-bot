@@ -35,6 +35,8 @@ Scripts are applied in **numeric** `pN_` order (then filename). `p10` runs after
 | 18 | `p18_pi_agent_state_and_remediation.sql` |
 | 19 | `p19_project_agent_memory.sql` |
 | 20 | `p20_task_audited_state.sql` |
+| 21 | `p21_host_verify_fix_command_generation.sql` |
+| 22 | `p22_task_manager_decisions.sql` |
 
 Skip `README.md` and any non-`.sql` files.
 
@@ -50,6 +52,16 @@ operations. PostgreSQL remains the canonical store.
 `p20_task_audited_state.sql` adds Host audited-state heads/revisions/audit runs/completion
 bindings, and relaxes `rd_agent_remediation_rounds.kind` to accept `HOST_VERIFY_FIX`
 while keeping `remediation_no BETWEEN 1 AND 2` for product-fix and host-verify-fix kinds.
+
+`p21_host_verify_fix_command_generation.sql` extends
+`ck_rd_requirement_stage_command_generation_v2` so `HOST_VERIFY_FIX` commands may use the
+remediation generation identity (p20 allowed the round kind but not the command row).
+
+`p22_task_manager_decisions.sql` adds `rd_task_manager_decisions` (`UNIQUE(task_id, round_no)`,
+`UNIQUE(task_id, source_command_id)`), extends rounds kind/number/targets and command generation
+CHECKs with `MANAGER_GAP_FIX`, and adds a partial unique index on coding-targeting rounds per
+`source_stage_run_id`. Claim/recoverable SQL in `RequirementStageCommandMapper` joins `rd_tasks`
+so `paused=true` is never claimed and `WAITING_USER_INPUT` only admits `USER_ANSWER_RESUME`.
 
 ## Bootstrap
 

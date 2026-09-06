@@ -71,12 +71,20 @@ class TaskRetryRoutePlannerTest {
                 "REQUIREMENT_DELIVERY", "PUBLICATION:operation-1", null, List.of());
         assertRoute(point(TaskFailurePhase.HOST_VERIFY, AgentRole.CODING_AGENT, "HOST_VERIFY", "policy-1", ""),
                 "REQUIREMENT_DELIVERY", "HOST_VERIFY", null, List.of(AgentRole.QA_AGENT));
+        assertRoute(point(TaskFailurePhase.MANAGER, null, "MANAGER_DECIDE:src-1", "policy-1", ""),
+                "REQUIREMENT_DELIVERY", "MANAGER_DECIDE:src-1", null, List.of());
+        assertRoute(point(TaskFailurePhase.MANAGER, null, "USER_ANSWER_RESUME:src-1", "policy-1", ""),
+                "REQUIREMENT_DELIVERY", "USER_ANSWER_RESUME:src-1", null, List.of());
     }
 
     @Test
     void mapsBarePublicationStageToPrPublicationPhase() {
         assertEquals(TaskFailurePhase.PR_PUBLICATION,
                 TaskRetryRoutePlanner.phaseForStage("PUBLICATION", null));
+        assertEquals(TaskFailurePhase.MANAGER,
+                TaskRetryRoutePlanner.phaseForStage("MANAGER_DECIDE:src-1", null));
+        assertEquals(TaskFailurePhase.MANAGER,
+                TaskRetryRoutePlanner.phaseForStage("USER_ANSWER_RESUME:src-1", null));
     }
 
     @Test

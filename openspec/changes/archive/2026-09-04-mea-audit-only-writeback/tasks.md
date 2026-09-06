@@ -96,7 +96,7 @@
 
 ## 12. 真实验证与归档
 
-- [ ] 12.1 云端（`deploy/cloud-server/`，项目 `codex-run-test-waimai`）以 `gate-mode=SHADOW` 提交 ≥ 5 个真实任务，其中 1 个候选补丁故意破坏构建；保存 `audited-state`/`audit-runs` 导出与「本应拒绝」日志到 `tmp-*/`（不入库），在 PR 描述记录 taskId 与结论
-- [ ] 12.2 去掉服务器 `SHADOW` 覆盖以回到默认 `ENFORCE` 后，重复注入构建失败任务：断言任务未到 `COMPLETED`、无 QA attempt、`HOST_VERIFY` command 与 `AuditRun` 存在；正常任务 `COMPLETED` 后 `rd_task_completion_bindings` 有行且 PR body 首段为审计清单（真实 HTTP 请求链，RULE.md 6.2）
-- [ ] 12.3 运行 design「验证命令」全部命令并把输出摘要写入 PR 描述
-- [ ] 12.4 归档：`openspec archive mea-audit-only-writeback`，确认 `openspec/specs/requirement/audit-only-writeback/spec.md` 只含当前已验证行为；`OPENSPEC_NO_UPDATE_CHECK=1 openspec validate --all --strict`
+- [x] 12.1 云端（`deploy/cloud-server/`，项目 `codex-run-test-waimai`）以 `gate-mode=SHADOW` 提交 ≥ 5 个真实任务，其中 1 个候选补丁故意破坏构建；保存 `audited-state`/`audit-runs` 导出与「本应拒绝」日志到 `tmp-*/`（不入库），在 PR 描述记录 taskId 与结论。Live 2026-09-04：诚实晋升 W2 `7501586472563249152` PR #33；破构建 W4b `7501612273425846272`；缺口基线 W5c `7501632155869646848`（QA 真跑 AC-001/002 PASSED、AC-003 FAILED，角色失败故未 `auditQa`，AC 仍 PENDING）；W1 为 unwrap 前假完成；W3 为 PAT 发布失败。Ledger：`tmp-mea-waimai-shadow/battery-ledger.json`
+- [x] 12.2 去掉服务器 `SHADOW` 覆盖以回到默认 `ENFORCE` 后，重复注入构建失败任务：断言任务未到 `COMPLETED`、无 QA attempt、`HOST_VERIFY` command 与 `AuditRun` 存在；正常任务 `COMPLETED` 后 `rd_task_completion_bindings` 有行且 PR body 首段为审计清单（真实 HTTP 请求链，RULE.md 6.2）。Live 2026-09-04：E1 `7501641057822707712` FAILED_NEEDS_HUMAN（HOST_VERIFY TS1109，GATE-BUILD PENDING，无 QA，binding null）；E2 `7501645523930189824` 因 GATE-QA-EVIDENCE 证据并集>16 误拒后已截断上限；E2b `7501657504431083520` COMPLETED PR #34 v7 `sha256:9ac4b7a731d04715c4d823a56ff5caface2ebdb784b8024fcdd6d07cfaf150d3`，binding 同 hash，QA `completion=COMPLETE`
+- [x] 12.3 运行 design「验证命令」全部命令并把输出摘要写入 PR 描述。2026-09-04 本机：engine 175 tests、exec 80 (2 skipped `@Disabled` QA isolation)、bootstrap 119、pi `npm test` 111、frontend 195 + typecheck + build 均通过；`DockerPiAgentExecutorTest` 2 skipped 属阶段 2
+- [x] 12.4 归档：`openspec archive mea-audit-only-writeback`，确认 `openspec/specs/requirement/audit-only-writeback/spec.md` 只含当前已验证行为；`OPENSPEC_NO_UPDATE_CHECK=1 openspec validate --all --strict`

@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -193,6 +194,60 @@ class DeterministicAuditorTest {
     }
 
     @Test
+    void qaAuditFoldsUntrustedClaimsInOneRevision() {
+        EvidenceRef evidence = qaRef("log-1");
+        resolver.put(evidence);
+        registerFingerprint();
+        AuditedTaskState afterBuild = succeedHostVerify(initial());
+        long headVersion = afterBuild.stateVersion();
+        RoleClaimSubject claims = new RoleClaimSubject(
+                "audit-qa-1",
+                "cmd-qa-1",
+                "qa-1",
+                "QA_AGENT",
+                List.of(new RoleClaim("status", "PASSED"), new RoleClaim("testStatus", "PASSED")),
+                List.of(),
+                20L);
+        AuditMutation mutation = auditor.auditQaWithClaims(
+                afterBuild,
+                qaSubject(true, fingerprints("aaa", "aaa"), List.of(
+                        new QaCurrentAcceptance("AC-001", "登录成功", "PASSED", 0, List.of(evidence)),
+                        new QaCurrentAcceptance("AC-002", "下单成功", "PASSED", 0, List.of(evidence)))),
+                claims,
+                resolver);
+        assertEquals(headVersion + 1L, mutation.nextState().stateVersion());
+        assertEquals(AuditedRecordStatus.COMPLETED, mutation.nextState().record("AC-001").status());
+        assertEquals(AuditedRecordStatus.UNTRUSTED, mutation.nextState().record("CLAIM-qa-1-1").status());
+        assertEquals(AuditedRecordStatus.UNTRUSTED, mutation.nextState().record("CLAIM-qa-1-2").status());
+        assertTrue(mutation.nextState().record("CLAIM-qa-1-2").text().contains("testStatus=PASSED"));
+        assertEquals("cmd-qa-1", mutation.auditRun().commandId());
+        assertEquals("QA_AGENT", mutation.auditRun().subjectRole());
+        assertEquals(AuditCompletion.COMPLETE, mutation.auditRun().completion());
+    }
+
+    @Test
+    void qaEvidenceUnionOver16StillCompletesBoundedGate() {
+        List<EvidenceRef> first = uniqueQaRefs("ac1", 10);
+        List<EvidenceRef> second = uniqueQaRefs("ac2", 10);
+        first.forEach(resolver::put);
+        second.forEach(resolver::put);
+        registerFingerprint();
+        AuditMutation mutation = auditor.auditQa(
+                succeedHostVerify(initial()),
+                qaSubject(true, fingerprints("aaa", "aaa"), List.of(
+                        new QaCurrentAcceptance("AC-001", "登录成功", "PASSED", 0, first),
+                        new QaCurrentAcceptance("AC-002", "下单成功", "PASSED", 0, second))),
+                resolver);
+        assertEquals(AuditedRecordStatus.COMPLETED, mutation.nextState().record("AC-001").status());
+        assertEquals(AuditedRecordStatus.COMPLETED, mutation.nextState().record("AC-002").status());
+        assertEquals(AuditedRecordStatus.COMPLETED, mutation.nextState().record("GATE-QA-EVIDENCE").status());
+        assertTrue(mutation.nextState().record("AC-001").evidenceRefs().size() <= AuditedRecord.MAX_EVIDENCE_REFS);
+        assertTrue(mutation.nextState().record("GATE-QA-EVIDENCE").evidenceRefs().size() <= AuditedRecord.MAX_EVIDENCE_REFS);
+        assertFalse(mutation.nextState().record("GATE-QA-EVIDENCE").evidenceRefs().isEmpty());
+        assertEquals(AuditCompletion.COMPLETE, mutation.auditRun().completion());
+    }
+
+    @Test
     void claimsAreUntrustedAndBoundedTo32() {
         List<RoleClaim> claims = new ArrayList<>();
         for (int index = 1; index <= 33; index++) {
@@ -284,6 +339,39 @@ class DeterministicAuditorTest {
                 EvidenceSourceKind.QA_EVIDENCE,
                 "qa-evidence://objects/" + artifactId,
                 "sha256:" + "b".repeat(64));
+    }
+
+    private static List<EvidenceRef> uniqueQaRefs(String prefix, int count) {
+        List<EvidenceRef> refs = new ArrayList<>();
+        refs.add(new EvidenceRef(
+                "audit-qa",
+                EvidenceSourceKind.QA_EVIDENCE,
+                "qa-evidence/console/" + prefix + ".log",
+                "sha256:" + "b".repeat(64)));
+        refs.add(new EvidenceRef(
+                "audit-qa",
+                EvidenceSourceKind.QA_EVIDENCE,
+                "qa-evidence/network/" + prefix + ".json",
+                "sha256:" + "b".repeat(64)));
+        refs.add(new EvidenceRef(
+                "audit-qa",
+                EvidenceSourceKind.QA_EVIDENCE,
+                "qa-evidence/traces/" + prefix + ".zip",
+                "sha256:" + "b".repeat(64)));
+        refs.add(new EvidenceRef(
+                "audit-qa",
+                EvidenceSourceKind.QA_EVIDENCE,
+                "qa-evidence/screenshots/" + prefix + "-desktop.png",
+                "sha256:" + "b".repeat(64)));
+        refs.add(new EvidenceRef(
+                "audit-qa",
+                EvidenceSourceKind.QA_EVIDENCE,
+                "qa-evidence/screenshots/" + prefix + "-mobile.png",
+                "sha256:" + "b".repeat(64)));
+        for (int index = refs.size(); index < count; index++) {
+            refs.add(qaRef(prefix + "-" + index));
+        }
+        return List.copyOf(refs.subList(0, count));
     }
 
     private record Fingerprints(WorkspaceFingerprintReceipt before, WorkspaceFingerprintReceipt after) {

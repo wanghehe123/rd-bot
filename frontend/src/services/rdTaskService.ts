@@ -31,6 +31,9 @@ export interface RdTask {
   acceptanceCriteriaJson: string;
   executionEvidence: RdTaskExecutionEvidence;
   tokenBudgetOverride: number;
+  version: number;
+  fencingToken: number;
+  managerDecisionHash: string;
 }
 
 export interface RdTaskExecutionEvidence {
@@ -554,6 +557,18 @@ export const submitRdTask = (taskId: string): Promise<RdTask> =>
 export const approveRdTask = (taskId: string, message?: string): Promise<RdTask> =>
   api.post<RdTask, RdTask>(`/admin/rd-tasks/${taskId}/approve`, message ? { message } : {});
 
+export const answerRdTask = (
+  taskId: string,
+  payload: {
+    expectedTaskVersion: number;
+    expectedTaskFence: number;
+    decisionHash: string;
+    answerRequestId: string;
+    answerText: string;
+  }
+): Promise<RdTask> =>
+  api.post<RdTask, RdTask>(`/admin/rd-tasks/${taskId}/answer`, payload);
+
 export const deleteRdTask = (taskId: string): Promise<{ deleted: boolean }> =>
   api.delete<{ deleted: boolean }, { deleted: boolean }>(`/admin/rd-tasks/${taskId}`);
 
@@ -724,6 +739,7 @@ export const STATUS_BADGE_CLASS: Record<string, string> = {
   PLAN_GENERATED: "border-cyan-200 bg-cyan-50 text-cyan-700",
   WAITING_POLICY: "border-amber-200 bg-amber-50 text-amber-700",
   WAITING_APPROVAL: "border-orange-200 bg-orange-50 text-orange-700",
+  WAITING_USER_INPUT: "border-violet-200 bg-violet-50 text-violet-800",
   SEARCHING: "border-amber-200 bg-amber-50 text-amber-700",
   EXECUTING: "border-teal-200 bg-teal-50 text-teal-700",
   VALIDATING: "border-sky-200 bg-sky-50 text-sky-700",

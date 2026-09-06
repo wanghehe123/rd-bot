@@ -18,8 +18,18 @@ import com.wish.rd.engine.requirement.verify.impl.InMemoryHostVerificationStore;
 import com.wish.rd.engine.requirement.verify.model.HostVerificationArtifact;
 import com.wish.rd.engine.requirement.verify.model.HostVerificationRun;
 import com.wish.rd.engine.requirement.verify.model.HostVerificationStatus;
+import com.wish.rd.engine.requirement.audit.AuditCompletion;
+import com.wish.rd.engine.requirement.audit.AuditIntegrity;
+import com.wish.rd.engine.requirement.audit.AuditRun;
+import com.wish.rd.engine.requirement.audit.AuditedRecord;
+import com.wish.rd.engine.requirement.audit.AuditedRecordKind;
 import com.wish.rd.engine.requirement.audit.AuditedRecordStatus;
+import com.wish.rd.engine.requirement.audit.AuditedTaskState;
+import com.wish.rd.engine.requirement.audit.AuditedTaskStateCodec;
 import com.wish.rd.engine.requirement.audit.AuditedTaskStatePolicyBootstrap;
+import com.wish.rd.engine.requirement.audit.ContractAuditVerdict;
+import com.wish.rd.engine.requirement.audit.EvidenceRef;
+import com.wish.rd.engine.requirement.audit.EvidenceSourceKind;
 import com.wish.rd.engine.requirement.audit.impl.InMemoryAuditedTaskStateStore;
 import com.wish.rd.engine.agent.AgentStageRunStore;
 import com.wish.rd.engine.agent.impl.InMemoryAgentStageRunStore;
@@ -419,6 +429,66 @@ class RequirementAgentStageOrchestratorTest {
     }
 
     @Test
+    void compactHandoffMarksNotesUntrustedAndOmitsErrorMessage() {
+        AgentWorkflowPlan plan = AgentWorkflowPlan.production();
+        OrchestratorTestHarness harness = new OrchestratorTestHarness()
+                .prestageRoles(plan.roles())
+                .prestageRoleContexts(plan.roles());
+        harness.executor.reviewerResultOverride = """
+                {"role":"REQUIREMENT_REVIEWER","status":"READY","decision":"APPROVED","feasibility":"FEASIBLE",
+                 "environmentNotes":["python3.13 已移除 cgi 模块"],
+                 "facts":[{"kind":"OBSERVED","statement":"python3.13 已移除 cgi 模块"}],
+                 "errorMessage":"secret-failure-wall",
+                 "budgetEstimate":{"initialTokens":256,"retryReserveTokens":32,
+                  "estimatedTotalTokens":288,"confidence":"LOW","basis":"heuristic","historicalSamples":[]}}
+                """;
+
+        RequirementExecutionResult result = harness.orchestrator.run(
+                plan, harness.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION, null);
+
+        assertTrue(result.success(), result.errorMessage());
+        String architectPrompt = harness.executor.lastPromptByRole.get(AgentRole.SOLUTION_ARCHITECT);
+        assertNotNull(architectPrompt);
+        assertTrue(architectPrompt.contains("UNTRUSTED"), architectPrompt);
+        assertTrue(architectPrompt.contains("python3.13 已移除 cgi 模块"), architectPrompt);
+        assertFalse(architectPrompt.contains("已实测验证，直接沿用"), architectPrompt);
+        assertFalse(architectPrompt.contains("视为已验证事实直接沿用"), architectPrompt);
+        String compact = harness.executor.lastRequestByRole.get(AgentRole.SOLUTION_ARCHITECT).upstreamResultJson();
+        assertFalse(compact.contains("secret-failure-wall"), compact);
+        assertFalse(compact.contains("\"errorMessage\""), compact);
+        assertTrue(compact.contains("UNTRUSTED"), compact);
+    }
+
+    @Test
+    void compactHandoffMarksCompletedFactVerified() {
+        AgentWorkflowPlan plan = AgentWorkflowPlan.production();
+        OrchestratorTestHarness harness = new OrchestratorTestHarness()
+                .prestageRoles(plan.roles())
+                .prestageRoleContexts(plan.roles());
+        InMemoryAuditedTaskStateStore audited = new InMemoryAuditedTaskStateStore();
+        InMemoryHostVerificationStore verifyStore = new InMemoryHostVerificationStore();
+        new AuditedTaskStatePolicyBootstrap(audited)
+                .initializeIfAbsent(harness.task.withConcurrency(1L, 1L));
+        seedCompletedObservedFact(audited, harness.task.taskId(), "jdk 21 is available");
+        harness.orchestrator.setAuditedTaskStateStore(audited);
+        harness.orchestrator.setHostVerificationStore(verifyStore);
+        harness.hostVerificationPort.persistTo(verifyStore);
+        harness.executor.reviewerResultOverride = """
+                {"role":"REQUIREMENT_REVIEWER","status":"READY","decision":"APPROVED","feasibility":"FEASIBLE",
+                 "facts":[{"kind":"OBSERVED","statement":"jdk 21 is available"}],
+                 "budgetEstimate":{"initialTokens":256,"retryReserveTokens":32,
+                  "estimatedTotalTokens":288,"confidence":"LOW","basis":"heuristic","historicalSamples":[]}}
+                """;
+
+        RequirementExecutionResult result = harness.orchestrator.run(
+                plan, harness.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION, null);
+
+        assertTrue(result.success(), result.errorMessage());
+        String compact = harness.executor.lastRequestByRole.get(AgentRole.SOLUTION_ARCHITECT).upstreamResultJson();
+        assertTrue(compact.contains("VERIFIED(auditRunId=audit-fact-1)"), compact);
+    }
+
+    @Test
     void prompt_excludes_unselected_material_body_from_manifest_bypass() {
         String hugeMarker = "UNSELECTED_HUGE_MATERIAL_MARKER_" + "X".repeat(8_000);
         AgentWorkflowPlan plan = reviewerOnlyPlan();
@@ -605,6 +675,123 @@ class RequirementAgentStageOrchestratorTest {
         RequirementExecutionRequest request = harness.executor.lastRequestByRole.get(AgentRole.QA_AGENT);
         assertTrue(request.prompt().contains(controlled));
         assertFalse(request.prompt().contains("qa-remediation/request.json"));
+    }
+
+    @Test
+    void durableHostVerifyFixInjectsGapSectionWithoutQaV2Capability() {
+        AgentWorkflowPlan plan = new AgentWorkflowPlan(
+                List.of(AgentRole.CODING_AGENT), false, false, 1, false, 2,
+                Map.of(AgentRole.CODING_AGENT, 0.08d), "TEST_HOST_VERIFY_FIX"
+        );
+        OrchestratorTestHarness harness = new OrchestratorTestHarness()
+                .prestageRoles(plan.roles())
+                .prestageRoleContexts(plan.roles());
+        InMemoryAuditedTaskStateStore audited = new InMemoryAuditedTaskStateStore();
+        new AuditedTaskStatePolicyBootstrap(audited)
+                .initializeIfAbsent(harness.task.withConcurrency(1L, 1L));
+        harness.orchestrator.setAuditedTaskStateStore(audited);
+        HostVerifyRemediationPackageBuilder.Package frozen = new HostVerifyRemediationPackageBuilder()
+                .build("verify-9", "coding-1", 1, "PRODUCT_DEFECT", "BUILD exit 1: cannot find symbol Foo");
+
+        RequirementExecutionResult result = harness.orchestrator.runRemediationRole(
+                plan, harness.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION,
+                null, frozen.attachment().content(), frozen.requestHash(), ""
+        );
+
+        assertTrue(result.success(), result.errorMessage());
+        String codingPrompt = harness.executor.lastPromptByRole.get(AgentRole.CODING_AGENT);
+        assertNotNull(codingPrompt);
+        assertTrue(codingPrompt.contains("# 已审计缺口（Host）"), codingPrompt);
+        assertTrue(codingPrompt.contains("GATE-BUILD"), codingPrompt);
+        assertTrue(codingPrompt.contains("state_version"), codingPrompt);
+        assertTrue(codingPrompt.contains("hash:"), codingPrompt);
+        assertTrue(codingPrompt.contains("HOST_VERIFY_FIX"), codingPrompt);
+        assertTrue(codingPrompt.contains(HostVerifyRemediationPackageBuilder.CONTAINER_PATH), codingPrompt);
+        assertFalse(codingPrompt.contains("cannot find symbol Foo"), codingPrompt);
+        assertFalse(codingPrompt.contains("上一轮失败反馈"), codingPrompt);
+        RequirementExecutionRequest request = harness.executor.lastRequestByRole.get(AgentRole.CODING_AGENT);
+        assertEquals(HostVerifyRemediationPackageBuilder.ATTACHMENT_PATH,
+                request.initialAgentStateAttachments().getFirst().path());
+    }
+
+    @Test
+    void durableManagerGapFixInjectsAttachmentWithoutQaV2Capability() {
+        AgentWorkflowPlan plan = new AgentWorkflowPlan(
+                List.of(AgentRole.CODING_AGENT), false, false, 1, false, 2,
+                Map.of(AgentRole.CODING_AGENT, 0.08d), "TEST_MANAGER_GAP_FIX"
+        );
+        OrchestratorTestHarness harness = new OrchestratorTestHarness()
+                .prestageRoles(plan.roles())
+                .prestageRoleContexts(plan.roles());
+        InMemoryAuditedTaskStateStore audited = new InMemoryAuditedTaskStateStore();
+        new AuditedTaskStatePolicyBootstrap(audited)
+                .initializeIfAbsent(harness.task.withConcurrency(1L, 1L));
+        harness.orchestrator.setAuditedTaskStateStore(audited);
+        ManagerGapFixPackageBuilder.Package frozen = new ManagerGapFixPackageBuilder()
+                .build(List.of("AC-003"), "只修复以下已审计缺口，禁止扩大范围：AC-003", 6L,
+                        "sha256:" + "a".repeat(64), 1);
+
+        RequirementExecutionResult result = harness.orchestrator.runRemediationRole(
+                plan, harness.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION,
+                null, frozen.attachment().content(), frozen.requestHash(), ""
+        );
+
+        assertTrue(result.success(), result.errorMessage());
+        RequirementExecutionRequest request = harness.executor.lastRequestByRole.get(AgentRole.CODING_AGENT);
+        assertEquals(ManagerGapFixPackageBuilder.ATTACHMENT_PATH,
+                request.initialAgentStateAttachments().getFirst().path());
+        String codingPrompt = harness.executor.lastPromptByRole.get(AgentRole.CODING_AGENT);
+        assertNotNull(codingPrompt);
+        assertTrue(codingPrompt.contains("MANAGER_GAP_FIX"), codingPrompt);
+        assertTrue(codingPrompt.contains("AC-003"), codingPrompt);
+        assertTrue(codingPrompt.contains(ManagerGapFixPackageBuilder.CONTAINER_PATH), codingPrompt);
+    }
+
+    @Test
+    void protocolCompleteQaProductFailureMarksStageSucceededForReviewRecovery() {
+        AgentWorkflowPlan plan = new AgentWorkflowPlan(
+                List.of(AgentRole.QA_AGENT), false, false, 1, false, 2,
+                Map.of(AgentRole.QA_AGENT, 0.08d), "TEST_PROTOCOL_COMPLETE_QA"
+        );
+        OrchestratorTestHarness harness = new OrchestratorTestHarness()
+                .prestageRoles(plan.roles())
+                .prestageRoleContexts(plan.roles());
+        harness.executor.qaFailureResultJson = """
+                {
+                  "status": "FAILED",
+                  "testStatus": "FAILED",
+                  "acceptanceResults": [
+                    {
+                      "criteriaId": "AC-001",
+                      "criteria": "client 生产构建通过",
+                      "scope": "CURRENT",
+                      "status": "PASSED",
+                      "exitCode": 0,
+                      "logArtifactId": "qa-evidence/console/ac001.log",
+                      "evidenceArtifactIds": ["qa-evidence/console/ac001.log"]
+                    },
+                    {
+                      "criteriaId": "AC-003",
+                      "criteria": "访问缺口页返回 200",
+                      "scope": "CURRENT",
+                      "status": "FAILED",
+                      "exitCode": 1,
+                      "logArtifactId": "qa-evidence/console/ac003.log",
+                      "evidenceArtifactIds": ["qa-evidence/console/ac003.log"]
+                    }
+                  ]
+                }
+                """;
+
+        RequirementExecutionResult result = harness.orchestrator.run(
+                plan, harness.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION, null);
+
+        assertFalse(result.success());
+        AgentStageRun qa = harness.stageRunStore.listByTask(harness.task.taskId()).stream()
+                .filter(stage -> stage.role() == AgentRole.QA_AGENT)
+                .findFirst()
+                .orElseThrow();
+        assertEquals(AgentStageStatus.SUCCEEDED, qa.status());
     }
 
     @Test
@@ -1027,6 +1214,13 @@ class RequirementAgentStageOrchestratorTest {
         OrchestratorTestHarness harness = new OrchestratorTestHarness()
                 .prestageRoles(plan.roles())
                 .prestageRoleContexts(plan.roles());
+        InMemoryAuditedTaskStateStore audited = new InMemoryAuditedTaskStateStore();
+        InMemoryHostVerificationStore verifyStore = new InMemoryHostVerificationStore();
+        new AuditedTaskStatePolicyBootstrap(audited)
+                .initializeIfAbsent(harness.task.withConcurrency(1L, 1L));
+        harness.orchestrator.setAuditedTaskStateStore(audited);
+        harness.orchestrator.setHostVerificationStore(verifyStore);
+        harness.hostVerificationPort.persistTo(verifyStore);
         harness.hostVerificationPort.withOutcomes(
                 hostVerify(HostVerificationStatus.FAILED_RETRYABLE, "PRODUCT_DEFECT",
                         "BUILD exit 1: cannot find symbol Foo"),
@@ -1043,9 +1237,10 @@ class RequirementAgentStageOrchestratorTest {
         assertEquals(1, stageCount(harness, AgentRole.QA_AGENT));
         String codingPrompt = harness.executor.lastPromptByRole.get(AgentRole.CODING_AGENT);
         assertNotNull(codingPrompt);
-        assertTrue(codingPrompt.contains("上一轮失败反馈"), codingPrompt);
-        assertTrue(codingPrompt.contains("cannot find symbol Foo"), codingPrompt);
-        assertTrue(codingPrompt.contains("PRODUCT_DEFECT"), codingPrompt);
+        assertTrue(codingPrompt.contains("已审计缺口（Host）"), codingPrompt);
+        assertTrue(codingPrompt.contains("GATE-BUILD"), codingPrompt);
+        assertFalse(codingPrompt.contains("上一轮失败反馈"), codingPrompt);
+        assertFalse(codingPrompt.contains("cannot find symbol Foo"), codingPrompt);
         assertTrue(codingPrompt.contains("宿主会在本阶段成功后"), codingPrompt);
     }
 
@@ -1359,6 +1554,7 @@ class RequirementAgentStageOrchestratorTest {
         String qaFailureResultJson = "";
         String codingResultOverride = null;
         String qaSuccessResultOverride = null;
+        String reviewerResultOverride = null;
 
         @Override
         public RequirementExecutionResult execute(RequirementExecutionRequest request) {
@@ -1382,6 +1578,12 @@ class RequirementAgentStageOrchestratorTest {
                         request.role().name() + " 完成",
                         "",
                         codingResultOverride
+                );
+            }
+            if (request.role() == AgentRole.REQUIREMENT_REVIEWER
+                    && reviewerResultOverride != null && !reviewerResultOverride.isBlank()) {
+                return RequirementExecutionResult.success(
+                        request.taskId(), request.role().name() + " 完成", "", reviewerResultOverride
                 );
             }
             if (request.role() == AgentRole.QA_AGENT
@@ -1530,6 +1732,48 @@ class RequirementAgentStageOrchestratorTest {
                    {"criteria":"regression","scope":"REGRESSION","command":"./mvnw test","status":"PASSED","exitCode":0,"durationMillis":1,"logArtifactId":"qa/regression.log","evidenceArtifactIds":["qa/regression.log"]}
                  ],"evidenceManifestArtifactId":"qa/manifest.json"}
                 """;
+    }
+
+    private static void seedCompletedObservedFact(
+            InMemoryAuditedTaskStateStore audited,
+            String taskId,
+            String statement
+    ) {
+        AuditedTaskStateCodec codec = new AuditedTaskStateCodec();
+        AuditedTaskState head = audited.head(taskId).orElseThrow();
+        EvidenceRef evidence = new EvidenceRef(
+                "audit-fact-1",
+                EvidenceSourceKind.HOST_ASSERTION,
+                "host-assertion://facts/jdk",
+                "sha256:" + "a".repeat(64));
+        List<AuditedRecord> records = new ArrayList<>(head.records());
+        records.add(new AuditedRecord(
+                "CLAIM-seed-1",
+                AuditedRecordKind.FACT,
+                false,
+                "OBSERVED:" + statement,
+                AuditedRecordStatus.COMPLETED,
+                List.of(evidence),
+                "seed",
+                ""));
+        AuditedTaskState next = codec.seal(head.withRevision(
+                head.stateVersion() + 1L, "", records, "audit-fact-1"));
+        AuditRun run = new AuditRun(
+                "audit-fact-1",
+                taskId,
+                "seed",
+                "REQUIREMENT_REVIEWER",
+                "cmd-seed-fact",
+                AuditCompletion.INCOMPLETE,
+                AuditIntegrity.CLEAN,
+                ContractAuditVerdict.ALIGNED,
+                List.of("CLAIM-seed-1"),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(evidence.uri()),
+                1L);
+        audited.appendRevision(next.stateVersion(), next, run);
     }
 
     private static void assertCodingPromptOwnsHostVerifyAndQaDoesNot(String codingPrompt, String qaPrompt) {

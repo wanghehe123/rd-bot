@@ -16,6 +16,15 @@ public interface RequirementStageCommandStore {
         return Optional.empty();
     }
 
+    /**
+     * Returns the newest command for one task/role/stage identity across normal, checkpoint, and
+     * remediation generations. Reclaim after {@code MANAGER_GAP_FIX} must see the latest Coding /
+     * HOST_VERIFY / QA row, not only the ordinary-generation identity.
+     */
+    default Optional<RequirementStageCommand> findLatestAnyGeneration(String taskId, String role, String stage) {
+        return find(taskId, role, stage);
+    }
+
     /** Returns one command under its normal or checkpoint-bound durable identity. */
     default Optional<RequirementStageCommand> find(
             String taskId, String role, String stage, String retryCheckpointId

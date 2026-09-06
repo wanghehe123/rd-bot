@@ -80,6 +80,8 @@ qa-runs/
 .superpowers/
 .qoder/
 tmp/
+tmp-mea-waimai-shadow/
+tmp-codex-memory-run/
 outputs/
 feishu-wiki-auth.png
 

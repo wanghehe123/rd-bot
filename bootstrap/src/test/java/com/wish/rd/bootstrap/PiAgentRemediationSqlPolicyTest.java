@@ -55,4 +55,34 @@ class PiAgentRemediationSqlPolicyTest {
         assertTrue(sql.contains("ck_rd_agent_remediation_rounds_number"));
         assertTrue(sql.contains("ck_rd_agent_remediation_rounds_targets"));
     }
+
+    @Test
+    void p21AllowsHostVerifyFixOnStageCommandGenerationConstraint() throws Exception {
+        Path sqlPath = Path.of(System.getProperty("user.dir"))
+                .resolve("src/main/resources/sql/postgres/p21_host_verify_fix_command_generation.sql");
+        String sql = Files.readString(sqlPath);
+        assertTrue(sql.contains("ck_rd_requirement_stage_command_generation_v2"));
+        assertTrue(sql.contains("HOST_VERIFY_FIX"));
+        assertTrue(sql.contains(
+                "remediation_kind IN ('QA_PRODUCT_FIX', 'QA_PROTOCOL_RETRY', 'HOST_VERIFY_FIX')"));
+    }
+
+    @Test
+    void p22AddsManagerDecisionsAndManagerGapFixWithoutWeakeningHostVerifyFixBudget() throws Exception {
+        Path sqlPath = Path.of(System.getProperty("user.dir"))
+                .resolve("src/main/resources/sql/postgres/p22_task_manager_decisions.sql");
+        String sql = Files.readString(sqlPath);
+        assertTrue(sql.contains("CREATE TABLE IF NOT EXISTS rd_task_manager_decisions"));
+        assertTrue(sql.contains("uk_rd_task_manager_decisions_task_source"));
+        assertTrue(sql.contains("UNIQUE (task_id, source_command_id)"));
+        assertTrue(sql.contains("MANAGER_GAP_FIX"));
+        assertTrue(sql.contains(
+                "kind IN ('QA_PRODUCT_FIX', 'QA_PROTOCOL_RETRY', 'HOST_VERIFY_FIX', 'MANAGER_GAP_FIX')"));
+        assertTrue(sql.contains("(kind = 'QA_PRODUCT_FIX' AND remediation_no BETWEEN 1 AND 2)"));
+        assertTrue(sql.contains("(kind = 'HOST_VERIFY_FIX' AND remediation_no BETWEEN 1 AND 2)"));
+        assertTrue(sql.contains("(kind = 'MANAGER_GAP_FIX' AND remediation_no BETWEEN 1 AND 2)"));
+        assertTrue(sql.contains("uk_rd_agent_remediation_rounds_coding_source"));
+        assertTrue(sql.contains(
+                "remediation_kind IN ('QA_PRODUCT_FIX', 'QA_PROTOCOL_RETRY', 'HOST_VERIFY_FIX', 'MANAGER_GAP_FIX')"));
+    }
 }

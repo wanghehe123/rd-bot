@@ -43,6 +43,8 @@ class TaskRetryExhaustionProvenanceFactoryTest {
         assertEquals(TaskFailurePhase.PR_PUBLICATION, phaseOf("PUBLICATION:operation-1"));
         assertEquals(TaskFailurePhase.PR_PUBLICATION, phaseOf("PUBLICATION"));
         assertEquals(TaskFailurePhase.HOST_VERIFY, phaseOf("HOST_VERIFY"));
+        assertEquals(TaskFailurePhase.MANAGER, phaseOf("MANAGER_DECIDE:src-1"));
+        assertEquals(TaskFailurePhase.MANAGER, phaseOf("USER_ANSWER_RESUME:src-1"));
         assertEquals(TaskFailurePhase.AGENT_ROLE, phaseOf("ROLE_EXECUTION:CODING_AGENT"));
         assertEquals(TaskFailurePhase.RAG, TaskRetryRoutePlanner.phaseForStage(
                 "ROLE_EXECUTION:CODING_AGENT", TaskFailurePhase.RAG));

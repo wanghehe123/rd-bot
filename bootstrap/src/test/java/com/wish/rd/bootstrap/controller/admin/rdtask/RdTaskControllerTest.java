@@ -16,6 +16,8 @@ import com.wish.rd.bootstrap.threading.RequirementDeliveryDispatchService;
 import com.wish.rd.engine.requirement.RequirementDeliveryEngine;
 import com.wish.rd.engine.requirement.policy.RequirementPolicyTransactionPort;
 import com.wish.rd.engine.requirement.policy.model.ApproveRequirementPolicyCommand;
+import com.wish.rd.engine.requirement.answer.AnswerRequirementCommand;
+import com.wish.rd.engine.requirement.answer.RequirementUserAnswerTransactionPort;
 import com.wish.rd.engine.requirement.job.impl.InMemoryRequirementDeliveryJobStore;
 import com.wish.rd.engine.requirement.job.impl.InMemoryRequirementStageCommandStore;
 import com.wish.rd.engine.requirement.model.RequirementExecutionResult;
@@ -410,6 +412,75 @@ class RdTaskControllerTest {
                                 "approvalRequestId", "request-1",
                                 "decision", "APPROVED",
                                 "note", "safe"))))
+                .andExpect(status().isConflict());
+    }
+
+    @Test
+    void shouldFailClosedWhenAnswerBodyIsMissing() throws Exception {
+        mockMvc.perform(post("/admin/rd-tasks/{taskId}/answer", "9999999999999999"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void shouldAnswerThroughTheUserAnswerTransactionWithTheExactHostControlledCommand() throws Exception {
+        String taskId = createTask("FS-ANSWER-1", "等待补充信息任务", "P1");
+        AtomicReference<AnswerRequirementCommand> command = new AtomicReference<>();
+        AtomicReference<String> actor = new AtomicReference<>();
+        AtomicReference<Long> answeredAt = new AtomicReference<>();
+        RequirementUserAnswerTransactionPort answerPort = new RequirementUserAnswerTransactionPort() {
+            @Override
+            public com.wish.rd.engine.requirement.answer.RequirementUserAnswerResult answer(
+                    AnswerRequirementCommand received, String receivedActor, long now
+            ) {
+                command.set(received);
+                actor.set(receivedActor);
+                answeredAt.set(now);
+                return null;
+            }
+
+            @Override
+            public com.wish.rd.engine.requirement.answer.RequirementUserAnswerResumeResult consumeAnswer(
+                    com.wish.rd.engine.requirement.job.model.RequirementStageCommand stageCommand,
+                    String leaseOwner,
+                    long nowEpochMillis
+            ) {
+                throw new AssertionError("answer HTTP must not consume the resume command");
+            }
+        };
+        RdTaskController controller = new RdTaskController(registry);
+        controller.setRequirementUserAnswerTransactionPort(answerPort);
+        mockMvc = MockMvcBuilders.standaloneSetup(controller).build();
+
+        mockMvc.perform(post("/admin/rd-tasks/{taskId}/answer", taskId)
+                        .contentType(APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of(
+                                "expectedTaskVersion", 5,
+                                "expectedTaskFence", 7,
+                                "decisionHash", "sha256:" + "a".repeat(64),
+                                "answerRequestId", "answer-1",
+                                "answerText", "补齐登录凭据"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status", is("CREATED")));
+
+        assertEquals(new AnswerRequirementCommand(
+                taskId, 5L, 7L, "sha256:" + "a".repeat(64),
+                "answer-1", "补齐登录凭据"), command.get());
+        assertEquals("ADMIN_API", actor.get());
+        assertTrue(answeredAt.get() > 0L);
+    }
+
+    @Test
+    void shouldFailClosedWhenUserAnswerPortIsUnavailable() throws Exception {
+        String taskId = createTask("FS-ANSWER-2", "回答端口缺失", "P1");
+
+        mockMvc.perform(post("/admin/rd-tasks/{taskId}/answer", taskId)
+                        .contentType(APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of(
+                                "expectedTaskVersion", 5,
+                                "expectedTaskFence", 7,
+                                "decisionHash", "sha256:" + "a".repeat(64),
+                                "answerRequestId", "answer-2",
+                                "answerText", "补齐登录凭据"))))
                 .andExpect(status().isConflict());
     }
 

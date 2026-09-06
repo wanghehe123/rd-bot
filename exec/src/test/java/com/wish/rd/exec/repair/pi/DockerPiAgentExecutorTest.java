@@ -30,7 +30,6 @@ import com.wish.rd.rag.project.agent.model.AgentExecutionProfileSnapshot;
 import com.wish.rd.rag.project.agent.model.AgentStateV2Codec;
 import com.wish.rd.rag.project.agent.model.AgentRuntimeCapability;
 import com.wish.rd.rag.project.agent.model.AgentRuntimeType;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -707,7 +706,8 @@ class DockerPiAgentExecutorTest {
         ));
 
         JsonNode request = OBJECT_MAPPER.readTree(Files.readString(
-                temporaryDirectory.resolve("workspaces/task-host-contract/input/request.json")
+                temporaryDirectory.resolve(
+                        "workspaces/task-host-contract/provider-attempts/stage-task-host-contract/input/request.json")
         ));
         assertEquals(2, request.path("hostAssertionContracts").size());
         assertEquals("CURRENT", request.path("hostAssertionContracts").get(0).path("scope").asText());
@@ -853,7 +853,7 @@ class DockerPiAgentExecutorTest {
         assertTrue(runner.request.initEnabled());
         assertEquals("1g", runner.request.sharedMemorySize());
         assertEquals("/work/repo", runner.request.mounts().get(
-                temporaryDirectory.resolve("workspaces/task-qa2/repo").toString()
+                temporaryDirectory.resolve("workspaces/task-qa2/provider-attempts/stage-qa2/repo").toString()
         ));
         assertEquals("true", runner.request.env().get("npm_config_offline"));
     }
@@ -883,7 +883,7 @@ class DockerPiAgentExecutorTest {
         assertNull(provision.networkPlan());
         assertTrue(provision.command().stream().anyMatch(part -> part.contains("npm")), provision.command().toString());
         assertEquals("/work/repo", provision.mounts().get(
-                temporaryDirectory.resolve("workspaces/task-qa-deps/repo").toString()
+                temporaryDirectory.resolve("workspaces/task-qa-deps/provider-attempts/stage-qa-deps/repo").toString()
         ));
         assertEquals("development", provision.env().get("NODE_ENV"));
         assertTrue(
@@ -1145,7 +1145,6 @@ class DockerPiAgentExecutorTest {
     }
 
     @Test
-    @Disabled("aspirational QA provider-attempt isolation; see pi-qa spec §4. Phase 2 of mea-audit-only-writeback.")
     void shouldMountQaRepoFromAnIndependentProviderAttemptWorkspace() throws Exception {
         CapturingRunner runner = new CapturingRunner();
         DockerPiAgentExecutor executor = executor(runner, AgentExecutionEventSink.noop(), ignored -> "secret");
@@ -1155,18 +1154,21 @@ class DockerPiAgentExecutorTest {
                 command("task-qa-ro", "QA_AGENT")
         ));
         String qaRepoMount = runner.request.mounts().entrySet().stream()
-                .filter(entry -> "/work/repo:ro".equals(entry.getValue()))
+                .filter(entry -> "/work/repo".equals(entry.getValue()))
                 .map(Map.Entry::getKey)
                 .findFirst()
                 .orElseThrow();
         assertTrue(qaRepoMount.contains("/provider-attempts/"), qaRepoMount);
         assertTrue(Files.isDirectory(Path.of(qaRepoMount)));
+        assertNull(runner.request.mounts().get(
+                temporaryDirectory.resolve("workspaces/task-qa-ro/repo").toString()
+        ));
     }
 
     @Test
-    @Disabled("aspirational QA provider-attempt isolation; see pi-qa spec §4. Phase 2 of mea-audit-only-writeback.")
     void shouldGiveQaAnIndependentCandidatePatchWorkspaceWhileRetainingTaskCache() throws Exception {
-        CapturingRunner runner = new CapturingRunner();
+        IdentityCapturingRunner runner = new IdentityCapturingRunner(
+                "stage-qa-isolated", "task-qa-isolated", "QA_AGENT");
         DockerPiAgentExecutor executor = executor(runner, AgentExecutionEventSink.noop(), ignored -> "secret");
 
         Path taskRoot = temporaryDirectory.resolve("workspaces/task-qa-isolated");
@@ -1357,7 +1359,8 @@ class DockerPiAgentExecutorTest {
 
         // QA parity with the Claude executor: profile lands in the read-only input
         // mount and the container receives the QA environment contract.
-        assertTrue(Files.isRegularFile(temporaryDirectory.resolve("workspaces/task-qa3/input/qa-profile.json")));
+        assertTrue(Files.isRegularFile(temporaryDirectory.resolve(
+                "workspaces/task-qa3/provider-attempts/stage-qa3/input/qa-profile.json")));
         assertEquals("/work/input/qa-profile.json", runner.request.env().get("RD_QA_PROFILE_FILE"));
         assertTrue(runner.request.env().containsKey("RD_QA_ALLOWED_HOSTS"));
         assertEquals("/work/output/qa-work/playwright", runner.request.env().get("PLAYWRIGHT_MCP_OUTPUT_DIR"));

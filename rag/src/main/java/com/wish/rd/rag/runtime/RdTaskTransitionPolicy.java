@@ -76,7 +76,11 @@ public final class RdTaskTransitionPolicy {
         put(graph, RdTaskStatus.WAITING_APPROVAL, RdTaskStatus.EXECUTING, RdTaskStatus.REJECTED,
                 RdTaskStatus.FAILED_RETRYABLE, RdTaskStatus.FAILED_NEEDS_HUMAN,
                 RdTaskStatus.CANCELLED, RdTaskStatus.DEAD_LETTERED);
-        put(graph, RdTaskStatus.EXECUTING, RdTaskStatus.VALIDATING, RdTaskStatus.WAITING_APPROVAL, RdTaskStatus.REJECTED,
+        put(graph, RdTaskStatus.WAITING_USER_INPUT, RdTaskStatus.EXECUTING, RdTaskStatus.REJECTED,
+                RdTaskStatus.FAILED_RETRYABLE, RdTaskStatus.FAILED_NEEDS_HUMAN,
+                RdTaskStatus.CANCELLED, RdTaskStatus.DEAD_LETTERED);
+        put(graph, RdTaskStatus.EXECUTING, RdTaskStatus.VALIDATING, RdTaskStatus.WAITING_APPROVAL,
+                RdTaskStatus.WAITING_USER_INPUT, RdTaskStatus.REJECTED,
                 RdTaskStatus.FAILED_RETRYABLE, RdTaskStatus.FAILED_NEEDS_HUMAN, RdTaskStatus.CANCELLED,
                 RdTaskStatus.DEAD_LETTERED);
         put(graph, RdTaskStatus.VALIDATING, RdTaskStatus.PR_CREATING, RdTaskStatus.REJECTED,
@@ -97,6 +101,7 @@ public final class RdTaskTransitionPolicy {
         put(graph, RdTaskStatus.DEAD_LETTERED, RdTaskStatus.RECOVERING);
         put(graph, RdTaskStatus.RECOVERING, RdTaskStatus.MATERIAL_COLLECTING,
                 RdTaskStatus.CONTEXT_BUILDING, RdTaskStatus.WAITING_POLICY, RdTaskStatus.WAITING_APPROVAL,
+                RdTaskStatus.WAITING_USER_INPUT,
                 RdTaskStatus.EXECUTING, RdTaskStatus.VALIDATING, RdTaskStatus.PR_CREATING,
                 RdTaskStatus.FAILED_RETRYABLE, RdTaskStatus.FAILED_NEEDS_HUMAN,
                 RdTaskStatus.CANCELLED, RdTaskStatus.DEAD_LETTERED);

@@ -32,6 +32,12 @@ test("loads stage-bound role prompts and renders effective context, static promp
   assert.match(detailPage, /TaskRoleWorkbench/);
   assert.match(detailPage, /evaluateRolePromptsFreshness/);
   assert.match(detailPage, /任务执行基线 Prompt/);
+  const workbenchModel = readFileSync(
+    new URL("../src/pages/admin/rdtask/roleWorkbenchModel.ts", import.meta.url),
+    "utf8"
+  );
+  assert.match(workbenchModel, /respStateAvailable = Boolean\(stage\.latestState\?\.available\)/);
+  assert.match(workbenchModel, /respInjAvailable = Boolean\(stage\.effectiveContext\?\.available\)/);
 
   // Workbench renders RoleEffectiveContextCard and evidence sections
   assert.match(roleWorkbench, /RoleEffectiveContextCard/);
@@ -51,4 +57,5 @@ test("loads stage-bound role prompts and renders effective context, static promp
   assert.match(roleContextCard, /AgentTodoList/);
   assert.match(roleContextCard, /查看安全原始状态/);
   assert.doesNotMatch(roleContextCard, /promptSnapshot/);
+  assert.match(roleContextCard, /!promptStage[\s\S]*当前 Attempt 尚无已绑定的 Prompt 读模型/);
 });

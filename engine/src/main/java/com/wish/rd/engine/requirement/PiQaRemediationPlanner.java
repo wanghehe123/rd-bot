@@ -9,6 +9,7 @@ import com.wish.rd.engine.requirement.remediation.model.AgentRemediationKind;
 import com.wish.rd.engine.requirement.model.RequirementExecutionProfileResolution;
 
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 
@@ -20,11 +21,21 @@ public final class PiQaRemediationPlanner {
             "AGENT_SETTLED_MISSING",
             "ROLE_SCHEMA_REJECTED_AFTER_RECOVERY"
     );
+    private static final Set<String> NON_PRODUCT_FAILURE_CATEGORIES = Set.of(
+            "ENVIRONMENT",
+            "AUTHENTICATION",
+            "QA_INFRASTRUCTURE",
+            "FLAKY",
+            "REQUIREMENT_AMBIGUITY"
+    );
 
     /**
      * Command-scoped role execution wraps a failed QA report as
      * {@code {"status":"NEEDS_HUMAN","stages":[{"role":"QA_AGENT","resultJson":"..."}]}}.
-     * Product/protocol decisions must read the nested QA FAILED object, not the aggregate root.
+     * Bounded QA success instead merges the persisted Coding JSON with
+     * {@code multiAgentStages[]} (see {@code mergeDeliveryResultJson}). Product/protocol
+     * decisions and {@code QaSubjectExtractor} must read the nested QA object, not the
+     * Coding aggregate root.
      */
     public static String authoritativeQaResultJson(String resultJson) {
         String raw = resultJson == null ? "" : resultJson;
@@ -37,6 +48,49 @@ public final class PiQaRemediationPlanner {
             return MAPPER.writeValueAsString(qa);
         } catch (Exception ignored) {
             return raw;
+        }
+    }
+
+    /**
+     * True when QA finished a real CURRENT acceptance report and the failure is a
+     * product gap, not a protocol receipt. Manager owns that gap; the Host must not
+     * turn {@code execution.success()==false} into {@code FAILED_NEEDS_HUMAN}.
+     *
+     * @param resultJson executor aggregate or nested QA result
+     * @return whether Manager should continue after this QA episode
+     */
+    public static boolean protocolCompleteAcceptanceReport(String resultJson) {
+        try {
+            JsonNode root = MAPPER.readTree(authoritativeQaResultJson(resultJson));
+            if (root == null || !root.isObject()) {
+                return false;
+            }
+            JsonNode metadata = root.path("dockerMetadata");
+            if (!metadata.path("piProtocolFailureReceiptJson").asText("").isBlank()
+                    || !metadata.path("piProtocolFailureReceiptHash").asText("").isBlank()) {
+                return false;
+            }
+            String status = root.path("status").asText("").strip().toUpperCase(java.util.Locale.ROOT);
+            if (!"FAILED".equals(status) && !"PASSED".equals(status) && !"SKIPPED".equals(status)) {
+                return false;
+            }
+            String failureCategory = root.path("failureCategory").asText("").strip()
+                    .toUpperCase(java.util.Locale.ROOT);
+            if (NON_PRODUCT_FAILURE_CATEGORIES.contains(failureCategory)) {
+                return false;
+            }
+            JsonNode acceptance = root.path("acceptanceResults");
+            if (!acceptance.isArray() || acceptance.isEmpty()) {
+                return false;
+            }
+            for (JsonNode row : acceptance) {
+                if ("CURRENT".equalsIgnoreCase(row.path("scope").asText("").strip())) {
+                    return true;
+                }
+            }
+            return false;
+        } catch (Exception ignored) {
+            return false;
         }
     }
 
@@ -161,8 +215,11 @@ public final class PiQaRemediationPlanner {
             return root;
         }
         JsonNode nested = null;
-        JsonNode stages = root.path("stages");
-        if (stages.isArray()) {
+        for (String field : List.of("stages", "multiAgentStages")) {
+            JsonNode stages = root.path(field);
+            if (!stages.isArray()) {
+                continue;
+            }
             for (JsonNode stage : stages) {
                 if (!"QA_AGENT".equals(stage.path("role").asText("").strip())) {
                     continue;

@@ -44,6 +44,50 @@ class RepairWorkspaceFactoryTest {
         assertTrue(Files.readString(workspace.files().prompt()).contains("/work/input/attachments"));
     }
 
+    @Test
+    void shouldPreserveHostVerifyRemediationNestedAttachmentPath() throws Exception {
+        RepairWorkspaceFactory factory = new RepairWorkspaceFactory(temporaryDirectory, "{}");
+        RepairJobCommand base = command("task-host-verify-attachment");
+        byte[] body = "{\"protocol\":\"rd-host-verify-remediation-request/v1\"}".getBytes(StandardCharsets.UTF_8);
+        RepairJobCommand command = new RepairJobCommand(
+                base.repairRecordId(), base.taskId(), base.ticketId(), base.ticketTitle(), base.prompt(),
+                base.repositoryUrl(), base.repoOwner(), base.repoName(), base.baseBranch(), base.workBranch(),
+                base.contextJson(), base.policyJson(),
+                java.util.List.of(new RepairInputAttachment(
+                        "host-verify-remediation/request.json", "application/json", body))
+        );
+
+        RepairWorkspace workspace = factory.create(command);
+
+        Path attachment = workspace.inputDirectory().resolve("attachments/host-verify-remediation/request.json");
+        assertTrue(Files.exists(attachment));
+        assertArrayEquals(body, Files.readAllBytes(attachment));
+        String context = Files.readString(workspace.files().context());
+        assertTrue(context.contains("/work/input/attachments/host-verify-remediation/request.json"));
+    }
+
+    @Test
+    void shouldPreserveManagerGapFixNestedAttachmentPath() throws Exception {
+        RepairWorkspaceFactory factory = new RepairWorkspaceFactory(temporaryDirectory, "{}");
+        RepairJobCommand base = command("task-manager-gap-attachment");
+        byte[] body = "{\"protocol\":\"rd-manager-gap-fix-request/v1\"}".getBytes(StandardCharsets.UTF_8);
+        RepairJobCommand command = new RepairJobCommand(
+                base.repairRecordId(), base.taskId(), base.ticketId(), base.ticketTitle(), base.prompt(),
+                base.repositoryUrl(), base.repoOwner(), base.repoName(), base.baseBranch(), base.workBranch(),
+                base.contextJson(), base.policyJson(),
+                java.util.List.of(new RepairInputAttachment(
+                        "manager-gap-fix/request.json", "application/json", body))
+        );
+
+        RepairWorkspace workspace = factory.create(command);
+
+        Path attachment = workspace.inputDirectory().resolve("attachments/manager-gap-fix/request.json");
+        assertTrue(Files.exists(attachment));
+        assertArrayEquals(body, Files.readAllBytes(attachment));
+        String context = Files.readString(workspace.files().context());
+        assertTrue(context.contains("/work/input/attachments/manager-gap-fix/request.json"));
+    }
+
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     private static final String RESULT_SCHEMA_JSON = """
             {

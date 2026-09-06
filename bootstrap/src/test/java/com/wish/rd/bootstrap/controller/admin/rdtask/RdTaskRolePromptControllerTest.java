@@ -235,9 +235,26 @@ class RdTaskRolePromptControllerTest {
                 "profile-legacy", legacy.stageRunId(), task.taskId(), legacy.role().name(), 1,
                 AgentRuntimeType.PI, legacyProfile, AgentExecutionProfileSnapshot.sha256(legacyProfile), 1L
         ));
+        String prompt = "# 当前职责\n\n评审需求是否可执行。";
+        artifactStore.save(new AgentStageArtifact(
+                "prompt-legacy-1001",
+                legacy.stageRunId(),
+                task.taskId(),
+                AgentRole.REQUIREMENT_REVIEWER,
+                "PROMPT_SNAPSHOT",
+                "rd-agent-stage://stage-legacy-1001/prompt",
+                "REQUIREMENT_REVIEWER prompt snapshot",
+                prompt,
+                sha256(prompt),
+                "{\"contentLength\":" + prompt.length() + "}",
+                1L
+        ));
+        stageRunStore.save(legacy.withPromptArtifactId("prompt-legacy-1001", 1L));
 
         mockMvc.perform(get("/admin/rd-tasks/{taskId}/role-prompts", task.taskId()))
                 .andExpect(status().isOk())
+                .andExpect(jsonPath("$.stagePrompts[0].prompt.available", is(true)))
+                .andExpect(jsonPath("$.stagePrompts[0].prompt.contentPreview", containsString("当前职责")))
                 .andExpect(jsonPath("$.stagePrompts[0].latestState.available", is(false)))
                 .andExpect(jsonPath("$.stagePrompts[0].latestState.unavailableReason", containsString("PI_AGENT_STATE_V2")))
                 .andExpect(jsonPath("$.stagePrompts[0].effectiveContext.available", is(false)));

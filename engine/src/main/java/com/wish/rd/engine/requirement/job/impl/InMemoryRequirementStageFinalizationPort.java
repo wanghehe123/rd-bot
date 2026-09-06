@@ -6,6 +6,8 @@ import com.wish.rd.engine.requirement.audit.AuditedCompletionBindingGuard;
 import com.wish.rd.engine.requirement.audit.AuditedStateMutation;
 import com.wish.rd.engine.requirement.audit.AuditedTaskStatePolicyBootstrap;
 import com.wish.rd.engine.requirement.audit.AuditedTaskStateStore;
+import com.wish.rd.engine.requirement.manager.ManagerDecision;
+import com.wish.rd.engine.requirement.manager.ManagerDecisionStore;
 import com.wish.rd.engine.requirement.job.RequirementDeliveryJobStore;
 import com.wish.rd.engine.requirement.job.RequirementStageCommandStore;
 import com.wish.rd.engine.requirement.job.RequirementStageFinalizationPort;
@@ -80,6 +82,7 @@ public final class InMemoryRequirementStageFinalizationPort implements Requireme
     private final AgentStageRunStore stageRunStore;
     private final ProjectMemoryOperationStore memoryOperationStore;
     private final AuditedTaskStateStore auditedTaskStateStore;
+    private ManagerDecisionStore managerDecisionStore;
     private final Map<String, RequirementStageFinalization> finalizations = new LinkedHashMap<>();
     private final Map<String, RequirementStageExecutionPlan> outcomePlans = new LinkedHashMap<>();
 
@@ -242,6 +245,10 @@ public final class InMemoryRequirementStageFinalizationPort implements Requireme
         this.stageRunStore = stageRunStore;
         this.memoryOperationStore = memoryOperationStore;
         this.auditedTaskStateStore = auditedTaskStateStore;
+    }
+
+    public void setManagerDecisionStore(ManagerDecisionStore managerDecisionStore) {
+        this.managerDecisionStore = managerDecisionStore;
     }
 
     /**
@@ -694,6 +701,7 @@ public final class InMemoryRequirementStageFinalizationPort implements Requireme
         AuditedCompletionBindingGuard.requireBindingIfCompleted(command.plan(), auditedTaskStateStore != null);
         applyAuditedStateMutation(command.plan());
         applyTaskMutations(command);
+        persistManagerDecision(command.plan());
         commitPublicationReceipt(publicationReceipt, command.nowEpochMillis());
         applyJobDisposition(command.umbrellaJob(), command.jobDisposition(), command);
         RequirementStageCommand completed;
@@ -1029,6 +1037,18 @@ public final class InMemoryRequirementStageFinalizationPort implements Requireme
                     mutation.completionBinding().stateVersion(),
                     mutation.completionBinding().stateHash());
         }
+    }
+
+    private void persistManagerDecision(RequirementStageExecutionPlan plan) {
+        if (plan == null || plan.managerDecision() == null) {
+            return;
+        }
+        if (managerDecisionStore == null) {
+            throw new IllegalStateException("manager decision store is required to persist a Manager plan");
+        }
+        ManagerDecision pending = plan.managerDecision();
+        int nextRound = managerDecisionStore.maxRound(pending.taskId()) + 1;
+        managerDecisionStore.insertIfAbsent(pending.withRoundNo(nextRound));
     }
 
     private void applyTaskMutations(FinalizationCommand command) {

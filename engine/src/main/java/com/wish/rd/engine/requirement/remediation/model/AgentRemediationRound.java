@@ -38,7 +38,7 @@ public record AgentRemediationRound(
         }
         targetCodingStageRunId = safe(targetCodingStageRunId);
         firstCommandId = require(firstCommandId, "firstCommandId");
-        if (kind == AgentRemediationKind.HOST_VERIFY_FIX) {
+        if (kind == AgentRemediationKind.HOST_VERIFY_FIX || kind == AgentRemediationKind.MANAGER_GAP_FIX) {
             targetCodingStageRunId = require(targetCodingStageRunId, "targetCodingStageRunId");
             if (targetCodingAttemptNo < 1 || targetCodingAttemptNo > 3) {
                 throw new IllegalArgumentException("target Coding attempt must be between 1 and 3");

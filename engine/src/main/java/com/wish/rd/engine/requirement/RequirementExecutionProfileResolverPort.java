@@ -17,6 +17,15 @@ public interface RequirementExecutionProfileResolverPort {
             int attemptNo
     );
 
+    default AgentExecutionProfileSnapshot prepareSnapshot(
+            RdRequirementTask task,
+            AgentRole role,
+            String stageRunId,
+            int attemptNo
+    ) {
+        return prepareSnapshot(task, role, stageRunId, attemptNo, null);
+    }
+
     /** Prepares an immutable future-stage snapshot without creating a persistence row. */
     default AgentExecutionProfileSnapshot prepareSnapshot(
             RdRequirementTask task,

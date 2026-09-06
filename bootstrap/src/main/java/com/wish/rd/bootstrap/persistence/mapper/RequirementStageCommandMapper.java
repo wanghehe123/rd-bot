@@ -48,6 +48,19 @@ public interface RequirementStageCommandMapper extends BaseMapper<RequirementSta
     );
 
     @Select("""
+            SELECT *
+              FROM rd_requirement_stage_commands
+             WHERE task_id = #{taskId} AND role = #{role} AND stage = #{stage}
+             ORDER BY created_at DESC, id DESC
+             LIMIT 1
+            """)
+    RequirementStageCommandRow findLatestAnyGeneration(
+            @Param("taskId") long taskId,
+            @Param("role") String role,
+            @Param("stage") String stage
+    );
+
+    @Select("""
             SELECT * FROM rd_requirement_stage_commands
              WHERE task_id = #{taskId} AND role = #{role} AND stage = #{stage}
                AND remediation_round_id IS NULL
@@ -88,18 +101,22 @@ public interface RequirementStageCommandMapper extends BaseMapper<RequirementSta
      */
     @Select("""
             WITH candidates AS (
-                SELECT id
-                FROM rd_requirement_stage_commands
-                WHERE attempt_no < max_attempts
-                  AND fencing_token > 0
-                  AND (deadline_at IS NULL OR deadline_at > #{now})
-                  AND ((status IN ('PENDING', 'FAILED_RETRYABLE') AND next_visible_at <= #{now})
-                   OR (status = 'RUNNING' AND lease_until <= #{now}))
-                ORDER BY (priority_rank - FLOOR(
-                              EXTRACT(EPOCH FROM (#{now} - created_at)) / 60.0
+                SELECT command.id
+                FROM rd_requirement_stage_commands command
+                JOIN rd_tasks task ON task.id = command.task_id
+                WHERE command.attempt_no < command.max_attempts
+                  AND command.fencing_token > 0
+                  AND (command.deadline_at IS NULL OR command.deadline_at > #{now})
+                  AND ((command.status IN ('PENDING', 'FAILED_RETRYABLE') AND command.next_visible_at <= #{now})
+                   OR (command.status = 'RUNNING' AND command.lease_until <= #{now}))
+                  AND COALESCE(task.paused, FALSE) = FALSE
+                  AND (task.status IS DISTINCT FROM 'WAITING_USER_INPUT'
+                       OR command.stage LIKE 'USER_ANSWER_RESUME:%')
+                ORDER BY (command.priority_rank - FLOOR(
+                              EXTRACT(EPOCH FROM (#{now} - command.created_at)) / 60.0
                           )) ASC,
-                         created_at, id
-                FOR UPDATE SKIP LOCKED
+                         command.created_at, command.id
+                FOR UPDATE OF command SKIP LOCKED
                 LIMIT #{batchSize}
             )
             UPDATE rd_requirement_stage_commands command
@@ -124,19 +141,23 @@ public interface RequirementStageCommandMapper extends BaseMapper<RequirementSta
     @Select({
             "<script>",
             "WITH candidates AS (",
-            "  SELECT id FROM rd_requirement_stage_commands",
-            "   WHERE id IN",
+            "  SELECT command.id FROM rd_requirement_stage_commands command",
+            "  JOIN rd_tasks task ON task.id = command.task_id",
+            "   WHERE command.id IN",
             "   <foreach collection='commandIds' item='commandId' open='(' separator=',' close=')'>",
             "     #{commandId}",
             "   </foreach>",
-            "     AND attempt_no &lt; max_attempts",
-            "     AND fencing_token &gt; 0",
-            "     AND (deadline_at IS NULL OR deadline_at &gt; #{now})",
-            "     AND ((status IN ('PENDING', 'FAILED_RETRYABLE') AND next_visible_at &lt;= #{now})",
-            "       OR (status = 'RUNNING' AND lease_until &lt;= #{now}))",
-            "   ORDER BY (priority_rank - FLOOR(EXTRACT(EPOCH FROM (#{now} - created_at)) / 60.0)) ASC,",
-            "            created_at, id",
-            "   FOR UPDATE SKIP LOCKED",
+            "     AND command.attempt_no &lt; command.max_attempts",
+            "     AND command.fencing_token &gt; 0",
+            "     AND (command.deadline_at IS NULL OR command.deadline_at &gt; #{now})",
+            "     AND ((command.status IN ('PENDING', 'FAILED_RETRYABLE') AND command.next_visible_at &lt;= #{now})",
+            "       OR (command.status = 'RUNNING' AND command.lease_until &lt;= #{now}))",
+            "     AND COALESCE(task.paused, FALSE) = FALSE",
+            "     AND (task.status IS DISTINCT FROM 'WAITING_USER_INPUT'",
+            "          OR command.stage LIKE 'USER_ANSWER_RESUME:%')",
+            "   ORDER BY (command.priority_rank - FLOOR(EXTRACT(EPOCH FROM (#{now} - command.created_at)) / 60.0)) ASC,",
+            "            command.created_at, command.id",
+            "   FOR UPDATE OF command SKIP LOCKED",
             "   LIMIT #{batchSize}",
             ")",
             "UPDATE rd_requirement_stage_commands command",
@@ -168,19 +189,23 @@ public interface RequirementStageCommandMapper extends BaseMapper<RequirementSta
     /** Locks the Host-planned candidate rows before their quotas are re-evaluated in Java. */
     @Select({
             "<script>",
-            "SELECT * FROM rd_requirement_stage_commands",
-            " WHERE id IN",
+            "SELECT command.* FROM rd_requirement_stage_commands command",
+            " JOIN rd_tasks task ON task.id = command.task_id",
+            " WHERE command.id IN",
             " <foreach collection='commandIds' item='commandId' open='(' separator=',' close=')'>",
             "   #{commandId}",
             " </foreach>",
-            "   AND attempt_no &lt; max_attempts",
-            "   AND fencing_token &gt; 0",
-            "   AND (deadline_at IS NULL OR deadline_at &gt; #{now})",
-            "   AND ((status IN ('PENDING', 'FAILED_RETRYABLE') AND next_visible_at &lt;= #{now})",
-            "     OR (status = 'RUNNING' AND lease_until &lt;= #{now}))",
-            " ORDER BY (priority_rank - FLOOR(EXTRACT(EPOCH FROM (#{now} - created_at)) / 60.0)) ASC,",
-            "          created_at, id",
-            " FOR UPDATE SKIP LOCKED",
+            "   AND command.attempt_no &lt; command.max_attempts",
+            "   AND command.fencing_token &gt; 0",
+            "   AND (command.deadline_at IS NULL OR command.deadline_at &gt; #{now})",
+            "   AND ((command.status IN ('PENDING', 'FAILED_RETRYABLE') AND command.next_visible_at &lt;= #{now})",
+            "     OR (command.status = 'RUNNING' AND command.lease_until &lt;= #{now}))",
+            "   AND COALESCE(task.paused, FALSE) = FALSE",
+            "   AND (task.status IS DISTINCT FROM 'WAITING_USER_INPUT'",
+            "        OR command.stage LIKE 'USER_ANSWER_RESUME:%')",
+            " ORDER BY (command.priority_rank - FLOOR(EXTRACT(EPOCH FROM (#{now} - command.created_at)) / 60.0)) ASC,",
+            "          command.created_at, command.id",
+            " FOR UPDATE OF command SKIP LOCKED",
             "</script>"
     })
     List<RequirementStageCommandRow> lockFairCandidates(
@@ -199,17 +224,22 @@ public interface RequirementStageCommandMapper extends BaseMapper<RequirementSta
     List<RequirementStageCommandRow> inFlightForFairAdmission(@Param("now") OffsetDateTime now);
 
     @Select("""
-            UPDATE rd_requirement_stage_commands
-               SET status = 'RUNNING', attempt_no = attempt_no + 1,
+            UPDATE rd_requirement_stage_commands command
+               SET status = 'RUNNING', attempt_no = command.attempt_no + 1,
                    lease_owner = #{leaseOwner}, lease_until = #{leaseUntil},
                    last_error = '', updated_at = #{now}
-             WHERE id = #{id}
-               AND (deadline_at IS NULL OR deadline_at > #{now})
-               AND ((status IN ('PENDING', 'FAILED_RETRYABLE') AND next_visible_at <= #{now})
-                 OR (status = 'RUNNING' AND lease_until <= #{now}))
-               AND attempt_no < max_attempts
-               AND fencing_token > 0
-             RETURNING *
+              FROM rd_tasks task
+             WHERE command.id = #{id}
+               AND task.id = command.task_id
+               AND COALESCE(task.paused, FALSE) = FALSE
+               AND (task.status IS DISTINCT FROM 'WAITING_USER_INPUT'
+                    OR command.stage LIKE 'USER_ANSWER_RESUME:%')
+               AND (command.deadline_at IS NULL OR command.deadline_at > #{now})
+               AND ((command.status IN ('PENDING', 'FAILED_RETRYABLE') AND command.next_visible_at <= #{now})
+                 OR (command.status = 'RUNNING' AND command.lease_until <= #{now}))
+               AND command.attempt_no < command.max_attempts
+               AND command.fencing_token > 0
+             RETURNING command.*
             """)
     RequirementStageCommandRow claimOne(
             @Param("id") long id,
@@ -311,24 +341,28 @@ public interface RequirementStageCommandMapper extends BaseMapper<RequirementSta
 
     @Select("""
             WITH ranked_candidates AS (
-                SELECT id,
-                       COALESCE(NULLIF(BTRIM(project_id), ''), '_default') AS project_key,
-                       priority_rank - FLOOR(
-                           EXTRACT(EPOCH FROM (#{now} - created_at)) * 1000.0 / #{agingMillis}
+                SELECT command.id,
+                       COALESCE(NULLIF(BTRIM(command.project_id), ''), '_default') AS project_key,
+                       command.priority_rank - FLOOR(
+                           EXTRACT(EPOCH FROM (#{now} - command.created_at)) * 1000.0 / #{agingMillis}
                        ) AS effective_priority,
                        ROW_NUMBER() OVER (
-                           PARTITION BY COALESCE(NULLIF(BTRIM(project_id), ''), '_default')
-                           ORDER BY (priority_rank - FLOOR(
-                                         EXTRACT(EPOCH FROM (#{now} - created_at)) * 1000.0 / #{agingMillis}
+                           PARTITION BY COALESCE(NULLIF(BTRIM(command.project_id), ''), '_default')
+                           ORDER BY (command.priority_rank - FLOOR(
+                                         EXTRACT(EPOCH FROM (#{now} - command.created_at)) * 1000.0 / #{agingMillis}
                                      )) ASC,
-                                    created_at, id
+                                    command.created_at, command.id
                        ) AS project_rank
-                  FROM rd_requirement_stage_commands
-                 WHERE attempt_no < max_attempts
-                   AND fencing_token > 0
-                   AND (deadline_at IS NULL OR deadline_at > #{now})
-                   AND ((status IN ('PENDING', 'FAILED_RETRYABLE') AND next_visible_at <= #{now})
-                    OR (status = 'RUNNING' AND lease_until <= #{now}))
+                  FROM rd_requirement_stage_commands command
+                  JOIN rd_tasks task ON task.id = command.task_id
+                 WHERE command.attempt_no < command.max_attempts
+                   AND command.fencing_token > 0
+                   AND (command.deadline_at IS NULL OR command.deadline_at > #{now})
+                   AND ((command.status IN ('PENDING', 'FAILED_RETRYABLE') AND command.next_visible_at <= #{now})
+                    OR (command.status = 'RUNNING' AND command.lease_until <= #{now}))
+                   AND COALESCE(task.paused, FALSE) = FALSE
+                   AND (task.status IS DISTINCT FROM 'WAITING_USER_INPUT'
+                        OR command.stage LIKE 'USER_ANSWER_RESUME:%')
             ),
             project_catalog AS (
                 SELECT project_key,

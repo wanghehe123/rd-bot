@@ -100,6 +100,21 @@ public final class InMemoryRequirementStageCommandStore implements RequirementSt
     }
 
     @Override
+    public synchronized Optional<RequirementStageCommand> findLatestAnyGeneration(
+            String taskId, String role, String stage
+    ) {
+        String expectedTask = safe(taskId);
+        String expectedRole = safe(role);
+        String expectedStage = safe(stage);
+        return commands.values().stream()
+                .filter(command -> command.taskId().equals(expectedTask))
+                .filter(command -> command.role().equals(expectedRole))
+                .filter(command -> command.stage().equals(expectedStage))
+                .max(Comparator.comparingLong(RequirementStageCommand::createdAtEpochMillis)
+                        .thenComparing(RequirementStageCommand::commandId));
+    }
+
+    @Override
     public synchronized List<RequirementStageCommand> claimBatch(
             String leaseOwner,
             long nowEpochMillis,

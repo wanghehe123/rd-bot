@@ -1,10 +1,13 @@
 package com.wish.rd.bootstrap.executor;
 
+import com.wish.rd.engine.requirement.answer.RequirementUserAnswerTransactionPort;
+import com.wish.rd.engine.requirement.answer.impl.InMemoryRequirementUserAnswerTransactionAdapter;
 import com.wish.rd.engine.requirement.audit.AuditedTaskStateStore;
 import com.wish.rd.engine.requirement.job.RequirementStageCommandStore;
 import com.wish.rd.engine.requirement.policy.RequirementPolicyRunStore;
 import com.wish.rd.engine.requirement.policy.RequirementPolicyTransactionPort;
 import com.wish.rd.engine.requirement.policy.impl.InMemoryRequirementPolicyTransactionAdapter;
+import com.wish.rd.engine.requirement.manager.ManagerDecisionStore;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
 import com.wish.rd.rag.runtime.RdTaskStatusEventStore;
 import com.wish.rd.rag.runtime.RdTaskStore;
@@ -51,5 +54,17 @@ public class InMemoryRequirementPolicyTransactionConfiguration {
     ) {
         return new InMemoryRequirementPolicyTransactionAdapter(
                 policyRuns, tasks, events, commands, ids, auditedTaskStateStore.getIfAvailable());
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(RequirementUserAnswerTransactionPort.class)
+    RequirementUserAnswerTransactionPort requirementUserAnswerTransactionPort(
+            RdTaskStore tasks,
+            RdTaskStatusEventStore events,
+            RequirementStageCommandStore commands,
+            ManagerDecisionStore decisions,
+            SnowflakeIdGenerator ids
+    ) {
+        return new InMemoryRequirementUserAnswerTransactionAdapter(tasks, events, commands, decisions, ids);
     }
 }

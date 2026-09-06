@@ -3,6 +3,13 @@ package com.wish.rd.bootstrap.threading;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.wish.rd.engine.requirement.RequirementDeliveryEngine;
 import com.wish.rd.engine.agent.model.AgentRole;
+import com.wish.rd.engine.requirement.answer.RequirementUserAnswerResumeResult;
+import com.wish.rd.engine.requirement.answer.RequirementUserAnswerTransactionPort;
+import com.wish.rd.engine.requirement.answer.UserAnswerResumeStages;
+import com.wish.rd.engine.requirement.manager.ManagerDecideStages;
+import com.wish.rd.engine.requirement.manager.ManagerDecision;
+import com.wish.rd.engine.requirement.manager.ManagerDecisionStore;
+import com.wish.rd.engine.requirement.manager.ManagerRoute;
 import com.wish.rd.engine.requirement.job.RequirementStageExecutor;
 import com.wish.rd.engine.requirement.job.RequirementStageFinalizationPort;
 import com.wish.rd.engine.requirement.policy.RequirementPolicyTransactionPort;
@@ -123,6 +130,8 @@ public class RequirementDeliveryDispatchService {
     private RequirementPolicyRunStore requirementPolicyRunStore;
     /** Publication ledger used to resolve exhaustion provenance for bare PUBLICATION commands. */
     private RequirementPublicationStore requirementPublicationStore;
+    private ManagerDecisionStore managerDecisionStore;
+    private RequirementUserAnswerTransactionPort requirementUserAnswerTransactionPort;
     /**
      * Futures owned by this dispatcher while their durable command is still pending. The map is
      * deliberately keyed by command identity so a later recovery tick can hand the same future
@@ -401,6 +410,18 @@ public class RequirementDeliveryDispatchService {
         this.requirementPublicationStore = requirementPublicationStore;
     }
 
+    @Autowired(required = false)
+    void setManagerDecisionStore(ManagerDecisionStore managerDecisionStore) {
+        this.managerDecisionStore = managerDecisionStore;
+    }
+
+    @Autowired(required = false)
+    void setRequirementUserAnswerTransactionPort(
+            RequirementUserAnswerTransactionPort requirementUserAnswerTransactionPort
+    ) {
+        this.requirementUserAnswerTransactionPort = requirementUserAnswerTransactionPort;
+    }
+
     /**
      * Enqueues one requirement delivery run.
      *
@@ -586,7 +607,10 @@ public class RequirementDeliveryDispatchService {
             CompletableFuture<RequirementDeliveryResult> requestedFuture
     ) {
         List<RequirementStageCommand> candidates = stageCommandStore.recoverable(
-                nowEpochMillis, Math.max(schedulingPolicy.limits().batchSize() * 4, 64), schedulingPolicy);
+                nowEpochMillis, Math.max(schedulingPolicy.limits().batchSize() * 4, 64), schedulingPolicy)
+                .stream()
+                .filter(this::isClaimableStageCommand)
+                .toList();
         List<RequirementStageCommand> inFlight = schedulingInFlight(
                 nowEpochMillis, Math.max(schedulingPolicy.limits().batchSize() * 4, 64));
         Map<ScheduleResourceClass, Integer> inFlightByResource = new HashMap<>();
@@ -685,6 +709,10 @@ public class RequirementDeliveryDispatchService {
             runApprovalResumeCommand(stageCommand, future);
             return;
         }
+        if (isUserAnswerResumeCommand(stageCommand)) {
+            runUserAnswerResumeCommand(stageCommand, future);
+            return;
+        }
         if (isLegacyPolicyCommand(stageCommand)) {
             IllegalStateException failure = new IllegalStateException(
                     "legacy POLICY stage is quarantined; durable POLICY_EVALUATE is required");
@@ -693,6 +721,13 @@ public class RequirementDeliveryDispatchService {
             return;
         }
         String taskId = stageCommand.taskId();
+        if (!isClaimableStageCommand(stageCommand)) {
+            IllegalStateException paused = new IllegalStateException(
+                    "paused or WAITING_USER_INPUT task cannot claim this stage: " + stageCommand.commandId());
+            failStageCommand(stageCommand, safeError(paused));
+            future.completeExceptionally(paused);
+            return;
+        }
         // The umbrella delivery job is retained for existing status/audit consumers, but it is
         // deliberately advisory. A recovered continuation must never be blocked by its absence
         // or terminal state; the stage command lease is the sole execution authority.
@@ -1057,9 +1092,83 @@ public class RequirementDeliveryDispatchService {
         }
     }
 
+    private void runUserAnswerResumeCommand(
+            RequirementStageCommand stageCommand,
+            CompletableFuture<RequirementDeliveryResult> future
+    ) {
+        AtomicBoolean leaseLost = new AtomicBoolean(false);
+        ScheduledFuture<?> heartbeat = null;
+        try {
+            if (!isClaimableStageCommand(stageCommand)) {
+                throw new IllegalStateException(
+                        "paused task cannot consume a user-answer-resume command: " + stageCommand.commandId());
+            }
+            heartbeat = scheduleStageHeartbeat(stageCommand, leaseLost);
+            if (leaseLost.get()) {
+                throw new IllegalStateException("user-answer-resume lease lost before consumption: "
+                        + stageCommand.commandId());
+            }
+            RequirementUserAnswerTransactionPort answerPort = requirementUserAnswerTransactionPort;
+            if (answerPort == null) {
+                throw new IllegalStateException("user-answer transaction port is not configured");
+            }
+            cancelHeartbeat(heartbeat);
+            heartbeat = null;
+            if (leaseLost.get()) {
+                throw new IllegalStateException("user-answer-resume lease lost before consumption: "
+                        + stageCommand.commandId());
+            }
+            RequirementUserAnswerResumeResult resumed = answerPort.consumeAnswer(
+                    stageCommand, workerId, System.currentTimeMillis());
+            if (resumed == null
+                    || !stageCommand.commandId().equals(resumed.completedResumeCommand().commandId())
+                    || !stageCommand.taskId().equals(resumed.nextCommand().taskId())) {
+                throw new IllegalStateException("user-answer-resume consumer returned mismatched durable result: "
+                        + stageCommand.commandId());
+            }
+            long now = System.currentTimeMillis();
+            observe(() -> metrics.recordCompleted(stageCommand, now));
+            observe(() -> metrics.recordEnqueued(resumed.nextCommand(), now));
+            scheduleStageCommand(resumed.nextCommand(), future, now);
+        } catch (RuntimeException | LinkageError exception) {
+            cancelHeartbeat(heartbeat);
+            if (leaseLost.get()) {
+                observe(metrics::recordLeaseLost);
+            }
+            failUserAnswerResumeCommand(stageCommand, safeError(exception));
+            log.error("user-answer-resume control command failed, commandId={}, taskId={}",
+                    stageCommand.commandId(), stageCommand.taskId(), exception);
+            future.completeExceptionally(exception);
+        }
+    }
+
     private boolean isApprovalResumeCommand(RequirementStageCommand stageCommand) {
         return stageCommand != null
                 && "APPROVAL_RESUME".equals(stageCommand.stage());
+    }
+
+    private boolean isUserAnswerResumeCommand(RequirementStageCommand stageCommand) {
+        return stageCommand != null && UserAnswerResumeStages.isResume(stageCommand.stage());
+    }
+
+    private boolean isClaimableStageCommand(RequirementStageCommand command) {
+        if (command == null || taskRegistry == null) {
+            return command != null;
+        }
+        RdTask task;
+        try {
+            task = taskRegistry.getTask(command.taskId());
+        } catch (RuntimeException ignored) {
+            return true;
+        }
+        if (task == null) {
+            return true;
+        }
+        if (task instanceof RdRequirementTask requirement && requirement.paused()) {
+            return false;
+        }
+        return task.status() != RdTaskStatus.WAITING_USER_INPUT
+                || UserAnswerResumeStages.isResume(command.stage());
     }
 
     private boolean isPolicyEvaluateCommand(RequirementStageCommand stageCommand) {
@@ -1078,6 +1187,7 @@ public class RequirementDeliveryDispatchService {
         return isPolicyEvaluateCommand(stageCommand)
                 || isPolicyApplyCommand(stageCommand)
                 || isApprovalResumeCommand(stageCommand)
+                || isUserAnswerResumeCommand(stageCommand)
                 || isLegacyPolicyCommand(stageCommand);
     }
 
@@ -1137,7 +1247,8 @@ public class RequirementDeliveryDispatchService {
         }
         String role = plan.continuation().role();
         String stage = plan.continuation().stage();
-        if (!previous.remediationRoundId().isBlank()) {
+        if (!previous.remediationRoundId().isBlank()
+                && shouldCopyRemediationGeneration(previous.stage(), stage)) {
             return stageCommandFactory.createRemediationPendingCommand(
                     "", previous.taskId(), plan.postVersion(), plan.postFencingToken(), role, stage,
                     previous.projectId(), priorityName(previous.priorityRank()), previous.providerId(),
@@ -1188,6 +1299,19 @@ public class RequirementDeliveryDispatchService {
                 previous.businessGeneration(),
                 targetBindingId,
                 nowEpochMillis);
+    }
+
+    /**
+     * Copies remediation identity onto HOST_VERIFY and the Manager/QA hops that still belong to
+     * the same gap-fix round. QA success that continues to the next {@code MANAGER_DECIDE:*} must
+     * exit to the ordinary generation so a second {@code ROLE_EXECUTION:QA_AGENT} can exist.
+     */
+    private static boolean shouldCopyRemediationGeneration(String previousStage, String nextStage) {
+        if (ManagerDecideStages.isManagerDecide(nextStage)
+                && ("ROLE_EXECUTION:" + AgentRole.QA_AGENT.name()).equals(previousStage)) {
+            return false;
+        }
+        return true;
     }
 
     private String continuationTargetBindingId(String checkpointId, String role, String stage) {
@@ -1339,7 +1463,8 @@ public class RequirementDeliveryDispatchService {
         String projectId = task instanceof RdRequirementTask requirementTask && !requirementTask.projectId().isBlank()
                 ? requirementTask.projectId() : "_default";
         StageTarget target = nextStageFor(taskId, task.status());
-        RequirementStageCommand existing = stageCommandStore.find(taskId, target.role(), target.stage())
+        RequirementStageCommand existing = stageCommandStore
+                .findLatestAnyGeneration(taskId, target.role(), target.stage())
                 .orElse(null);
         if (existing != null) {
             requireExactTaskIdentity(existing, task, "existing stage command");
@@ -1467,6 +1592,8 @@ public class RequirementDeliveryDispatchService {
                     "RECOVERING requires an exact durable checkpoint route");
             case WAITING_APPROVAL -> throw new IllegalStateException(
                     "WAITING_APPROVAL may only resume through the durable approval producer");
+            case WAITING_USER_INPUT -> throw new IllegalStateException(
+                    "WAITING_USER_INPUT may only resume through the durable answer producer");
             case EXECUTING -> nextRoleTarget(taskId);
             case VALIDATING -> new StageTarget("REQUIREMENT_DELIVERY", "DETERMINISTIC_REVIEW");
             case PR_CREATING -> new StageTarget("REQUIREMENT_DELIVERY", "PUBLICATION");
@@ -1479,20 +1606,70 @@ public class RequirementDeliveryDispatchService {
     private StageTarget nextRoleTarget(String taskId) {
         for (AgentRole role : AgentRole.requirementDeliveryOrder()) {
             String stage = "ROLE_EXECUTION:" + role.name();
-            RequirementStageCommand existing = stageCommandStore.find(taskId, role.name(), stage).orElse(null);
+            RequirementStageCommand existing = latestCommand(taskId, role.name(), stage);
             if (existing == null || existing.status() != RequirementStageCommand.Status.SUCCEEDED) {
                 return new StageTarget(role.name(), stage);
             }
             if (role == AgentRole.CODING_AGENT) {
-                RequirementStageCommand hostVerify = stageCommandStore
-                        .find(taskId, "REQUIREMENT_DELIVERY", "HOST_VERIFY")
-                        .orElse(null);
+                RequirementStageCommand hostVerify = latestCommand(
+                        taskId, "REQUIREMENT_DELIVERY", "HOST_VERIFY");
                 if (hostVerify == null || hostVerify.status() != RequirementStageCommand.Status.SUCCEEDED) {
                     return new StageTarget("REQUIREMENT_DELIVERY", "HOST_VERIFY");
                 }
+                StageTarget afterHost = requireManagerAuthority(taskId, hostVerify);
+                if (!isQaExecutionTarget(afterHost)) {
+                    return afterHost;
+                }
+            }
+            if (role == AgentRole.QA_AGENT) {
+                return requireManagerAuthority(taskId, existing);
             }
         }
-        return new StageTarget("REQUIREMENT_DELIVERY", "DETERMINISTIC_REVIEW");
+        throw new IllegalStateException("role pipeline exhausted without manager authority: " + taskId);
+    }
+
+    private RequirementStageCommand latestCommand(String taskId, String role, String stage) {
+        return stageCommandStore.findLatestAnyGeneration(taskId, role, stage).orElse(null);
+    }
+
+    private static boolean isQaExecutionTarget(StageTarget target) {
+        return target != null && ("ROLE_EXECUTION:" + AgentRole.QA_AGENT.name()).equals(target.stage());
+    }
+
+    private StageTarget requireManagerAuthority(String taskId, RequirementStageCommand source) {
+        if (source == null) {
+            throw new IllegalStateException("manager authority requires a source command: " + taskId);
+        }
+        String managerStage = ManagerDecideStages.forSource(source.commandId());
+        RequirementStageCommand manager = latestCommand(taskId, "REQUIREMENT_DELIVERY", managerStage);
+        if (manager == null || manager.status() != RequirementStageCommand.Status.SUCCEEDED) {
+            return new StageTarget("REQUIREMENT_DELIVERY", managerStage);
+        }
+        if (managerDecisionStore == null) {
+            throw new IllegalStateException("manager decision store is required to reclaim: " + taskId);
+        }
+        ManagerDecision decision = managerDecisionStore.findBySourceCommand(taskId, source.commandId())
+                .orElseThrow(() -> new IllegalStateException(
+                        "manager command succeeded without persisted decision: " + manager.commandId()));
+        return switch (decision.route()) {
+            case DONE -> new StageTarget("REQUIREMENT_DELIVERY", "DETERMINISTIC_REVIEW");
+            case EXECUTE -> {
+                if (AgentRole.QA_AGENT.name().equals(decision.executorRoute())) {
+                    yield new StageTarget(
+                            AgentRole.QA_AGENT.name(), "ROLE_EXECUTION:" + AgentRole.QA_AGENT.name());
+                }
+                if (AgentRole.CODING_AGENT.name().equals(decision.executorRoute())) {
+                    yield new StageTarget(
+                            AgentRole.CODING_AGENT.name(), "ROLE_EXECUTION:" + AgentRole.CODING_AGENT.name());
+                }
+                throw new IllegalStateException(
+                        "manager execute route is not reclaimable: " + decision.executorRoute());
+            }
+            case ASK -> throw new IllegalStateException(
+                    "WAITING_USER_INPUT may only resume through the durable answer producer");
+            case BLOCKED, REPLAN -> throw new IllegalStateException(
+                    "blocked manager decision cannot reclaim into review: " + taskId);
+        };
     }
 
     private void completeStageCommand(RequirementStageCommand stageCommand, RequirementDeliveryResult result) {
@@ -1555,11 +1732,11 @@ public class RequirementDeliveryDispatchService {
                         "ROLE_EXECUTION:" + nextRole.name(), nowEpochMillis);
             }
             return newCommand(completed.taskId(), completed, "REQUIREMENT_DELIVERY",
-                    "DETERMINISTIC_REVIEW", nowEpochMillis);
+                    ManagerDecideStages.forSource(completed.commandId()), nowEpochMillis);
         }
         if ("HOST_VERIFY".equals(completed.stage())) {
-            return newCommand(completed.taskId(), completed, AgentRole.QA_AGENT.name(),
-                    "ROLE_EXECUTION:" + AgentRole.QA_AGENT.name(), nowEpochMillis);
+            return newCommand(completed.taskId(), completed, "REQUIREMENT_DELIVERY",
+                    ManagerDecideStages.forSource(completed.commandId()), nowEpochMillis);
         }
         String nextStage = switch (completed.stage()) {
             case "DETERMINISTIC_REVIEW" -> "AI_REVIEW";
@@ -1590,7 +1767,8 @@ public class RequirementDeliveryDispatchService {
         if (task == null || task.fencingToken() <= 0L) {
             throw new IllegalStateException("stage continuation requires a positive task fencing token: " + taskId);
         }
-        RequirementStageCommand existing = stageCommandStore.find(taskId, role, stage).orElse(null);
+        RequirementStageCommand existing = stageCommandStore.findLatestAnyGeneration(taskId, role, stage)
+                .orElse(null);
         if (existing != null) {
             requireExactTaskIdentity(existing, task, "existing stage continuation");
             if (!previous.policyRunId().equals(existing.policyRunId())) {
@@ -1718,6 +1896,20 @@ public class RequirementDeliveryDispatchService {
         return result.status();
     }
 
+    private void failUserAnswerResumeCommand(RequirementStageCommand stageCommand, String reason) {
+        if (stageCommand == null) {
+            return;
+        }
+        try {
+            observe(metrics::recordRetry);
+            stageCommandStore.fail(stageCommand, workerId,
+                    reason == null ? "" : reason, ownedNow(stageCommand));
+        } catch (RuntimeException exception) {
+            log.warn("user-answer-resume command retry sync failed, commandId={}, reason={}",
+                    stageCommand.commandId(), safeError(exception));
+        }
+    }
+
     /**
      * Retry only the control command. Its task and advisory job remain untouched so a stale or
      * unavailable consumer cannot overwrite the durable WAITING_APPROVAL decision.
@@ -1749,7 +1941,8 @@ public class RequirementDeliveryDispatchService {
             if (isTechnicalAttemptExhausted(stageCommand)
                     && ("POLICY_EVALUATE".equals(stageCommand.stage())
                     || "POLICY_APPLY".equals(stageCommand.stage())
-                    || "APPROVAL_RESUME".equals(stageCommand.stage()))) {
+                    || "APPROVAL_RESUME".equals(stageCommand.stage())
+                    || UserAnswerResumeStages.isResume(stageCommand.stage()))) {
                 exhaustTechnically(
                         stageCommand,
                         reason == null ? "" : reason,
@@ -1776,6 +1969,7 @@ public class RequirementDeliveryDispatchService {
                 || status == RdTaskStatus.MERGED
                 || status == RdTaskStatus.REPORTING
                 || status == RdTaskStatus.WAITING_APPROVAL
+                || status == RdTaskStatus.WAITING_USER_INPUT
                 || status == RdTaskStatus.WAITING_POLICY) {
             jobStore.complete(job.jobId(), workerId, System.currentTimeMillis());
             return;
@@ -1848,7 +2042,9 @@ public class RequirementDeliveryDispatchService {
         TaskRetryCheckpointStatus target;
         if (taskStatus == RdTaskStatus.COMPLETED || taskStatus == RdTaskStatus.COMMITTED
                 || taskStatus == RdTaskStatus.MERGED || taskStatus == RdTaskStatus.REPORTING
-                || taskStatus == RdTaskStatus.WAITING_APPROVAL || taskStatus == RdTaskStatus.WAITING_POLICY) {
+                || taskStatus == RdTaskStatus.WAITING_APPROVAL
+                || taskStatus == RdTaskStatus.WAITING_USER_INPUT
+                || taskStatus == RdTaskStatus.WAITING_POLICY) {
             target = TaskRetryCheckpointStatus.SUCCEEDED;
         } else if (taskStatus == RdTaskStatus.FAILED_RETRYABLE) {
             target = TaskRetryCheckpointStatus.FAILED_RETRYABLE;

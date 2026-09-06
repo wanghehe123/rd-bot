@@ -60,6 +60,9 @@ import com.wish.rd.engine.requirement.model.RequirementPlan;
 import com.wish.rd.engine.requirement.model.RequirementPolicyDecision;
 import com.wish.rd.engine.requirement.audit.AcceptanceCriteriaIds;
 import com.wish.rd.engine.requirement.audit.AuditMutation;
+import com.wish.rd.engine.requirement.audit.AuditRun;
+import com.wish.rd.engine.requirement.audit.AuditedGapSection;
+import com.wish.rd.engine.requirement.audit.AuditedHandoffTrust;
 import com.wish.rd.engine.requirement.audit.AuditedTaskState;
 import com.wish.rd.engine.requirement.audit.AuditedTaskStateCodec;
 import com.wish.rd.engine.requirement.audit.AuditedTaskStateInitializer;
@@ -275,9 +278,12 @@ public class RequirementAgentStageOrchestrator {
     ) {
         if (plan == null) throw new IllegalArgumentException("AgentWorkflowPlan must not be null");
         enforceBudgetLedger(plan, task);
+        String hostVerifyFeedback = safe(qaProductRemediationRequestJson)
+                .contains(HostVerifyRemediationPackageBuilder.PROTOCOL)
+                ? hostVerifyFailureFeedbackSection(task.taskId()) : "";
         return runInternal(plan, task, materials, context, planSnapshot, policyDecision, activeRetry,
                 safe(qaProductRemediationRequestJson), safe(qaProductRemediationRequestHash),
-                safe(qaProtocolRetryPrompt), "", 0, 0);
+                safe(qaProtocolRetryPrompt), hostVerifyFeedback, 0, 0);
     }
 
     /**
@@ -332,7 +338,7 @@ public class RequirementAgentStageOrchestrator {
             }
             // Persist complete role results for audit, but dispatch only a bounded handoff manifest.
             // This keeps Docker metadata and raw model JSON out of downstream retrieval and prompts.
-            String upstreamResultJson = compactUpstreamHandoffJson(stageResults);
+            String upstreamResultJson = compactUpstreamHandoffJson(task.taskId(), stageResults);
             if (role == AgentRole.CODING_AGENT && !qaRemediationResultJson.isBlank()) {
                 upstreamResultJson = qaRemediationUpstreamJson(upstreamResultJson, qaRemediationResultJson);
             }
@@ -415,21 +421,35 @@ public class RequirementAgentStageOrchestrator {
             }
             QaRemediationPackageBuilder.Package remediationPackage = null;
             HostVerifyRemediationPackageBuilder.Package hostVerifyPackage = null;
-            if (role == AgentRole.CODING_AGENT && !qaRemediationResultJson.isBlank()
-                    && executionProfileResolution.piQaRemediationV2Enabled()) {
-                if (qaRemediationRequestHash.isBlank()) {
-                    throw new IllegalStateException("PI QA remediation package hash is required");
-                }
-                if (qaRemediationResultJson.contains(HostVerifyRemediationPackageBuilder.PROTOCOL)) {
-                    hostVerifyPackage = new HostVerifyRemediationPackageBuilder().fromFrozen(
-                            qaRemediationResultJson, qaRemediationRequestHash);
-                } else {
-                    remediationPackage = new QaRemediationPackageBuilder().fromFrozen(
-                            qaRemediationResultJson, qaRemediationRequestHash);
+            ManagerGapFixPackageBuilder.Package managerGapFixPackage = null;
+            if (role == AgentRole.CODING_AGENT && !qaRemediationResultJson.isBlank()) {
+                boolean hostVerifyFix = qaRemediationResultJson.contains(HostVerifyRemediationPackageBuilder.PROTOCOL);
+                boolean managerGapFix = qaRemediationResultJson.contains(ManagerGapFixPackageBuilder.PROTOCOL);
+                if (hostVerifyFix || managerGapFix || executionProfileResolution.piQaRemediationV2Enabled()) {
+                    if (qaRemediationRequestHash.isBlank()) {
+                        throw new IllegalStateException("PI QA remediation package hash is required");
+                    }
+                    if (hostVerifyFix) {
+                        hostVerifyPackage = new HostVerifyRemediationPackageBuilder().fromFrozen(
+                                qaRemediationResultJson, qaRemediationRequestHash);
+                        if (safe(hostVerifyFailureFeedback).isBlank()) {
+                            previousFailure = joinPromptSections(
+                                    auditedGapSection(task.taskId()), previousFailure);
+                        }
+                    } else if (managerGapFix) {
+                        managerGapFixPackage = new ManagerGapFixPackageBuilder().fromFrozen(
+                                qaRemediationResultJson, qaRemediationRequestHash);
+                        previousFailure = joinPromptSections(
+                                auditedGapSection(task.taskId()), previousFailure);
+                    } else {
+                        remediationPackage = new QaRemediationPackageBuilder().fromFrozen(
+                                qaRemediationResultJson, qaRemediationRequestHash);
+                    }
                 }
             }
             String remediationPrompt = remediationPackage != null ? remediationPackage.promptSection()
-                    : (hostVerifyPackage != null ? hostVerifyPackage.promptSection() : "");
+                    : (hostVerifyPackage != null ? hostVerifyPackage.promptSection()
+                    : (managerGapFixPackage != null ? managerGapFixPackage.promptSection() : ""));
             String recoverySection = joinPromptSections(
                     joinPromptSections(recoveryPromptSection(activeRetry, role, roleContext), previousFailure),
                     remediationPrompt
@@ -472,7 +492,8 @@ public class RequirementAgentStageOrchestrator {
                         executionProfileResolution,
                         manifestCapture.manifest(),
                         remediationPackage,
-                        hostVerifyPackage
+                        hostVerifyPackage,
+                        managerGapFixPackage
                 );
             } catch (RuntimeException exception) {
                 String reason = firstNonBlank(exception.getMessage(), "PI initial agent state is invalid");
@@ -581,10 +602,26 @@ public class RequirementAgentStageOrchestrator {
                 );
             }
             if (!roleResult.success()) {
-                // RESULT_COLLECTING -> FAILED_NEEDS_HUMAN：角色执行失败，带上错误原因，阻断后续角色。
                 String reason = roleResult.errorMessage().isBlank()
                         ? "agent stage failed: " + role
                         : roleResult.errorMessage();
+                boolean protocolCompleteQaGap = role == AgentRole.QA_AGENT
+                        && PiQaRemediationPlanner.protocolCompleteAcceptanceReport(roleResult.resultJson())
+                        && !isCodingRemediationRequested(roleResult.resultJson(), executionProfileResolution);
+                if (protocolCompleteQaGap) {
+                    // Host Manager owns CURRENT product gaps. Keep the attempt recoverable for
+                    // DETERMINISTIC_REVIEW while still returning failure so planRoleExecutionStage
+                    // can continue to MANAGER_DECIDE.
+                    stage = transitionStage(stage, AgentStageStatus.VERIFYING, "", "");
+                    stage = transitionStage(stage, AgentStageStatus.SUCCEEDED, "", "");
+                    stageResults.add(stageResultJson(role, roleResult));
+                    return RequirementExecutionResult.failure(
+                            task.taskId(),
+                            reason,
+                            aggregateAgentResultsJson("FAILED", pullRequestUrl, stageResults)
+                    );
+                }
+                // RESULT_COLLECTING -> FAILED_NEEDS_HUMAN：角色执行失败，带上错误原因，阻断后续角色。
                 AgentStageRun failedStage = transitionStage(
                         stage,
                         AgentStageStatus.FAILED_NEEDS_HUMAN,
@@ -1637,13 +1674,16 @@ public class RequirementAgentStageOrchestrator {
             RequirementExecutionProfileResolution resolution,
             RoleExecutionInputManifest inputManifest,
             QaRemediationPackageBuilder.Package remediationPackage,
-            HostVerifyRemediationPackageBuilder.Package hostVerifyPackage
+            HostVerifyRemediationPackageBuilder.Package hostVerifyPackage,
+            ManagerGapFixPackageBuilder.Package managerGapFixPackage
     ) {
         RequirementExecutionRequest.InitialAgentStateAttachment extraAttachment =
                 remediationPackage != null ? remediationPackage.attachment()
-                        : (hostVerifyPackage != null ? hostVerifyPackage.attachment() : null);
+                        : (hostVerifyPackage != null ? hostVerifyPackage.attachment()
+                        : (managerGapFixPackage != null ? managerGapFixPackage.attachment() : null));
         List<String> extraTodos = remediationPackage != null ? remediationPackage.todos()
-                : (hostVerifyPackage != null ? hostVerifyPackage.todos() : List.of());
+                : (hostVerifyPackage != null ? hostVerifyPackage.todos()
+                : (managerGapFixPackage != null ? managerGapFixPackage.todos() : List.of()));
         if (resolution == null || !resolution.piStateV2Enabled()) {
             return extraAttachment == null
                     ? InitialAgentStateDispatch.empty()
@@ -1797,7 +1837,10 @@ public class RequirementAgentStageOrchestrator {
         return stageResults.stream().collect(Collectors.joining(",", "[", "]"));
     }
 
-    private String compactUpstreamHandoffJson(List<String> stageResults) {
+    private String compactUpstreamHandoffJson(String taskId, List<String> stageResults) {
+        AuditedTaskState head = auditedTaskStateStore == null
+                ? null
+                : auditedTaskStateStore.head(taskId).orElse(null);
         List<Map<String, Object>> stages = new ArrayList<>();
         for (String rawStage : stageResults == null ? List.<String>of() : stageResults) {
             try {
@@ -1821,12 +1864,6 @@ public class RequirementAgentStageOrchestrator {
                 if (!summary.isBlank()) {
                     compact.put("summary", compactText(summary));
                 }
-                String errorMessage = firstNonBlank(
-                        stage.path("errorMessage").asText(""), roleResult.path("errorMessage").asText("")
-                );
-                if (!errorMessage.isBlank()) {
-                    compact.put("errorMessage", compactText(errorMessage));
-                }
                 List<String> environmentNotes = compactEnvironmentNotes(roleResult.path("environmentNotes"));
                 if (environmentNotes.isEmpty()) {
                     environmentNotes = deriveEnvironmentNotesFromFacts(roleResult.path("facts"));
@@ -1834,7 +1871,7 @@ public class RequirementAgentStageOrchestrator {
                 if (!environmentNotes.isEmpty()) {
                     compact.put("environmentNotes", environmentNotes);
                 }
-                List<Map<String, Object>> compactFacts = compactFacts(roleResult.path("facts"));
+                List<Map<String, Object>> compactFacts = compactFacts(roleResult.path("facts"), head);
                 if (!compactFacts.isEmpty()) {
                     compact.put("facts", compactFacts);
                 }
@@ -1874,7 +1911,7 @@ public class RequirementAgentStageOrchestrator {
             if (text.isBlank()) {
                 continue;
             }
-            notes.add(text);
+            notes.add(AuditedHandoffTrust.UNTRUSTED + ": " + text);
             if (notes.size() >= MAX_ENVIRONMENT_NOTES) {
                 break;
             }
@@ -1898,7 +1935,7 @@ public class RequirementAgentStageOrchestrator {
             if (statement.isBlank()) {
                 continue;
             }
-            notes.add(statement);
+            notes.add(AuditedHandoffTrust.UNTRUSTED + ": " + statement);
             if (notes.size() >= MAX_ENVIRONMENT_NOTES) {
                 break;
             }
@@ -1906,7 +1943,7 @@ public class RequirementAgentStageOrchestrator {
         return List.copyOf(notes);
     }
 
-    private List<Map<String, Object>> compactFacts(JsonNode factsNode) {
+    private List<Map<String, Object>> compactFacts(JsonNode factsNode, AuditedTaskState head) {
         if (factsNode == null || !factsNode.isArray()) {
             return List.of();
         }
@@ -1931,9 +1968,14 @@ public class RequirementAgentStageOrchestrator {
             putCompactFactField(compactFact, "workspaceFingerprint", factNode.path("workspaceFingerprint"));
             putCompactFactField(compactFact, "observedAt", factNode.path("observedAt"));
             putCompactFactField(compactFact, "commandHash", factNode.path("commandHash"));
-            if (!compactFact.isEmpty()) {
-                facts.add(Map.copyOf(compactFact));
+            if (compactFact.isEmpty()) {
+                continue;
             }
+            compactFact.put("trust", AuditedHandoffTrust.trustForFact(
+                    head,
+                    safe(factNode.path("kind").asText("")),
+                    statement));
+            facts.add(Map.copyOf(compactFact));
             if (facts.size() >= MAX_COMPACT_FACTS) {
                 break;
             }
@@ -2131,7 +2173,7 @@ public class RequirementAgentStageOrchestrator {
                 : "\nVerified candidate patches:\n" + String.join("\n", candidatePatchLines);
         String environmentNotes = environmentNoteLines.isEmpty()
                 ? ""
-                : "\n环境备忘（上游角色已实测验证，直接沿用，不要重复探测）:\n" + String.join("\n", environmentNoteLines);
+                : "\n环境备忘（UNTRUSTED）:\n" + String.join("\n", environmentNoteLines);
         return (stageSummary + "\n" + documents + candidatePatches + environmentNotes + remediation).strip();
     }
 
@@ -2606,25 +2648,28 @@ public class RequirementAgentStageOrchestrator {
                         || stage.status() == AgentStageStatus.FAILED_NEEDS_HUMAN)
                 .max(STAGE_RUN_RECENCY)
                 .orElse(null);
-        if (previousFailure == null || previousFailure.errorMessage().isBlank()) {
+        if (previousFailure == null) {
             return "";
         }
-        String detail = previousFailure.errorMessage();
-        if (detail.length() > MAX_FAILURE_FEEDBACK_CHARS) {
-            detail = detail.substring(0, MAX_FAILURE_FEEDBACK_CHARS) + "...(truncated)";
+        return auditedGapSection(taskId);
+    }
+
+    private String auditedGapSection(String taskId) {
+        if (auditedTaskStateStore == null) {
+            return "";
         }
-        return """
-                # 上一轮失败反馈
-                上一次 %s 尝试（attempt %d）失败，错误分类：%s。
-                失败明细：
-                %s
-                请针对以上明细修正本轮输出（逐条补齐缺失或非法的结果字段），不要原样重复上一轮输出。
-                """.formatted(
-                role.name(),
-                previousFailure.attemptNo(),
-                previousFailure.errorCategory().isBlank() ? "UNKNOWN" : previousFailure.errorCategory(),
-                detail
-        ).strip();
+        AuditedTaskState head = auditedTaskStateStore.head(taskId).orElse(null);
+        if (head == null) {
+            return "";
+        }
+        AuditRun lastRun = null;
+        if (!head.lastAuditRunId().isBlank()) {
+            lastRun = auditedTaskStateStore.listAuditRuns(taskId).stream()
+                    .filter(run -> head.lastAuditRunId().equals(run.auditRunId()))
+                    .findFirst()
+                    .orElse(null);
+        }
+        return AuditedGapSection.render(head, lastRun);
     }
 
     private static String joinPromptSections(String first, String second) {
@@ -3086,9 +3131,9 @@ public class RequirementAgentStageOrchestrator {
                     null
             );
         }
+        persistLegacyHostVerifyAudit(task, codingStage, verification);
         if (verification.status() == HostVerificationStatus.SUCCEEDED
                 || verification.status() == HostVerificationStatus.SKIPPED_DOCS_ONLY) {
-            persistLegacyHostVerifyAudit(task, codingStage, verification);
             return null;
         }
         if (shouldCheapRemediate(plan, verification, hostVerifyRemediationCount)) {
@@ -3105,7 +3150,7 @@ public class RequirementAgentStageOrchestrator {
                         qaRemediationResultJson,
                         qaRemediationRequestHash,
                         qaProtocolRetryPrompt,
-                        hostVerifyFailureFeedbackSection(verification),
+                        hostVerifyFailureFeedbackSection(task.taskId()),
                         hostVerifyRemediationCount + 1,
                         qaRemediationCount
                 );
@@ -3215,19 +3260,8 @@ public class RequirementAgentStageOrchestrator {
         )));
     }
 
-    private String hostVerifyFailureFeedbackSection(HostVerificationRun verification) {
-        String detail = firstNonBlank(verification.errorMessage(), "host verification failed");
-        if (detail.length() > MAX_FAILURE_FEEDBACK_CHARS) {
-            detail = detail.substring(0, MAX_FAILURE_FEEDBACK_CHARS) + "...(truncated)";
-        }
-        String category = verification.failureCategory().isBlank() ? "UNKNOWN" : verification.failureCategory();
-        return """
-                # 上一轮失败反馈
-                上一次 HOST_VERIFY 尝试（attempt %d）失败，错误分类：%s。
-                失败明细：
-                %s
-                请针对以上明细修正本轮输出（逐条补齐缺失或非法的结果字段），不要原样重复上一轮输出。
-                """.formatted(verification.attemptNo(), category, detail).strip();
+    private String hostVerifyFailureFeedbackSection(String taskId) {
+        return auditedGapSection(taskId);
     }
 
     private RequirementExecutionResult hostVerifyNeedsHuman(
@@ -3571,7 +3605,7 @@ public class RequirementAgentStageOrchestrator {
                     """.strip();
             case SOLUTION_ARCHITECT -> """
                     - 基于需求评审和证据制定开发方案，不修改代码，不创建 PR。
-                    - 上游环境备忘视为已验证事实直接沿用；本轮新发现的环境事实追加写入 result.json 的 environmentNotes。
+                    - 上游环境备忘默认 UNTRUSTED，仅当 compact facts 标 VERIFIED(auditRunId=…) 时沿用；本轮新发现的环境事实追加写入 result.json 的 environmentNotes。
                     - 输出影响文件、接口/数据变更、实现步骤、验收映射和测试计划。
                     - 使用已安装的 role-handoff-document Skill，把完整开发计划写入 /work/output/handoff/next.md，供 CODING_AGENT 作为受控附件读取；预算见 context.json 的 roleHandoffMaxTokens。
                     - result.json 中的 next_prompt 只提供目标角色、短摘要和固定相对路径；不要把完整计划或 RustFS 地址复制进 JSON。
@@ -3579,7 +3613,7 @@ public class RequirementAgentStageOrchestrator {
                     """.strip();
             case CODING_AGENT -> """
                     - 根据需求评审和方案执行代码修改。
-                    - 上游环境备忘视为已验证事实直接沿用，不要重复探测；本轮新发现的环境事实（含可用的测试执行方式）追加写入 result.json 的 environmentNotes，供 QA 直接沿用。
+                    - 上游环境备忘默认 UNTRUSTED，仅当 compact facts 标 VERIFIED(auditRunId=…) 时沿用，不要重复探测；本轮新发现的环境事实（含可用的测试执行方式）追加写入 result.json 的 environmentNotes，供 QA 直接沿用。
                     - 本容器在 credential-relay 隔离网上，不能访问 npm/pypi/GitHub。依赖由宿主预装到 /work/repo 与 /work/cache。禁止探测公网 DNS（含 8.8.8.8），禁止把 EAI_AGAIN/ENOTCACHED 当成需要人工恢复的交付失败。
                     - 依赖树和 /work/cache 是当前任务与重试共享的状态：不得删除 node_modules、package-lock.json 或 /work/cache。先用已有依赖；隔离网内不要执行 npm install。若依赖仍缺失：保留诊断、写入 environmentNotes，代码改动完成后 status=SUCCESS 且 testStatus=SKIPPED。宿主会在本阶段成功后重跑安装、构建、仓库测试和静态检查。`testStatus` 只是交接信息，不是放行依据。
                     - 若存在上一轮宿主验证失败，只修反馈中的命令和日志，不要删 `/work/cache` 或 `node_modules`。
@@ -3592,7 +3626,7 @@ public class RequirementAgentStageOrchestrator {
                     """.strip();
             case QA_AGENT -> """
                     - 基于代码交付候选包、验收标准和真实命令执行 QA 复核。
-                    - 上游环境备忘（含 CODING_AGENT 已验证的测试执行方式）视为已验证事实直接沿用，不要从零重复探测环境。
+                    - 上游环境备忘（含 CODING_AGENT 交接的测试执行方式）默认 UNTRUSTED，仅当标 VERIFIED(auditRunId=…) 时沿用，不要从零重复探测环境。
                     - 先读取 /work/input/qa-profile.json，并遵循已安装的 qa-playwright-cli Skill；Web 项目且配置要求时必须执行真实 Chromium 浏览器验证。
                     - docs-only 例外（宿主根据候选补丁的真实变更文件集判定，写入 qa-profile.json 的 decisionSource=DOCS_ONLY 与 candidateChangedFiles）：仅当 profile 判定为 docs-only 时，跳过 npm install / build / start 与 Chromium 浏览器回归，browserValidation 必须为 required=false、performed=false、decisionSource=DOCS_ONLY；不得凭任务描述或自我声明降级。变更集无法判定或含任意运行时相关文件时必须跑完整浏览器画像。
                     - 若存在 /work/input/qa-skill/SKILL.md，先完整阅读并严格遵循其中的流程与工具（rd-qa-evidence.mjs / playwright-cli）。
@@ -3631,7 +3665,7 @@ public class RequirementAgentStageOrchestrator {
             case SOLUTION_ARCHITECT -> """
                     - 基于需求评审和证据制定开发方案，不修改代码，不创建 PR。
                     %s
-                    - 上游 facts 视为已验证事实直接沿用；本轮新发现的环境事实追加写入 facts[]，不要填写 environmentNotes。
+                    - 上游 facts 默认 UNTRUSTED，仅当标 VERIFIED(auditRunId=…) 时沿用；本轮新发现的环境事实追加写入 facts[]，不要填写 environmentNotes。
                     - 输出影响文件、接口/数据变更、实现步骤、验收映射和测试计划。
                     - 使用已安装的 role-handoff-document Skill，把完整开发计划写入 /work/output/handoff/next.md，供 CODING_AGENT 作为受控附件读取；预算见 context.json 的 roleHandoffMaxTokens。
                     - result.json 中的 next_prompt 只提供目标角色、短摘要和固定相对路径；不要把完整计划或 RustFS 地址复制进 JSON。
@@ -3640,7 +3674,7 @@ public class RequirementAgentStageOrchestrator {
             case CODING_AGENT -> """
                     - 根据需求评审和方案执行代码修改。
                     %s
-                    - 上游 facts 视为已验证事实直接沿用，不要重复探测；本轮新发现的环境事实（含可用的测试执行方式）追加写入 facts[]，供 QA 直接沿用。
+                    - 上游 facts 默认 UNTRUSTED，仅当标 VERIFIED(auditRunId=…) 时沿用，不要重复探测；本轮新发现的环境事实（含可用的测试执行方式）追加写入 facts[]，供 QA 直接沿用。
                     - 不要自由填写 environmentNotes；Harness 会从 fresh OBSERVED facts 派生 environmentNotes。
                     - 本容器在 credential-relay 隔离网上，不能访问 npm/pypi/GitHub。依赖由宿主预装到 /work/repo 与 /work/cache。禁止探测公网 DNS（含 8.8.8.8），禁止把 EAI_AGAIN/ENOTCACHED 当成需要人工恢复的交付失败。
                     - 依赖树和 /work/cache 是当前任务与重试共享的状态：不得删除 node_modules、package-lock.json 或 /work/cache。先用已有依赖；隔离网内不要执行 npm install。若依赖仍缺失：保留诊断、写入 environmentNotes，代码改动完成后 status=SUCCESS 且 testStatus=SKIPPED。宿主会在本阶段成功后重跑安装、构建、仓库测试和静态检查。`testStatus` 只是交接信息，不是放行依据。

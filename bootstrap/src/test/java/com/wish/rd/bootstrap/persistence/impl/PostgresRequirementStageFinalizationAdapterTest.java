@@ -32,7 +32,9 @@ import com.wish.rd.engine.requirement.audit.AuditedStateMutation;
 import com.wish.rd.engine.requirement.audit.AuditedTaskState;
 import com.wish.rd.engine.requirement.audit.AuditedTaskStateCodec;
 import com.wish.rd.engine.requirement.audit.ContractAuditVerdict;
+import com.wish.rd.engine.requirement.HostVerifyRemediationPackageBuilder;
 import com.wish.rd.engine.requirement.job.RequirementStageFinalizationPort;
+import com.wish.rd.engine.requirement.remediation.model.AgentRemediationKind;
 import com.wish.rd.rag.project.memory.model.ProjectMemoryOperationKey;
 import com.wish.rd.engine.requirement.job.model.ExternalEffectReceipt;
 import com.wish.rd.engine.requirement.job.model.RequirementStageCommand;
@@ -1094,6 +1096,78 @@ class PostgresRequirementStageFinalizationAdapterTest {
 
         verify(commands).enqueue(any(RequirementStageCommandRow.class));
         verify(markers, never()).finalizePrepared(any());
+    }
+
+    @Test
+    void hostVerifyFixCodingContinuationLooksUpRemediationIdentityNotThePriorHostVerify() {
+        RequirementStageFinalizationMapper markers = mock(RequirementStageFinalizationMapper.class);
+        RequirementStageCommandMapper commands = mock(RequirementStageCommandMapper.class);
+        RdTaskMapper tasks = mock(RdTaskMapper.class);
+        RdTaskStatusEventMapper events = mock(RdTaskStatusEventMapper.class);
+        PostgresRequirementStageFinalizationAdapter adapter = new PostgresRequirementStageFinalizationAdapter(
+                markers, commands, mock(RequirementDeliveryJobMapper.class), tasks, events);
+        HostVerifyRemediationPackageBuilder.Package frozen = new HostVerifyRemediationPackageBuilder()
+                .build("verify-9", "705", 1, "PRODUCT_DEFECT", "BUILD exit 1: cannot find symbol Foo");
+        RequirementStageCommand command = RequirementStageCommand.remediationPending(
+                "701", "700", 4L, 9L, "CODING_AGENT", "ROLE_EXECUTION:CODING_AGENT", 3, 60_000L,
+                ScheduleResourceClass.PROVIDER, java.util.Set.of(ScheduleResourceClass.PROVIDER),
+                "project", "provider", "P1", "801", "9001", AgentRemediationKind.HOST_VERIFY_FIX, 1,
+                "705", frozen.attachment().content(), frozen.requestHash(), 1L)
+                .claimed("worker", 60_000L, 2L);
+        RequirementStageExecutionPlan plan = new RequirementStageExecutionPlan(
+                RequirementStageExecutionPlan.CURRENT_SCHEMA_VERSION,
+                command.taskId(), command.taskVersion(), command.fencingToken(), RdTaskStatus.EXECUTING,
+                java.util.List.of(RequirementTaskMutation.snapshotUpdate(
+                        RdTaskStatus.EXECUTING, "", "{}", "", "", "")),
+                com.wish.rd.engine.requirement.job.model.CommandDisposition.SUCCEEDED,
+                new com.wish.rd.engine.requirement.job.model.ContinuationSpec(
+                        "REQUIREMENT_DELIVERY", "HOST_VERIFY"),
+                com.wish.rd.engine.requirement.job.model.ExternalEffectReceipt.none());
+        RequirementStageFinalization marker = outcomeRecordedMarker(command, plan);
+        when(commands.lockByIdForUpdate(anyLong())).thenReturn(commandRow(command));
+        when(markers.findForUpdate(anyLong(), anyInt())).thenReturn(markerRow(marker));
+        RdTaskRow task = new RdTaskRow();
+        task.title = "host verify fix";
+        when(tasks.selectById(anyLong())).thenReturn(task);
+        when(tasks.advanceStatusWithExpectedVersionFenced(
+                anyLong(), anyLong(), anyLong(), anyString(), anyString(), any(), any(), any(), any(), any()))
+                .thenReturn(1);
+        when(events.insert(any(RdTaskStatusEventRow.class))).thenReturn(1);
+        when(commands.completeAttempt(anyLong(), anyInt(), anyString(), any()))
+                .thenReturn(commandRow(command.succeeded(20L)));
+        RequirementStageCommand requested = RequirementStageCommand.remediationPending(
+                "702", command.taskId(), plan.postVersion(), plan.postFencingToken(),
+                "REQUIREMENT_DELIVERY", "HOST_VERIFY", 3, 60_000L,
+                ScheduleResourceClass.DOCKER, java.util.Set.of(ScheduleResourceClass.DOCKER),
+                "project", "provider", "P1", "801", "9001", AgentRemediationKind.HOST_VERIFY_FIX, 1,
+                "705", frozen.attachment().content(), frozen.requestHash(), 20L);
+        RequirementStageCommand priorHostVerify = RequirementStageCommand.pending(
+                "688", command.taskId(), 4L, 9L, "REQUIREMENT_DELIVERY", "HOST_VERIFY",
+                0, 3, 60_000L, ScheduleResourceClass.DOCKER, java.util.Set.of(ScheduleResourceClass.DOCKER),
+                "project", "provider", "P1", "801", 1L);
+        when(commands.findByIdentity(anyLong(), anyString(), anyString(), anyString()))
+                .thenReturn(commandRow(priorHostVerify));
+        RequirementStageCommandRow persisted = commandRow(requested);
+        persisted.deadlineAt = com.wish.rd.bootstrap.persistence.PostgresPersistenceSupport.toDateTime(
+                requested.deadlineEpochMillis());
+        persisted.remediationRoundId = 9001L;
+        persisted.remediationKind = AgentRemediationKind.HOST_VERIFY_FIX.name();
+        persisted.remediationNo = 1;
+        persisted.remediationSourceStageRunId = 705L;
+        persisted.remediationRequestJson = frozen.attachment().content();
+        persisted.remediationRequestHash = frozen.requestHash();
+        when(commands.findByRemediationIdentity(eq(700L), eq("REQUIREMENT_DELIVERY"), eq("HOST_VERIFY"), eq(9001L)))
+                .thenReturn(persisted);
+        when(markers.finalizePrepared(any())).thenReturn(1);
+
+        adapter.finalize(new RequirementStageFinalizationPort.FinalizationCommand(
+                marker, command, "worker", plan, requested,
+                null, RequirementStageFinalizationPort.JobDisposition.NONE,
+                RequirementStageFinalizationPort.TaskMutationDisposition.APPLY, 20L));
+
+        verify(commands).findByRemediationIdentity(700L, "REQUIREMENT_DELIVERY", "HOST_VERIFY", 9001L);
+        verify(commands, never()).findByIdentity(anyLong(), anyString(), anyString(), anyString());
+        verify(markers).finalizePrepared(any());
     }
 
     @Test

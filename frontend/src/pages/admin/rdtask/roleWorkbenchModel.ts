@@ -31,6 +31,7 @@ const NON_SUBMITTABLE_REQUIREMENT_TASK_STATUSES = new Set([
   "VALIDATING",
   "PR_CREATING",
   "WAITING_APPROVAL",
+  "WAITING_USER_INPUT",
   "COMMITTED",
   "MERGED",
   "COMPLETED",
@@ -602,6 +603,8 @@ export function evaluateRolePromptsFreshness(
     const expected = expectedMap[stage.stageRunId];
     if (!expected) continue;
 
+    const respStateAvailable = Boolean(stage.latestState?.available);
+    const respInjAvailable = Boolean(stage.effectiveContext?.available);
     const respStateSeq = stage.latestState?.sequence ?? 0;
     const expStateSeq = expected.stateSequence ?? 0;
     const respStateHash = stage.latestState?.contentHash ?? "";
@@ -614,16 +617,27 @@ export function evaluateRolePromptsFreshness(
     const respPromptHash = stage.effectiveContext?.promptContentHash ?? "";
     const expPromptHash = expected.promptHash ?? "";
 
-    // 1. If any response sequence is behind expected -> discard as stale
-    if ((expStateSeq > 0 && respStateSeq < expStateSeq) || (expInjSeq > 0 && respInjSeq < expInjSeq)) {
+    // Unavailable latest/effective identities are not "behind" the overview.
+    // Completed PI attempts without PI_AGENT_STATE_V2 still return a bound static Prompt.
+    if (
+      (respStateAvailable && expStateSeq > 0 && respStateSeq < expStateSeq)
+      || (respInjAvailable && expInjSeq > 0 && respInjSeq < expInjSeq)
+    ) {
       return "STALE_DISCARD";
     }
 
     // 2. If sequences match but hashes differ -> consistency error
-    if (expStateSeq > 0 && respStateSeq === expStateSeq && expStateHash && respStateHash && respStateHash !== expStateHash) {
+    if (
+      respStateAvailable
+      && expStateSeq > 0
+      && respStateSeq === expStateSeq
+      && expStateHash
+      && respStateHash
+      && respStateHash !== expStateHash
+    ) {
       return "CONSISTENCY_ERROR";
     }
-    if (expInjSeq > 0 && respInjSeq === expInjSeq) {
+    if (respInjAvailable && expInjSeq > 0 && respInjSeq === expInjSeq) {
       if (expInjBlockHash && respInjBlockHash && respInjBlockHash !== expInjBlockHash) {
         return "CONSISTENCY_ERROR";
       }
@@ -633,7 +647,10 @@ export function evaluateRolePromptsFreshness(
     }
 
     // 3. If any response identity is ahead of expected -> accept and reconcile overview
-    if ((expStateSeq > 0 && respStateSeq > expStateSeq) || (expInjSeq > 0 && respInjSeq > expInjSeq)) {
+    if (
+      (respStateAvailable && expStateSeq > 0 && respStateSeq > expStateSeq)
+      || (respInjAvailable && expInjSeq > 0 && respInjSeq > expInjSeq)
+    ) {
       hasAhead = true;
     }
   }

@@ -1,0 +1,989 @@
+{
+  "generatedAt": "2026-09-06",
+  "classification": "CURRENT_CODE_AND_LIVE_EVIDENCE — extracted from laptop copies of VM snapshots; not a substitute for the raw JSON",
+  "project": {
+    "projectId": "7499721648870920192",
+    "projectKey": "codex-run-test-waimai",
+    "repositoryUrl": "https://github.com/wanghehe123/rd-bot-waimai-acceptance-20260624-141045.git",
+    "vm": "ubuntu@106.55.13.166"
+  },
+  "triangleClaim": {
+    "claim": "MEA three-role loop (CODING → HOST_VERIFY → Manager → QA → Manager) can enqueue bounded MANAGER_GAP_FIX for a PENDING AC instead of jumping to DETERMINISTIC_REVIEW",
+    "primaryProofTaskId": "7502196308401328128",
+    "primaryProofExperiment": "p3-w1e",
+    "notClaimed": [
+      "P3-W1 live COMPLETED+PR",
+      "protocol-complete QA stage SUCCEEDED fix proven on a later live task (W1f died before second QA)",
+      "P3-W2 ASK live",
+      "P3-W3 pause live"
+    ]
+  },
+  "w1eProofPoints": {
+    "pendingAc003WithGapFixRunningNoReview": {
+      "file": "snapshot-p080.json",
+      "ac": {
+        "AC-001": "COMPLETED",
+        "AC-002": "COMPLETED",
+        "AC-003": "PENDING"
+      },
+      "verdict": "PASS_MANAGER_GAP_FIX_ENQUEUED",
+      "hasDeterministicReview": false,
+      "gapFixCommands": [
+        {
+          "status": "RUNNING",
+          "stage": "ROLE_EXECUTION:CODING_AGENT",
+          "kind": "MANAGER_GAP_FIX"
+        }
+      ]
+    },
+    "lastPendingAc003StillNoReview": {
+      "file": "snapshot-p157.json",
+      "ac": {
+        "AC-001": "COMPLETED",
+        "AC-002": "COMPLETED",
+        "AC-003": "PENDING"
+      },
+      "verdict": "PASS_MANAGER_GAP_FIX_ENQUEUED",
+      "hasDeterministicReview": false,
+      "gapFixCommands": [
+        {
+          "status": "SUCCEEDED",
+          "stage": "ROLE_EXECUTION:CODING_AGENT",
+          "kind": "MANAGER_GAP_FIX"
+        },
+        {
+          "status": "SUCCEEDED",
+          "stage": "HOST_VERIFY",
+          "kind": "MANAGER_GAP_FIX"
+        },
+        {
+          "status": "SUCCEEDED",
+          "stage": "MANAGER_DECIDE:7502208702544482304",
+          "kind": "MANAGER_GAP_FIX"
+        },
+        {
+          "status": "RUNNING",
+          "stage": "ROLE_EXECUTION:QA_AGENT",
+          "kind": "MANAGER_GAP_FIX"
+        }
+      ]
+    },
+    "firstAc003Completed": {
+      "file": "snapshot-p158.json",
+      "ac": {
+        "AC-001": "COMPLETED",
+        "AC-002": "COMPLETED",
+        "AC-003": "COMPLETED"
+      },
+      "verdict": "PASS_MANAGER_GAP_FIX_ENQUEUED",
+      "hasDeterministicReview": true,
+      "gapFixCommands": [
+        {
+          "status": "SUCCEEDED",
+          "stage": "ROLE_EXECUTION:CODING_AGENT",
+          "kind": "MANAGER_GAP_FIX"
+        },
+        {
+          "status": "SUCCEEDED",
+          "stage": "HOST_VERIFY",
+          "kind": "MANAGER_GAP_FIX"
+        },
+        {
+          "status": "SUCCEEDED",
+          "stage": "MANAGER_DECIDE:7502208702544482304",
+          "kind": "MANAGER_GAP_FIX"
+        },
+        {
+          "status": "SUCCEEDED",
+          "stage": "ROLE_EXECUTION:QA_AGENT",
+          "kind": "MANAGER_GAP_FIX"
+        }
+      ]
+    }
+  },
+  "runs": [
+    {
+      "experiment": "p3-w1",
+      "taskId": "7502036764404617216",
+      "note": "3.0-only contrast: first Coding implemented AC-003; Manager QA→DONE; COMPLETED PR #38. Not phase-exit.",
+      "status": "COMPLETED",
+      "errorMessage": "",
+      "stateVersion": 7,
+      "ac": {
+        "AC-001": "COMPLETED",
+        "AC-002": "COMPLETED",
+        "AC-003": "COMPLETED"
+      },
+      "pollerVerdict": "TERMINAL_COMPLETED",
+      "pullRequestUrl": "https://github.com/wanghehe123/rd-bot-waimai-acceptance-20260624-141045/pull/38",
+      "managerDecisionHash": "sha256:9988764a2ffc2707e63eefe43b4de0b14dd14671d2e36be9f952806ed30964af",
+      "records": [
+        {
+          "id": "AC-001",
+          "status": "COMPLETED",
+          "kind": "REQUIREMENT"
+        },
+        {
+          "id": "AC-002",
+          "status": "COMPLETED",
+          "kind": "REQUIREMENT"
+        },
+        {
+          "id": "AC-003",
+          "status": "COMPLETED",
+          "kind": "REQUIREMENT"
+        },
+        {
+          "id": "GATE-BUILD",
+          "status": "COMPLETED",
+          "kind": "GATE"
+        },
+        {
+          "id": "GATE-STATIC",
+          "status": "COMPLETED",
+          "kind": "GATE"
+        },
+        {
+          "id": "GATE-QA-EVIDENCE",
+          "status": "COMPLETED",
+          "kind": "GATE"
+        },
+        {
+          "id": "GATE-WORKSPACE-INTEGRITY",
+          "status": "COMPLETED",
+          "kind": "GATE"
+        },
+        {
+          "id": "ART-PR",
+          "status": "COMPLETED",
+          "kind": "ARTIFACT"
+        }
+      ],
+      "decisions": [
+        {
+          "round_no": 1,
+          "source_command_id": "7502040865670565888",
+          "route": "EXECUTE",
+          "executor_route": "QA_AGENT",
+          "target_record_ids": [],
+          "bounded_contract": "",
+          "rationale": "host-verify succeeded; continue QA",
+          "created_at": "2026-09-05T16:34:42.680044+00:00"
+        },
+        {
+          "round_no": 2,
+          "source_command_id": "7502041533064024064",
+          "route": "DONE",
+          "executor_route": "DETERMINISTIC_REVIEW",
+          "target_record_ids": [],
+          "bounded_contract": "",
+          "rationale": "all blocking requirements completed",
+          "created_at": "2026-09-05T17:00:07.748492+00:00"
+        }
+      ],
+      "commands": [
+        {
+          "id": "7502036769311952896",
+          "stage": "ROLE_EXECUTION:REQUIREMENT_REVIEWER",
+          "status": "SUCCEEDED",
+          "remediation_kind": null,
+          "remediation_round_id": null,
+          "updated_at": "2026-09-05T16:22:03.627+00:00",
+          "last_error": null
+        },
+        {
+          "id": "7502038349377572864",
+          "stage": "ROLE_EXECUTION:SOLUTION_ARCHITECT",
+          "status": "SUCCEEDED",
+          "remediation_kind": null,
+          "remediation_round_id": null,
+          "updated_at": "2026-09-05T16:23:46.233+00:00",
+          "last_error": null
+        },
+        {
+          "id": "7502038779717357568",
+          "stage": "ROLE_EXECUTION:CODING_AGENT",
+          "status": "SUCCEEDED",
+          "remediation_kind": null,
+          "remediation_round_id": null,
+          "updated_at": "2026-09-05T16:32:03.555+00:00",
+          "last_error": null
+        },
+        {
+          "id": "7502040865670565888",
+          "stage": "HOST_VERIFY",
+          "status": "SUCCEEDED",
+          "remediation_kind": null,
+          "remediation_round_id": null,
+          "updated_at": "2026-09-05T16:34:42.563+00:00",
+          "last_error": null
+        },
+        {
+          "id": "7502041532594262016",
+          "stage": "MANAGER_DECIDE:7502040865670565888",
+          "status": "SUCCEEDED",
+          "remediation_kind": null,
+          "remediation_round_id": null,
+          "updated_at": "2026-09-05T16:34:42.676+00:00",
+          "last_error": null
+        },
+        {
+          "id": "7502041533064024064",
+          "stage": "ROLE_EXECUTION:QA_AGENT",
+          "status": "SUCCEEDED",
+          "remediation_kind": null,
+          "remediation_round_id": null,
+          "updated_at": "2026-09-05T17:00:07.529+00:00",
+          "last_error": null
+        },
+        {
+          "id": "7502047928769449984",
+          "stage": "MANAGER_DECIDE:7502041533064024064",
+          "status": "SUCCEEDED",
+          "remediation_kind": null,
+          "remediation_round_id": null,
+          "updated_at": "2026-09-05T17:00:07.744+00:00",
+          "last_error": null
+        },
+        {
+          "id": "7502047929671225344",
+          "stage": "DETERMINISTIC_REVIEW",
+          "status": "SUCCEEDED",
+          "remediation_kind": null,
+          "remediation_round_id": null,
+          "updated_at": "2026-09-05T17:00:08.115+00:00",
+          "last_error": null
+        },
+        {
+          "id": "7502047932347191296",
+          "stage": "PUBLICATION",
+          "status": "SUCCEEDED",
+          "remediation_kind": null,
+          "remediation_round_id": null,
+          "updated_at": "2026-09-05T17:00:16.772+00:00",
+          "last_error": null
+        },
+        {
+          "id": "7502047968267210752",
+          "stage": "COMPLETION",
+          "status": "SUCCEEDED",
+          "remediation_kind": null,
+          "remediation_round_id": null,
+          "updated_at": "2026-09-05T17:00:17.072+00:00",
+          "last_error": null
+        }
+      ],
+      "localEvidenceDir": "tmp-mea-waimai-shadow/p3-w1/",
+      "vmEvidenceDir": "/tmp/mea-p3-w1/"
+    },
+    {
+      "experiment": "p3-w1c",
+      "taskId": "7502060281951031296",
+      "note": "Manager GAP_FIX enqueued; Coding DEAD_LETTERED on attachment allowlist.",
+      "status": "FAILED_RETRYABLE",
+      "errorMessage": "agent executor exception: CODING_AGENT attachments without initial state are restricted to Host remediation packages",
+      "stateVersion": 6,
+      "ac": {
+        "AC-001": "COMPLETED",
+        "AC-002": "COMPLETED",
+        "AC-003": "PENDING"
+      },
+      "pollerVerdict": "PASS_MANAGER_GAP_FIX_ENQUEUED",
+      "pullRequestUrl": "",
+      "managerDecisionHash": "sha256:df0d0421c66b760636e08a80cc124bb3c7be5d774c2a7b44985a6b597ad7f166",
+      "records": [
+        {
+          "id": "AC-001",
+          "status": "COMPLETED",
+          "kind": "REQUIREMENT"
+        },
+        {
+          "id": "AC-002",
+          "status": "COMPLETED",
+          "kind": "REQUIREMENT"
+        },
+        {
+          "id": "AC-003",
+          "status": "PENDING",
+          "kind": "REQUIREMENT"
+        },
+        {
+          "id": "GATE-BUILD",
+          "status": "COMPLETED",
+          "kind": "GATE"
+        },
+        {
+          "id": "GATE-STATIC",
+          "status": "COMPLETED",
+          "kind": "GATE"
+        },
+        {
+          "id": "GATE-QA-EVIDENCE",
+          "status": "PENDING",
+          "kind": "GATE"
+        },
+        {
+          "id": "GATE-WORKSPACE-INTEGRITY",
+          "status": "COMPLETED",
+          "kind": "GATE"
+        },
+        {
+          "id": "ART-PR",
+          "status": "PENDING",
+          "kind": "ARTIFACT"
+        }
+      ],
+      "decisions": [
+        {
+          "round_no": 1,
+          "source_command_id": "7502062139528581120",
+          "route": "EXECUTE",
+          "executor_route": "QA_AGENT",
+          "target_record_ids": [],
+          "bounded_contract": "",
+          "rationale": "host-verify succeeded; continue QA",
+          "created_at": "2026-09-05T17:59:12.070107+00:00"
+        },
+        {
+          "round_no": 2,
+          "source_command_id": "7502062795614195712",
+          "route": "EXECUTE",
+          "executor_route": "CODING_AGENT",
+          "target_record_ids": [
+            "AC-003"
+          ],
+          "bounded_contract": "只修复以下已审计缺口，禁止扩大范围：AC-003",
+          "rationale": "pending blocking acceptance [AC-003]",
+          "created_at": "2026-09-05T18:15:16.002678+00:00"
+        }
+      ],
+      "commands": [
+        {
+          "id": "7502060286900310016",
+          "stage": "ROLE_EXECUTION:REQUIREMENT_REVIEWER",
+          "status": "SUCCEEDED",
+          "remediation_kind": null,
+          "remediation_round_id": null,
+          "updated_at": "2026-09-05T17:51:09.393+00:00",
+          "last_error": null
+        },
+        {
+          "id": "7502060771145289728",
+          "stage": "ROLE_EXECUTION:SOLUTION_ARCHITECT",
+          "status": "SUCCEEDED",
+          "remediation_kind": null,
+          "remediation_round_id": null,
+          "updated_at": "2026-09-05T17:52:58.75+00:00",
+          "last_error": null
+        },
+        {
+          "id": "7502061229825986560",
+          "stage": "ROLE_EXECUTION:CODING_AGENT",
+          "status": "SUCCEEDED",
+          "remediation_kind": null,
+          "remediation_round_id": null,
+          "updated_at": "2026-09-05T17:56:35.638+00:00",
+          "last_error": null
+        },
+        {
+          "id": "7502062139528581120",
+          "stage": "HOST_VERIFY",
+          "status": "SUCCEEDED",
+          "remediation_kind": null,
+          "remediation_round_id": null,
+          "updated_at": "2026-09-05T17:59:11.949+00:00",
+          "last_error": null
+        },
+        {
+          "id": "7502062795144433664",
+          "stage": "MANAGER_DECIDE:7502062139528581120",
+          "status": "SUCCEEDED",
+          "remediation_kind": null,
+          "remediation_round_id": null,
+          "updated_at": "2026-09-05T17:59:12.066+00:00",
+          "last_error": null
+        },
+        {
+          "id": "7502062795614195712",
+          "stage": "ROLE_EXECUTION:QA_AGENT",
+          "status": "SUCCEEDED",
+          "remediation_kind": null,
+          "remediation_round_id": null,
+          "updated_at": "2026-09-05T18:15:15.26+00:00",
+          "last_error": null
+        },
+        {
+          "id": "7502066835563614208",
+          "stage": "MANAGER_DECIDE:7502062795614195712",
+          "status": "SUCCEEDED",
+          "remediation_kind": null,
+          "remediation_round_id": null,
+          "updated_at": "2026-09-05T18:15:15.999+00:00",
+          "last_error": null
+        },
+        {
+          "id": "7502066836817711106",
+          "stage": "ROLE_EXECUTION:CODING_AGENT",
+          "status": "DEAD_LETTERED",
+          "remediation_kind": "MANAGER_GAP_FIX",
+          "remediation_round_id": "7502066836817711105",
+          "updated_at": "2026-09-05T18:16:09.908+00:00",
+          "last_error": "agent executor exception: CODING_AGENT attachments without initial state are restricted to Host remediation packages"
+        }
+      ],
+      "localEvidenceDir": "tmp-mea-waimai-shadow/p3-w1c/",
+      "vmEvidenceDir": "/tmp/mea-p3-w1c/"
+    },
+    {
+      "experiment": "p3-w1d",
+      "taskId": "7502183328116772864",
+      "note": "GAP_FIX Coding+HOST_VERIFY succeeded; second QA blocked on terminal QA attempt.",
+      "status": "FAILED_RETRYABLE",
+      "errorMessage": "agent stage is terminal before execution: QA_AGENT FAILED_NEEDS_HUMAN",
+      "stateVersion": 8,
+      "ac": {
+        "AC-001": "COMPLETED",
+        "AC-002": "COMPLETED",
+        "AC-003": "PENDING"
+      },
+      "pollerVerdict": "PASS_MANAGER_GAP_FIX_ENQUEUED",
+      "pullRequestUrl": "",
+      "managerDecisionHash": "sha256:591e2957fb7070044899c54a379d6ae862801aed69c7089b89099ab98b28a601",
+      "records": [
+        {
+          "id": "AC-001",
+          "status": "COMPLETED",
+          "kind": "REQUIREMENT"
+        },
+        {
+          "id": "AC-002",
+          "status": "COMPLETED",
+          "kind": "REQUIREMENT"
+        },
+        {
+          "id": "AC-003",
+          "status": "PENDING",
+          "kind": "REQUIREMENT"
+        },
+        {
+          "id": "GATE-BUILD",
+          "status": "COMPLETED",
+          "kind": "GATE"
+        },
+        {
+          "id": "GATE-STATIC",
+          "status": "COMPLETED",
+          "kind": "GATE"
+        },
+        {
+          "id": "GATE-QA-EVIDENCE",
+          "status": "PENDING",
+          "kind": "GATE"
+        },
+        {
+          "id": "GATE-WORKSPACE-INTEGRITY",
+          "status": "COMPLETED",
+          "kind": "GATE"
+        },
+        {
+          "id": "ART-PR",
+          "status": "PENDING",
+          "kind": "ARTIFACT"
+        }
+      ],
+      "decisions": [
+        {
+          "round_no": 1,
+          "source_command_id": "7502187868148862976",
+          "route": "EXECUTE",
+          "executor_route": "QA_AGENT",
+          "target_record_ids": [],
+          "bounded_contract": "",
+          "rationale": "host-verify succeeded; continue QA",
+          "created_at": "2026-09-06T02:19:18.679276+00:00"
+        },
+        {
+          "round_no": 2,
+          "source_command_id": "7502188652471128064",
+          "route": "EXECUTE",
+          "executor_route": "CODING_AGENT",
+          "target_record_ids": [
+            "AC-003"
+          ],
+          "bounded_contract": "只修复以下已审计缺口，禁止扩大范围：AC-003",
+          "rationale": "pending blocking acceptance [AC-003]",
+          "created_at": "2026-09-06T02:34:18.511242+00:00"
+        },
+        {
+          "round_no": 3,
+          "source_command_id": "7502193808810053632",
+          "route": "EXECUTE",
+          "executor_route": "QA_AGENT",
+          "target_record_ids": [],
+          "bounded_contract": "",
+          "rationale": "host-verify succeeded; continue QA",
+          "created_at": "2026-09-06T02:42:24.838113+00:00"
+        }
+      ],
+      "commands": [
+        {
+          "id": "7502183332860530688",
+          "stage": "ROLE_EXECUTION:REQUIREMENT_REVIEWER",
+          "status": "SUCCEEDED",
+          "remediation_kind": null,
+          "remediation_round_id": null,
+          "updated_at": "2026-09-06T02:09:44.087+00:00",
+          "last_error": null
+        },
+        {
+          "id": "7502186242470187008",
+          "stage": "ROLE_EXECUTION:SOLUTION_ARCHITECT",
+          "status": "SUCCEEDED",
+          "remediation_kind": null,
+          "remediation_round_id": null,
+          "updated_at": "2026-09-06T02:11:20.871+00:00",
+          "last_error": null
+        },
+        {
+          "id": "7502186648390733824",
+          "stage": "ROLE_EXECUTION:CODING_AGENT",
+          "status": "SUCCEEDED",
+          "remediation_kind": null,
+          "remediation_round_id": null,
+          "updated_at": "2026-09-06T02:16:11.677+00:00",
+          "last_error": null
+        },
+        {
+          "id": "7502187868148862976",
+          "stage": "HOST_VERIFY",
+          "status": "SUCCEEDED",
+          "remediation_kind": null,
+          "remediation_round_id": null,
+          "updated_at": "2026-09-06T02:19:18.606+00:00",
+          "last_error": null
+        },
+        {
+          "id": "7502188652185915392",
+          "stage": "MANAGER_DECIDE:7502187868148862976",
+          "status": "SUCCEEDED",
+          "remediation_kind": null,
+          "remediation_round_id": null,
+          "updated_at": "2026-09-06T02:19:18.676+00:00",
+          "last_error": null
+        },
+        {
+          "id": "7502188652471128064",
+          "stage": "ROLE_EXECUTION:QA_AGENT",
+          "status": "SUCCEEDED",
+          "remediation_kind": null,
+          "remediation_round_id": null,
+          "updated_at": "2026-09-06T02:34:17.72+00:00",
+          "last_error": null
+        },
+        {
+          "id": "7502192423343362048",
+          "stage": "MANAGER_DECIDE:7502188652471128064",
+          "status": "SUCCEEDED",
+          "remediation_kind": null,
+          "remediation_round_id": null,
+          "updated_at": "2026-09-06T02:34:18.506+00:00",
+          "last_error": null
+        },
+        {
+          "id": "7502192424912031746",
+          "stage": "ROLE_EXECUTION:CODING_AGENT",
+          "status": "SUCCEEDED",
+          "remediation_kind": "MANAGER_GAP_FIX",
+          "remediation_round_id": "7502192424912031745",
+          "updated_at": "2026-09-06T02:39:48.041+00:00",
+          "last_error": null
+        },
+        {
+          "id": "7502193808810053632",
+          "stage": "HOST_VERIFY",
+          "status": "SUCCEEDED",
+          "remediation_kind": "MANAGER_GAP_FIX",
+          "remediation_round_id": "7502192424912031745",
+          "updated_at": "2026-09-06T02:42:24.753+00:00",
+          "last_error": null
+        },
+        {
+          "id": "7502194466107822080",
+          "stage": "MANAGER_DECIDE:7502193808810053632",
+          "status": "SUCCEEDED",
+          "remediation_kind": "MANAGER_GAP_FIX",
+          "remediation_round_id": "7502192424912031745",
+          "updated_at": "2026-09-06T02:42:24.835+00:00",
+          "last_error": null
+        },
+        {
+          "id": "7502194466434977792",
+          "stage": "ROLE_EXECUTION:QA_AGENT",
+          "status": "DEAD_LETTERED",
+          "remediation_kind": "MANAGER_GAP_FIX",
+          "remediation_round_id": "7502192424912031745",
+          "updated_at": "2026-09-06T02:43:16.467+00:00",
+          "last_error": "agent stage is terminal before execution: QA_AGENT FAILED_NEEDS_HUMAN"
+        }
+      ],
+      "localEvidenceDir": "tmp-mea-waimai-shadow/p3-w1d/",
+      "vmEvidenceDir": "/tmp/mea-p3-w1d/"
+    },
+    {
+      "experiment": "p3-w1e",
+      "taskId": "7502196308401328128",
+      "note": "PRIMARY triangle proof. Routing+auditQa passed. Review recovery crashed.",
+      "status": "FAILED_RETRYABLE",
+      "errorMessage": "cannot recover delivery result, successful stage missing: QA_AGENT",
+      "stateVersion": 9,
+      "ac": {
+        "AC-001": "COMPLETED",
+        "AC-002": "COMPLETED",
+        "AC-003": "COMPLETED"
+      },
+      "pollerVerdict": "PASS_MANAGER_GAP_FIX_ENQUEUED",
+      "pullRequestUrl": "",
+      "managerDecisionHash": "sha256:1e8cdb83413d4f68197079108994fbca12ff99a75ec332387ffb843d769d6fee",
+      "records": [
+        {
+          "id": "AC-001",
+          "status": "COMPLETED",
+          "kind": "REQUIREMENT"
+        },
+        {
+          "id": "AC-002",
+          "status": "COMPLETED",
+          "kind": "REQUIREMENT"
+        },
+        {
+          "id": "AC-003",
+          "status": "COMPLETED",
+          "kind": "REQUIREMENT"
+        },
+        {
+          "id": "GATE-BUILD",
+          "status": "COMPLETED",
+          "kind": "GATE"
+        },
+        {
+          "id": "GATE-STATIC",
+          "status": "COMPLETED",
+          "kind": "GATE"
+        },
+        {
+          "id": "GATE-QA-EVIDENCE",
+          "status": "COMPLETED",
+          "kind": "GATE"
+        },
+        {
+          "id": "GATE-WORKSPACE-INTEGRITY",
+          "status": "COMPLETED",
+          "kind": "GATE"
+        },
+        {
+          "id": "ART-PR",
+          "status": "PENDING",
+          "kind": "ARTIFACT"
+        }
+      ],
+      "decisions": [
+        {
+          "round_no": 1,
+          "source_command_id": "7502201602179207168",
+          "route": "EXECUTE",
+          "executor_route": "QA_AGENT",
+          "target_record_ids": [],
+          "bounded_contract": "",
+          "rationale": "host-verify succeeded; continue QA",
+          "created_at": "2026-09-06T03:13:25.906207+00:00"
+        },
+        {
+          "round_no": 2,
+          "source_command_id": "7502202272282185728",
+          "route": "EXECUTE",
+          "executor_route": "CODING_AGENT",
+          "target_record_ids": [
+            "AC-003"
+          ],
+          "bounded_contract": "只修复以下已审计缺口，禁止扩大范围：AC-003",
+          "rationale": "pending blocking acceptance [AC-003]",
+          "created_at": "2026-09-06T03:30:12.228714+00:00"
+        },
+        {
+          "round_no": 3,
+          "source_command_id": "7502208702544482304",
+          "route": "EXECUTE",
+          "executor_route": "QA_AGENT",
+          "target_record_ids": [],
+          "bounded_contract": "",
+          "rationale": "host-verify succeeded; continue QA",
+          "created_at": "2026-09-06T03:41:35.468557+00:00"
+        },
+        {
+          "round_no": 4,
+          "source_command_id": "7502209358856589312",
+          "route": "DONE",
+          "executor_route": "DETERMINISTIC_REVIEW",
+          "target_record_ids": [],
+          "bounded_contract": "",
+          "rationale": "all blocking requirements completed",
+          "created_at": "2026-09-06T04:09:47.716201+00:00"
+        }
+      ],
+      "commands": [
+        {
+          "id": "7502196315875577856",
+          "stage": "ROLE_EXECUTION:REQUIREMENT_REVIEWER",
+          "status": "SUCCEEDED",
+          "remediation_kind": null,
+          "remediation_round_id": null,
+          "updated_at": "2026-09-06T02:55:43.457+00:00",
+          "last_error": null
+        },
+        {
+          "id": "7502197816094232576",
+          "stage": "ROLE_EXECUTION:SOLUTION_ARCHITECT",
+          "status": "SUCCEEDED",
+          "remediation_kind": null,
+          "remediation_round_id": null,
+          "updated_at": "2026-09-06T02:57:26.077+00:00",
+          "last_error": null
+        },
+        {
+          "id": "7502198246505320448",
+          "stage": "ROLE_EXECUTION:CODING_AGENT",
+          "status": "SUCCEEDED",
+          "remediation_kind": null,
+          "remediation_round_id": null,
+          "updated_at": "2026-09-06T03:10:46.125+00:00",
+          "last_error": null
+        },
+        {
+          "id": "7502201602179207168",
+          "stage": "HOST_VERIFY",
+          "status": "SUCCEEDED",
+          "remediation_kind": null,
+          "remediation_round_id": null,
+          "updated_at": "2026-09-06T03:13:25.712+00:00",
+          "last_error": null
+        },
+        {
+          "id": "7502202271535599616",
+          "stage": "MANAGER_DECIDE:7502201602179207168",
+          "status": "SUCCEEDED",
+          "remediation_kind": null,
+          "remediation_round_id": null,
+          "updated_at": "2026-09-06T03:13:25.898+00:00",
+          "last_error": null
+        },
+        {
+          "id": "7502202272282185728",
+          "stage": "ROLE_EXECUTION:QA_AGENT",
+          "status": "SUCCEEDED",
+          "remediation_kind": null,
+          "remediation_round_id": null,
+          "updated_at": "2026-09-06T03:30:11.269+00:00",
+          "last_error": null
+        },
+        {
+          "id": "7502206489147346944",
+          "stage": "MANAGER_DECIDE:7502202272282185728",
+          "status": "SUCCEEDED",
+          "remediation_kind": null,
+          "remediation_round_id": null,
+          "updated_at": "2026-09-06T03:30:12.22+00:00",
+          "last_error": null
+        },
+        {
+          "id": "7502206490577604610",
+          "stage": "ROLE_EXECUTION:CODING_AGENT",
+          "status": "SUCCEEDED",
+          "remediation_kind": "MANAGER_GAP_FIX",
+          "remediation_round_id": "7502206490577604609",
+          "updated_at": "2026-09-06T03:38:58.985+00:00",
+          "last_error": null
+        },
+        {
+          "id": "7502208702544482304",
+          "stage": "HOST_VERIFY",
+          "status": "SUCCEEDED",
+          "remediation_kind": "MANAGER_GAP_FIX",
+          "remediation_round_id": "7502206490577604609",
+          "updated_at": "2026-09-06T03:41:35.358+00:00",
+          "last_error": null
+        },
+        {
+          "id": "7502209358420381696",
+          "stage": "MANAGER_DECIDE:7502208702544482304",
+          "status": "SUCCEEDED",
+          "remediation_kind": "MANAGER_GAP_FIX",
+          "remediation_round_id": "7502206490577604609",
+          "updated_at": "2026-09-06T03:41:35.465+00:00",
+          "last_error": null
+        },
+        {
+          "id": "7502209358856589312",
+          "stage": "ROLE_EXECUTION:QA_AGENT",
+          "status": "SUCCEEDED",
+          "remediation_kind": "MANAGER_GAP_FIX",
+          "remediation_round_id": "7502206490577604609",
+          "updated_at": "2026-09-06T04:09:47.351+00:00",
+          "last_error": null
+        },
+        {
+          "id": "7502216455157583872",
+          "stage": "MANAGER_DECIDE:7502209358856589312",
+          "status": "SUCCEEDED",
+          "remediation_kind": null,
+          "remediation_round_id": null,
+          "updated_at": "2026-09-06T04:09:47.714+00:00",
+          "last_error": null
+        },
+        {
+          "id": "7502216456675921920",
+          "stage": "DETERMINISTIC_REVIEW",
+          "status": "DEAD_LETTERED",
+          "remediation_kind": null,
+          "remediation_round_id": null,
+          "updated_at": "2026-09-06T04:10:34.202+00:00",
+          "last_error": "cannot recover delivery result, successful stage missing: QA_AGENT"
+        }
+      ],
+      "localEvidenceDir": "tmp-mea-waimai-shadow/p3-w1e/",
+      "vmEvidenceDir": "/tmp/mea-p3-w1e/"
+    },
+    {
+      "experiment": "p3-w1f",
+      "taskId": "7502220631853895680",
+      "note": "Infra flake: first QA missing-lifecycle / OpenCode 401. Did not reach GAP_FIX.",
+      "status": "FAILED_NEEDS_HUMAN",
+      "errorMessage": "QA_AGENT failed: Pi result requires RESULT_SUBMITTED followed by AGENT_SETTLED",
+      "stateVersion": 5,
+      "ac": {
+        "AC-001": "PENDING",
+        "AC-002": "PENDING",
+        "AC-003": "PENDING"
+      },
+      "pollerVerdict": "TERMINAL_FAILED_NEEDS_HUMAN",
+      "pullRequestUrl": "",
+      "managerDecisionHash": "sha256:bfbb4c1fd40a756f17fb90842818dca7f8fc65d4264ff4bd9f82a43b6cebb783",
+      "records": [
+        {
+          "id": "AC-001",
+          "status": "PENDING",
+          "kind": "REQUIREMENT"
+        },
+        {
+          "id": "AC-002",
+          "status": "PENDING",
+          "kind": "REQUIREMENT"
+        },
+        {
+          "id": "AC-003",
+          "status": "PENDING",
+          "kind": "REQUIREMENT"
+        },
+        {
+          "id": "GATE-BUILD",
+          "status": "COMPLETED",
+          "kind": "GATE"
+        },
+        {
+          "id": "GATE-STATIC",
+          "status": "COMPLETED",
+          "kind": "GATE"
+        },
+        {
+          "id": "GATE-QA-EVIDENCE",
+          "status": "PENDING",
+          "kind": "GATE"
+        },
+        {
+          "id": "GATE-WORKSPACE-INTEGRITY",
+          "status": "PENDING",
+          "kind": "GATE"
+        },
+        {
+          "id": "ART-PR",
+          "status": "PENDING",
+          "kind": "ARTIFACT"
+        }
+      ],
+      "decisions": [
+        {
+          "round_no": 1,
+          "source_command_id": "7502225157860233216",
+          "route": "EXECUTE",
+          "executor_route": "QA_AGENT",
+          "target_record_ids": [],
+          "bounded_contract": "",
+          "rationale": "host-verify succeeded; continue QA",
+          "created_at": "2026-09-06T04:47:27.140075+00:00"
+        }
+      ],
+      "commands": [
+        {
+          "id": "7502220639047127040",
+          "stage": "ROLE_EXECUTION:REQUIREMENT_REVIEWER",
+          "status": "SUCCEEDED",
+          "remediation_kind": null,
+          "remediation_round_id": null,
+          "updated_at": "2026-09-06T04:34:58.05+00:00",
+          "last_error": null
+        },
+        {
+          "id": "7502222791475859456",
+          "stage": "ROLE_EXECUTION:SOLUTION_ARCHITECT",
+          "status": "SUCCEEDED",
+          "remediation_kind": null,
+          "remediation_round_id": null,
+          "updated_at": "2026-09-06T04:37:39.187+00:00",
+          "last_error": null
+        },
+        {
+          "id": "7502223467337617408",
+          "stage": "ROLE_EXECUTION:CODING_AGENT",
+          "status": "SUCCEEDED",
+          "remediation_kind": null,
+          "remediation_round_id": null,
+          "updated_at": "2026-09-06T04:44:22.237+00:00",
+          "last_error": null
+        },
+        {
+          "id": "7502225157860233216",
+          "stage": "HOST_VERIFY",
+          "status": "SUCCEEDED",
+          "remediation_kind": null,
+          "remediation_round_id": null,
+          "updated_at": "2026-09-06T04:47:27.037+00:00",
+          "last_error": null
+        },
+        {
+          "id": "7502225932967612416",
+          "stage": "MANAGER_DECIDE:7502225157860233216",
+          "status": "SUCCEEDED",
+          "remediation_kind": null,
+          "remediation_round_id": null,
+          "updated_at": "2026-09-06T04:47:27.136+00:00",
+          "last_error": null
+        },
+        {
+          "id": "7502225933374459904",
+          "stage": "ROLE_EXECUTION:QA_AGENT",
+          "status": "SUCCEEDED",
+          "remediation_kind": null,
+          "remediation_round_id": null,
+          "updated_at": "2026-09-06T05:33:10.336+00:00",
+          "last_error": null
+        }
+      ],
+      "localEvidenceDir": "tmp-mea-waimai-shadow/p3-w1f/",
+      "vmEvidenceDir": "/tmp/mea-p3-w1f/"
+    }
+  ],
+  "w1bNote": {
+    "taskId": "7502048568933486592",
+    "localEvidence": "not copied to laptop tmp-mea-waimai-shadow (listed as W1e parentTaskIds[1])",
+    "fromPriorRunNotes": "FAILED_NEEDS_HUMAN; QA AC-001/002 PASS AC-003 FAIL; requested=false v2=false; bounce empty; no Manager after product-FAILED QA. Fixed later by protocolCompleteAcceptanceReport continuation."
+  }
+}

@@ -20,7 +20,7 @@
 - **THEN** 系统不创建 `AuditedTaskState`，也不改变既有只读 BugFix 行为
 
 ### Requirement: Executor 声明只能以 UNTRUSTED 进入状态
-系统 SHALL 把角色结果 JSON 中经协议校验的自报内容——`CODING_AGENT.testStatus`、`QA_AGENT.status`、各角色 `environmentNotes` 与 `facts[]`（`DECLARED`/`INFERRED`）——在该 `ROLE_EXECUTION` command 的 finalize 事务内记录为 `UNTRUSTED` claim（`kind=FACT`，`status=UNTRUSTED`，`sourceStageRunId` 指向本次 attempt）。任何 `ROLE_EXECUTION` command 的 finalize MUST NOT 把 `REQUIREMENT`、`GATE-*` 或 `ART-*` 记录写为 `COMPLETED`。
+系统 SHALL 把角色结果 JSON 中经协议校验的自报内容——`CODING_AGENT.testStatus`、`QA_AGENT.status`、各角色 `environmentNotes` 与 `facts[]`（`DECLARED`/`INFERRED`）——在该 `ROLE_EXECUTION` command 的 finalize 事务内记录为 `UNTRUSTED` claim（`kind=FACT`，`status=UNTRUSTED`，`sourceStageRunId` 指向本次 attempt）。`recordClaims` MUST NOT 把 `REQUIREMENT`、`GATE-*` 或 `ART-*` 记录写为 `COMPLETED`。`ROLE_EXECUTION:QA_AGENT` 成功（含产品补救冻结 intent 的 SUCCEEDED 命令）MUST 改为一次 `auditQaWithClaims`：同一 `finish()` 写入 UNTRUSTED claims 与 QA 审计，`UNIQUE(command_id)` 仍只允许一条 `AuditRun`。
 
 #### Scenario: Coding 自报测试通过
 - **WHEN** `CODING_AGENT` 结果为 `status=SUCCESS`、`testStatus=PASSED` 且协议校验通过
@@ -29,6 +29,14 @@
 #### Scenario: QA 自报 PASSED 但尚无审计轮次
 - **WHEN** `QA_AGENT` 结果为 `status=PASSED` 而本 command 尚未产生 `AuditRun`
 - **THEN** 没有任何 `AC-*` 记录变为 `COMPLETED`
+
+#### Scenario: 生产 QA 成功接线 auditQaWithClaims
+- **WHEN** bounded `ROLE_EXECUTION:QA_AGENT` 成功，CURRENT `acceptanceResults` 含 `criteriaId=AC-001`、`status=PASSED`、`exitCode=0`、可解析证据，且前后工作区指纹一致
+- **THEN** 该 command 的 `AuditedStateMutation` 恰好一次：`subjectRole=QA_AGENT`，`AC-001`、`GATE-QA-EVIDENCE`、`GATE-WORKSPACE-INTEGRITY` 为 `COMPLETED`，`testStatus=PASSED` 仅作为 `CLAIM-*` UNTRUSTED
+
+#### Scenario: bounded QA 成功结果从 multiAgentStages 解包
+- **WHEN** orchestrator 把已成功 Coding 的 `resultJson` 与 `multiAgentStages[]` 合并（根对象是 Coding 字段，`status=SUCCESS`，没有顶层 `stages`/`acceptanceResults`/`dockerMetadata`），QA 行的 `resultJson` 含 CURRENT 通过项与一致指纹
+- **THEN** `QaSubjectExtractor` / `authoritativeQaResultJson` 仍读到 QA 对象：指纹不为 SUSPECT，`AC-*` 与 `GATE-QA-EVIDENCE`/`GATE-WORKSPACE-INTEGRITY` 可晋升；不得把 Coding 根对象当成 QA 报告
 
 ### Requirement: 只有 AuditRun 能晋升记录且必须携带可解析证据引用
 系统 SHALL 只允许 Host 确定性审计器（`DeterministicAuditor`）产生 `AuditRun{completion, integrity, contractAudit, verified[], missing[], untrusted[], blockers[]}` 并据此写下一版状态。每条 `COMPLETED` 记录 MUST 携带至少一条 `EvidenceRef{auditRunId, sourceKind, uri, sha256}`，`sourceKind` 限于 `HOST_VERIFICATION`、`QA_EVIDENCE`、`HOST_ASSERTION`、`PUBLICATION_LEDGER`、`WORKSPACE_FINGERPRINT`，且 `uri` 在写入时 MUST 解析到已持久化的产物（`rd_host_verification_artifacts`、`rd_qa_evidence_objects`、`rd_requirement_publications` 或指纹回执）。状态转移遵守：`PENDING --干净证据--> COMPLETED`；`COMPLETED --新证据冲突或失效--> PENDING/UNTRUSTED`（不得静默覆盖，冲突写入 `AuditRun.untrusted[]`）；`UNTRUSTED --重新独立核验--> COMPLETED/PENDING`。
@@ -81,6 +89,10 @@
 #### Scenario: 全部验收标准有证据通过
 - **WHEN** QA 对每条 `AC-*` 提交 CURRENT `PASSED` 结果且全部证据引用可解析
 - **THEN** 全部 `AC-*` 记为 `COMPLETED`，`GATE-QA-EVIDENCE` 记为 `COMPLETED`，`AuditRun.completion=COMPLETE`
+
+#### Scenario: GATE-QA-EVIDENCE 证据并集超过每条记录 16 条上限
+- **WHEN** 多条 CURRENT `PASSED` 的 `evidenceArtifactIds` 去重后仍超过 16（浏览器 QA 常为每条 AC 各附 console/network/trace/desktop/mobile）
+- **THEN** 审计器 MUST 在写入 `AuditedRecord` 前把该记录的证据截到 ≤ 16（优先保留 console/network/traces.zip/desktop/mobile 引用），仍晋升 `AC-*` 与 `GATE-QA-EVIDENCE`；MUST NOT 抛 `evidenceRefs must not exceed 16` 把诚实任务打成 `FAILED_RETRYABLE`
 
 #### Scenario: 漏掉一条验收标准
 - **WHEN** QA 报告 `status=PASSED` 但某条 `AC-*` 没有 CURRENT 结果

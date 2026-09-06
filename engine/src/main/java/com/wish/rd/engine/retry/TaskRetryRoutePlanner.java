@@ -1,6 +1,8 @@
 package com.wish.rd.engine.retry;
 
 import com.wish.rd.engine.agent.model.AgentRole;
+import com.wish.rd.engine.requirement.answer.UserAnswerResumeStages;
+import com.wish.rd.engine.requirement.manager.ManagerDecideStages;
 import com.wish.rd.engine.retry.model.TaskFailurePhase;
 import com.wish.rd.engine.retry.model.TaskRetryAttemptKind;
 import com.wish.rd.engine.retry.model.TaskRetryPoint;
@@ -44,6 +46,9 @@ public final class TaskRetryRoutePlanner {
                 || normalized.equals("APPROVAL_RESUME")) {
             return TaskFailurePhase.POLICY;
         }
+        if (ManagerDecideStages.isManagerDecide(normalized) || UserAnswerResumeStages.isResume(normalized)) {
+            return TaskFailurePhase.MANAGER;
+        }
         if (normalized.equals("DETERMINISTIC_REVIEW")) {
             return TaskFailurePhase.DETERMINISTIC_REVIEW;
         }
@@ -84,6 +89,14 @@ public final class TaskRetryRoutePlanner {
                 requirePolicy(point);
                 requireStage(point, "POLICY_EVALUATE", "POLICY_APPLY", "APPROVAL_RESUME");
                 yield infrastructure("POLICY_EVALUATE", allRoles());
+            }
+            case MANAGER -> {
+                requirePolicy(point);
+                if (!ManagerDecideStages.isManagerDecide(point.failedStage())
+                        && !UserAnswerResumeStages.isResume(point.failedStage())) {
+                    throw ambiguous(point);
+                }
+                yield infrastructure(point.failedStage(), List.of());
             }
             case RAG -> {
                 if (point.failedRetrievalRunId().isBlank()) {

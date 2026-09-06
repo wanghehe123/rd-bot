@@ -20,6 +20,7 @@ const STATUS_LABELS: Record<string, string> = {
   PLAN_GENERATED: "计划就绪",
   WAITING_POLICY: "策略检查",
   WAITING_APPROVAL: "等待审批",
+  WAITING_USER_INPUT: "等待补充信息",
   SEARCHING: "检索中",
   EXECUTING: "执行中",
   VALIDATING: "验证中",

@@ -168,7 +168,9 @@ export function RoleEffectiveContextCard({
               <EmptyLine
                 label={
                   effectiveContext?.unavailableReason
-                  || (runtimeType !== "PI"
+                  || (!promptStage
+                    ? "当前 Attempt 尚无已绑定的 Prompt 读模型。"
+                    : runtimeType !== "PI"
                     ? "当前 Attempt 不是 PI，状态栏不适用"
                     : "已记录最新状态，但尚无可证明的注入上下文")
                 }

@@ -154,15 +154,19 @@ public final class EngineRequirementExecutionProfileResolver
             int attemptNo,
             AgentRuntimeCapability requiredCapability
     ) {
-        if (task == null || role == null || requiredCapability == null) {
-            throw new IllegalArgumentException("task, role, and requiredCapability must not be null");
+        if (task == null || role == null) {
+            throw new IllegalArgumentException("task and role must not be null");
         }
         String safeStageRunId = requireText(stageRunId, "stageRunId");
         if (snapshotStore.findByStageRunId(safeStageRunId).isPresent()) {
             throw new IllegalStateException("prepared target stage already has a profile snapshot: " + safeStageRunId);
         }
         AgentExecutionProfileSnapshot prepared = buildSnapshot(task, role, safeStageRunId, attemptNo);
-        if (prepared.runtimeType() != AgentRuntimeType.PI || !prepared.hasCapability(requiredCapability)) {
+        if (prepared.runtimeType() != AgentRuntimeType.PI) {
+            throw new IllegalStateException("prepared target profile is not eligible PI runtime: "
+                    + safeStageRunId);
+        }
+        if (requiredCapability != null && !prepared.hasCapability(requiredCapability)) {
             throw new IllegalStateException("prepared target profile is not eligible PI runtime: "
                     + safeStageRunId + " requires " + requiredCapability.name());
         }

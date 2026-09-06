@@ -1,5 +1,6 @@
 package com.wish.rd.engine.requirement.job.model;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.wish.rd.engine.requirement.audit.AuditedStateMutation;
 import com.wish.rd.rag.runtime.model.RdTaskStatus;
 
@@ -19,6 +20,7 @@ import java.util.List;
  * @param externalEffectReceipt durable external-effect evidence
  * @param piQaRemediationIntent optional immutable PI QA remediation intent
  * @param auditedStateMutation optional audited-state writeback (schema v3)
+ * @param managerDecision optional Host Manager decision frozen with this plan
  */
 public record RequirementStageExecutionPlan(
         int schemaVersion,
@@ -31,7 +33,9 @@ public record RequirementStageExecutionPlan(
         ContinuationSpec continuation,
         ExternalEffectReceipt externalEffectReceipt,
         PiQaRemediationIntent piQaRemediationIntent,
-        AuditedStateMutation auditedStateMutation
+        AuditedStateMutation auditedStateMutation,
+        @JsonInclude(JsonInclude.Include.NON_NULL)
+        com.wish.rd.engine.requirement.manager.ManagerDecision managerDecision
 ) {
 
     public static final int LEGACY_SCHEMA_VERSION = 1;
@@ -96,7 +100,22 @@ public record RequirementStageExecutionPlan(
         return new RequirementStageExecutionPlan(
                 schemaVersion, taskId, expectedVersion, expectedFencingToken, expectedStatus,
                 mutations, commandDisposition, continuation, externalEffectReceipt, intent,
-                auditedStateMutation);
+                auditedStateMutation, managerDecision);
+    }
+
+    /**
+     * Returns a copy carrying the Host Manager decision.
+     *
+     * @param decision decision, or {@code null} to clear it
+     * @return plan carrying {@code decision}
+     */
+    public RequirementStageExecutionPlan withManagerDecision(
+            com.wish.rd.engine.requirement.manager.ManagerDecision decision
+    ) {
+        return new RequirementStageExecutionPlan(
+                schemaVersion, taskId, expectedVersion, expectedFencingToken, expectedStatus,
+                mutations, commandDisposition, continuation, externalEffectReceipt,
+                piQaRemediationIntent, auditedStateMutation, decision);
     }
 
     /**
@@ -109,7 +128,7 @@ public record RequirementStageExecutionPlan(
         return new RequirementStageExecutionPlan(
                 CURRENT_SCHEMA_VERSION, taskId, expectedVersion, expectedFencingToken, expectedStatus,
                 mutations, commandDisposition, continuation, externalEffectReceipt, piQaRemediationIntent,
-                mutation);
+                mutation, managerDecision);
     }
 
     /** Backward-compatible constructor used by non-remediation plan producers. */
@@ -125,7 +144,7 @@ public record RequirementStageExecutionPlan(
             ExternalEffectReceipt externalEffectReceipt
     ) {
         this(schemaVersion, taskId, expectedVersion, expectedFencingToken, expectedStatus, mutations,
-                commandDisposition, continuation, externalEffectReceipt, null, null);
+                commandDisposition, continuation, externalEffectReceipt, null, null, null);
     }
 
     /** Backward-compatible constructor used by remediation plan producers. */
@@ -142,7 +161,26 @@ public record RequirementStageExecutionPlan(
             PiQaRemediationIntent piQaRemediationIntent
     ) {
         this(schemaVersion, taskId, expectedVersion, expectedFencingToken, expectedStatus, mutations,
-                commandDisposition, continuation, externalEffectReceipt, piQaRemediationIntent, null);
+                commandDisposition, continuation, externalEffectReceipt, piQaRemediationIntent, null, null);
+    }
+
+    /** Backward-compatible constructor used by Manager plan producers. */
+    public RequirementStageExecutionPlan(
+            int schemaVersion,
+            String taskId,
+            long expectedVersion,
+            long expectedFencingToken,
+            RdTaskStatus expectedStatus,
+            List<RequirementTaskMutation> mutations,
+            CommandDisposition commandDisposition,
+            ContinuationSpec continuation,
+            ExternalEffectReceipt externalEffectReceipt,
+            PiQaRemediationIntent piQaRemediationIntent,
+            AuditedStateMutation auditedStateMutation
+    ) {
+        this(schemaVersion, taskId, expectedVersion, expectedFencingToken, expectedStatus, mutations,
+                commandDisposition, continuation, externalEffectReceipt, piQaRemediationIntent,
+                auditedStateMutation, null);
     }
 
     /**

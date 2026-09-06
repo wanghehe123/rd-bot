@@ -109,6 +109,7 @@ const STATUS_OPTIONS = [
   { value: "PLAN_GENERATED", label: "计划就绪" },
   { value: "WAITING_POLICY", label: "策略检查" },
   { value: "WAITING_APPROVAL", label: "等待审批" },
+  { value: "WAITING_USER_INPUT", label: "等待补充信息" },
   { value: "SEARCHING", label: "检索中" },
   { value: "EXECUTING", label: "执行中" },
   { value: "VALIDATING", label: "验证中" },
@@ -345,7 +346,7 @@ export function RdTaskListPage() {
     for (const t of records) {
       if (["EXECUTING", "SEARCHING", "VALIDATING", "PR_CREATING", "MATERIAL_COLLECTING", "CONTEXT_BUILDING", "PLAN_GENERATING", "REPORTING", "RECOVERING", "RUNNING"].includes(t.status)) {
         inProgress++;
-      } else if (["WAITING_APPROVAL", "WAITING_POLICY", "FAILED_NEEDS_HUMAN"].includes(t.status)) {
+      } else if (["WAITING_APPROVAL", "WAITING_USER_INPUT", "WAITING_POLICY", "FAILED_NEEDS_HUMAN"].includes(t.status)) {
         waiting++;
       } else if (["FAILED_RETRYABLE", "DEAD_LETTERED", "REJECTED"].includes(t.status)) {
         failed++;

@@ -28,6 +28,10 @@ class RdTaskTransitionPolicyTest {
         assertDoesNotThrow(() -> allow(
                 RdTaskType.REQUIREMENT, RdTaskStatus.RECOVERING, RdTaskStatus.FAILED_RETRYABLE));
         assertDoesNotThrow(() -> allow(RdTaskType.REQUIREMENT, RdTaskStatus.EXECUTING, RdTaskStatus.CANCELLED));
+        assertDoesNotThrow(() -> allow(RdTaskType.REQUIREMENT, RdTaskStatus.EXECUTING, RdTaskStatus.WAITING_USER_INPUT));
+        assertDoesNotThrow(() -> allow(RdTaskType.REQUIREMENT, RdTaskStatus.WAITING_USER_INPUT, RdTaskStatus.EXECUTING));
+        assertDoesNotThrow(() -> allow(RdTaskType.REQUIREMENT, RdTaskStatus.WAITING_USER_INPUT, RdTaskStatus.REJECTED));
+        assertDoesNotThrow(() -> allow(RdTaskType.REQUIREMENT, RdTaskStatus.RECOVERING, RdTaskStatus.WAITING_USER_INPUT));
         assertDoesNotThrow(() -> allow(RdTaskType.REQUIREMENT, RdTaskStatus.CREATED, RdTaskStatus.DEAD_LETTERED));
         assertDoesNotThrow(() -> allow(
                 RdTaskType.REQUIREMENT, RdTaskStatus.DEAD_LETTERED, RdTaskStatus.RECOVERING));
@@ -57,6 +61,10 @@ class RdTaskTransitionPolicyTest {
         assertThrows(
                 IllegalStateException.class,
                 () -> allow(RdTaskType.BUG_FIX, RdTaskStatus.CREATED, RdTaskStatus.MATERIAL_COLLECTING)
+        );
+        assertThrows(
+                IllegalStateException.class,
+                () -> allow(RdTaskType.BUG_FIX, RdTaskStatus.EXECUTING, RdTaskStatus.WAITING_USER_INPUT)
         );
     }
 

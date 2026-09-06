@@ -79,6 +79,26 @@ class EngineRequirementExecutionProfileResolverTest {
     }
 
     @Test
+    void shouldPreparePiSnapshotWithoutQaRemediationCapabilityWhenNoneIsRequired() {
+        InMemoryAgentExecutionProfileStore profiles = new InMemoryAgentExecutionProfileStore();
+        AgentExecutionProfileService profileService = new AgentExecutionProfileService(profiles);
+        AgentExecutionProfile piWithoutCapability = new AgentExecutionProfile(
+                "pi-legacy", "project-1", "CODING_AGENT", "Pi legacy", AgentRuntimeType.PI,
+                "provider-1", "", "", 0L, "tool-v1", 1L, true, 1L, List.of());
+        profileService.register(piWithoutCapability);
+        profileService.bindProjectDefault("project-1", "CODING_AGENT", piWithoutCapability.profileId());
+        InMemoryAgentExecutionProfileSnapshotStore snapshots = new InMemoryAgentExecutionProfileSnapshotStore();
+
+        AgentExecutionProfileSnapshot prepared = resolver(profileService, snapshots).prepareSnapshot(
+                task(), AgentRole.CODING_AGENT, "future-host-verify-fix", 2);
+
+        assertEquals("future-host-verify-fix", prepared.stageRunId());
+        assertEquals(AgentRuntimeType.PI, prepared.runtimeType());
+        assertFalse(prepared.hasCapability(AgentRuntimeCapability.PI_QA_REMEDIATION_V2));
+        assertTrue(snapshots.findByStageRunId("future-host-verify-fix").isEmpty());
+    }
+
+    @Test
     void shouldFreezeSortedCapabilitiesAndProfileVersionInCanonicalSnapshot() {
         InMemoryAgentExecutionProfileStore profiles = new InMemoryAgentExecutionProfileStore();
         AgentExecutionProfileService profileService = new AgentExecutionProfileService(profiles);

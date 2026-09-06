@@ -51,6 +51,7 @@ public final class RdDashboardQueryService {
     );
     private static final Set<RdTaskStatus> WAITING_HUMAN_STATUSES = EnumSet.of(
             RdTaskStatus.WAITING_APPROVAL,
+            RdTaskStatus.WAITING_USER_INPUT,
             RdTaskStatus.FAILED_NEEDS_HUMAN
     );
     private static final Set<RdTaskStatus> BLOCKED_STATUSES = EnumSet.of(
@@ -63,6 +64,7 @@ public final class RdDashboardQueryService {
             RdTaskStatus.CREATED,
             RdTaskStatus.WAITING_POLICY,
             RdTaskStatus.WAITING_APPROVAL,
+            RdTaskStatus.WAITING_USER_INPUT,
             RdTaskStatus.CANCELLED,
             RdTaskStatus.DELETED,
             RdTaskStatus.REJECTED,

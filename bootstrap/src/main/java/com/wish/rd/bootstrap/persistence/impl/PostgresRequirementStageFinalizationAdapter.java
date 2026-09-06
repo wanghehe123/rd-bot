@@ -31,6 +31,8 @@ import com.wish.rd.bootstrap.persistence.mapper.RequirementPublicationMapper;
 import com.wish.rd.bootstrap.persistence.mapper.TaskFailureProvenanceMapper;
 import com.wish.rd.bootstrap.persistence.mapper.TaskRetryAttemptBindingMapper;
 import com.wish.rd.bootstrap.persistence.mapper.TaskRetryCheckpointMapper;
+import com.wish.rd.engine.requirement.manager.ManagerDecision;
+import com.wish.rd.engine.requirement.manager.ManagerDecisionStore;
 import com.wish.rd.engine.project.memory.ProjectMemoryFinalizationRegistrar;
 import com.wish.rd.engine.requirement.audit.AuditedCompletionBindingGuard;
 import com.wish.rd.engine.requirement.audit.AuditedStateMutation;
@@ -95,6 +97,7 @@ public class PostgresRequirementStageFinalizationAdapter implements RequirementS
     private final AgentRemediationRoundMapper remediationRoundMapper;
     private final ProjectMemoryOperationStore memoryOperationStore;
     private final AuditedStateFinalizationWriter auditedStateWriter;
+    private ManagerDecisionStore managerDecisionStore;
 
     /** Advisory-lock namespace distinct from fair stage admission. */
     static final long REMEDIATION_TASK_LOCK_NAMESPACE = 0x5049_524D_4C4B_0000L;
@@ -237,6 +240,11 @@ public class PostgresRequirementStageFinalizationAdapter implements RequirementS
                 remediationRoundMapperProvider == null ? null : remediationRoundMapperProvider.getIfAvailable(),
                 memoryOperationStoreProvider == null ? null : memoryOperationStoreProvider.getIfAvailable(),
                 auditedStateWriterProvider == null ? null : auditedStateWriterProvider.getIfAvailable());
+    }
+
+    @Autowired(required = false)
+    public void setManagerDecisionStore(ManagerDecisionStore managerDecisionStore) {
+        this.managerDecisionStore = managerDecisionStore;
     }
 
     /**
@@ -572,8 +580,12 @@ public class PostgresRequirementStageFinalizationAdapter implements RequirementS
         }
         Map<String, PiQaRemediationIntent.ExecutionProfileClaim> claims = new TreeMap<>();
         addProfileClaim(claims, intent.sourceProfile());
-        if (intent.codingProfile() != null) addProfileClaim(claims, intent.codingProfile().profile());
-        addProfileClaim(claims, intent.qaProfile().profile());
+        if (intent.codingProfile() != null) {
+            addProfileClaim(claims, intent.codingProfile().profile());
+        }
+        if (intent.qaProfile() != null) {
+            addProfileClaim(claims, intent.qaProfile().profile());
+        }
         for (Map.Entry<String, PiQaRemediationIntent.ExecutionProfileClaim> entry : claims.entrySet()) {
             AgentExecutionProfileRow row = executionProfileMapper.findForUpdate(entry.getKey());
             verifyProfileClaim(row, entry.getValue());
@@ -673,6 +685,7 @@ public class PostgresRequirementStageFinalizationAdapter implements RequirementS
         AuditedCompletionBindingGuard.requireBindingIfCompleted(command.plan(), auditedStateWriter != null);
         applyAuditedStateMutation(command.plan());
         applyTaskMutation(command, lockedMarker);
+        persistManagerDecision(command.plan());
         RequirementPublicationRow publicationReceipt = lockPublicationReceipt(command.plan(), marker.taskId());
 
         // The completion CAS is deliberately before continuation visibility. Because this method
@@ -711,10 +724,7 @@ public class PostgresRequirementStageFinalizationAdapter implements RequirementS
         } else if (completed.status() == RequirementStageCommand.Status.SUCCEEDED && command.nextCommand() != null) {
             preparePolicyEvaluateLedger(command.plan(), command.nextCommand(), command.nowEpochMillis());
             stageCommandMapper.enqueue(toRow(command.nextCommand()));
-            RequirementStageCommandRow nextRow = stageCommandMapper.findByIdentity(
-                    PostgresPersistenceSupport.parseId(command.nextCommand().taskId()),
-                    command.nextCommand().role(),
-                    command.nextCommand().stage(), command.nextCommand().retryCheckpointId());
+            RequirementStageCommandRow nextRow = lookupPersistedContinuation(command.nextCommand());
             if (nextRow == null) {
                 throw new IllegalStateException("stage continuation was not persisted: "
                         + command.nextCommand().commandId());
@@ -1467,6 +1477,21 @@ public class PostgresRequirementStageFinalizationAdapter implements RequirementS
         }
     }
 
+    private RequirementStageCommandRow lookupPersistedContinuation(RequirementStageCommand requested) {
+        if (!requested.remediationRoundId().isBlank()) {
+            return stageCommandMapper.findByRemediationIdentity(
+                    PostgresPersistenceSupport.parseId(requested.taskId()),
+                    requested.role(),
+                    requested.stage(),
+                    PostgresPersistenceSupport.parseId(requested.remediationRoundId()));
+        }
+        return stageCommandMapper.findByIdentity(
+                PostgresPersistenceSupport.parseId(requested.taskId()),
+                requested.role(),
+                requested.stage(),
+                requested.retryCheckpointId());
+    }
+
     private static void requireExactContinuationIdentity(
             RequirementStageCommand requested,
             RequirementStageCommand effective
@@ -1851,6 +1876,18 @@ public class PostgresRequirementStageFinalizationAdapter implements RequirementS
         } catch (IllegalArgumentException exception) {
             throw new IllegalStateException("unknown stage finalization expected status: " + safe(value), exception);
         }
+    }
+
+    private void persistManagerDecision(RequirementStageExecutionPlan plan) {
+        if (plan == null || plan.managerDecision() == null) {
+            return;
+        }
+        if (managerDecisionStore == null) {
+            throw new IllegalStateException("manager decision store is required to persist a Manager plan");
+        }
+        ManagerDecision pending = plan.managerDecision();
+        int nextRound = managerDecisionStore.maxRound(pending.taskId()) + 1;
+        managerDecisionStore.insertIfAbsent(pending.withRoundNo(nextRound));
     }
 
     private static ScheduleResourceClass parseResource(String value) {

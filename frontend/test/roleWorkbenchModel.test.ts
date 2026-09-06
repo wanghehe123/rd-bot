@@ -25,6 +25,8 @@ test("keeps failed requirements on the checkpointed recovery path", () => {
   assert.equal(canSubmitRequirementTask({ status: "CREATED", paused: false }), true);
   assert.equal(canSubmitRequirementTask({ status: "CREATED", paused: true }), false);
   assert.equal(canSubmitRequirementTask({ status: "RECOVERING", paused: false }), false);
+  assert.equal(canSubmitRequirementTask({ status: "WAITING_USER_INPUT", paused: false }), false);
+  assert.equal(canSubmitRequirementTask({ status: "WAITING_APPROVAL", paused: false }), false);
 });
 
 test("does not treat checkpoint-bound retry progress as a blocker", () => {
@@ -464,8 +466,8 @@ test("evaluates role prompt freshness against overview expected identity", () =>
       role: "CODING_AGENT",
       status: "RUNNING",
       attemptNo: 1,
-      latestState: { sequence: 10, contentHash: "state-hash-10" } as any,
-      effectiveContext: { injectionSequence: 4, injectedBlockHash: "block-hash-4", promptContentHash: "prompt-hash-1" } as any
+      latestState: { available: true, sequence: 10, contentHash: "state-hash-10" } as any,
+      effectiveContext: { available: true, injectionSequence: 4, injectedBlockHash: "block-hash-4", promptContentHash: "prompt-hash-1" } as any
     }], expectedMap),
     "STALE_DISCARD"
   );
@@ -477,8 +479,8 @@ test("evaluates role prompt freshness against overview expected identity", () =>
       role: "CODING_AGENT",
       status: "RUNNING",
       attemptNo: 1,
-      latestState: { sequence: 12, contentHash: "state-hash-12" } as any,
-      effectiveContext: { injectionSequence: 3, injectedBlockHash: "block-hash-3", promptContentHash: "prompt-hash-1" } as any
+      latestState: { available: true, sequence: 12, contentHash: "state-hash-12" } as any,
+      effectiveContext: { available: true, injectionSequence: 3, injectedBlockHash: "block-hash-3", promptContentHash: "prompt-hash-1" } as any
     }], expectedMap),
     "STALE_DISCARD"
   );
@@ -490,8 +492,8 @@ test("evaluates role prompt freshness against overview expected identity", () =>
       role: "CODING_AGENT",
       status: "RUNNING",
       attemptNo: 1,
-      latestState: { sequence: 12, contentHash: "corrupted-hash" } as any,
-      effectiveContext: { injectionSequence: 4, injectedBlockHash: "block-hash-4", promptContentHash: "prompt-hash-1" } as any
+      latestState: { available: true, sequence: 12, contentHash: "corrupted-hash" } as any,
+      effectiveContext: { available: true, injectionSequence: 4, injectedBlockHash: "block-hash-4", promptContentHash: "prompt-hash-1" } as any
     }], expectedMap),
     "CONSISTENCY_ERROR"
   );
@@ -503,8 +505,8 @@ test("evaluates role prompt freshness against overview expected identity", () =>
       role: "CODING_AGENT",
       status: "RUNNING",
       attemptNo: 1,
-      latestState: { sequence: 12, contentHash: "state-hash-12" } as any,
-      effectiveContext: { injectionSequence: 4, injectedBlockHash: "block-hash-4", promptContentHash: "prompt-hash-1" } as any
+      latestState: { available: true, sequence: 12, contentHash: "state-hash-12" } as any,
+      effectiveContext: { available: true, injectionSequence: 4, injectedBlockHash: "block-hash-4", promptContentHash: "prompt-hash-1" } as any
     }], expectedMap),
     "ACCEPT"
   );
@@ -516,8 +518,8 @@ test("evaluates role prompt freshness against overview expected identity", () =>
       role: "CODING_AGENT",
       status: "RUNNING",
       attemptNo: 1,
-      latestState: { sequence: 13, contentHash: "state-hash-13" } as any,
-      effectiveContext: { injectionSequence: 4, injectedBlockHash: "block-hash-4", promptContentHash: "prompt-hash-1" } as any
+      latestState: { available: true, sequence: 13, contentHash: "state-hash-13" } as any,
+      effectiveContext: { available: true, injectionSequence: 4, injectedBlockHash: "block-hash-4", promptContentHash: "prompt-hash-1" } as any
     }], expectedMap),
     "ACCEPT_AND_RECONCILE"
   );
@@ -529,10 +531,45 @@ test("evaluates role prompt freshness against overview expected identity", () =>
       role: "CODING_AGENT",
       status: "RUNNING",
       attemptNo: 1,
-      latestState: { sequence: 12, contentHash: "state-hash-12" } as any,
-      effectiveContext: { injectionSequence: 5, injectedBlockHash: "block-hash-5", promptContentHash: "prompt-hash-1" } as any
+      latestState: { available: true, sequence: 12, contentHash: "state-hash-12" } as any,
+      effectiveContext: { available: true, injectionSequence: 5, injectedBlockHash: "block-hash-5", promptContentHash: "prompt-hash-1" } as any
     }], expectedMap),
     "ACCEPT_AND_RECONCILE"
+  );
+
+  // Case 7: overview still advertises archived v1 state (seq 32) while role-prompts
+  // marks latest/effective unavailable (no PI_AGENT_STATE_V2). That is not a stale
+  // payload — discarding it hides the bound static Prompt.
+  assert.equal(
+    evaluateRolePromptsFreshness([{
+      stageRunId: "7501657509921427457",
+      role: "CODING_AGENT",
+      status: "SUCCEEDED",
+      attemptNo: 1,
+      latestState: {
+        available: false,
+        sequence: 0,
+        contentHash: "",
+        unavailableReason: "当前 Attempt 未启用 PI_AGENT_STATE_V2 capability"
+      } as any,
+      effectiveContext: {
+        available: false,
+        injectionSequence: 0,
+        injectedBlockHash: "",
+        promptContentHash: "",
+        unavailableReason: "当前 Attempt 未启用 PI_AGENT_STATE_V2 capability"
+      } as any
+    }], {
+      "7501657509921427457": {
+        stateSequence: 32,
+        stateHash: "sha256:a082830b67e679166b0ec37a839540b0c",
+        injectionSequence: 0,
+        injectedStateSequence: -1,
+        injectedBlockHash: "",
+        promptHash: ""
+      }
+    }),
+    "ACCEPT"
   );
 });
 

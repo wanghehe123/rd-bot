@@ -8,6 +8,8 @@ import com.wish.rd.engine.agent.model.AgentStageRun;
 import com.wish.rd.engine.agent.model.AgentStageStatus;
 import com.wish.rd.engine.requirement.review.model.AiReviewRun;
 import com.wish.rd.engine.requirement.review.model.AiReviewRunStatus;
+import com.wish.rd.engine.requirement.answer.UserAnswerResumeStages;
+import com.wish.rd.engine.requirement.manager.ManagerDecideStages;
 import com.wish.rd.engine.retry.model.TaskFailurePhase;
 import com.wish.rd.engine.retry.model.TaskRetryFailureProvenance;
 import com.wish.rd.engine.retry.model.TaskRetryPoint;
@@ -404,6 +406,8 @@ public final class TaskRetryPointResolver {
             case POLICY -> stage.equals("POLICY_EVALUATE")
                     || stage.equals("POLICY_APPLY")
                     || stage.equals("APPROVAL_RESUME");
+            case MANAGER -> ManagerDecideStages.isManagerDecide(stage)
+                    || UserAnswerResumeStages.isResume(stage);
             case RAG, AGENT_ROLE -> stage.startsWith("ROLE_EXECUTION:")
                     && parseRoleStage(stage) != null;
             case HOST_VERIFY -> stage.equals(HostVerifyFailureJson.STAGE);

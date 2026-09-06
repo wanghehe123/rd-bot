@@ -126,7 +126,8 @@ test("only bypasses real task SPA routes while proxying nested task content APIs
     "/admin/rd-tasks/7480495920010891264/host-verifications",
     "/admin/rd-tasks/7480495920010891264/host-verifications/2/evidence/9/content",
     "/admin/rd-tasks/7480495920010891264/audited-state",
-    "/admin/rd-tasks/7480495920010891264/audit-runs"
+    "/admin/rd-tasks/7480495920010891264/audit-runs",
+    "/admin/rd-tasks/7480495920010891264/answer"
   ]) {
     assert.equal(bypass?.(navigation(apiPath)), undefined, `${apiPath} must reach Spring Boot`);
   }

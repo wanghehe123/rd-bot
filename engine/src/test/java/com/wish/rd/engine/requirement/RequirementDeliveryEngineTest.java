@@ -1091,6 +1091,10 @@ class RequirementDeliveryEngineTest {
         List<RequirementExecutionRequest> captured = new CopyOnWriteArrayList<>();
         AgentStageRunStore stageRunStore = new InMemoryAgentStageRunStore();
         RequirementDeliveryEngine engine = failingArchitectEngine(registry, materialStore, captured, stageRunStore);
+        InMemoryAuditedTaskStateStore audited = new InMemoryAuditedTaskStateStore();
+        new com.wish.rd.engine.requirement.audit.AuditedTaskStatePolicyBootstrap(audited)
+                .initializeIfAbsent(task);
+        engine.setAuditedTaskStateStore(audited);
 
         assertEquals(RdTaskStatus.FAILED_NEEDS_HUMAN, engine.submit(task.taskId()).status());
         assertEquals(RdTaskStatus.FAILED_NEEDS_HUMAN, engine.submit(task.taskId()).status());
@@ -1100,8 +1104,9 @@ class RequirementDeliveryEngineTest {
                 .toList();
         assertEquals(2, architectRequests.size());
         assertFalse(architectRequests.get(0).prompt().contains("上一轮失败反馈"));
-        assertTrue(architectRequests.get(1).prompt().contains("上一轮失败反馈"));
-        assertTrue(architectRequests.get(1).prompt().contains("缺少必填字段: implementationSteps"));
+        assertFalse(architectRequests.get(1).prompt().contains("上一轮失败反馈"));
+        assertFalse(architectRequests.get(1).prompt().contains("缺少必填字段: implementationSteps"));
+        assertTrue(architectRequests.get(1).prompt().contains("已审计缺口（Host）"), architectRequests.get(1).prompt());
     }
 
     private RequirementDeliveryEngine failingArchitectEngine(
@@ -2088,8 +2093,12 @@ class RequirementDeliveryEngineTest {
         for (int i = 1; i < 4; i++) {
             assertTrue(captured.get(i).prompt().contains("环境备忘"),
                     "downstream prompt #" + i + " must carry environment notes section");
+            assertTrue(captured.get(i).prompt().contains("UNTRUSTED"),
+                    "downstream prompt #" + i + " must mark environment notes UNTRUSTED");
             assertTrue(captured.get(i).prompt().contains(reviewerEnvironmentNote),
                     "downstream prompt #" + i + " must carry reviewer environment note");
+            assertFalse(captured.get(i).prompt().contains("已实测验证，直接沿用"),
+                    "downstream prompt #" + i + " must not treat notes as verified");
         }
         // P2: 补丁即交付任务对 REVIEWER/ARCHITECT 启用轻量模式，消除重复复现
         assertTrue(captured.getFirst().prompt().contains("轻量交付模式"),

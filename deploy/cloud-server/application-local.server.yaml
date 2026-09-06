@@ -23,9 +23,6 @@ server:
 rd:
   knowledge:
     store: postgres
-  requirement-delivery:
-    audited-writeback:
-      gate-mode: SHADOW
   storage:
     mode: s3
   distributed-lock:

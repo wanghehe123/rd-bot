@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Test;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class PiQaRemediationPlannerTest {
@@ -50,6 +51,44 @@ class PiQaRemediationPlannerTest {
         assertTrue(planner.decide(result, piProfile(), command(null), "201", 1).isEmpty());
         assertTrue(planner.decide(result.replace("\"201\"", "\"999\""),
                 piProfile(), command(null), "201", 1).isEmpty());
+    }
+
+    @Test
+    void protocolCompleteAcceptanceReportDetectsFailedCurrentGap() throws Exception {
+        String qaJson = """
+                {"status":"FAILED","failureCategory":"PRODUCT_DEFECT","retryRecommendation":"NONE",
+                 "acceptanceResults":[
+                   {"criteriaId":"AC-001","scope":"CURRENT","status":"PASSED","exitCode":0},
+                   {"criteriaId":"AC-003","scope":"CURRENT","status":"FAILED","exitCode":1}
+                 ]}
+                """;
+        String aggregate = MAPPER.writeValueAsString(Map.of(
+                "status", "NEEDS_HUMAN",
+                "stages", java.util.List.of(Map.of(
+                        "role", "QA_AGENT",
+                        "success", false,
+                        "resultJson", qaJson.replaceAll("\\s+", "")
+                ))
+        ));
+        assertTrue(PiQaRemediationPlanner.protocolCompleteAcceptanceReport(aggregate));
+        assertFalse(PiQaRemediationPlanner.protocolCompleteAcceptanceReport(
+                "{\"status\":\"FAILED\",\"summary\":\"no acceptances\"}"));
+        String receipt = receipt("RESULT_MISSING_AFTER_RECOVERY", "BRIDGE_SYNTHETIC");
+        assertFalse(PiQaRemediationPlanner.protocolCompleteAcceptanceReport(MAPPER.writeValueAsString(Map.of(
+                "status", "FAILED",
+                "acceptanceResults", java.util.List.of(Map.of("scope", "CURRENT", "status", "FAILED")),
+                "dockerMetadata", Map.of(
+                        "piProtocolFailureReceiptJson", receipt,
+                        "piProtocolFailureReceiptHash", CanonicalJsonSha256.digest(receipt)
+                )
+        ))));
+        assertFalse(
+                PiQaRemediationPlanner.protocolCompleteAcceptanceReport(
+                        """
+                        {"status":"FAILED","failureCategory":"ENVIRONMENT","retryRecommendation":"HUMAN",
+                         "acceptanceResults":[{"criteriaId":"AC-001","scope":"CURRENT","status":"FAILED"}]}
+                        """),
+                "environment failures stay FAILED_NEEDS_HUMAN; Manager does not own infra");
     }
 
     @Test

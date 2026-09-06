@@ -201,7 +201,9 @@ public class RepairWorkspaceFactory {
 
     private static String safeAttachmentFilename(String filename) {
         String normalized = filename == null ? "" : filename.replace('\\', '/').strip();
-        if ("qa-remediation/request.json".equals(normalized)) {
+        if ("qa-remediation/request.json".equals(normalized)
+                || "host-verify-remediation/request.json".equals(normalized)
+                || "manager-gap-fix/request.json".equals(normalized)) {
             return normalized;
         }
         int separator = normalized.lastIndexOf('/');

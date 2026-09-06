@@ -3,6 +3,7 @@ package com.wish.rd.engine.requirement;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -21,7 +22,10 @@ class HostVerifyRemediationPackageBuilderTest {
                 value.attachment().bytes());
         assertTrue(value.attachment().bytes() <= 65_536);
         assertTrue(value.promptSection().contains(HostVerifyRemediationPackageBuilder.CONTAINER_PATH));
-        assertTrue(value.promptSection().contains("cannot find symbol Foo"));
+        assertTrue(value.promptSection().contains(value.attachment().hash()));
+        assertFalse(value.promptSection().contains("cannot find symbol Foo"));
+        assertFalse(value.promptSection().contains("Failure:"));
+        assertTrue(value.attachment().content().contains("cannot find symbol Foo"));
         assertTrue(value.promptSection().contains("PRODUCT_DEFECT"));
         assertEquals(1, value.todos().size());
     }
@@ -46,7 +50,8 @@ class HostVerifyRemediationPackageBuilderTest {
                 original.attachment().content(), original.requestHash());
         assertEquals(original.requestHash(), frozen.requestHash());
         assertEquals(original.attachment().content(), frozen.attachment().content());
-        assertTrue(frozen.promptSection().contains("cannot find symbol Foo"));
+        assertTrue(frozen.promptSection().contains(HostVerifyRemediationPackageBuilder.CONTAINER_PATH));
+        assertFalse(frozen.promptSection().contains("cannot find symbol Foo"));
 
         String pretty = original.attachment().content()
                 .replace("{", "{\n")

@@ -12,6 +12,7 @@ import com.wish.rd.engine.requirement.audit.AuditCompletion;
 import com.wish.rd.engine.requirement.audit.AuditIntegrity;
 import com.wish.rd.engine.requirement.audit.AuditRun;
 import com.wish.rd.engine.requirement.audit.AuditedRecord;
+import com.wish.rd.engine.requirement.audit.AuditedRecordKind;
 import com.wish.rd.engine.requirement.audit.AuditedRecordStatus;
 import com.wish.rd.engine.requirement.audit.AuditedTaskState;
 import com.wish.rd.engine.requirement.audit.AuditedTaskStateCodec;
@@ -22,14 +23,17 @@ import com.wish.rd.engine.requirement.audit.ContractAuditVerdict;
 import com.wish.rd.engine.requirement.audit.EvidenceRef;
 import com.wish.rd.engine.requirement.audit.EvidenceSourceKind;
 import com.wish.rd.engine.requirement.audit.impl.InMemoryAuditedTaskStateStore;
+import com.wish.rd.engine.requirement.job.impl.InMemoryRequirementStageCommandStore;
 import com.wish.rd.engine.requirement.job.model.CommandDisposition;
 import com.wish.rd.engine.requirement.job.model.ContinuationSpec;
 import com.wish.rd.engine.requirement.job.model.RequirementStageCommand;
 import com.wish.rd.engine.requirement.job.model.RequirementStageExecutionPlan;
+import com.wish.rd.engine.requirement.manager.ManagerDecideStages;
 import com.wish.rd.engine.requirement.model.RequirementDeliveryResult;
 import com.wish.rd.engine.requirement.model.RequirementExecutionProfileResolution;
 import com.wish.rd.engine.requirement.model.RequirementExecutionRequest;
 import com.wish.rd.engine.requirement.model.RequirementExecutionResult;
+import com.wish.rd.engine.requirement.policy.CanonicalJsonSha256;
 import com.wish.rd.engine.requirement.policy.RequirementPolicyRunStore;
 import com.wish.rd.engine.requirement.policy.model.RequirementPolicyRun;
 import com.wish.rd.engine.requirement.policy.model.RequirementPolicyRunState;
@@ -68,7 +72,9 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -181,14 +187,282 @@ class RequirementDeliveryStageExecutionTest {
     }
 
     @Test
+    void qaSuccessPlanAuditsCurrentAcceptancesInOneRevisionInsteadOfClaimsOnly() throws Exception {
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(), new InMemoryRdTaskStatusEventStore(), SnowflakeIdGenerator.defaultGenerator());
+        RdRequirementTask task = executingTask(
+                registry,
+                "qa auditQa writeback",
+                List.of("client 生产构建通过"),
+                "");
+        RequirementPolicyRun authorization = appliedRun(
+                "qa-audit-policy", task.taskId(), task.version(), task.fencingToken());
+        RequirementPolicyRunStore policies = mock(RequirementPolicyRunStore.class);
+        when(policies.findById(authorization.id())).thenReturn(Optional.of(authorization));
+        String innerQaJson = """
+                {
+                  "status": "PASSED",
+                  "testStatus": "PASSED",
+                  "acceptanceResults": [
+                    {
+                      "criteriaId": "AC-001",
+                      "criteria": "client 生产构建通过",
+                      "scope": "CURRENT",
+                      "status": "PASSED",
+                      "exitCode": 0,
+                      "logArtifactId": "qa-evidence/console/ac001.log",
+                      "evidenceArtifactIds": ["qa-evidence/console/ac001.log"]
+                    },
+                    {
+                      "criteriaId": "AC-999",
+                      "criteria": "regression health",
+                      "scope": "REGRESSION",
+                      "status": "PASSED",
+                      "exitCode": 0,
+                      "logArtifactId": "qa-evidence/console/regression.log",
+                      "evidenceArtifactIds": ["qa-evidence/console/regression.log"]
+                    }
+                  ],
+                  "dockerMetadata": {
+                    "qaWorkspaceFingerprintBeforeJson": "{\\"headSha\\":\\"abc\\",\\"trackedTreeSha256\\":\\"sha256:aaa\\",\\"trackedFileCount\\":3}",
+                    "qaWorkspaceFingerprintAfterJson": "{\\"headSha\\":\\"abc\\",\\"trackedTreeSha256\\":\\"sha256:aaa\\",\\"trackedFileCount\\":3}",
+                    "qaWorkspaceIntegrity": "CLEAN"
+                  }
+                }
+                """;
+        String envelope = new ObjectMapper().writeValueAsString(Map.of(
+                "stages", List.of(Map.of(
+                        "role", "QA_AGENT",
+                        "resultJson", innerQaJson
+                ))
+        ));
+        RequirementAgentStageOrchestrator orchestrator = mock(RequirementAgentStageOrchestrator.class);
+        when(orchestrator.run(any(), any(), anyList(), any(), any(), any(), isNull()))
+                .thenReturn(RequirementExecutionResult.success(
+                        task.taskId(),
+                        "qa complete",
+                        "",
+                        envelope));
+        InMemoryAuditedTaskStateStore audited = new InMemoryAuditedTaskStateStore();
+        new AuditedTaskStatePolicyBootstrap(audited).initializeIfAbsent(task);
+        completeHostVerifyGates(audited, task);
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry, new InMemoryTaskMaterialStore(), request -> {
+                    throw new AssertionError("the bounded role orchestrator must own execution");
+                });
+        engine.setRequirementPolicyRunStore(policies);
+        engine.setStageOrchestrator(orchestrator);
+        engine.setAuditedTaskStateStore(audited);
+        engine.setExecutionProfileResolver(new CommandScopedPiRemediationResolver());
+
+        RequirementStageExecutionPlan proposal = engine.planStage(
+                roleCommand(task, authorization.id(), AgentRole.QA_AGENT, "qa-audit-command"));
+
+        assertNotNull(proposal.auditedStateMutation());
+        assertEquals("QA_AGENT", proposal.auditedStateMutation().auditRun().subjectRole());
+        assertEquals("qa-audit-command", proposal.auditedStateMutation().auditRun().commandId());
+        assertEquals(audited.head(task.taskId()).orElseThrow().stateVersion() + 1L,
+                proposal.auditedStateMutation().expectedStateVersion());
+        AuditedTaskState next = proposal.auditedStateMutation().nextState();
+        assertEquals(AuditedRecordStatus.COMPLETED, next.record("AC-001").status());
+        assertEquals(AuditedRecordStatus.COMPLETED, next.record("GATE-QA-EVIDENCE").status());
+        assertEquals(AuditedRecordStatus.COMPLETED, next.record("GATE-WORKSPACE-INTEGRITY").status());
+        assertTrue(next.records().stream().anyMatch(record ->
+                record.status() == AuditedRecordStatus.UNTRUSTED
+                        && record.text().contains("testStatus=PASSED")));
+        assertTrue(next.records().stream().noneMatch(record ->
+                record.id().startsWith("AC-") && record.text().contains("testStatus=PASSED")));
+        assertEquals(1L, proposal.auditedStateMutation().expectedStateVersion()
+                - audited.head(task.taskId()).orElseThrow().stateVersion());
+    }
+
+    @Test
+    void commandScopedQaFailedCurrentGapContinuesToManagerInsteadOfHuman() throws Exception {
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(), new InMemoryRdTaskStatusEventStore(),
+                SnowflakeIdGenerator.defaultGenerator());
+        RdRequirementTask task = executingTask(
+                registry,
+                "qa failed current gap to manager",
+                List.of("client 生产构建通过", "顾客首页渲染包含标记", "访问缺口页返回 200"),
+                "");
+        RequirementPolicyRun authorization = appliedRun(
+                "qa-gap-policy", task.taskId(), task.version(), task.fencingToken());
+        RequirementPolicyRunStore policies = mock(RequirementPolicyRunStore.class);
+        when(policies.findById(authorization.id())).thenReturn(Optional.of(authorization));
+        String innerQaJson = """
+                {
+                  "status": "FAILED",
+                  "testStatus": "FAILED",
+                  "failureCategory": "PRODUCT_DEFECT",
+                  "retryRecommendation": "NONE",
+                  "acceptanceResults": [
+                    {
+                      "criteriaId": "AC-001",
+                      "criteria": "client 生产构建通过",
+                      "scope": "CURRENT",
+                      "status": "PASSED",
+                      "exitCode": 0,
+                      "logArtifactId": "qa-evidence/console/ac001.log",
+                      "evidenceArtifactIds": ["qa-evidence/console/ac001.log"]
+                    },
+                    {
+                      "criteriaId": "AC-002",
+                      "criteria": "顾客首页渲染包含标记",
+                      "scope": "CURRENT",
+                      "status": "PASSED",
+                      "exitCode": 0,
+                      "logArtifactId": "qa-evidence/console/ac002.log",
+                      "evidenceArtifactIds": ["qa-evidence/console/ac002.log"]
+                    },
+                    {
+                      "criteriaId": "AC-003",
+                      "criteria": "访问缺口页返回 200",
+                      "scope": "CURRENT",
+                      "status": "FAILED",
+                      "exitCode": 1,
+                      "logArtifactId": "qa-evidence/console/ac003.log",
+                      "evidenceArtifactIds": ["qa-evidence/console/ac003.log"]
+                    },
+                    {
+                      "criteriaId": "",
+                      "criteria": "regression health",
+                      "scope": "REGRESSION",
+                      "status": "PASSED",
+                      "exitCode": 0,
+                      "logArtifactId": "qa-evidence/console/regression.log",
+                      "evidenceArtifactIds": ["qa-evidence/console/regression.log"]
+                    }
+                  ],
+                  "dockerMetadata": {
+                    "qaWorkspaceFingerprintBeforeJson": "{\\"headSha\\":\\"abc\\",\\"trackedTreeSha256\\":\\"sha256:aaa\\",\\"trackedFileCount\\":3}",
+                    "qaWorkspaceFingerprintAfterJson": "{\\"headSha\\":\\"abc\\",\\"trackedTreeSha256\\":\\"sha256:aaa\\",\\"trackedFileCount\\":3}",
+                    "qaWorkspaceIntegrity": "CLEAN"
+                  }
+                }
+                """;
+        String aggregate = new ObjectMapper().writeValueAsString(Map.of(
+                "status", "NEEDS_HUMAN",
+                "stages", List.of(Map.of(
+                        "role", "QA_AGENT",
+                        "success", false,
+                        "summary", "QA failed acceptance",
+                        "errorMessage", "QA_AGENT failed acceptance",
+                        "resultJson", innerQaJson
+                ))
+        ));
+        RequirementAgentStageOrchestrator orchestrator = mock(RequirementAgentStageOrchestrator.class);
+        when(orchestrator.run(any(), any(), anyList(), any(), any(), any(), isNull()))
+                .thenReturn(RequirementExecutionResult.failure(
+                        task.taskId(), "QA_AGENT failed: QA_AGENT failed acceptance", aggregate));
+        InMemoryAuditedTaskStateStore audited = new InMemoryAuditedTaskStateStore();
+        new AuditedTaskStatePolicyBootstrap(audited).initializeIfAbsent(task);
+        completeHostVerifyGates(audited, task);
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry, new InMemoryTaskMaterialStore(), request -> {
+                    throw new AssertionError("the bounded role orchestrator must own execution");
+                });
+        engine.setRequirementPolicyRunStore(policies);
+        engine.setStageOrchestrator(orchestrator);
+        engine.setAuditedTaskStateStore(audited);
+        engine.setExecutionProfileResolver(new CommandScopedPiWithoutQaV2Resolver());
+
+        RequirementStageExecutionPlan proposal = engine.planStage(
+                roleCommand(task, authorization.id(), AgentRole.QA_AGENT, "qa-gap-command"));
+
+        assertEquals(CommandDisposition.SUCCEEDED, proposal.commandDisposition());
+        assertNull(proposal.piQaRemediationIntent());
+        assertEquals("REQUIREMENT_DELIVERY", proposal.continuation().role());
+        assertEquals(ManagerDecideStages.forSource("qa-gap-command"), proposal.continuation().stage());
+        assertEquals(RdTaskStatus.EXECUTING, proposal.postStatus());
+        AuditedTaskState next = proposal.auditedStateMutation().nextState();
+        assertEquals(AuditedRecordStatus.COMPLETED, next.record("AC-001").status());
+        assertEquals(AuditedRecordStatus.COMPLETED, next.record("AC-002").status());
+        assertEquals(AuditedRecordStatus.PENDING, next.record("AC-003").status());
+    }
+
+    @Test
+    void qaSuccessCodingMergeEnvelopeStillPromotesAcceptancesAndFingerprints() throws Exception {
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(), new InMemoryRdTaskStatusEventStore(), SnowflakeIdGenerator.defaultGenerator());
+        RdRequirementTask task = executingTask(
+                registry,
+                "qa auditQa multiAgentStages writeback",
+                List.of("client 生产构建通过"),
+                "");
+        RequirementPolicyRun authorization = appliedRun(
+                "qa-audit-merge-policy", task.taskId(), task.version(), task.fencingToken());
+        RequirementPolicyRunStore policies = mock(RequirementPolicyRunStore.class);
+        when(policies.findById(authorization.id())).thenReturn(Optional.of(authorization));
+        String innerQaJson = """
+                {
+                  "status": "PASSED",
+                  "testStatus": "PASSED",
+                  "acceptanceResults": [
+                    {
+                      "criteriaId": "AC-001",
+                      "criteria": "client 生产构建通过",
+                      "scope": "CURRENT",
+                      "status": "PASSED",
+                      "exitCode": 0,
+                      "logArtifactId": "qa-evidence/console/ac001.log",
+                      "evidenceArtifactIds": ["qa-evidence/console/ac001.log"]
+                    }
+                  ],
+                  "dockerMetadata": {
+                    "qaWorkspaceFingerprintBeforeJson": "{\\"headSha\\":\\"abc\\",\\"trackedTreeSha256\\":\\"sha256:aaa\\",\\"trackedFileCount\\":3}",
+                    "qaWorkspaceFingerprintAfterJson": "{\\"headSha\\":\\"abc\\",\\"trackedTreeSha256\\":\\"sha256:aaa\\",\\"trackedFileCount\\":3}",
+                    "qaWorkspaceIntegrity": "CLEAN"
+                  }
+                }
+                """;
+        String envelope = new ObjectMapper().writeValueAsString(Map.of(
+                "status", "SUCCESS",
+                "testStatus", "PASSED",
+                "changedFiles", List.of("client/src/pages/customer/Home.tsx"),
+                "multiAgentStages", List.of(
+                        Map.of("role", "REQUIREMENT_REVIEWER", "resultJson", "{}"),
+                        Map.of("role", "SOLUTION_ARCHITECT", "resultJson", "{}"),
+                        Map.of("role", "CODING_AGENT", "resultJson", "{\"status\":\"PASSED\",\"testStatus\":\"PASSED\"}"),
+                        Map.of("role", "QA_AGENT", "success", true, "resultJson", innerQaJson))));
+        RequirementAgentStageOrchestrator orchestrator = mock(RequirementAgentStageOrchestrator.class);
+        when(orchestrator.run(any(), any(), anyList(), any(), any(), any(), isNull()))
+                .thenReturn(RequirementExecutionResult.success(
+                        task.taskId(),
+                        "qa complete",
+                        "",
+                        envelope));
+        InMemoryAuditedTaskStateStore audited = new InMemoryAuditedTaskStateStore();
+        new AuditedTaskStatePolicyBootstrap(audited).initializeIfAbsent(task);
+        completeHostVerifyGates(audited, task);
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry, new InMemoryTaskMaterialStore(), request -> {
+                    throw new AssertionError("the bounded role orchestrator must own execution");
+                });
+        engine.setRequirementPolicyRunStore(policies);
+        engine.setStageOrchestrator(orchestrator);
+        engine.setAuditedTaskStateStore(audited);
+        engine.setExecutionProfileResolver(new CommandScopedPiRemediationResolver());
+
+        RequirementStageExecutionPlan proposal = engine.planStage(
+                roleCommand(task, authorization.id(), AgentRole.QA_AGENT, "qa-merge-command"));
+
+        AuditedTaskState next = proposal.auditedStateMutation().nextState();
+        assertEquals(AuditedRecordStatus.COMPLETED, next.record("AC-001").status());
+        assertEquals(AuditedRecordStatus.COMPLETED, next.record("GATE-QA-EVIDENCE").status());
+        assertEquals(AuditedRecordStatus.COMPLETED, next.record("GATE-WORKSPACE-INTEGRITY").status());
+        assertEquals("CLEAN", proposal.auditedStateMutation().auditRun().integrity().name());
+    }
+
+    @Test
     void hostVerifySucceededWritesBuildStaticGatesAndContinuesToQa() {
         HostVerifyFixture fixture = hostVerifyFixture(
                 HostVerificationStatus.SUCCEEDED, false, "", "", 1, true);
         RequirementStageExecutionPlan proposal = fixture.engine.planStage(fixture.command);
 
         assertEquals(CommandDisposition.SUCCEEDED, proposal.commandDisposition());
-        assertEquals("QA_AGENT", proposal.continuation().role());
-        assertEquals("ROLE_EXECUTION:QA_AGENT", proposal.continuation().stage());
+        assertEquals("REQUIREMENT_DELIVERY", proposal.continuation().role());
+        assertEquals("MANAGER_DECIDE:host-verify-command", proposal.continuation().stage());
         assertEquals(AuditedRecordStatus.COMPLETED,
                 proposal.auditedStateMutation().nextState().record("GATE-BUILD").status());
         assertEquals(AuditedRecordStatus.COMPLETED,
@@ -203,7 +477,7 @@ class RequirementDeliveryStageExecutionTest {
                 HostVerificationStatus.SKIPPED_DOCS_ONLY, true, "", "", 1, true);
         RequirementStageExecutionPlan proposal = fixture.engine.planStage(fixture.command);
 
-        assertEquals("ROLE_EXECUTION:QA_AGENT", proposal.continuation().stage());
+        assertEquals("MANAGER_DECIDE:host-verify-command", proposal.continuation().stage());
         assertEquals(AuditedRecordStatus.COMPLETED,
                 proposal.auditedStateMutation().nextState().record("GATE-BUILD").status());
         assertEquals(AuditedRecordStatus.COMPLETED,
@@ -229,6 +503,21 @@ class RequirementDeliveryStageExecutionTest {
         assertEquals(RdTaskStatus.EXECUTING, proposal.mutations().getFirst().toStatus());
         assertEquals(AuditedRecordStatus.PENDING,
                 proposal.auditedStateMutation().nextState().record("GATE-BUILD").status());
+    }
+
+    @Test
+    void hostVerifyProductDefectFreezesFixWhenPiProfileLacksQaRemediationV2() {
+        HostVerifyFixture fixture = hostVerifyFixture(
+                HostVerificationStatus.FAILED_RETRYABLE, false, "PRODUCT_DEFECT",
+                "BUILD exit 1: cannot find symbol Foo", 1, false);
+        fixture.engine.setExecutionProfileResolver(new CommandScopedPiWithoutQaV2Resolver());
+        RequirementStageExecutionPlan proposal = fixture.engine.planStage(fixture.command);
+
+        assertEquals(CommandDisposition.SUCCEEDED, proposal.commandDisposition());
+        assertTrue(proposal.continuation().isTerminal());
+        assertEquals(AgentRemediationKind.HOST_VERIFY_FIX, proposal.piQaRemediationIntent().kind());
+        assertEquals("verify-1", proposal.piQaRemediationIntent().hostVerificationRunId());
+        assertFalse(proposal.piQaRemediationIntent().requestJson().contains("https://"));
     }
 
     @Test
@@ -452,8 +741,309 @@ class RequirementDeliveryStageExecutionTest {
 
         assertEquals(task, registry.getRequirementTask(task.taskId()));
         assertEquals(1, proposal.mutations().size());
-        assertEquals("DETERMINISTIC_REVIEW", proposal.continuation().stage());
+        assertEquals("MANAGER_DECIDE:last-role-command", proposal.continuation().stage());
         assertEquals("REQUIREMENT_DELIVERY", proposal.continuation().role());
+    }
+
+    @Test
+    void managerAfterHostVerifyRoutesQaWithoutGapFix() {
+        HostVerifyFixture fixture = hostVerifyFixture(
+                HostVerificationStatus.SUCCEEDED, false, "", "", 1, true);
+        InMemoryRequirementStageCommandStore commands = new InMemoryRequirementStageCommandStore();
+        commands.enqueue(fixture.command);
+        fixture.engine.setStageCommandStore(commands);
+        RequirementStageCommand manager = RequirementStageCommand.pending(
+                "manager-after-hv", fixture.task().taskId(), fixture.task().version(),
+                fixture.task().fencingToken(), "REQUIREMENT_DELIVERY",
+                "MANAGER_DECIDE:host-verify-command", 0, 3, System.currentTimeMillis() + 60_000L,
+                ScheduleResourceClass.GENERIC, Set.of(ScheduleResourceClass.GENERIC),
+                "_default", "memory", "P1", System.currentTimeMillis());
+
+        RequirementStageExecutionPlan proposal = fixture.engine.planStage(manager);
+
+        assertEquals(CommandDisposition.SUCCEEDED, proposal.commandDisposition());
+        assertEquals("ROLE_EXECUTION:QA_AGENT", proposal.continuation().stage());
+        assertEquals(com.wish.rd.engine.requirement.manager.ManagerRoute.EXECUTE, proposal.managerDecision().route());
+        assertNull(proposal.piQaRemediationIntent());
+    }
+
+    @Test
+    void managerAfterQaWithPendingAcFreezesManagerGapFix() {
+        InMemoryRdTaskStatusEventStore events = new InMemoryRdTaskStatusEventStore();
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(), events, SnowflakeIdGenerator.defaultGenerator());
+        RdRequirementTask task = executingTask(registry, "manager gap fix", List.of("criterion AC-001"), "");
+        long now = System.currentTimeMillis();
+        InMemoryAgentStageRunStore stages = new InMemoryAgentStageRunStore();
+        stages.save(AgentStageRun.pending("coding-1", task.taskId(), AgentRole.CODING_AGENT, 1,
+                        task.taskId() + ":CODING_AGENT:1", now)
+                .withStatus(AgentStageStatus.SUCCEEDED, "", "", now));
+        stages.save(AgentStageRun.pending("qa-1", task.taskId(), AgentRole.QA_AGENT, 1,
+                        task.taskId() + ":QA_AGENT:1", now)
+                .withStatus(AgentStageStatus.SUCCEEDED, "", "", now));
+        InMemoryAuditedTaskStateStore audited = new InMemoryAuditedTaskStateStore();
+        new AuditedTaskStatePolicyBootstrap(audited).initializeIfAbsent(task);
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry, new InMemoryTaskMaterialStore(), request -> {
+                    throw new AssertionError("manager must not call the role executor");
+                },
+                new RequirementContextBuilder(),
+                new RequirementPlanGenerator(),
+                new RuleBasedRequirementPolicyGate(),
+                new AgentStagePlanner(SnowflakeIdGenerator.defaultGenerator()::nextIdString),
+                stages);
+        engine.setAuditedTaskStateStore(audited);
+        engine.setExecutionProfileResolver(new CommandScopedPiWithoutQaV2Resolver());
+        InMemoryRequirementStageCommandStore commands = new InMemoryRequirementStageCommandStore();
+        commands.enqueue(RequirementStageCommand.pending(
+                "qa-source", task.taskId(), task.version(), task.fencingToken(),
+                AgentRole.QA_AGENT.name(), "ROLE_EXECUTION:QA_AGENT", 0, 3, now + 60_000L,
+                ScheduleResourceClass.PROVIDER, Set.of(ScheduleResourceClass.PROVIDER),
+                "_default", "provider", "P1", now));
+        engine.setStageCommandStore(commands);
+        RequirementStageCommand manager = RequirementStageCommand.pending(
+                "manager-after-qa", task.taskId(), task.version(), task.fencingToken(),
+                "REQUIREMENT_DELIVERY", "MANAGER_DECIDE:qa-source", 0, 3, now + 60_000L,
+                ScheduleResourceClass.GENERIC, Set.of(ScheduleResourceClass.GENERIC),
+                "_default", "memory", "P1", now);
+
+        RequirementStageExecutionPlan proposal = engine.planStage(manager);
+
+        assertEquals(AgentRemediationKind.MANAGER_GAP_FIX, proposal.piQaRemediationIntent().kind());
+        assertTrue(proposal.continuation().isTerminal());
+        assertTrue(proposal.managerDecision().boundedContract().contains("AC-001")
+                || proposal.piQaRemediationIntent().requestJson().contains("AC-001"));
+    }
+
+    @Test
+    void managerGapFixQaReentryOpensFreshAttemptWhenPreviousQaStageIsTerminal() {
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(), new InMemoryRdTaskStatusEventStore(),
+                SnowflakeIdGenerator.defaultGenerator());
+        RdRequirementTask task = executingTask(
+                registry,
+                "manager gap fix qa reentry",
+                List.of("client 生产构建通过", "顾客首页标记", "缺口页"),
+                "");
+        RequirementPolicyRun authorization = appliedRun(
+                "gap-qa-reentry-policy", task.taskId(), task.version(), task.fencingToken());
+        RequirementPolicyRunStore policies = mock(RequirementPolicyRunStore.class);
+        when(policies.findById(authorization.id())).thenReturn(Optional.of(authorization));
+        long now = System.currentTimeMillis();
+        InMemoryAgentStageRunStore stages = new InMemoryAgentStageRunStore();
+        stages.save(AgentStageRun.pending("coding-1", task.taskId(), AgentRole.CODING_AGENT, 1,
+                        task.taskId() + ":CODING_AGENT:1", now)
+                .withStatus(AgentStageStatus.SUCCEEDED, "", "", now));
+        stages.save(AgentStageRun.pending("coding-2", task.taskId(), AgentRole.CODING_AGENT, 2,
+                        task.taskId() + ":CODING_AGENT:2", now + 1)
+                .withStatus(AgentStageStatus.SUCCEEDED, "", "", now + 1));
+        stages.save(AgentStageRun.pending("qa-1", task.taskId(), AgentRole.QA_AGENT, 1,
+                        task.taskId() + ":QA_AGENT:1", now)
+                .withStatus(AgentStageStatus.FAILED_NEEDS_HUMAN, "AGENT_RESULT_REJECTED",
+                        "QA_AGENT failed acceptance: AC-003 FAILED", now + 2));
+        RequirementAgentStageOrchestrator orchestrator = mock(RequirementAgentStageOrchestrator.class);
+        when(orchestrator.runRemediationRole(any(), any(), anyList(), any(), any(), any(), isNull(),
+                any(), any(), any()))
+                .thenReturn(RequirementExecutionResult.success(task.taskId(), "qa reentry", "", """
+                        {"status":"PASSED","testStatus":"PASSED","acceptanceResults":[]}
+                        """));
+        InMemoryAuditedTaskStateStore audited = new InMemoryAuditedTaskStateStore();
+        new AuditedTaskStatePolicyBootstrap(audited).initializeIfAbsent(task);
+        completeHostVerifyGates(audited, task);
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry, new InMemoryTaskMaterialStore(), request -> {
+                    throw new AssertionError("the bounded role orchestrator must own execution");
+                },
+                new RequirementContextBuilder(),
+                new RequirementPlanGenerator(),
+                new RuleBasedRequirementPolicyGate(),
+                new AgentStagePlanner(SnowflakeIdGenerator.defaultGenerator()::nextIdString),
+                stages);
+        engine.setRequirementPolicyRunStore(policies);
+        engine.setStageOrchestrator(orchestrator);
+        engine.setAuditedTaskStateStore(audited);
+        engine.setExecutionProfileResolver(new CommandScopedPiWithoutQaV2Resolver());
+        String requestJson = "{\"protocol\":\"rd-manager-gap-fix-request/v1\",\"targetRecordIds\":[\"AC-003\"]}";
+        RequirementStageCommand qaReentry = RequirementStageCommand.remediationPending(
+                "gap-qa-reentry", task.taskId(), task.version(), task.fencingToken(),
+                AgentRole.QA_AGENT.name(), "ROLE_EXECUTION:QA_AGENT", 3, now + 60_000L,
+                ScheduleResourceClass.PROVIDER, Set.of(ScheduleResourceClass.PROVIDER),
+                "_default", "provider", "P1", authorization.id(),
+                "7502192424912031745", AgentRemediationKind.MANAGER_GAP_FIX, 1, "qa-1",
+                requestJson, CanonicalJsonSha256.digest(requestJson), now);
+
+        RequirementStageExecutionPlan proposal = engine.planStage(qaReentry);
+
+        assertEquals(CommandDisposition.SUCCEEDED, proposal.commandDisposition());
+        assertNotEquals("agent stage is terminal before execution: QA_AGENT FAILED_NEEDS_HUMAN",
+                proposal.mutations().isEmpty() ? "" : proposal.mutations().getLast().errorMessage());
+        List<AgentStageRun> qaStages = stages.listByTask(task.taskId()).stream()
+                .filter(stage -> stage.role() == AgentRole.QA_AGENT)
+                .sorted((left, right) -> Integer.compare(left.attemptNo(), right.attemptNo()))
+                .toList();
+        assertEquals(2, qaStages.size());
+        assertEquals(1, qaStages.getFirst().attemptNo());
+        assertEquals(AgentStageStatus.FAILED_NEEDS_HUMAN, qaStages.getFirst().status());
+        assertEquals(2, qaStages.getLast().attemptNo());
+        assertEquals(AgentStageStatus.PENDING, qaStages.getLast().status());
+        verify(orchestrator).runRemediationRole(any(), any(), anyList(), any(), any(), any(), isNull(),
+                any(), any(), any());
+        verify(orchestrator, never()).run(any(), any(), anyList(), any(), any(), any(), isNull());
+    }
+
+    @Test
+    void managerGapFixQaReentryOpensFreshAttemptWhenPreviousQaSucceeded() {
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(), new InMemoryRdTaskStatusEventStore(),
+                SnowflakeIdGenerator.defaultGenerator());
+        RdRequirementTask task = executingTask(
+                registry,
+                "manager gap fix qa reentry after succeeded protocol qa",
+                List.of("client 生产构建通过", "顾客首页标记", "缺口页"),
+                "");
+        RequirementPolicyRun authorization = appliedRun(
+                "gap-qa-reentry-succeeded-policy", task.taskId(), task.version(), task.fencingToken());
+        RequirementPolicyRunStore policies = mock(RequirementPolicyRunStore.class);
+        when(policies.findById(authorization.id())).thenReturn(Optional.of(authorization));
+        long now = System.currentTimeMillis();
+        InMemoryAgentStageRunStore stages = new InMemoryAgentStageRunStore();
+        stages.save(AgentStageRun.pending("coding-1", task.taskId(), AgentRole.CODING_AGENT, 1,
+                        task.taskId() + ":CODING_AGENT:1", now)
+                .withStatus(AgentStageStatus.SUCCEEDED, "", "", now));
+        stages.save(AgentStageRun.pending("coding-2", task.taskId(), AgentRole.CODING_AGENT, 2,
+                        task.taskId() + ":CODING_AGENT:2", now + 1)
+                .withStatus(AgentStageStatus.SUCCEEDED, "", "", now + 1));
+        stages.save(AgentStageRun.pending("qa-1", task.taskId(), AgentRole.QA_AGENT, 1,
+                        task.taskId() + ":QA_AGENT:1", now)
+                .withStatus(AgentStageStatus.SUCCEEDED, "", "", now + 2));
+        RequirementAgentStageOrchestrator orchestrator = mock(RequirementAgentStageOrchestrator.class);
+        when(orchestrator.runRemediationRole(any(), any(), anyList(), any(), any(), any(), isNull(),
+                any(), any(), any()))
+                .thenReturn(RequirementExecutionResult.success(task.taskId(), "qa reentry", "", """
+                        {"status":"PASSED","testStatus":"PASSED","acceptanceResults":[]}
+                        """));
+        InMemoryAuditedTaskStateStore audited = new InMemoryAuditedTaskStateStore();
+        new AuditedTaskStatePolicyBootstrap(audited).initializeIfAbsent(task);
+        completeHostVerifyGates(audited, task);
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry, new InMemoryTaskMaterialStore(), request -> {
+                    throw new AssertionError("the bounded role orchestrator must own execution");
+                },
+                new RequirementContextBuilder(),
+                new RequirementPlanGenerator(),
+                new RuleBasedRequirementPolicyGate(),
+                new AgentStagePlanner(SnowflakeIdGenerator.defaultGenerator()::nextIdString),
+                stages);
+        engine.setRequirementPolicyRunStore(policies);
+        engine.setStageOrchestrator(orchestrator);
+        engine.setAuditedTaskStateStore(audited);
+        engine.setExecutionProfileResolver(new CommandScopedPiWithoutQaV2Resolver());
+        String requestJson = "{\"protocol\":\"rd-manager-gap-fix-request/v1\",\"targetRecordIds\":[\"AC-003\"]}";
+        RequirementStageCommand qaReentry = RequirementStageCommand.remediationPending(
+                "gap-qa-reentry-succeeded", task.taskId(), task.version(), task.fencingToken(),
+                AgentRole.QA_AGENT.name(), "ROLE_EXECUTION:QA_AGENT", 3, now + 60_000L,
+                ScheduleResourceClass.PROVIDER, Set.of(ScheduleResourceClass.PROVIDER),
+                "_default", "provider", "P1", authorization.id(),
+                "7502192424912031746", AgentRemediationKind.MANAGER_GAP_FIX, 1, "qa-1",
+                requestJson, CanonicalJsonSha256.digest(requestJson), now);
+
+        engine.planStage(qaReentry);
+
+        List<AgentStageRun> qaStages = stages.listByTask(task.taskId()).stream()
+                .filter(stage -> stage.role() == AgentRole.QA_AGENT)
+                .sorted((left, right) -> Integer.compare(left.attemptNo(), right.attemptNo()))
+                .toList();
+        assertEquals(2, qaStages.size());
+        assertEquals(AgentStageStatus.SUCCEEDED, qaStages.getFirst().status());
+        assertEquals(2, qaStages.getLast().attemptNo());
+        assertEquals(AgentStageStatus.PENDING, qaStages.getLast().status());
+    }
+
+    @Test
+    void managerAfterQaWithNoPendingAcContinuesToDeterministicReview() {
+        InMemoryRdTaskStatusEventStore events = new InMemoryRdTaskStatusEventStore();
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(), events, SnowflakeIdGenerator.defaultGenerator());
+        RdRequirementTask task = executingTask(registry, "manager done", List.of("criterion AC-001"), "");
+        long now = System.currentTimeMillis();
+        InMemoryAuditedTaskStateStore audited = new InMemoryAuditedTaskStateStore();
+        new AuditedTaskStatePolicyBootstrap(audited).initializeIfAbsent(task);
+        completeAllBlockingRequirements(audited, task);
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry, new InMemoryTaskMaterialStore(), request -> {
+                    throw new AssertionError("manager must not call the role executor");
+                });
+        engine.setAuditedTaskStateStore(audited);
+        InMemoryRequirementStageCommandStore commands = new InMemoryRequirementStageCommandStore();
+        commands.enqueue(RequirementStageCommand.pending(
+                "qa-done-source", task.taskId(), task.version(), task.fencingToken(),
+                AgentRole.QA_AGENT.name(), "ROLE_EXECUTION:QA_AGENT", 0, 3, now + 60_000L,
+                ScheduleResourceClass.PROVIDER, Set.of(ScheduleResourceClass.PROVIDER),
+                "_default", "provider", "P1", now));
+        engine.setStageCommandStore(commands);
+        RequirementStageCommand manager = RequirementStageCommand.pending(
+                "manager-done", task.taskId(), task.version(), task.fencingToken(),
+                "REQUIREMENT_DELIVERY", "MANAGER_DECIDE:qa-done-source", 0, 3, now + 60_000L,
+                ScheduleResourceClass.GENERIC, Set.of(ScheduleResourceClass.GENERIC),
+                "_default", "memory", "P1", now);
+
+        RequirementStageExecutionPlan proposal = engine.planStage(manager);
+
+        assertEquals("DETERMINISTIC_REVIEW", proposal.continuation().stage());
+        assertEquals(com.wish.rd.engine.requirement.manager.ManagerRoute.DONE, proposal.managerDecision().route());
+        assertNull(proposal.piQaRemediationIntent());
+    }
+
+    @Test
+    void bareManagerDecideStageFailsClosed() {
+        InMemoryRdTaskStatusEventStore events = new InMemoryRdTaskStatusEventStore();
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(), events, SnowflakeIdGenerator.defaultGenerator());
+        RdRequirementTask task = executingTask(registry, "bare manager");
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry, new InMemoryTaskMaterialStore(), request -> null);
+        RequirementStageCommand bare = RequirementStageCommand.pending(
+                "bare-manager", task.taskId(), task.version(), task.fencingToken(),
+                "REQUIREMENT_DELIVERY", "MANAGER_DECIDE", 0, 3, System.currentTimeMillis() + 60_000L,
+                ScheduleResourceClass.GENERIC, Set.of(ScheduleResourceClass.GENERIC),
+                "_default", "memory", "P1", System.currentTimeMillis());
+
+        assertThrows(IllegalArgumentException.class, () -> engine.planStage(bare));
+    }
+
+    @Test
+    void managerGapFixIntentFailureBlocksInsteadOfDeterministicReview() {
+        InMemoryRdTaskStatusEventStore events = new InMemoryRdTaskStatusEventStore();
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(), events, SnowflakeIdGenerator.defaultGenerator());
+        RdRequirementTask task = executingTask(registry, "manager intent fail", List.of("criterion AC-001"), "");
+        long now = System.currentTimeMillis();
+        InMemoryAuditedTaskStateStore audited = new InMemoryAuditedTaskStateStore();
+        new AuditedTaskStatePolicyBootstrap(audited).initializeIfAbsent(task);
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry, new InMemoryTaskMaterialStore(), request -> {
+                    throw new AssertionError("manager must not call the role executor");
+                });
+        engine.setAuditedTaskStateStore(audited);
+        InMemoryRequirementStageCommandStore commands = new InMemoryRequirementStageCommandStore();
+        commands.enqueue(RequirementStageCommand.pending(
+                "qa-unmintable", task.taskId(), task.version(), task.fencingToken(),
+                AgentRole.QA_AGENT.name(), "ROLE_EXECUTION:QA_AGENT", 0, 3, now + 60_000L,
+                ScheduleResourceClass.PROVIDER, Set.of(ScheduleResourceClass.PROVIDER),
+                "_default", "provider", "P1", now));
+        engine.setStageCommandStore(commands);
+        RequirementStageCommand manager = RequirementStageCommand.pending(
+                "manager-unmintable", task.taskId(), task.version(), task.fencingToken(),
+                "REQUIREMENT_DELIVERY", "MANAGER_DECIDE:qa-unmintable", 0, 3, now + 60_000L,
+                ScheduleResourceClass.GENERIC, Set.of(ScheduleResourceClass.GENERIC),
+                "_default", "memory", "P1", now);
+
+        RequirementStageExecutionPlan proposal = engine.planStage(manager);
+
+        assertEquals(com.wish.rd.engine.requirement.manager.ManagerRoute.BLOCKED, proposal.managerDecision().route());
+        assertTrue(proposal.continuation().isTerminal());
+        assertNull(proposal.piQaRemediationIntent());
+        assertEquals(RdTaskStatus.FAILED_NEEDS_HUMAN, proposal.mutations().getLast().toStatus());
     }
 
     @Test
@@ -1108,6 +1698,90 @@ class RequirementDeliveryStageExecutionTest {
         store.appendRevision(next.stateVersion(), next, run);
     }
 
+    private static void completeAllBlockingRequirements(InMemoryAuditedTaskStateStore store, RdRequirementTask task) {
+        AuditedTaskState head = store.head(task.taskId()).orElseThrow();
+        EvidenceRef evidence = new EvidenceRef(
+                "audit-ac-complete",
+                EvidenceSourceKind.HOST_ASSERTION,
+                "host-assertion://acceptance/complete",
+                "sha256:" + "c".repeat(64));
+        List<AuditedRecord> nextRecords = new ArrayList<>();
+        List<String> completedIds = new ArrayList<>();
+        for (AuditedRecord record : head.records()) {
+            if (record.kind() == AuditedRecordKind.REQUIREMENT
+                    && record.blocking()
+                    && record.status() == AuditedRecordStatus.PENDING) {
+                nextRecords.add(record.withStatus(AuditedRecordStatus.COMPLETED, List.of(evidence), ""));
+                completedIds.add(record.id());
+            } else {
+                nextRecords.add(record);
+            }
+        }
+        AuditRun run = new AuditRun(
+                "audit-ac-complete-" + task.taskId(),
+                task.taskId(),
+                "qa-seed",
+                "ROLE_EXECUTION:QA_AGENT",
+                "qa-complete-" + task.taskId(),
+                AuditCompletion.INCOMPLETE,
+                AuditIntegrity.CLEAN,
+                ContractAuditVerdict.ALIGNED,
+                completedIds,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                1L);
+        AuditedTaskState next = new AuditedTaskStateCodec().seal(new AuditedTaskState(
+                head.taskId(),
+                head.stateVersion() + 1L,
+                "",
+                head.contractRef(),
+                nextRecords,
+                run.auditRunId()));
+        store.appendRevision(next.stateVersion(), next, run);
+    }
+
+    private static void completeHostVerifyGates(InMemoryAuditedTaskStateStore store, RdRequirementTask task) {
+        AuditedTaskState head = store.head(task.taskId()).orElseThrow();
+        EvidenceRef build = new EvidenceRef(
+                "audit-hv-seed",
+                EvidenceSourceKind.HOST_VERIFICATION,
+                "host-verification://artifacts/build-ok",
+                "sha256:" + "a".repeat(64));
+        List<AuditedRecord> nextRecords = new ArrayList<>();
+        for (AuditedRecord record : head.records()) {
+            if ("GATE-BUILD".equals(record.id()) || "GATE-STATIC".equals(record.id())) {
+                nextRecords.add(record.withStatus(AuditedRecordStatus.COMPLETED, List.of(build), ""));
+            } else {
+                nextRecords.add(record);
+            }
+        }
+        AuditRun run = new AuditRun(
+                "audit-hv-seed-" + task.taskId(),
+                task.taskId(),
+                "coding-seed",
+                "HOST_VERIFY",
+                "host-verify-seed-" + task.taskId(),
+                AuditCompletion.INCOMPLETE,
+                AuditIntegrity.CLEAN,
+                ContractAuditVerdict.ALIGNED,
+                List.of("GATE-BUILD", "GATE-STATIC"),
+                List.of("AC-001", "GATE-QA-EVIDENCE", "GATE-WORKSPACE-INTEGRITY"),
+                List.of(),
+                List.of(),
+                List.of(),
+                1L);
+        AuditedTaskState next = new AuditedTaskStateCodec().seal(new AuditedTaskState(
+                head.taskId(),
+                head.stateVersion() + 1L,
+                "",
+                head.contractRef(),
+                nextRecords,
+                run.auditRunId()));
+        store.appendRevision(next.stateVersion(), next, run);
+    }
+
     private static void demoteRecord(InMemoryAuditedTaskStateStore store, RdRequirementTask task, String recordId) {
         AuditedTaskState head = store.head(task.taskId()).orElseThrow();
         List<AuditedRecord> nextRecords = new ArrayList<>();
@@ -1300,7 +1974,7 @@ class RequirementDeliveryStageExecutionTest {
                     AgentExecutionProfileSnapshot.sha256(json),
                     System.currentTimeMillis()
             );
-            if (!snapshot.hasCapability(requiredCapability)) {
+            if (requiredCapability != null && !snapshot.hasCapability(requiredCapability)) {
                 throw new IllegalStateException("prepared target profile is not eligible PI runtime");
             }
             return snapshot;
@@ -1319,6 +1993,58 @@ class RequirementDeliveryStageExecutionTest {
             value.put("profileId", "pi-test-" + role.name().toLowerCase());
             value.put("profileVersion", 1L);
             value.put("capabilities", List.of("PI_AGENT_STATE_V2", "PI_QA_REMEDIATION_V2"));
+            return AgentManifestCanonicalJson.canonicalJson(value);
+        }
+    }
+
+    private static final class CommandScopedPiWithoutQaV2Resolver implements RequirementExecutionProfileResolverPort {
+        @Override
+        public RequirementExecutionProfileResolution resolve(
+                RdRequirementTask task, AgentRole role, String stageRunId, int attemptNo
+        ) {
+            return RequirementExecutionProfileResolution.of(
+                    "agent-profile-" + stageRunId, snapshotJson(task, role, stageRunId, attemptNo));
+        }
+
+        @Override
+        public AgentExecutionProfileSnapshot prepareSnapshot(
+                RdRequirementTask task,
+                AgentRole role,
+                String stageRunId,
+                int attemptNo,
+                AgentRuntimeCapability requiredCapability
+        ) {
+            String json = snapshotJson(task, role, stageRunId, attemptNo);
+            AgentExecutionProfileSnapshot snapshot = new AgentExecutionProfileSnapshot(
+                    "agent-profile-" + stageRunId,
+                    stageRunId,
+                    task.taskId(),
+                    role.name(),
+                    attemptNo,
+                    AgentRuntimeType.PI,
+                    json,
+                    AgentExecutionProfileSnapshot.sha256(json),
+                    System.currentTimeMillis()
+            );
+            if (requiredCapability != null && !snapshot.hasCapability(requiredCapability)) {
+                throw new IllegalStateException("prepared target profile is not eligible PI runtime");
+            }
+            return snapshot;
+        }
+
+        private static String snapshotJson(
+                RdRequirementTask task, AgentRole role, String stageRunId, int attemptNo
+        ) {
+            Map<String, Object> value = new LinkedHashMap<>();
+            value.put("snapshotVersion", 1);
+            value.put("stageRunId", stageRunId);
+            value.put("taskId", task.taskId());
+            value.put("role", role.name());
+            value.put("attemptNo", attemptNo);
+            value.put("runtimeType", "PI");
+            value.put("profileId", "pi-test-" + role.name().toLowerCase());
+            value.put("profileVersion", 1L);
+            value.put("capabilities", List.of());
             return AgentManifestCanonicalJson.canonicalJson(value);
         }
     }

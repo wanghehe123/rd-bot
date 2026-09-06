@@ -15,6 +15,10 @@ import com.wish.rd.engine.agent.model.AgentStageRun;
 import com.wish.rd.engine.control.RdTaskExecutionControlEngine;
 import com.wish.rd.engine.control.model.RdTaskExecutionControlResult;
 import com.wish.rd.engine.requirement.RequirementDeliveryEngine;
+import com.wish.rd.engine.requirement.answer.AnswerRequirementCommand;
+import com.wish.rd.engine.requirement.answer.RequirementUserAnswerTransactionPort;
+import com.wish.rd.engine.requirement.manager.ManagerDecision;
+import com.wish.rd.engine.requirement.manager.ManagerDecisionStore;
 import com.wish.rd.engine.requirement.policy.RequirementPolicyTransactionPort;
 import com.wish.rd.engine.requirement.policy.model.ApproveRequirementPolicyCommand;
 import com.wish.rd.engine.oracle.AssertionSpecCompiler;
@@ -111,6 +115,8 @@ public class RdTaskController {
     private HostVerificationRetentionService hostVerificationRetentionService;
     private AgentStageRunStore agentStageRunStore;
     private RequirementPolicyTransactionPort requirementPolicyTransactionPort;
+    private RequirementUserAnswerTransactionPort requirementUserAnswerTransactionPort;
+    private ManagerDecisionStore managerDecisionStore;
     private final Object materialUploadMonitor = new Object();
     private ObjectStorageService objectStorageService = new InMemoryObjectStorageService();
 
@@ -145,6 +151,18 @@ public class RdTaskController {
     @Autowired(required = false)
     void setRequirementPolicyTransactionPort(RequirementPolicyTransactionPort requirementPolicyTransactionPort) {
         this.requirementPolicyTransactionPort = requirementPolicyTransactionPort;
+    }
+
+    @Autowired(required = false)
+    void setRequirementUserAnswerTransactionPort(
+            RequirementUserAnswerTransactionPort requirementUserAnswerTransactionPort
+    ) {
+        this.requirementUserAnswerTransactionPort = requirementUserAnswerTransactionPort;
+    }
+
+    @Autowired(required = false)
+    void setManagerDecisionStore(ManagerDecisionStore managerDecisionStore) {
+        this.managerDecisionStore = managerDecisionStore;
     }
 
     public RdTaskController(RagStreamTaskRegistry registry) {
@@ -258,7 +276,7 @@ public class RdTaskController {
         RdTaskQuery query = new RdTaskQuery(taskType, status, priority, projectId, ticketId, keyword, page, pageSize);
         RdTaskPage result = registry.queryTasks(query);
         List<RdTaskView> views = result.records().stream()
-                .map(RdTaskController::toListView)
+                .map(this::toListView)
                 .toList();
         return new RdTaskPageView(views, result.page(), result.pageSize(), result.total(), result.pages());
     }
@@ -410,6 +428,35 @@ public class RdTaskController {
                 request.approvalRequestId(),
                 request.decision(),
                 request.note()
+        ), POLICY_APPROVAL_ACTOR, Instant.now().toEpochMilli());
+        return toDetailView(registry.getTask(taskId));
+    }
+
+    /**
+     * Records an operator answer for {@code WAITING_USER_INPUT} and produces {@code USER_ANSWER_RESUME}.
+     *
+     * @param taskId  task ID
+     * @param request digest-bound answer payload
+     * @return latest task view
+     */
+    @PostMapping("/admin/rd-tasks/{taskId}/answer")
+    public RdTaskView answer(
+            @PathVariable("taskId") String taskId,
+            @RequestBody AnswerRequirementTaskRequest request
+    ) {
+        if (request == null) {
+            throw new IllegalArgumentException("request body must not be null");
+        }
+        if (requirementUserAnswerTransactionPort == null) {
+            throw new IllegalStateException("requirement user-answer transaction port unavailable");
+        }
+        requirementUserAnswerTransactionPort.answer(new AnswerRequirementCommand(
+                taskId,
+                request.expectedTaskVersion(),
+                request.expectedTaskFence(),
+                request.decisionHash(),
+                request.answerRequestId(),
+                request.answerText()
         ), POLICY_APPROVAL_ACTOR, Instant.now().toEpochMilli());
         return toDetailView(registry.getTask(taskId));
     }
@@ -767,19 +814,19 @@ public class RdTaskController {
         return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of("message", exception.getMessage()));
     }
 
-    private static RdTaskView toListView(RdTask task) {
+    private RdTaskView toListView(RdTask task) {
         return toView(task, true, false);
     }
 
-    private static RdTaskView toDetailView(RdTask task) {
+    private RdTaskView toDetailView(RdTask task) {
         return toView(task, false, false);
     }
 
-    private static RdTaskView toWorkbenchView(RdTask task) {
+    private RdTaskView toWorkbenchView(RdTask task) {
         return toView(task, false, true);
     }
 
-    private static RdTaskView toView(RdTask task, boolean listView, boolean omitAuditBlobs) {
+    private RdTaskView toView(RdTask task, boolean listView, boolean omitAuditBlobs) {
         String ticketId = "";
         String ticketTitle = "";
         String promptSnapshot = "";
@@ -870,8 +917,20 @@ public class RdTaskController {
                 acceptanceCriteriaJson,
                 hostAssertionBundle,
                 executionEvidence(executionResultJson, pullRequestUrl),
-                tokenBudgetOverride
+                tokenBudgetOverride,
+                task.version(),
+                task.fencingToken(),
+                latestManagerDecisionHash(task.taskId())
         );
+    }
+
+    private String latestManagerDecisionHash(String taskId) {
+        if (managerDecisionStore == null || taskId == null || taskId.isBlank()) {
+            return "";
+        }
+        return managerDecisionStore.findLatest(taskId)
+                .map(ManagerDecision::decisionHash)
+                .orElse("");
     }
 
     private static ExecutionEvidenceView executionEvidence(String executionResultJson, String pullRequestUrl) {
@@ -1235,6 +1294,11 @@ public class RdTaskController {
         if (requirementDeliveryDispatchService == null) {
             throw new IllegalStateException("requirement delivery dispatch service unavailable");
         }
+        RdTask current = registry.getTask(taskId);
+        if (current != null && (current.status() == RdTaskStatus.WAITING_APPROVAL
+                || current.status() == RdTaskStatus.WAITING_USER_INPUT)) {
+            return;
+        }
         requirementDeliveryDispatchService.submit(taskId);
     }
 
@@ -1376,6 +1440,16 @@ public class RdTaskController {
     ) {
     }
 
+    /** Digest- and concurrency-bound operator answer for WAITING_USER_INPUT. */
+    public record AnswerRequirementTaskRequest(
+            long expectedTaskVersion,
+            long expectedTaskFence,
+            String decisionHash,
+            String answerRequestId,
+            String answerText
+    ) {
+    }
+
     /** 停止任务响应体。 */
     public record StopRdTaskResponse(
             RdTaskView task,
@@ -1433,12 +1507,16 @@ public class RdTaskController {
             String acceptanceCriteriaJson,
             JsonNode hostAssertionBundle,
             ExecutionEvidenceView executionEvidence,
-            long tokenBudgetOverride
+            long tokenBudgetOverride,
+            long version,
+            long fencingToken,
+            String managerDecisionHash
     ) {
         public RdTaskView {
             hostAssertionBundle = hostAssertionBundle == null || hostAssertionBundle.isNull()
                     ? null
                     : hostAssertionBundle.deepCopy();
+            managerDecisionHash = managerDecisionHash == null ? "" : managerDecisionHash.strip();
         }
 
         public JsonNode hostAssertionBundle() {

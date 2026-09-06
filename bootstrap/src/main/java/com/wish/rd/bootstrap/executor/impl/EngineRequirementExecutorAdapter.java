@@ -451,6 +451,10 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
                 : request.initialAgentStateAttachments()) {
             String filename = "attachments/qa-remediation/request.json".equals(attachment.path())
                     ? "qa-remediation/request.json"
+                    : "attachments/host-verify-remediation/request.json".equals(attachment.path())
+                    ? "host-verify-remediation/request.json"
+                    : "attachments/manager-gap-fix/request.json".equals(attachment.path())
+                    ? "manager-gap-fix/request.json"
                     : java.nio.file.Path.of(attachment.path()).getFileName().toString();
             boolean duplicate = attachments.stream().anyMatch(existing -> existing.filename().equals(filename));
             if (duplicate) {

@@ -73,6 +73,7 @@ import com.wish.rd.engine.requirement.job.model.ExternalEffectReceipt;
 import com.wish.rd.engine.requirement.job.model.RequirementStageCommand;
 import com.wish.rd.engine.requirement.job.model.RequirementStageExecutionPlan;
 import com.wish.rd.engine.requirement.job.model.RequirementTaskMutation;
+import com.wish.rd.engine.requirement.job.RequirementStageCommandStore;
 import com.wish.rd.engine.requirement.job.model.PiQaRemediationIntent;
 import com.wish.rd.engine.requirement.policy.CanonicalJsonSha256;
 import com.wish.rd.engine.requirement.remediation.model.AgentRemediationKind;
@@ -108,6 +109,7 @@ import com.wish.rd.engine.requirement.policy.model.RequirementPolicyEvaluationPr
 import com.wish.rd.engine.requirement.policy.RequirementPolicyRunStore;
 import com.wish.rd.engine.requirement.policy.model.RequirementPolicyRun;
 import com.wish.rd.engine.requirement.verify.HostVerificationPort;
+import com.wish.rd.engine.requirement.answer.UserAnswerResumeStages;
 import com.wish.rd.engine.requirement.audit.HostVerifySubject;
 import com.wish.rd.engine.requirement.audit.InMemoryEvidenceRefResolver;
 import com.wish.rd.engine.requirement.verify.HostVerificationStore;
@@ -121,6 +123,8 @@ import com.wish.rd.engine.requirement.audit.AuditIntegrity;
 import com.wish.rd.engine.requirement.audit.AuditMutation;
 import com.wish.rd.engine.requirement.audit.AuditRun;
 import com.wish.rd.engine.requirement.audit.AuditedCompletionGate;
+import com.wish.rd.engine.requirement.audit.AuditedGapSection;
+import com.wish.rd.engine.requirement.audit.AuditedHandoffTrust;
 import com.wish.rd.engine.requirement.audit.AuditedRecord;
 import com.wish.rd.engine.requirement.audit.AuditedRecordStatus;
 import com.wish.rd.engine.requirement.audit.AuditedStateMutation;
@@ -137,8 +141,18 @@ import com.wish.rd.engine.requirement.audit.DeterministicAuditor;
 import com.wish.rd.engine.requirement.audit.EvidenceRef;
 import com.wish.rd.engine.requirement.audit.EvidenceRefResolverPort;
 import com.wish.rd.engine.requirement.audit.EvidenceSourceKind;
+import com.wish.rd.engine.requirement.audit.QaCurrentAcceptance;
+import com.wish.rd.engine.requirement.audit.QaEvidenceLookup;
+import com.wish.rd.engine.requirement.audit.QaSubject;
+import com.wish.rd.engine.requirement.audit.QaSubjectExtractor;
 import com.wish.rd.engine.requirement.audit.RoleClaimExtractor;
 import com.wish.rd.engine.requirement.audit.RoleClaimSubject;
+import com.wish.rd.engine.requirement.manager.ManagerDecideStages;
+import com.wish.rd.engine.requirement.manager.ManagerDecision;
+import com.wish.rd.engine.requirement.manager.ManagerDecisionStore;
+import com.wish.rd.engine.requirement.manager.ManagerPolicy;
+import com.wish.rd.engine.requirement.manager.ManagerRoute;
+import com.wish.rd.engine.requirement.manager.impl.InMemoryManagerDecisionStore;
 import com.wish.rd.engine.requirement.policy.model.RequirementPolicyRunState;
 import com.wish.rd.engine.provider.ProviderSideEffectStatusPort;
 import com.wish.rd.rag.project.agent.model.AgentExecutionProfileSnapshot;
@@ -207,6 +221,8 @@ public class RequirementDeliveryEngine {
             ProviderSideEffectStatusPort.unavailable();
     private HostVerificationPort hostVerificationPort = HostVerificationPort.noop();
     private AuditedTaskStateStore auditedTaskStateStore;
+    private ManagerDecisionStore managerDecisionStore = new InMemoryManagerDecisionStore();
+    private RequirementStageCommandStore stageCommandStore;
     private AuditedWritebackGateMode auditedWritebackGateMode = AuditedWritebackGateMode.ENFORCE;
     private EvidenceRefResolverPort evidenceRefResolver;
     private final AuditedTaskStateCodec auditedTaskStateCodec = new AuditedTaskStateCodec();
@@ -364,6 +380,21 @@ public class RequirementDeliveryEngine {
     @Autowired(required = false)
     public void setAuditedTaskStateStore(AuditedTaskStateStore auditedTaskStateStore) {
         this.auditedTaskStateStore = auditedTaskStateStore;
+        if (this.stageOrchestrator != null) {
+            this.stageOrchestrator.setAuditedTaskStateStore(auditedTaskStateStore);
+        }
+    }
+
+    @Autowired(required = false)
+    public void setManagerDecisionStore(ManagerDecisionStore managerDecisionStore) {
+        this.managerDecisionStore = managerDecisionStore == null
+                ? new InMemoryManagerDecisionStore()
+                : managerDecisionStore;
+    }
+
+    @Autowired(required = false)
+    public void setStageCommandStore(RequirementStageCommandStore stageCommandStore) {
+        this.stageCommandStore = stageCommandStore;
     }
 
     /**
@@ -396,6 +427,9 @@ public class RequirementDeliveryEngine {
     @Autowired(required = false)
     public void setHostVerificationStore(HostVerificationStore hostVerificationStore) {
         this.hostVerificationStore = hostVerificationStore;
+        if (this.stageOrchestrator != null) {
+            this.stageOrchestrator.setHostVerificationStore(hostVerificationStore);
+        }
     }
 
     /**
@@ -410,6 +444,8 @@ public class RequirementDeliveryEngine {
             this.stageOrchestrator = stageOrchestrator;
             this.stageOrchestrator.setProviderSideEffectStatusPort(providerSideEffectStatusPort);
             this.stageOrchestrator.setHostVerificationPort(hostVerificationPort);
+            this.stageOrchestrator.setAuditedTaskStateStore(auditedTaskStateStore);
+            this.stageOrchestrator.setHostVerificationStore(hostVerificationStore);
         }
     }
 
@@ -1206,6 +1242,8 @@ public class RequirementDeliveryEngine {
             case String roleStage when roleStage.startsWith("ROLE_EXECUTION:") ->
                     planRoleExecutionStage(task, command, parseRoleStage(roleStage));
             case "HOST_VERIFY" -> planHostVerifyStage(task, command);
+            case String managerStage when ManagerDecideStages.isManagerDecide(managerStage) ->
+                    planManagerDecisionStage(task, command);
             case "DETERMINISTIC_REVIEW" -> planDeterministicReviewStage(task, command);
             case "AI_REVIEW" -> planAiReviewStage(task, command);
             case "PUBLICATION" -> planPublicationStage(task, command, false);
@@ -1355,14 +1393,17 @@ public class RequirementDeliveryEngine {
         // Agent-stage records are orchestration evidence, not task/timeline state. The Host later
         // applies the returned task mutation atomically with the command completion.
         ensureRequirementStages(task);
+        ensureFreshQaAttemptForManagerGapFix(task, command, role);
         ensureRoleContexts(task, materials, null);
         String qaProductRemediationJson =
                 (command.remediationKind() == AgentRemediationKind.QA_PRODUCT_FIX
-                        || command.remediationKind() == AgentRemediationKind.HOST_VERIFY_FIX)
+                        || command.remediationKind() == AgentRemediationKind.HOST_VERIFY_FIX
+                        || command.remediationKind() == AgentRemediationKind.MANAGER_GAP_FIX)
                 && role == AgentRole.CODING_AGENT ? command.remediationRequestJson() : "";
         String qaProductRemediationHash =
                 (command.remediationKind() == AgentRemediationKind.QA_PRODUCT_FIX
-                        || command.remediationKind() == AgentRemediationKind.HOST_VERIFY_FIX)
+                        || command.remediationKind() == AgentRemediationKind.HOST_VERIFY_FIX
+                        || command.remediationKind() == AgentRemediationKind.MANAGER_GAP_FIX)
                 && role == AgentRole.CODING_AGENT ? command.remediationRequestHash() : "";
         String qaProtocolRetryPrompt = command.remediationKind() == AgentRemediationKind.QA_PROTOCOL_RETRY
                 && role == AgentRole.QA_AGENT ? protocolRetryPrompt(command.remediationRequestJson()) : "";
@@ -1392,15 +1433,49 @@ public class RequirementDeliveryEngine {
                             "",
                             execution.errorMessage()
                     ));
-                    return plan(
+                    return attachRoleClaims(
+                            plan(
+                                    task,
+                                    command,
+                                    mutations,
+                                    CommandDisposition.SUCCEEDED,
+                                    ContinuationSpec.terminal(),
+                                    ExternalEffectReceipt.none(),
+                                    remediationIntent
+                            ),
                             task,
                             command,
-                            mutations,
-                            CommandDisposition.SUCCEEDED,
-                            ContinuationSpec.terminal(),
-                            ExternalEffectReceipt.none(),
-                            remediationIntent
-                    );
+                            role,
+                            execution.resultJson());
+                }
+                if (PiQaRemediationPlanner.protocolCompleteAcceptanceReport(execution.resultJson())) {
+                    List<RequirementTaskMutation> mutations = new ArrayList<>();
+                    if (checkpointRecovery) {
+                        mutations.add(mutation(
+                                RdTaskStatus.RECOVERING, RdTaskStatus.EXECUTING, "", "", "", ""
+                        ));
+                    }
+                    mutations.add(RequirementTaskMutation.snapshotUpdate(
+                            RdTaskStatus.EXECUTING,
+                            "",
+                            execution.resultJson(),
+                            execution.pullRequestUrl(),
+                            "",
+                            ""));
+                    return attachRoleClaims(
+                            plan(
+                                    task,
+                                    command,
+                                    mutations,
+                                    CommandDisposition.SUCCEEDED,
+                                    new ContinuationSpec(
+                                            "REQUIREMENT_DELIVERY",
+                                            ManagerDecideStages.forSource(command.commandId()))
+                            ),
+                            task,
+                            command,
+                            role,
+                            execution.resultJson());
                 }
             }
             boolean needsHuman = needsHumanInterventionResult(execution);
@@ -1427,7 +1502,9 @@ public class RequirementDeliveryEngine {
         mutations.add(RequirementTaskMutation.snapshotUpdate(
                 RdTaskStatus.EXECUTING, "", execution.resultJson(), execution.pullRequestUrl(), "", ""));
         return attachRoleClaims(
-                plan(task, command, mutations, CommandDisposition.SUCCEEDED, roleContinuation(role)),
+                plan(task, command, mutations, CommandDisposition.SUCCEEDED, role == AgentRole.QA_AGENT
+                        ? new ContinuationSpec("REQUIREMENT_DELIVERY", ManagerDecideStages.forSource(command.commandId()))
+                        : roleContinuation(role)),
                 task,
                 command,
                 role,
@@ -1489,7 +1566,8 @@ public class RequirementDeliveryEngine {
                     hostVerifyMutations(checkpointRecovery, RequirementTaskMutation.snapshotUpdate(
                             RdTaskStatus.EXECUTING, "", hostVerifyResultJson(verification), "", "", "")),
                     CommandDisposition.SUCCEEDED,
-                    new ContinuationSpec(AgentRole.QA_AGENT.name(), "ROLE_EXECUTION:" + AgentRole.QA_AGENT.name()));
+                    new ContinuationSpec(
+                            "REQUIREMENT_DELIVERY", ManagerDecideStages.forSource(command.commandId())));
             return attachHostVerifyAudit(planned, task, command, codingStage, verification);
         }
         String resultJson = hostVerifyFailureJson(verification);
@@ -1501,6 +1579,152 @@ public class RequirementDeliveryEngine {
                         CommandDisposition.TERMINAL_FAILURE,
                         ContinuationSpec.terminal()),
                 task, command, codingStage, verification);
+    }
+
+    private RequirementStageExecutionPlan planManagerDecisionStage(
+            RdRequirementTask task,
+            RequirementStageCommand command
+    ) {
+        boolean checkpointRecovery = task.status() == RdTaskStatus.RECOVERING
+                && !command.retryCheckpointId().isBlank();
+        if (task.status() != RdTaskStatus.EXECUTING && !checkpointRecovery) {
+            throw new IllegalStateException("manager-decide command task is not executing: " + command.commandId());
+        }
+        String sourceCommandId = ManagerDecideStages.sourceCommandId(command.stage());
+        String previousStage = "";
+        if (stageCommandStore != null) {
+            previousStage = stageCommandStore.findById(sourceCommandId)
+                    .map(RequirementStageCommand::stage)
+                    .orElse("");
+        }
+        AuditedTaskState head = auditedTaskStateStore == null
+                ? null
+                : auditedTaskStateStore.head(task.taskId()).orElse(null);
+        boolean needUserInput = !UserAnswerResumeStages.isResume(previousStage)
+                && head != null
+                && head.records().stream().anyMatch(record ->
+                record.status() == AuditedRecordStatus.BLOCKED
+                        && record.blockedReason().toUpperCase(Locale.ROOT).contains("NEED_USER_INPUT"));
+        int usedCodingAttempts = (int) stageRunStore.listByTask(task.taskId()).stream()
+                .filter(stage -> stage.role() == AgentRole.CODING_AGENT)
+                .count();
+        int usedManagerGapFixRounds = (int) managerDecisionStore.listByTask(task.taskId()).stream()
+                .filter(decision -> decision.route() == ManagerRoute.EXECUTE
+                        && AgentRole.CODING_AGENT.name().equals(decision.executorRoute()))
+                .count();
+        ManagerPolicy.Output output = ManagerPolicy.decide(new ManagerPolicy.Input(
+                task.taskId(),
+                sourceCommandId,
+                previousStage,
+                task.paused(),
+                needUserInput,
+                head,
+                usedCodingAttempts,
+                usedManagerGapFixRounds));
+        PiQaRemediationIntent intent = null;
+        if (output.gapFix()) {
+            intent = buildManagerGapFixIntent(task, command, output.decision(), usedManagerGapFixRounds + 1);
+            if (intent == null) {
+                output = new ManagerPolicy.Output(
+                        ManagerDecision.of(
+                                task.taskId(),
+                                1,
+                                sourceCommandId,
+                                output.decision().stateVersion(),
+                                output.decision().stateHash(),
+                                ManagerRoute.BLOCKED,
+                                List.of(),
+                                "",
+                                "",
+                                "manager gap-fix intent could not be minted"),
+                        ContinuationSpec.terminal(),
+                        false);
+            }
+        }
+        List<RequirementTaskMutation> mutations = new ArrayList<>();
+        if (checkpointRecovery) {
+            mutations.add(mutation(RdTaskStatus.RECOVERING, RdTaskStatus.EXECUTING, "", "", "", ""));
+        }
+        RdTaskStatus from = checkpointRecovery ? RdTaskStatus.EXECUTING : task.status();
+        ManagerDecision decision = output.decision();
+        if (decision.route() == ManagerRoute.ASK) {
+            mutations.add(mutation(from, RdTaskStatus.WAITING_USER_INPUT, "", "{}", "", decision.rationale()));
+        } else if (decision.route() == ManagerRoute.BLOCKED || decision.route() == ManagerRoute.REPLAN) {
+            mutations.add(mutation(from, RdTaskStatus.FAILED_NEEDS_HUMAN, "", "{}", "", decision.rationale()));
+        }
+        RequirementStageExecutionPlan planned = intent == null
+                ? plan(task, command, mutations, CommandDisposition.SUCCEEDED, output.continuation())
+                : plan(task, command, mutations, CommandDisposition.SUCCEEDED, output.continuation(),
+                        ExternalEffectReceipt.none(), intent);
+        return planned.withManagerDecision(decision);
+    }
+
+    private PiQaRemediationIntent buildManagerGapFixIntent(
+            RdRequirementTask task,
+            RequirementStageCommand command,
+            ManagerDecision decision,
+            int remediationNo
+    ) {
+        try {
+            AgentStageRun sourceQa = latestStageOrNull(stageRunStore.listByTask(task.taskId()), AgentRole.QA_AGENT);
+            AgentStageRun latestCoding = latestSucceededStageLocator.require(
+                    stageRunStore.listByTask(task.taskId()), AgentRole.CODING_AGENT, task.taskId());
+            if (sourceQa == null) {
+                log.warn("MANAGER_GAP_FIX declined: no QA stage taskId={}", task.taskId());
+                return null;
+            }
+            int targetCodingAttempt = latestCoding.attemptNo() + 1;
+            if (targetCodingAttempt > MAX_ROLE_ATTEMPTS) {
+                log.warn("MANAGER_GAP_FIX declined: coding attempt budget exhausted taskId={}", task.taskId());
+                return null;
+            }
+            ManagerGapFixPackageBuilder.Package request = new ManagerGapFixPackageBuilder().build(
+                    decision.targetRecordIds(),
+                    decision.boundedContract(),
+                    decision.stateVersion(),
+                    decision.stateHash(),
+                    remediationNo);
+            String codingStageId = idGenerator.nextIdString();
+            String roundId = idGenerator.nextIdString();
+            String firstCommandId = idGenerator.nextIdString();
+            AgentExecutionProfileSnapshot codingSnapshot = executionProfileResolver.prepareSnapshot(
+                    task, AgentRole.CODING_AGENT, codingStageId, targetCodingAttempt);
+            RequirementExecutionProfileResolution sourceResolution = executionProfileResolver.resolve(
+                    task, AgentRole.QA_AGENT, sourceQa.stageRunId(), sourceQa.attemptNo());
+            String sourceJson = task.executionResultJson();
+            String sourceHash;
+            try {
+                sourceHash = CanonicalJsonSha256.digest(sourceJson == null || sourceJson.isBlank() ? "{}" : sourceJson);
+            } catch (RuntimeException invalid) {
+                sourceHash = CanonicalJsonSha256.digest("{}");
+            }
+            return new PiQaRemediationIntent(
+                    PiQaRemediationIntent.PROTOCOL,
+                    task.taskId(),
+                    sourceQa.stageRunId(),
+                    command.commandId(),
+                    sourceHash,
+                    command.taskVersion(),
+                    command.fencingToken(),
+                    AgentRemediationKind.MANAGER_GAP_FIX,
+                    remediationNo,
+                    roundId,
+                    request.attachment().content(),
+                    request.requestHash(),
+                    codingStageId,
+                    targetCodingAttempt,
+                    "",
+                    0,
+                    firstCommandId,
+                    profileClaim(sourceResolution.snapshotJson()),
+                    preparedProfile(codingSnapshot),
+                    null,
+                    "",
+                    "");
+        } catch (RuntimeException invalid) {
+            log.warn("MANAGER_GAP_FIX declined: intent construction failed taskId={}", task.taskId(), invalid);
+            return null;
+        }
     }
 
     private List<RequirementTaskMutation> hostVerifyMutations(
@@ -1609,8 +1833,7 @@ public class RequirementDeliveryEngine {
             String roundId = idGenerator.nextIdString();
             String firstCommandId = idGenerator.nextIdString();
             AgentExecutionProfileSnapshot codingSnapshot = executionProfileResolver.prepareSnapshot(
-                    task, AgentRole.CODING_AGENT, codingStageId, targetCodingAttempt,
-                    AgentRuntimeCapability.PI_QA_REMEDIATION_V2);
+                    task, AgentRole.CODING_AGENT, codingStageId, targetCodingAttempt);
             RequirementExecutionProfileResolution sourceResolution = executionProfileResolver.resolve(
                     task, AgentRole.CODING_AGENT, codingStage.stageRunId(), codingStage.attemptNo());
             return new PiQaRemediationIntent(
@@ -2181,7 +2404,7 @@ public class RequirementDeliveryEngine {
             AgentRole role,
             String resultJson
     ) {
-        AuditMutation mutation = roleClaimMutation(task, command, role, resultJson);
+        AuditMutation mutation = auditedRoleMutation(task, command, role, resultJson);
         return mutation == null ? plan : plan.withAuditedStateMutation(mutation.toPlanMutation());
     }
 
@@ -2197,12 +2420,140 @@ public class RequirementDeliveryEngine {
         if (auditedTaskStateStore.head(task.taskId()).isEmpty()) {
             new AuditedTaskStatePolicyBootstrap(auditedTaskStateStore).initializeIfAbsent(task);
         }
-        AuditMutation mutation = roleClaimMutation(task, command, role, resultJson);
+        AuditMutation mutation = auditedRoleMutation(task, command, role, resultJson);
         if (mutation == null) {
             return;
         }
         auditedTaskStateStore.appendRevision(
                 mutation.nextState().stateVersion(), mutation.nextState(), mutation.auditRun());
+    }
+
+    private AuditMutation auditedRoleMutation(
+            RdRequirementTask task,
+            RequirementStageCommand command,
+            AgentRole role,
+            String resultJson
+    ) {
+        if (role == AgentRole.QA_AGENT) {
+            return qaAuditMutation(task, command, resultJson);
+        }
+        return roleClaimMutation(task, command, role, resultJson);
+    }
+
+    private AuditMutation qaAuditMutation(
+            RdRequirementTask task,
+            RequirementStageCommand command,
+            String resultJson
+    ) {
+        if (auditedTaskStateStore == null) {
+            return null;
+        }
+        AuditedTaskStateCodec codec = new AuditedTaskStateCodec();
+        AuditedTaskState head = auditedTaskStateStore.head(task.taskId())
+                .orElseGet(() -> new AuditedTaskStateInitializer(codec).initialize(task));
+        AgentStageRun latest = latestStageOrNull(stageRunStore.listByTask(task.taskId()), AgentRole.QA_AGENT);
+        String stageRunId = latest == null || latest.stageRunId().isBlank()
+                ? command.commandId()
+                : latest.stageRunId();
+        long now = Math.max(command.updatedAtEpochMillis(), command.createdAtEpochMillis());
+        String auditRunId = idGenerator.nextIdString();
+        String authoritative = PiQaRemediationPlanner.authoritativeQaResultJson(resultJson);
+        RoleClaimSubject claims = RoleClaimExtractor.fromResultJson(
+                auditRunId,
+                command.commandId(),
+                stageRunId,
+                AgentRole.QA_AGENT.name(),
+                authoritative,
+                now);
+        QaSubject qaSubject = QaSubjectExtractor.fromResultJson(
+                auditRunId,
+                command.commandId(),
+                stageRunId,
+                qaPiV2Enabled(task, latest),
+                resultJson,
+                qaEvidenceLookup(task.taskId()));
+        InMemoryEvidenceRefResolver resolver = new InMemoryEvidenceRefResolver();
+        registerQaEvidence(resolver, task.taskId(), qaSubject);
+        return new DeterministicAuditor(codec).auditQaWithClaims(head, qaSubject, claims, resolver);
+    }
+
+    private boolean qaPiV2Enabled(RdRequirementTask task, AgentStageRun latest) {
+        if (executionProfileResolver == null || latest == null) {
+            return true;
+        }
+        try {
+            return executionProfileResolver.resolve(
+                    task, AgentRole.QA_AGENT, latest.stageRunId(), latest.attemptNo()
+            ).piQaRemediationV2Enabled();
+        } catch (RuntimeException ignored) {
+            return true;
+        }
+    }
+
+    private QaEvidenceLookup qaEvidenceLookup(String taskId) {
+        return path -> {
+            if (artifactStore == null || path == null || path.isBlank()) {
+                return Optional.empty();
+            }
+            return artifactStore.listByTask(taskId).stream()
+                    .filter(artifact -> matchesQaEvidencePath(artifact, path))
+                    .findFirst()
+                    .map(RequirementDeliveryEngine::toPersistedQaEvidence);
+        };
+    }
+
+    private static boolean matchesQaEvidencePath(AgentStageArtifact artifact, String path) {
+        if (artifact == null || path == null || path.isBlank()) {
+            return false;
+        }
+        return path.equals(artifact.summary())
+                || path.equals(qaArtifactName(artifact))
+                || artifact.artifactUri().endsWith("/" + path)
+                || artifact.artifactUri().endsWith(path);
+    }
+
+    private static String qaArtifactName(AgentStageArtifact artifact) {
+        try {
+            JsonNode metadata = OBJECT_MAPPER.readTree(
+                    artifact.metadataJson() == null || artifact.metadataJson().isBlank()
+                            ? "{}"
+                            : artifact.metadataJson());
+            return metadata.path("artifactName").asText("").strip();
+        } catch (Exception ignored) {
+            return "";
+        }
+    }
+
+    private static QaEvidenceLookup.PersistedObject toPersistedQaEvidence(AgentStageArtifact artifact) {
+        String sha = artifact.contentHash();
+        try {
+            JsonNode metadata = OBJECT_MAPPER.readTree(
+                    artifact.metadataJson() == null || artifact.metadataJson().isBlank()
+                            ? "{}"
+                            : artifact.metadataJson());
+            String fromMeta = metadata.path("sha256").asText("").strip();
+            if (!fromMeta.isBlank()) {
+                sha = fromMeta.startsWith("sha256:") ? fromMeta : "sha256:" + fromMeta;
+            }
+        } catch (Exception ignored) {
+            // contentHash remains the digest when metadata is unreadable
+        }
+        return new QaEvidenceLookup.PersistedObject(artifact.artifactId(), sha);
+    }
+
+    private static void registerQaEvidence(
+            InMemoryEvidenceRefResolver resolver,
+            String taskId,
+            QaSubject qaSubject
+    ) {
+        for (QaCurrentAcceptance hit : qaSubject.currentAcceptances()) {
+            for (EvidenceRef ref : hit.evidenceRefs()) {
+                resolver.put(ref);
+            }
+        }
+        if (qaSubject.fingerprintBefore() != null && qaSubject.fingerprintAfter() != null) {
+            resolver.put(DeterministicAuditor.qaWorkspaceFingerprintRef(taskId, qaSubject));
+        }
     }
 
     private AuditMutation roleClaimMutation(
@@ -3208,6 +3559,33 @@ public class RequirementDeliveryEngine {
                 || status == RdTaskStatus.CANCELLED
                 || status == RdTaskStatus.DEAD_LETTERED
                 || status == RdTaskStatus.DELETED;
+    }
+
+    /**
+     * MANAGER_GAP_FIX keeps the QA column empty on the round (HOST_VERIFY_FIX shape), so the
+     * copied QA command after gap-fix HOST_VERIFY has no pre-minted attempt. The previous QA
+     * product failure left {@code FAILED_NEEDS_HUMAN}; without a fresh PENDING attempt the
+     * orchestrator refuses to re-enter the role.
+     */
+    private void ensureFreshQaAttemptForManagerGapFix(
+            RdRequirementTask task, RequirementStageCommand command, AgentRole role
+    ) {
+        if (role != AgentRole.QA_AGENT || command.remediationKind() != AgentRemediationKind.MANAGER_GAP_FIX) {
+            return;
+        }
+        AgentStageRun latest = latestStageOrNull(stageRunStore.listByTask(task.taskId()), role);
+        if (latest == null) {
+            return;
+        }
+        if (latest.status() != AgentStageStatus.FAILED_NEEDS_HUMAN
+                && latest.status() != AgentStageStatus.FAILED_RETRYABLE
+                && latest.status() != AgentStageStatus.SUCCEEDED) {
+            return;
+        }
+        if (latest.attemptNo() >= MAX_ROLE_ATTEMPTS) {
+            return;
+        }
+        stageRunStore.save(pendingStage(task.taskId(), role, latest.attemptNo() + 1, System.currentTimeMillis()));
     }
 
     private void ensureRequirementStages(RdRequirementTask task) {
@@ -5132,25 +5510,28 @@ public class RequirementDeliveryEngine {
                         || stage.status() == AgentStageStatus.FAILED_NEEDS_HUMAN)
                 .max(STAGE_RUN_RECENCY)
                 .orElse(null);
-        if (previousFailure == null || previousFailure.errorMessage().isBlank()) {
+        if (previousFailure == null) {
             return "";
         }
-        String detail = previousFailure.errorMessage();
-        if (detail.length() > MAX_FAILURE_FEEDBACK_CHARS) {
-            detail = detail.substring(0, MAX_FAILURE_FEEDBACK_CHARS) + "...(truncated)";
+        return auditedGapSection(taskId);
+    }
+
+    private String auditedGapSection(String taskId) {
+        if (auditedTaskStateStore == null) {
+            return "";
         }
-        return """
-                # 上一轮失败反馈
-                上一次 %s 尝试（attempt %d）失败，错误分类：%s。
-                失败明细：
-                %s
-                请针对以上明细修正本轮输出（逐条补齐缺失或非法的结果字段），不要原样重复上一轮输出。
-                """.formatted(
-                role.name(),
-                previousFailure.attemptNo(),
-                previousFailure.errorCategory().isBlank() ? "UNKNOWN" : previousFailure.errorCategory(),
-                detail
-        ).strip();
+        AuditedTaskState head = auditedTaskStateStore.head(taskId).orElse(null);
+        if (head == null) {
+            return "";
+        }
+        AuditRun lastRun = null;
+        if (!head.lastAuditRunId().isBlank()) {
+            lastRun = auditedTaskStateStore.listAuditRuns(taskId).stream()
+                    .filter(run -> head.lastAuditRunId().equals(run.auditRunId()))
+                    .findFirst()
+                    .orElse(null);
+        }
+        return AuditedGapSection.render(head, lastRun);
     }
 
     private static String joinPromptSections(String first, String second) {
@@ -5284,7 +5665,7 @@ public class RequirementDeliveryEngine {
                     """.strip();
             case SOLUTION_ARCHITECT -> """
                     - 基于需求评审和证据制定开发方案，不修改代码，不创建 PR。
-                    - 上游环境备忘视为已验证事实直接沿用；本轮新发现的环境事实追加写入 result.json 的 environmentNotes。
+                    - 上游环境备忘默认 UNTRUSTED，仅当 compact facts 标 VERIFIED(auditRunId=…) 时沿用；本轮新发现的环境事实追加写入 result.json 的 environmentNotes。
                     - 输出影响文件、接口/数据变更、实现步骤、验收映射和测试计划。
                     - 使用已安装的 role-handoff-document Skill，把完整开发计划写入 /work/output/handoff/next.md，供 CODING_AGENT 作为受控附件读取；预算见 context.json 的 roleHandoffMaxTokens。
                     - result.json 中的 next_prompt 只提供目标角色、短摘要和固定相对路径；不要把完整计划或 RustFS 地址复制进 JSON。
@@ -5292,7 +5673,7 @@ public class RequirementDeliveryEngine {
                     """.strip();
             case CODING_AGENT -> """
                     - 根据需求评审和方案执行代码修改。
-                    - 上游环境备忘视为已验证事实直接沿用，不要重复探测；本轮新发现的环境事实（含可用的测试执行方式）追加写入 result.json 的 environmentNotes，供 QA 直接沿用。
+                    - 上游环境备忘默认 UNTRUSTED，仅当 compact facts 标 VERIFIED(auditRunId=…) 时沿用，不要重复探测；本轮新发现的环境事实（含可用的测试执行方式）追加写入 result.json 的 environmentNotes，供 QA 直接沿用。
                     - 本容器在 credential-relay 隔离网上，不能访问 npm/pypi/GitHub。依赖由宿主预装到 /work/repo 与 /work/cache。禁止探测公网 DNS（含 8.8.8.8），禁止把 EAI_AGAIN/ENOTCACHED 当成需要人工恢复的交付失败。
                     - 依赖树和 /work/cache 是当前任务与重试共享的状态：不得删除 node_modules、package-lock.json 或 /work/cache。先用已有依赖；隔离网内不要执行 npm install。若依赖仍缺失：保留诊断、写入 environmentNotes，代码改动完成后 status=SUCCESS 且 testStatus=SKIPPED。宿主会在本阶段成功后重跑安装、构建、仓库测试和静态检查。`testStatus` 只是交接信息，不是放行依据。
                     - 若 node_modules 已就绪，Next.js 服务验收必须使用生产模式：执行 npm run build && npm run start；不得以 npm run dev 作为交付验证服务。
@@ -5304,7 +5685,7 @@ public class RequirementDeliveryEngine {
                     """.strip();
             case QA_AGENT -> """
                     - 基于代码交付候选包、验收标准和真实命令执行 QA 复核。
-                    - 上游环境备忘（含 CODING_AGENT 已验证的测试执行方式）视为已验证事实直接沿用，不要从零重复探测环境。
+                    - 上游环境备忘（含 CODING_AGENT 交接的测试执行方式）默认 UNTRUSTED，仅当标 VERIFIED(auditRunId=…) 时沿用，不要从零重复探测环境。
                     - 先读取 /work/input/qa-profile.json，并遵循已安装的 qa-playwright-cli Skill；Web 项目且配置要求时必须执行真实 Chromium 浏览器验证。
                     - docs-only 例外（宿主根据候选补丁的真实变更文件集判定，写入 qa-profile.json 的 decisionSource=DOCS_ONLY 与 candidateChangedFiles）：仅当 profile 判定为 docs-only 时，跳过 npm install / build / start 与 Chromium 浏览器回归，browserValidation 必须为 required=false、performed=false、decisionSource=DOCS_ONLY；不得凭任务描述或自我声明降级。变更集无法判定或含任意运行时相关文件时必须跑完整浏览器画像。
                     - 若存在 /work/input/qa-skill/SKILL.md，先完整阅读并严格遵循其中的流程与工具（rd-qa-evidence.mjs / playwright-cli）。
@@ -5533,12 +5914,6 @@ public class RequirementDeliveryEngine {
                 if (!summary.isBlank()) {
                     compact.put("summary", compactText(summary));
                 }
-                String errorMessage = firstNonBlank(
-                        stage.path("errorMessage").asText(""), roleResult.path("errorMessage").asText("")
-                );
-                if (!errorMessage.isBlank()) {
-                    compact.put("errorMessage", compactText(errorMessage));
-                }
                 List<String> environmentNotes = compactEnvironmentNotes(roleResult.path("environmentNotes"));
                 if (!environmentNotes.isEmpty()) {
                     compact.put("environmentNotes", environmentNotes);
@@ -5583,7 +5958,7 @@ public class RequirementDeliveryEngine {
             if (text.isBlank()) {
                 continue;
             }
-            notes.add(text);
+            notes.add(AuditedHandoffTrust.UNTRUSTED + ": " + text);
             if (notes.size() >= MAX_ENVIRONMENT_NOTES) {
                 break;
             }
@@ -5775,7 +6150,7 @@ public class RequirementDeliveryEngine {
                 : "\nVerified candidate patches:\n" + String.join("\n", candidatePatchLines);
         String environmentNotes = environmentNoteLines.isEmpty()
                 ? ""
-                : "\n环境备忘（上游角色已实测验证，直接沿用，不要重复探测）:\n" + String.join("\n", environmentNoteLines);
+                : "\n环境备忘（UNTRUSTED）:\n" + String.join("\n", environmentNoteLines);
         return (stageSummary + "\n" + documents + candidatePatches + environmentNotes + remediation).strip();
     }
 

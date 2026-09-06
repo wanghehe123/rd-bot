@@ -52,7 +52,9 @@ public interface RequirementStageFinalizationMapper extends BaseMapper<Requireme
                )
                AND (
                     (
-                        command.stage IN ('POLICY_EVALUATE', 'POLICY_APPLY', 'APPROVAL_RESUME')
+                        (command.stage IN ('POLICY_EVALUATE', 'POLICY_APPLY', 'APPROVAL_RESUME')
+                         OR command.stage LIKE 'USER_ANSWER_RESUME:%'
+                         OR command.stage LIKE 'MANAGER_DECIDE:%')
                         AND command.status IN ('SUCCEEDED', 'DEAD_LETTERED')
                     )
                     OR EXISTS (
@@ -85,6 +87,9 @@ public interface RequirementStageFinalizationMapper extends BaseMapper<Requireme
                         AND command.stage IN ('PLAN_GENERATING', 'PLAN_GENERATED'))
                     OR (#{row.failurePhase} = 'POLICY'
                         AND command.stage IN ('POLICY_EVALUATE', 'POLICY_APPLY', 'APPROVAL_RESUME'))
+                    OR (#{row.failurePhase} = 'MANAGER'
+                        AND (command.stage LIKE 'MANAGER_DECIDE:%'
+                             OR command.stage LIKE 'USER_ANSWER_RESUME:%'))
                     OR (#{row.failurePhase} = 'RAG'
                         AND #{row.failedRetrievalRunId,jdbcType=BIGINT} IS NOT NULL
                         AND EXISTS (

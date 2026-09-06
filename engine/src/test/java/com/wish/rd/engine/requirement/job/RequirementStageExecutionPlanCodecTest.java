@@ -16,6 +16,8 @@ import com.wish.rd.engine.requirement.job.model.ContinuationSpec;
 import com.wish.rd.engine.requirement.job.model.ExternalEffectReceipt;
 import com.wish.rd.engine.requirement.job.model.PiQaRemediationIntent;
 import com.wish.rd.engine.requirement.job.model.RequirementStageExecutionPlan;
+import com.wish.rd.engine.requirement.manager.ManagerDecision;
+import com.wish.rd.engine.requirement.manager.ManagerRoute;
 import com.wish.rd.engine.requirement.remediation.model.AgentRemediationKind;
 import com.wish.rd.rag.runtime.model.RdTaskStatus;
 import org.junit.jupiter.api.Test;
@@ -85,6 +87,37 @@ class RequirementStageExecutionPlanCodecTest {
                 v2, RequirementStageExecutionPlanCodec.digest(v2));
         assertEquals(2, decodedV2.schemaVersion());
         assertNull(decodedV2.auditedStateMutation());
+        assertNull(decodedV2.managerDecision());
+    }
+
+    @Test
+    void shouldRoundTripManagerDecisionAndKeepMissingFieldNull() {
+        RequirementStageExecutionPlan without = new RequirementStageExecutionPlan(
+                RequirementStageExecutionPlan.CURRENT_SCHEMA_VERSION,
+                "task-1", 7L, 3L, RdTaskStatus.EXECUTING, List.of(),
+                CommandDisposition.SUCCEEDED, ContinuationSpec.terminal(), ExternalEffectReceipt.none());
+        ManagerDecision decision = ManagerDecision.of(
+                "task-1", 2, "qa-command-1", 7L, "sha256:" + "d".repeat(64),
+                ManagerRoute.EXECUTE, List.of("AC-001"), "只修复 AC-001", "CODING_AGENT",
+                "pending blocking acceptance");
+        RequirementStageExecutionPlan withDecision = without.withManagerDecision(decision);
+        String canonical = codec.encodeCanonical(withDecision);
+        RequirementStageExecutionPlan roundTrip = codec.decodeAndVerify(
+                canonical, RequirementStageExecutionPlanCodec.digest(canonical));
+        assertEquals(decision, roundTrip.managerDecision());
+        assertNotEquals(
+                RequirementStageExecutionPlanCodec.digest(codec.encodeCanonical(without)),
+                RequirementStageExecutionPlanCodec.digest(canonical));
+
+        String v3 = "{\"schemaVersion\":3,\"taskId\":\"task-1\",\"expectedVersion\":7,"
+                + "\"expectedFencingToken\":3,\"expectedStatus\":\"EXECUTING\",\"mutations\":[],"
+                + "\"commandDisposition\":\"SUCCEEDED\",\"continuation\":{\"role\":\"\",\"stage\":\"\"},"
+                + "\"externalEffectReceipt\":{\"kind\":\"NONE\",\"operationId\":\"\","
+                + "\"durableState\":\"\",\"receiptJson\":\"{}\"},\"piQaRemediationIntent\":null,"
+                + "\"auditedStateMutation\":null}";
+        RequirementStageExecutionPlan decoded = codec.decodeAndVerify(
+                v3, RequirementStageExecutionPlanCodec.digest(v3));
+        assertNull(decoded.managerDecision());
     }
 
     @Test
