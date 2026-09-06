@@ -154,6 +154,70 @@ class DeliveryObservabilityQueryServiceTest {
     }
 
     @Test
+    void committedWithPrAndNoCompletedEventIsInProgressNotSuccess() {
+        DeliveryObservabilityOverview overview = overviewOf(
+                DeliveryObservabilityFixtures.committedNoCompleteTask());
+
+        assertEquals(0L, overview.successRate().numerator());
+        assertEquals(0L, overview.terminalCount());
+        assertEquals(1L, overview.runningCount());
+        assertTrue(overview.successRate().noSample());
+        assertEquals(0L, overview.prCreationRate().numerator());
+    }
+
+    @Test
+    void mergedWithCompletedStatusEventIsSuccess() {
+        DeliveryObservabilityOverview overview = overviewOf(
+                DeliveryObservabilityFixtures.mergedWithCompleteTask());
+
+        assertEquals(1L, overview.successRate().numerator());
+        assertEquals(1L, overview.successRate().denominator());
+        assertEquals(1L, overview.terminalCount());
+        assertEquals(0L, overview.runningCount());
+        assertEquals(1.0D, overview.successRate().value(), 0.000_001D);
+    }
+
+    @Test
+    void mergedWithOnlyCommittedHistoryIsPublicationTerminalNotSuccessOrFailure() {
+        DeliveryObservabilityOverview overview = overviewOf(
+                DeliveryObservabilityFixtures.mergedCommittedOnlyTask());
+
+        assertEquals(1L, overview.terminalCount());
+        assertEquals(0L, overview.runningCount());
+        assertEquals(0L, overview.successRate().numerator());
+        assertEquals(0L, overview.successRate().denominator());
+        assertTrue(overview.successRate().noSample());
+        assertEquals(0L, overview.unknownFailureRate().numerator());
+        assertEquals(0L, overview.unknownFailureRate().denominator());
+        assertTrue(overview.unknownFailureRate().noSample());
+        assertTrue(overview.failureCategories().isEmpty());
+    }
+
+    @Test
+    void waitingUserInputWithTerminalAtIsRunningNotSuccessFailureOrTerminal() {
+        DeliveryObservabilityOverview overview = overviewOf(
+                DeliveryObservabilityFixtures.waitingUserInputTask());
+
+        assertEquals(0L, overview.successRate().numerator());
+        assertEquals(0L, overview.terminalCount());
+        assertEquals(1L, overview.runningCount());
+        assertTrue(overview.successRate().noSample());
+        assertTrue(overview.unknownFailureRate().noSample());
+        assertTrue(overview.failureCategories().isEmpty());
+    }
+
+    @Test
+    void waitingApprovalWithTerminalAtIsRunning() {
+        DeliveryObservabilityOverview overview = overviewOf(
+                DeliveryObservabilityFixtures.waitingApprovalTask());
+
+        assertEquals(0L, overview.terminalCount());
+        assertEquals(1L, overview.runningCount());
+        assertEquals(0L, overview.successRate().numerator());
+        assertTrue(overview.successRate().noSample());
+    }
+
+    @Test
     void inMemoryOverviewP95StaysUnderProvisionalBudget() {
         DeliveryObservabilityQueryService queryService = service(catalogPort());
         DeliveryObservabilityQuery query = DeliveryObservabilityQuery.overview("", "24h", NOW);
@@ -168,6 +232,15 @@ class DeliveryObservabilityQueryServiceTest {
         java.util.Collections.sort(samples);
         long p95 = samples.get((int) Math.ceil(0.95D * samples.size()) - 1);
         assertTrue(p95 < 500L, "in-memory fixture p95 was " + p95 + " ms");
+    }
+
+    private static DeliveryObservabilityOverview overviewOf(
+            DeliveryObservabilityFixtures.TaskFixture... fixtures
+    ) {
+        DeliveryObservabilityFixtures.Catalog catalog = new DeliveryObservabilityFixtures.Catalog(
+                List.of(fixtures), List.of());
+        return service(new FakePort(toLedger(catalog, NOW), false))
+                .overview(DeliveryObservabilityQuery.overview("", "24h", NOW), NOW);
     }
 
     private static DeliveryObservabilityQueryService service(DeliveryObservabilitySnapshotPort port) {

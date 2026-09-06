@@ -256,6 +256,9 @@ public RetrievalBundle retrieve(RetrievalRequest request) {
   - 验证：`./mvnw -pl rag -Dtest=RdTaskTransitionPolicyTest -Dsurefire.failIfNoSpecifiedTests=false test`；`./mvnw -pl engine -am -Dtest=ManagerPolicyTest,RequirementReviewProtocolTest,RequirementDeliveryStageExecutionTest,RequirementDeliveryEngineTest,RequirementStageExecutionPlanCodecTest -Dsurefire.failIfNoSpecifiedTests=false test`；`./mvnw -pl bootstrap -am -Dtest=EngineRequirementExecutorAdapterTest#reviewerNeedInfoIsASuccessfulProtocolResult,RequirementDeliveryDispatchServiceTest,RdTaskControllerTest,PiAgentRemediationSqlPolicyTest,ManagerDecisionPurityPolicyTest,RequirementCompletionWriterPolicyTest,PiRemediationFinalizationWriterTest -Dsurefire.failIfNoSpecifiedTests=false test`
 - 【强制】`QA_AGENT` 容器前后 tracked-tree 指纹必须写入 `dockerMetadataJson`（`QaExecutionMetadataKeys.WORKSPACE_FINGERPRINT_*` / `WORKSPACE_INTEGRITY`）。`VIOLATION` / `SUSPECT` 的 QA 结果不得晋升任何 `AuditedRecord`。
 - 【强制】PI-v2 QA `acceptanceResults[]` CURRENT 必带冻结集合内 `criteriaId`；提示词、`result-tool.mjs`、`QaEvidenceBundleValidator` 三处必须锁步，改后重建 `Dockerfile` 与 `Dockerfile.qa`。验证命令见 `openspec/changes/mea-audit-only-writeback/design.md`「验证命令」。
+- 【强制】交付观测成功率分子只计 `COMPLETED`，或当前为 `MERGED` 且 `statusEvents` 含 `COMPLETED`。`COMMITTED`、`WAITING_USER_INPUT`、`WAITING_APPROVAL` 是在途：有 PR、有 `terminalAt` 也不算成功、失败或观测终态。`paused` 是独立标记，不得当成成功/失败/终态。分类以 status events 的历史完成事实为准，禁止用「存在 PR」或仅凭当前枚举猜测 `MERGED`。
+  - 代码：`DeliveryObservabilityQueryService#isDeliverySuccess`、`#isOutcomeTerminal`
+  - 验证：`./mvnw -pl engine -am -Dtest=DeliveryObservabilityQueryServiceTest -Dsurefire.failIfNoSpecifiedTests=false test`
 
 ### 3.5.4 管理台任务项目筛选【强制】
 

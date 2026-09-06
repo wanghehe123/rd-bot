@@ -45,11 +45,16 @@ public final class DeliveryObservabilityQueryService {
 
     private static final Logger log = LoggerFactory.getLogger(DeliveryObservabilityQueryService.class);
 
-    private static final Set<String> SUCCESS = Set.of("COMPLETED", "COMMITTED", "MERGED");
+    /**
+     * In-progress even when {@code terminalAt} is non-null. PR existence is not success.
+     * Pause is an independent flag and is never classified here.
+     */
+    private static final Set<String> IN_PROGRESS = Set.of(
+            "COMMITTED", "WAITING_USER_INPUT", "WAITING_APPROVAL");
     private static final Set<String> FAILURE = Set.of(
             "REJECTED", "FAILED_RETRYABLE", "FAILED_NEEDS_HUMAN", "DEAD_LETTERED");
-    private static final Set<String> TERMINAL = Set.of(
-            "COMPLETED", "COMMITTED", "MERGED", "REJECTED", "FAILED_RETRYABLE",
+    private static final Set<String> OUTCOME_TERMINAL = Set.of(
+            "COMPLETED", "MERGED", "REJECTED", "FAILED_RETRYABLE",
             "FAILED_NEEDS_HUMAN", "DEAD_LETTERED", "CANCELLED");
     private static final List<String> PHASES = List.of(
             DeliveryPhaseDurationCalculator.PHASE_MATERIAL,
@@ -132,9 +137,9 @@ public final class DeliveryObservabilityQueryService {
             if (inWindow(task.acceptedAt(), start, end)) {
                 accepted[bucketIndex(task.acceptedAt(), start, bucketMillis, buckets)]++;
             }
-            if (task.terminal() && TERMINAL.contains(status(task)) && inWindow(task.terminalAt(), start, end)) {
+            if (isOutcomeTerminal(task) && inWindow(task.terminalAt(), start, end)) {
                 int index = bucketIndex(task.terminalAt(), start, bucketMillis, buckets);
-                if (SUCCESS.contains(status(task))) {
+                if (isDeliverySuccess(task)) {
                     success[index]++;
                 } else if (FAILURE.contains(status(task))) {
                     failure[index]++;
@@ -403,12 +408,14 @@ public final class DeliveryObservabilityQueryService {
                 .filter(task -> inWindow(task.acceptedAt(), start, end))
                 .count();
         List<TaskObservation> terminal = scoped.stream()
-                .filter(task -> task.terminal() && TERMINAL.contains(status(task)) && inWindow(task.terminalAt(), start, end))
+                .filter(task -> isOutcomeTerminal(task) && inWindow(task.terminalAt(), start, end))
                 .toList();
         long running = scoped.stream()
-                .filter(task -> !task.terminal() && task.acceptedAt() != null && task.acceptedAt().isBefore(end))
+                .filter(task -> !isOutcomeTerminal(task)
+                        && task.acceptedAt() != null
+                        && task.acceptedAt().isBefore(end))
                 .count();
-        long success = terminal.stream().filter(task -> SUCCESS.contains(status(task))).count();
+        long success = terminal.stream().filter(DeliveryObservabilityQueryService::isDeliverySuccess).count();
         long failure = terminal.stream().filter(task -> FAILURE.contains(status(task))).count();
         long judged = success + failure;
         long human = terminal.stream().filter(task -> "FAILED_NEEDS_HUMAN".equals(status(task))).count();
@@ -665,6 +672,45 @@ public final class DeliveryObservabilityQueryService {
 
     private static String status(TaskObservation task) {
         return safe(task.status()).toUpperCase(Locale.ROOT);
+    }
+
+    /**
+     * Publication-terminal or failure/cancel/completed. COMMITTED and waiting
+     * states stay in-progress even when {@code terminalAt} is set.
+     *
+     * @param task observation
+     * @return true when the task is an observability terminal outcome
+     */
+    private static boolean isOutcomeTerminal(TaskObservation task) {
+        String current = status(task);
+        if (IN_PROGRESS.contains(current)) {
+            return false;
+        }
+        return OUTCOME_TERMINAL.contains(current);
+    }
+
+    /**
+     * Delivery success is COMPLETED, or MERGED whose status events include COMPLETED.
+     * Current enum MERGED alone, PR URL, and COMMITTED are not success.
+     *
+     * @param task observation
+     * @return true when historical completion is proven
+     */
+    private static boolean isDeliverySuccess(TaskObservation task) {
+        String current = status(task);
+        if ("COMPLETED".equals(current)) {
+            return true;
+        }
+        return "MERGED".equals(current) && hasCompletedStatusEvent(task);
+    }
+
+    /**
+     * @param task observation
+     * @return true when any status event records COMPLETED
+     */
+    private static boolean hasCompletedStatusEvent(TaskObservation task) {
+        return task.statusEvents().stream()
+                .anyMatch(event -> "COMPLETED".equals(safe(event.status()).toUpperCase(Locale.ROOT)));
     }
 
     private static boolean unknownCategory(TaskObservation task) {
