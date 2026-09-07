@@ -16,5 +16,5 @@
 
 - [x] 3.1 CodingMea / StageResult Controllers + 测试
 - [x] 3.2 finalization 精确读取与角色解包；截断/下载
-- [ ] 3.3 真实 HTTP；向前端提供 fixture 与 W1g/W2/W3 identity（fixture + identity 已写；真机 HTTP 待部署本分支）
+- [x] 3.3 真实 HTTP；向前端提供 fixture 与 W1g/W2/W3 identity（2026-09-07 部署 jar `04205367…`；W1g/W2B/W3J/W1e/C06 `coding-mea` 均 200；W1g stage-result 200；跨 task stage 404）
 - [x] 3.4 `openspec validate mea-coding-read-model --strict`
