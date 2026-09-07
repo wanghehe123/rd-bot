@@ -2,23 +2,41 @@ import { api } from "./api.ts";
 import type { AuditedTaskAuditRun } from "./rdTaskService.ts";
 
 export interface CodingMeaQuery {
-  stageRunId?: string;
+  codingStageRunId?: string;
   cursor?: string;
   limit?: number;
 }
 
+/**
+ * 后端 EvidenceRefView：URI 引用而非 artifactId。
+ * 见 engine/src/main/java/com/wish/rd/engine/requirement/query/CodingMeaResponse.java
+ */
+export interface MeaEvidenceRef {
+  auditRunId: string;
+  sourceKind: string;
+  uri: string;
+  sha256: string | null;
+}
+
+/** 后端 AuditedRecordView wire 字段：id/text/evidenceRefs（不是 recordId/title/evidenceIds）。 */
+export interface MeaStateRecord {
+  id: string;
+  kind: string;
+  text: string;
+  status: string;
+  blocking: boolean;
+  evidenceRefs: MeaEvidenceRef[];
+  sourceStageRunId: string | null;
+  blockedReason: string | null;
+}
+
 export interface StateSlice {
-  stateVersion: number;
-  stateHash: string;
+  available: boolean;
+  unavailableReason: string | null;
+  stateVersion: number | null;
+  stateHash: string | null;
   recordsTruncated: boolean;
-  records: Array<{
-    recordId: string;
-    kind: string;
-    title: string;
-    status: string;
-    blocking: boolean;
-    evidenceIds: string[];
-  }>;
+  records: MeaStateRecord[];
 }
 
 export interface StageReference {
@@ -47,6 +65,7 @@ export interface CommandReference {
   updatedAtEpochMillis: number;
 }
 
+/** coding-mea 列表内嵌的决策预览（boundedContractPreview 截断 2000 字）。 */
 export interface DecisionReference {
   managerCommandId: string | null;
   roundNo: number;
@@ -62,6 +81,24 @@ export interface DecisionReference {
   stateHash: string;
   stateAtDecision: StateSlice;
   commandCreatedAtEpochMillis: number | null;
+}
+
+/**
+ * Manager 决策全文端点（/manager-decisions/{decisionHash}）的独立 wire type：
+ * 全文字段是 boundedContract，与列表预览不是同一个 DTO。
+ */
+export interface ManagerDecisionDetail {
+  taskId: string;
+  roundNo: number;
+  sourceCommandId: string;
+  decisionHash: string;
+  route: string;
+  executorRoute: string | null;
+  targetRecordIds: string[];
+  boundedContract: string;
+  rationale: string;
+  stateVersion: number;
+  stateHash: string;
 }
 
 export interface RemediationReference {
@@ -132,8 +169,8 @@ export const getCodingMea = (
 export const getManagerDecision = (
   taskId: string,
   decisionHash: string
-): Promise<DecisionReference> => {
-  return api.get<DecisionReference, DecisionReference>(
+): Promise<ManagerDecisionDetail> => {
+  return api.get<ManagerDecisionDetail, ManagerDecisionDetail>(
     `/admin/rd-tasks/${taskId}/manager-decisions/${decisionHash}`
   );
 };

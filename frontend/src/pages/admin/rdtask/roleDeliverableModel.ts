@@ -5,6 +5,13 @@ import type {
 } from "./roleWorkbenchModel.ts";
 import type { StageResultResponse } from "@/services/stageResultService.ts";
 
+/** 证据条目：优先复用后端下发 contentUrl，其余字段用于展示兜底。 */
+export type RoleQaEvidenceRef = RoleQaEvidenceLike & {
+  contentUrl?: string;
+  name?: string;
+  type?: string;
+};
+
 export interface DeliverableItem {
   label: string;
   value: string;
@@ -71,10 +78,11 @@ export interface RoleDeliverableView {
 }
 
 export interface RoleDeliverableInput {
+  taskId: string;
   role: string;
   stage?: RoleStageLike;
   promptStage?: RolePromptStageLike;
-  qaEvidence?: RoleQaEvidenceLike[];
+  qaEvidence?: RoleQaEvidenceRef[];
   hostVerification?: {
     runId?: string;
     codingStageRunId?: string;
@@ -114,6 +122,7 @@ const QA_EVIDENCE_TYPE_LABEL: Record<string, string> = {
 
 export function buildRoleDeliverables(input: RoleDeliverableInput): RoleDeliverableView {
   const {
+    taskId,
     role,
     stage,
     promptStage,
@@ -309,17 +318,22 @@ export function buildRoleDeliverables(input: RoleDeliverableInput): RoleDelivera
     }
   }
 
-  // 关键证据列表（最多默认展示 5 项）
+  // 关键证据列表（最多默认展示 5 项）。
+  // URL 优先用后端下发的 task-scoped contentUrl；仅在缺失时按当前 taskId 生成既有路径，
+  // 禁止把一个 task 的证据引用换到另一个 task。
   const matchingQaEvidence = qaEvidence.filter((ev) => ev.stageRunId === stageRunId);
   const totalEvidenceCount = matchingQaEvidence.length;
   const keyEvidence: DeliverableEvidenceItem[] = matchingQaEvidence.slice(0, 5).map((ev) => ({
     id: ev.artifactId,
-    name: QA_EVIDENCE_TYPE_LABEL[ev.artifactId] || ev.artifactId,
-    type: ev.artifactId,
+    name: ev.name || QA_EVIDENCE_TYPE_LABEL[ev.type || ""] || ev.artifactId,
+    type: ev.type || ev.artifactId,
     role,
     attemptNo,
     stageRunId,
-    contentUrl: `/admin/rd-tasks/qa-evidence/${ev.artifactId}/content`
+    contentUrl: ev.contentUrl
+      || (taskId
+        ? `/admin/rd-tasks/${taskId}/qa-evidence/${ev.artifactId}/content`
+        : undefined)
   }));
 
   // 产物最多默认展示 3 项

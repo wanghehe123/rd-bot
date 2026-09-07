@@ -18,7 +18,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { CodingMeaView, MeaRoundView } from "@/pages/admin/rdtask/codingMeaModel.ts";
-import { getManagerDecision, type DecisionReference } from "@/services/codingMeaService.ts";
+import { getManagerDecision, type ManagerDecisionDetail } from "@/services/codingMeaService.ts";
 
 export interface CodingMeaPanelProps {
   taskId: string;
@@ -36,7 +36,7 @@ export function CodingMeaPanel({
   onNavigateToQaAttempt
 }: CodingMeaPanelProps) {
   const [expandedHistoryRounds, setExpandedHistoryRounds] = useState<Record<string, boolean>>({});
-  const [fullContractMap, setFullContractMap] = useState<Record<string, DecisionReference>>({});
+  const [fullContractMap, setFullContractMap] = useState<Record<string, ManagerDecisionDetail>>({});
   const [loadingContractHash, setLoadingContractHash] = useState<string | null>(null);
 
   if (loading) {
@@ -199,7 +199,7 @@ function RoundThreeColumnSection({
   round: MeaRoundView;
   isFirstCodingWithoutManager: boolean;
   onNavigateToQaAttempt?: (qaAttemptNo: number) => void;
-  fullContractMap: Record<string, DecisionReference>;
+  fullContractMap: Record<string, ManagerDecisionDetail>;
   loadingContractHash: string | null;
   onLoadFullDecision: (decisionHash: string) => void;
 }) {
@@ -227,7 +227,7 @@ function RoundThreeColumnSection({
             </div>
           ) : !manage ? (
             <div className="py-4 text-center text-xs text-slate-500">
-              当前轮暂无前置 Manager 决策记录
+              {round.manageNote || "当前轮暂无前置 Manager 决策记录"}
             </div>
           ) : (
             <div className="space-y-2 text-xs">
@@ -267,7 +267,7 @@ function RoundThreeColumnSection({
                     ) : null}
                   </div>
                   <p className="text-[11px] text-slate-700 whitespace-pre-wrap leading-relaxed line-clamp-3">
-                    {fullContractMap[manage.decisionHash]?.boundedContractPreview || manage.boundedContractPreview}
+                    {fullContractMap[manage.decisionHash]?.boundedContract || manage.boundedContractPreview}
                   </p>
                 </div>
               ) : null}

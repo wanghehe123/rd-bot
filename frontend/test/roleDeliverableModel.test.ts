@@ -4,6 +4,7 @@ import { buildRoleDeliverables } from "../src/pages/admin/rdtask/roleDeliverable
 
 test("buildRoleDeliverables for REQUIREMENT_REVIEWER extracts feasibility, coverage and gaps", () => {
   const input = {
+    taskId: "task-750",
     role: "REQUIREMENT_REVIEWER",
     stage: {
       stageRunId: "stage-rev-1",
@@ -31,6 +32,7 @@ test("buildRoleDeliverables for REQUIREMENT_REVIEWER extracts feasibility, cover
 
 test("buildRoleDeliverables for SOLUTION_ARCHITECT extracts affected files and steps", () => {
   const input = {
+    taskId: "task-750",
     role: "SOLUTION_ARCHITECT",
     stage: {
       stageRunId: "stage-arch-1",
@@ -58,6 +60,7 @@ test("buildRoleDeliverables for SOLUTION_ARCHITECT extracts affected files and s
 test("buildRoleDeliverables for CODING_AGENT: Attempt 1 reported PASSED does not borrow Attempt 2 Host Verify", () => {
   // Coding Attempt 1
   const inputAttempt1 = {
+    taskId: "task-750",
     role: "CODING_AGENT",
     stage: {
       stageRunId: "stage-code-1",
@@ -94,6 +97,7 @@ test("buildRoleDeliverables for CODING_AGENT: Attempt 1 reported PASSED does not
 
   // Coding Attempt 2 with matching Host Verification
   const inputAttempt2 = {
+    taskId: "task-750",
     role: "CODING_AGENT",
     stage: {
       stageRunId: "stage-code-2",
@@ -118,6 +122,7 @@ test("buildRoleDeliverables for CODING_AGENT: Attempt 1 reported PASSED does not
 
 test("buildRoleDeliverables for QA_AGENT: distinguishes QA reported checks from Host audited status", () => {
   const input = {
+    taskId: "task-750",
     role: "QA_AGENT",
     stage: {
       stageRunId: "stage-qa-1",
@@ -162,17 +167,63 @@ test("buildRoleDeliverables for QA_AGENT: distinguishes QA reported checks from 
   // Evidence list contains the 2 items matching stage-qa-1
   assert.equal(view.keyEvidence.length, 2);
   assert.equal(view.totalEvidenceCount, 2);
+
+  // 生成的证据链接必须带当前 taskId（task-scoped 路由）
+  for (const ev of view.keyEvidence) {
+    assert.equal(ev.contentUrl, `/admin/rd-tasks/task-750/qa-evidence/${ev.id}/content`);
+  }
+});
+
+test("buildRoleDeliverables: QA evidence prefers backend contentUrl and never leaks another taskId", () => {
+  const input = {
+    taskId: "task-750",
+    role: "QA_AGENT",
+    stage: {
+      stageRunId: "stage-qa-9",
+      role: "QA_AGENT",
+      status: "SUCCEEDED",
+      attemptNo: 1
+    },
+    qaEvidence: [
+      {
+        artifactId: "art-manifest",
+        stageRunId: "stage-qa-9",
+        name: "证据清单",
+        type: "QA_EVIDENCE_MANIFEST",
+        contentUrl: "/admin/rd-tasks/task-750/qa-evidence/art-manifest/content"
+      },
+      {
+        artifactId: "art-trace",
+        stageRunId: "stage-qa-9",
+        name: "Playwright trace",
+        type: "QA_TRACE"
+      }
+    ]
+  };
+
+  const view = buildRoleDeliverables(input);
+  assert.equal(view.totalEvidenceCount, 2);
+
+  const manifest = view.keyEvidence.find((ev) => ev.id === "art-manifest");
+  const trace = view.keyEvidence.find((ev) => ev.id === "art-trace");
+  // 已有 contentUrl 原样复用，不重新拼接
+  assert.equal(manifest?.contentUrl, "/admin/rd-tasks/task-750/qa-evidence/art-manifest/content");
+  assert.equal(manifest?.name, "证据清单");
+  // 缺 contentUrl 时生成带当前 taskId 的既有路径
+  assert.equal(trace?.contentUrl, "/admin/rd-tasks/task-750/qa-evidence/art-trace/content");
 });
 
 test("buildRoleDeliverables handles unstructured or missing results with explicit unavailableReason", () => {
   // Empty Attempt
   const emptyView = buildRoleDeliverables({
+    taskId: "task-750",
     role: "REQUIREMENT_REVIEWER"
   });
   assert.equal(emptyView.unavailableReason, "当前角色尚未创建执行 Attempt");
 
   // Unstructured attempt without summary
   const unstructuredView = buildRoleDeliverables({
+    taskId: "task-750",
     role: "SOLUTION_ARCHITECT",
     stage: {
       stageRunId: "stage-arch-unstructured",

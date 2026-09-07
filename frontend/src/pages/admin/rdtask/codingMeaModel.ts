@@ -3,6 +3,7 @@ import type {
   CommandReference,
   DecisionReference,
   HostVerificationReference,
+  MeaLink,
   RemediationReference,
   StageReference
 } from "@/services/codingMeaService.ts";
@@ -56,6 +57,8 @@ export interface MeaRoundView {
   roundKey: string;
   roundTitle: string;
   manage: MeaManageColumn | null;
+  /** manage 为空时的如实说明；不猜测关联。 */
+  manageNote: string | null;
   execute: MeaExecuteColumn | null;
   audit: MeaAuditColumn | null;
   isCurrent: boolean;
@@ -73,6 +76,17 @@ export interface CodingMeaView {
   pageHasMore: boolean;
 }
 
+/** 无法用权威身份字段建立关联时的如实说明，绝不回退猜测。 */
+export const MEA_UNRELATABLE_NOTE = "当前记录暂无法关联到具体 Manager 决策";
+
+/**
+ * 用响应中的权威身份字段建立当前 Coding Attempt 的 MEA 三栏关联：
+ * - command 只认 stageRunId 精确绑定（commandAttemptNo 与 stage attemptNo 不同源）；
+ * - remediation 只认 targetCodingStageRunId / remediationRoundId；
+ * - decision 只认 links 的 EXECUTES 边或 sourceCommandId → remediation 身份两级解析；
+ * - QA 只认 remediation.targetQaStageRunId，或「唯一 Coding 轮 + 唯一 QA stage」的无歧义特例。
+ * 关联不上就显示不可用，不做位置/序号/第一条回退。
+ */
 export function buildCodingMeaView(
   response: CodingMeaResponse | null | undefined,
   selectedStageRunId: string
@@ -98,12 +112,12 @@ export function buildCodingMeaView(
     decisions = [],
     remediations = [],
     hostVerifications = [],
+    links = [],
     head,
     page
   } = response;
 
-  const currentCodingStage = codingStages.find((s) => s.stageRunId === selectedStageRunId)
-    || codingStages[0];
+  const currentCodingStage = codingStages.find((s) => s.stageRunId === selectedStageRunId);
 
   if (!currentCodingStage) {
     return {
@@ -119,70 +133,51 @@ export function buildCodingMeaView(
     };
   }
 
-  // 关联当前 Coding stageRunId 相关的 command
-  const codingCommand = commands.find((c) => (
-    c.stageRunId === currentCodingStage.stageRunId
-    || (c.role === "CODING_AGENT" && c.commandAttemptNo === currentCodingStage.attemptNo)
-  ));
+  const commandById = new Map<string, CommandReference>(
+    commands.map((c) => [c.commandId, c])
+  );
 
-  // 查找关联的 remediation round
+  // 关联当前 Coding stageRunId 的 command：仅精确 stage 绑定，不做 role+attempt 回退
+  const codingCommand = commands.find((c) => c.stageRunId === currentCodingStage.stageRunId);
+
+  // 关联 remediation round：targetCodingStageRunId 是权威身份，remediationRoundId 次之
   const currentRemediation = remediations.find((r) => (
     r.targetCodingStageRunId === currentCodingStage.stageRunId
     || (codingCommand?.remediationRoundId && r.roundId === codingCommand.remediationRoundId)
   ));
 
-  // 查找前置或同轮的 Manager decision
-  let currentDecision: DecisionReference | undefined;
-  const codingCmdSourceId = (codingCommand as { sourceCommandId?: string | null })?.sourceCommandId;
-  if (codingCmdSourceId) {
-    currentDecision = decisions.find((d) => d.sourceCommandId === codingCmdSourceId);
-  }
-  if (!currentDecision && currentRemediation?.firstCommandId) {
-    currentDecision = decisions.find((d) => (
-      d.sourceCommandId === currentRemediation.firstCommandId
-      || d.managerCommandId === currentRemediation.firstCommandId
-    ));
-  }
-  if (!currentDecision && decisions.length > 0) {
-    // 寻找以当前 stage 为 targets 的最近 decision
-    currentDecision = decisions.find((d) => (
-      d.executorRoute === "CODING_AGENT"
-      && currentRemediation?.roundId
-    )) || (currentCodingStage.attemptNo > 1 ? decisions[0] : undefined);
-  }
+  // 唯一 Coding 轮且至多一个 QA stage 时，QA 的归属不存在歧义，可直接采用
+  const singleCodingRound = codingStages.length === 1;
+  const unambiguousQaStage = singleCodingRound && qaStages.length === 1 ? qaStages[0] : undefined;
 
-  // 查找关联的 Host Verification
+  const currentDecision = findGoverningDecision({
+    decisions,
+    remediation: currentRemediation,
+    links,
+    commandById,
+    qaStages,
+    allowSingleRound: singleCodingRound
+  });
+
+  // 查找关联的 Host Verification（codingStageRunId 为权威绑定）
   const currentHv = hostVerifications.find((hv) => hv.codingStageRunId === currentCodingStage.stageRunId);
 
-  // 查找关联的 QA stage
+  // 查找关联的 QA stage：仅 remediation 身份或唯一轮无歧义特例
   let currentQaStage: StageReference | undefined;
   if (currentRemediation?.targetQaStageRunId) {
     currentQaStage = qaStages.find((q) => q.stageRunId === currentRemediation.targetQaStageRunId);
-  }
-  if (!currentQaStage && currentCodingStage.attemptNo) {
-    // 依据同轮次 attemptNo 关联
-    currentQaStage = qaStages.find((q) => q.attemptNo === currentCodingStage.attemptNo);
+  } else {
+    currentQaStage = unambiguousQaStage;
   }
 
   const isFirstCodingWithoutManager = currentCodingStage.attemptNo === 1 && !currentDecision;
 
   // 构造三栏
-  let manageColumn: MeaManageColumn | null = null;
-  if (currentDecision) {
-    manageColumn = {
-      decisionHash: currentDecision.decisionHash,
-      roundNo: currentDecision.roundNo,
-      roundLabel: `决策第 ${currentDecision.roundNo} 轮`,
-      route: currentDecision.route,
-      routeLabel: formatRouteLabel(currentDecision.route),
-      targetRecordIds: currentDecision.targetRecordIds || [],
-      boundedContractPreview: currentDecision.boundedContractPreview || "",
-      boundedContractTruncated: Boolean(currentDecision.boundedContractTruncated),
-      rationale: currentDecision.rationale || "",
-      commandCreatedAtEpochMillis: currentDecision.commandCreatedAtEpochMillis,
-      stateVersion: currentDecision.stateVersion
-    };
-  }
+  const manageColumn = currentDecision ? toManageColumn(currentDecision) : null;
+
+  const manageNote = manageColumn
+    ? null
+    : (isFirstCodingWithoutManager ? null : MEA_UNRELATABLE_NOTE);
 
   const remediationRoundLabel = currentRemediation
     ? `修复第 ${currentRemediation.remediationNo} 轮`
@@ -233,6 +228,7 @@ export function buildCodingMeaView(
       ? `${remediationRoundLabel} (Coding Attempt ${currentCodingStage.attemptNo})`
       : `首轮执行 (Coding Attempt ${currentCodingStage.attemptNo})`,
     manage: manageColumn,
+    manageNote,
     execute: executeColumn,
     audit: auditColumn,
     isCurrent: true
@@ -262,16 +258,28 @@ export function buildCodingMeaView(
     currentHeadline = `Coding Attempt ${currentCodingStage.attemptNo}`;
   }
 
-  // 历史轮次（除当前 Coding Attempt 之外的其它 Coding 轮次）
+  // 历史轮次（除当前 Coding Attempt 之外的其它 Coding 轮次）；
+  // 历史轮的 decision / QA 只能通过 remediation 身份关联，唯一轮特例不适用于历史轮。
   const historyRounds: MeaRoundView[] = codingStages
     .filter((s) => s.stageRunId !== currentCodingStage.stageRunId)
     .sort((a, b) => b.attemptNo - a.attemptNo)
     .map((historicalCoding) => {
       const hCommand = commands.find((c) => c.stageRunId === historicalCoding.stageRunId);
       const hRemediation = remediations.find((r) => r.targetCodingStageRunId === historicalCoding.stageRunId);
-      const hDecision = decisions.find((d) => d.roundNo === historicalCoding.attemptNo);
+      const hDecision = hRemediation
+        ? findGoverningDecision({
+            decisions,
+            remediation: hRemediation,
+            links,
+            commandById,
+            qaStages,
+            allowSingleRound: false
+          })
+        : undefined;
       const hHv = hostVerifications.find((hv) => hv.codingStageRunId === historicalCoding.stageRunId);
-      const hQa = qaStages.find((q) => q.attemptNo === historicalCoding.attemptNo);
+      const hQa = hRemediation?.targetQaStageRunId
+        ? qaStages.find((q) => q.stageRunId === hRemediation.targetQaStageRunId)
+        : undefined;
 
       const hRoundLabel = hRemediation
         ? `修复第 ${hRemediation.remediationNo} 轮`
@@ -280,19 +288,8 @@ export function buildCodingMeaView(
       return {
         roundKey: `round-${historicalCoding.stageRunId}`,
         roundTitle: `${hRoundLabel} (历史轮次)`,
-        manage: hDecision ? {
-          decisionHash: hDecision.decisionHash,
-          roundNo: hDecision.roundNo,
-          roundLabel: `决策第 ${hDecision.roundNo} 轮`,
-          route: hDecision.route,
-          routeLabel: formatRouteLabel(hDecision.route),
-          targetRecordIds: hDecision.targetRecordIds || [],
-          boundedContractPreview: hDecision.boundedContractPreview || "",
-          boundedContractTruncated: Boolean(hDecision.boundedContractTruncated),
-          rationale: hDecision.rationale || "",
-          commandCreatedAtEpochMillis: hDecision.commandCreatedAtEpochMillis,
-          stateVersion: hDecision.stateVersion
-        } : null,
+        manage: hDecision ? toManageColumn(hDecision) : null,
+        manageNote: hDecision ? null : MEA_UNRELATABLE_NOTE,
         execute: {
           stageRunId: historicalCoding.stageRunId,
           attemptNo: historicalCoding.attemptNo,
@@ -314,7 +311,7 @@ export function buildCodingMeaView(
             stageRunId: hQa.stageRunId,
             attemptNo: hQa.attemptNo,
             status: hQa.status,
-            linkRole: "QA_AGENT"
+            linkRole: "QA_AGENT" as const
           } : undefined
         },
         isCurrent: false
@@ -331,6 +328,86 @@ export function buildCodingMeaView(
     managerDoneReviewNote,
     hasPartialHistory: Boolean(page?.hasMore),
     pageHasMore: Boolean(page?.hasMore)
+  };
+}
+
+interface GoverningDecisionInput {
+  decisions: DecisionReference[];
+  remediation: RemediationReference | undefined;
+  links: MeaLink[];
+  commandById: Map<string, CommandReference>;
+  qaStages: StageReference[];
+  allowSingleRound: boolean;
+}
+
+/**
+ * 解析「治理本轮 Coding 的 Manager decision」。全部走权威身份：
+ * (a) links 的 DECISION --EXECUTES--> COMMAND 且目标 command 属于该 remediation round；
+ * (b) decision.sourceCommandId 的 command 绑定在 remediation.sourceStageRunId（触发修复的来源阶段）；
+ * (c) decision.sourceCommandId 的 command 绑定在 remediation.targetQaStageRunId（本轮 QA 后的裁决）；
+ * (d) 无 remediation 的唯一轮：sourceCommandId 绑定唯一 QA stage 或 HOST_VERIFY 命令。
+ * 多个命中时取 roundNo 最高的决策（最新裁决）。
+ */
+function findGoverningDecision(input: GoverningDecisionInput): DecisionReference | undefined {
+  const { decisions, remediation, links, commandById, qaStages, allowSingleRound } = input;
+
+  const matches = decisions.filter((d) => {
+    if (remediation) {
+      if (remediation.roundId) {
+        const executesTarget = links.find((l) => (
+          l.relation === "EXECUTES"
+          && l.fromType === "DECISION"
+          && l.fromId === d.decisionHash
+          && l.available
+          && l.toId != null
+        ))?.toId;
+        if (executesTarget && commandById.get(executesTarget)?.remediationRoundId === remediation.roundId) {
+          return true;
+        }
+      }
+      const source = d.sourceCommandId ? commandById.get(d.sourceCommandId) : undefined;
+      if (source) {
+        if (remediation.sourceStageRunId && source.stageRunId === remediation.sourceStageRunId) {
+          return true;
+        }
+        if (remediation.targetQaStageRunId && source.stageRunId === remediation.targetQaStageRunId) {
+          return true;
+        }
+      }
+      return false;
+    }
+    if (!allowSingleRound) {
+      return false;
+    }
+    const source = d.sourceCommandId ? commandById.get(d.sourceCommandId) : undefined;
+    if (!source) {
+      return false;
+    }
+    if (source.stage === "HOST_VERIFY") {
+      return true;
+    }
+    return source.stageRunId != null && qaStages.some((q) => q.stageRunId === source.stageRunId);
+  });
+
+  if (matches.length === 0) {
+    return undefined;
+  }
+  return matches.reduce((latest, d) => (d.roundNo > latest.roundNo ? d : latest));
+}
+
+function toManageColumn(decision: DecisionReference): MeaManageColumn {
+  return {
+    decisionHash: decision.decisionHash,
+    roundNo: decision.roundNo,
+    roundLabel: `决策第 ${decision.roundNo} 轮`,
+    route: decision.route,
+    routeLabel: formatRouteLabel(decision.route),
+    targetRecordIds: decision.targetRecordIds || [],
+    boundedContractPreview: decision.boundedContractPreview || "",
+    boundedContractTruncated: Boolean(decision.boundedContractTruncated),
+    rationale: decision.rationale || "",
+    commandCreatedAtEpochMillis: decision.commandCreatedAtEpochMillis,
+    stateVersion: decision.stateVersion
   };
 }
 

@@ -92,6 +92,7 @@ export function RoleDeliverablesPanel({
   // 构建纯展示模型
   const view: RoleDeliverableView = useMemo(() => {
     return buildRoleDeliverables({
+      taskId,
       role: stage.role,
       stage,
       promptStage,
@@ -115,7 +116,7 @@ export function RoleDeliverablesPanel({
         : null,
       stageResult
     });
-  }, [stage, promptStage, qaEvidence, matchingHostVerify, materials, stageResult]);
+  }, [taskId, stage, promptStage, qaEvidence, matchingHostVerify, materials, stageResult]);
 
   const loadFullResult = async () => {
     if (stageResult || stageResultLoading) return;

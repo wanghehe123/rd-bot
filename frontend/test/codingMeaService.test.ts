@@ -4,10 +4,13 @@ import {
   getCodingMea,
   getManagerDecision,
   type CodingMeaResponse,
-  type DecisionReference
+  type ManagerDecisionDetail
 } from "../src/services/codingMeaService.ts";
 import { api } from "../src/services/api.ts";
 
+// fixture 字段结构与后端 CodingMeaResponse 冻结合同一致：
+// records 用 id/text/evidenceRefs（URI 引用），StateSlice 带 available/unavailableReason，
+// links 用后端 buildLinks 的真实形状（DECIDED_AFTER / CONTINUES_AS / EXECUTES / VERIFIES）。
 export const FIXTURE_CODING_MEA_W1E: CodingMeaResponse = {
   schemaVersion: 1,
   taskId: "7502196308401328128",
@@ -19,33 +22,45 @@ export const FIXTURE_CODING_MEA_W1E: CodingMeaResponse = {
   taskStatus: "EXECUTING",
   paused: false,
   head: {
+    available: true,
+    unavailableReason: null,
     stateVersion: 5,
     stateHash: "abc123statehash",
     recordsTruncated: false,
     records: [
       {
-        recordId: "AC-001",
+        id: "AC-001",
         kind: "REQUIREMENT",
-        title: "用户结算页面金额展示",
+        text: "用户结算页面金额展示",
         status: "COMPLETED",
         blocking: true,
-        evidenceIds: ["ev-01"]
+        evidenceRefs: [
+          { auditRunId: "audit-1", sourceKind: "QA_MANIFEST", uri: "qa-evidence/console/", sha256: "sha256:aa" }
+        ],
+        sourceStageRunId: null,
+        blockedReason: null
       },
       {
-        recordId: "AC-002",
+        id: "AC-002",
         kind: "REQUIREMENT",
-        title: "优惠券抵扣计算",
+        text: "优惠券抵扣计算",
         status: "COMPLETED",
         blocking: true,
-        evidenceIds: ["ev-02"]
+        evidenceRefs: [
+          { auditRunId: "audit-1", sourceKind: "QA_MANIFEST", uri: "qa-evidence/network/", sha256: "sha256:bb" }
+        ],
+        sourceStageRunId: null,
+        blockedReason: null
       },
       {
-        recordId: "AC-003",
+        id: "AC-003",
         kind: "REQUIREMENT",
-        title: "外卖超时赔付说明",
+        text: "外卖超时赔付说明",
         status: "PENDING",
         blocking: true,
-        evidenceIds: []
+        evidenceRefs: [],
+        sourceStageRunId: null,
+        blockedReason: null
       }
     ]
   },
@@ -78,7 +93,7 @@ export const FIXTURE_CODING_MEA_W1E: CodingMeaResponse = {
       role: "CODING_AGENT",
       status: "SUCCEEDED",
       stageRunId: "7502208702544482305",
-      stageLinkReason: "AUDITED_STAGE_RUN",
+      stageLinkReason: null,
       commandAttemptNo: 1,
       remediationRoundId: "round-gap-1",
       remediationKind: "MANAGER_GAP_FIX",
@@ -103,17 +118,21 @@ export const FIXTURE_CODING_MEA_W1E: CodingMeaResponse = {
       stateVersion: 4,
       stateHash: "prevstatehash123",
       stateAtDecision: {
+        available: true,
+        unavailableReason: null,
         stateVersion: 4,
         stateHash: "prevstatehash123",
         recordsTruncated: false,
         records: [
           {
-            recordId: "AC-003",
+            id: "AC-003",
             kind: "REQUIREMENT",
-            title: "外卖超时赔付说明",
+            text: "外卖超时赔付说明",
             status: "PENDING",
             blocking: true,
-            evidenceIds: []
+            evidenceRefs: [],
+            sourceStageRunId: null,
+            blockedReason: null
           }
         ]
       },
@@ -145,11 +164,38 @@ export const FIXTURE_CODING_MEA_W1E: CodingMeaResponse = {
   auditRuns: [],
   links: [
     {
+      fromType: "DECISION",
+      fromId: "dec_hash_w1e_p157",
+      toType: "COMMAND",
+      toId: "7502208702544482304",
+      relation: "DECIDED_AFTER",
+      available: true,
+      unavailableReason: null
+    },
+    {
       fromType: "COMMAND",
       fromId: "7502208702544482304",
+      toType: "COMMAND",
+      toId: "cmd-mgr-1",
+      relation: "CONTINUES_AS",
+      available: true,
+      unavailableReason: null
+    },
+    {
+      fromType: "DECISION",
+      fromId: "dec_hash_w1e_p157",
+      toType: "COMMAND",
+      toId: "7502208702544482304",
+      relation: "EXECUTES",
+      available: true,
+      unavailableReason: null
+    },
+    {
+      fromType: "HOST_VERIFY",
+      fromId: "hv-001",
       toType: "STAGE",
       toId: "7502208702544482305",
-      relation: "EXECUTES",
+      relation: "VERIFIES",
       available: true,
       unavailableReason: null
     }
@@ -174,10 +220,15 @@ test("CodingMeaResponse contract preserves string IDs, nullables, and pagination
   // Decision string IDs and non-empty targetRecordIds
   assert.equal(resp.decisions[0].route, "EXECUTE");
   assert.deepEqual(resp.decisions[0].targetRecordIds, ["AC-003"]);
-  assert.equal(resp.decisions[0].stateAtDecision.records[0].recordId, "AC-003");
+  assert.equal(resp.decisions[0].stateAtDecision.records[0].id, "AC-003");
+
+  // Evidence refs stay URI-shaped, never coerced into artifactIds
+  const evidence = resp.head.records[0].evidenceRefs[0];
+  assert.equal(evidence.uri, "qa-evidence/console/");
+  assert.equal(evidence.sha256, "sha256:aa");
 });
 
-test("getCodingMea delegates to api.get with query parameters", async () => {
+test("getCodingMea delegates to api.get with the backend codingStageRunId parameter", async () => {
   let capturedUrl = "";
   let capturedConfig: unknown = null;
 
@@ -190,14 +241,14 @@ test("getCodingMea delegates to api.get with query parameters", async () => {
 
   try {
     const response = await getCodingMea("7502196308401328128", {
-      stageRunId: "stage-123",
+      codingStageRunId: "stage-123",
       cursor: "cur-1",
       limit: 10
     });
 
     assert.equal(capturedUrl, "/admin/rd-tasks/7502196308401328128/coding-mea");
     assert.deepEqual((capturedConfig as { params: unknown })?.params, {
-      stageRunId: "stage-123",
+      codingStageRunId: "stage-123",
       cursor: "cur-1",
       limit: 10
     });
@@ -207,20 +258,37 @@ test("getCodingMea delegates to api.get with query parameters", async () => {
   }
 });
 
-test("getManagerDecision delegates to api.get with exact decision hash", async () => {
+test("getManagerDecision returns the full-text wire type with boundedContract", async () => {
   let capturedUrl = "";
 
   const originalGet = api.get;
   (api as unknown as { get: typeof originalGet }).get = ((url: string) => {
     capturedUrl = url;
-    return Promise.resolve(FIXTURE_CODING_MEA_W1E.decisions[0]);
+    return Promise.resolve({
+      taskId: "7502196308401328128",
+      roundNo: 2,
+      sourceCommandId: "7502208702544482304",
+      decisionHash: "dec_hash_w1e_p157",
+      route: "EXECUTE",
+      executorRoute: "CODING_AGENT",
+      targetRecordIds: ["AC-003"],
+      boundedContract: "完整的有界合同全文，包含全部 AC 条目与验收方式说明",
+      rationale: "QA 当前轮已通过 AC-001/002，尚余 AC-003 待修复",
+      stateVersion: 4,
+      stateHash: "prevstatehash123"
+    } satisfies ManagerDecisionDetail);
   }) as typeof originalGet;
 
   try {
-    const decision: DecisionReference = await getManagerDecision("7502196308401328128", "dec_hash_w1e_p157");
+    const decision: ManagerDecisionDetail = await getManagerDecision(
+      "7502196308401328128",
+      "dec_hash_w1e_p157"
+    );
     assert.equal(capturedUrl, "/admin/rd-tasks/7502196308401328128/manager-decisions/dec_hash_w1e_p157");
     assert.equal(decision.decisionHash, "dec_hash_w1e_p157");
     assert.equal(decision.route, "EXECUTE");
+    // 全文响应读取 boundedContract；不再是列表预览字段
+    assert.match(decision.boundedContract, /全文/);
   } finally {
     (api as unknown as { get: typeof originalGet }).get = originalGet;
   }

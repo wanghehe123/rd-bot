@@ -547,7 +547,8 @@ export function RdTaskDetailPage() {
 
     setLoadingCodingMea(true);
     try {
-      const response = await getCodingMea(taskId, { stageRunId });
+      // 后端 query 参数是 codingStageRunId；传错参数名会静默回落到最新 Attempt，造成串数据
+      const response = await getCodingMea(taskId, { codingStageRunId: stageRunId });
       if (requestSeq !== codingMeaLoadSeqRef.current || !requestGuardRef.current.isCurrent(requestToken)) return;
       setCodingMeaResponse(response);
       setCodingMeaError("");
