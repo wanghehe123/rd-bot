@@ -100,6 +100,49 @@ public final class InMemoryRequirementStageCommandStore implements RequirementSt
     }
 
     @Override
+    public synchronized List<RequirementStageCommand> listByTaskAfter(
+            String taskId, long afterCreatedAtEpochMillis, String afterCommandId, int limit
+    ) {
+        String expectedTask = safe(taskId);
+        String afterId = safe(afterCommandId);
+        int max = Math.max(1, limit);
+        return commands.values().stream()
+                .filter(command -> command.taskId().equals(expectedTask))
+                .filter(command -> afterCreatedAtEpochMillis <= 0L
+                        || command.createdAtEpochMillis() > afterCreatedAtEpochMillis
+                        || (command.createdAtEpochMillis() == afterCreatedAtEpochMillis
+                        && command.commandId().compareTo(afterId) > 0))
+                .sorted(Comparator.comparingLong(RequirementStageCommand::createdAtEpochMillis)
+                        .thenComparing(RequirementStageCommand::commandId))
+                .limit(max)
+                .toList();
+    }
+
+    @Override
+    public synchronized List<String> listIdsByTask(String taskId) {
+        String expectedTask = safe(taskId);
+        return commands.values().stream()
+                .filter(command -> command.taskId().equals(expectedTask))
+                .map(RequirementStageCommand::commandId)
+                .toList();
+    }
+
+    @Override
+    public synchronized List<RequirementStageCommand> listByTargetRetryBinding(
+            String taskId, String targetRetryBindingId
+    ) {
+        String expectedTask = safe(taskId);
+        String binding = safe(targetRetryBindingId);
+        if (binding.isBlank()) {
+            return List.of();
+        }
+        return commands.values().stream()
+                .filter(command -> command.taskId().equals(expectedTask))
+                .filter(command -> command.targetRetryBindingId().equals(binding))
+                .toList();
+    }
+
+    @Override
     public synchronized Optional<RequirementStageCommand> findLatestAnyGeneration(
             String taskId, String role, String stage
     ) {

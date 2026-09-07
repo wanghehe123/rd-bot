@@ -31,6 +31,15 @@ public final class InMemoryAuditedTaskStateStore implements AuditedTaskStateStor
     }
 
     @Override
+    public synchronized Optional<AuditedTaskState> findRevision(String taskId, long stateVersion) {
+        Map<Long, AuditedTaskState> taskRevisions = revisions.get(normalize(taskId));
+        if (taskRevisions == null) {
+            return Optional.empty();
+        }
+        return Optional.ofNullable(taskRevisions.get(stateVersion));
+    }
+
+    @Override
     public synchronized AuditedTaskState initializeIfAbsent(AuditedTaskState initial) {
         if (initial == null) {
             throw new IllegalArgumentException("initial state must not be null");

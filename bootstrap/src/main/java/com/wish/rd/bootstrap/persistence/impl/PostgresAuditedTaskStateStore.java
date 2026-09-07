@@ -67,6 +67,16 @@ public class PostgresAuditedTaskStateStore implements AuditedTaskStateStore {
     }
 
     @Override
+    public Optional<AuditedTaskState> findRevision(String taskId, long stateVersion) {
+        long id = PostgresPersistenceSupport.parseId(taskId);
+        TaskAuditedStateRevisionRow revision = mapper.findRevision(id, stateVersion);
+        if (revision == null || revision.stateJson == null || revision.stateJson.isBlank()) {
+            return Optional.empty();
+        }
+        return Optional.of(codec.decode(revision.stateJson));
+    }
+
+    @Override
     @Transactional
     public AuditedTaskState initializeIfAbsent(AuditedTaskState initial) {
         if (initial == null) {

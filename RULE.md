@@ -644,6 +644,33 @@ public RetrievalBundle retrieve(RetrievalRequest request) {
   Claude 栈移除，但这条挂载纪律对 Pi 及任何后续运行时同等有效。
 - 实测记录：`docs/superpowers/specs/2026-08-13-waimai-corpus-rag-comparison-report.md` §6.6。
 
+### 3.5.15 Coding MEA 只读快照与完整结果【强制】
+
+- 【强制】`GET /admin/rd-tasks/{taskId}/coding-mea` 与 stage result 读取必须在单一 PostgreSQL
+  只读事务 `Isolation.REPEATABLE_READ` 内聚合既有 Store/mapper；禁止新业务表、禁止 GET
+  触发 finalize / `ManagerPolicy.decide` / executor / publication / 任何更新端口。
+- 【强制】默认响应不得包含全量 Prompt、result、stderr 或 AGENT_EVENTS 正文；页外引用保留
+  ID 并标 `OUTSIDE_PAGE`。跨 task 的 stage/command/decision 引用必须 `available=false` 或
+  HTTP 404，不得泄漏他任务摘要。
+- 【强制】`stateAtDecision` 必须按 decision 的 `stateVersion`/`stateHash` 读 revision；缺失则
+  `available=false`，禁止用 head 顶替。Manager 展示时间只取已关联 Manager command 的
+  `createdAtEpochMillis`，不得改 `decisionHash` 或领域写入合同。
+- 【强制】完整结果链：stage → 精确 command（AuditRun / retry binding / durable identity）→
+  `rd_requirement_stage_finalizations.result_json` → 按角色解包；无 FINALIZED 绑定时只能
+  `ARTIFACT_PREVIEW` / `UNAVAILABLE`，不得假下载。
+- 代码：`PostgresCodingMeaReadAdapter`、`PostgresStageResultReadAdapter`、
+  `CodingMeaQueryEngine`、`StageResultQueryEngine`、`RdTaskCodingMeaController`、
+  `RdTaskStageResultController`
+- OpenSpec：`openspec/changes/mea-coding-read-model/`
+- 验证：
+  `./mvnw -pl engine -am -Dtest=CodingMeaQueryEngineTest,StageResultQueryEngineTest -Dsurefire.failIfNoSpecifiedTests=false test`；
+  `./mvnw -pl bootstrap -am -Dtest=PostgresCodingMeaReadAdapterTest,RdTaskCodingMeaControllerTest,RdTaskStageResultControllerTest -Dsurefire.failIfNoSpecifiedTests=false test`；
+  真库：`./mvnw -pl bootstrap -am -Drd.integration.coding-mea.enabled=true -Dtest=PostgresCodingMeaRepeatableReadRealSmokeTest -Dsurefire.failIfNoSpecifiedTests=false test`
+  （默认 throwaway `127.0.0.1:55432/rdbot_acceptance`；可用
+  `-Drd.integration.coding-mea.url=...` 覆盖）。
+- 联调 identity（只读）：W1e `7502196308401328128`、W1g `7502261872498970624`、
+  W2B `7502311153071165440`、W3J `7502300444828504064`。
+
 ### 3.6 聚合根（Aggregate Root）【强制用于"强一致实体群"】
 
 - **已落地**：`KnowledgeDocumentMutationEngine` 是知识写入聚合根，经 `KnowledgeMutationTransactionPort` 提交 document/revision/chunks/vectors/binding/outbox。`KnowledgeWorkspace` 是查询 facade，mutation 方法委托 Engine。

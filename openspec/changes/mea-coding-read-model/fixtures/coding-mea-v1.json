@@ -1,0 +1,423 @@
+{
+  "schemaVersion": 1,
+  "note": "Frontend/backend contract fixture. NOT a live API response. No secrets.",
+  "linkRelations": [
+    "DECIDED_AFTER",
+    "EXECUTES",
+    "VERIFIES",
+    "AUDITS",
+    "CONTINUES_AS"
+  ],
+  "unavailableReasons": [
+    "NO_CODING_STAGE",
+    "REVISION_UNAVAILABLE",
+    "OUTSIDE_PAGE",
+    "NO_UNIQUE_STAGE_BINDING",
+    "CROSS_TASK_REFUSED",
+    "HOST_ONLY_COMMAND",
+    "FULL_RESULT_NOT_PERSISTED_OR_NOT_BOUND"
+  ],
+  "liveIdentities": {
+    "note": "Real task ids for later HTTP join; fixtures below stay synthetic.",
+    "w1e": "7502196308401328128",
+    "w1g": "7502261872498970624",
+    "w2": "7502311153071165440",
+    "w3": "7502300444828504064"
+  },
+  "cases": {
+    "noCodingStage": {
+      "query": { "taskId": "task-empty", "limit": 50 },
+      "response": {
+        "schemaVersion": 1,
+        "taskId": "task-empty",
+        "codingStageRunId": null,
+        "available": false,
+        "unavailableReason": "NO_CODING_STAGE",
+        "snapshotReadAtEpochMillis": 1725600000000,
+        "taskVersion": 2,
+        "taskStatus": "EXECUTING",
+        "paused": false,
+        "head": {
+          "available": true,
+          "unavailableReason": null,
+          "stateVersion": 1,
+          "stateHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "records": [],
+          "recordsTruncated": false
+        },
+        "codingStages": [],
+        "qaStages": [],
+        "commands": [],
+        "decisions": [],
+        "remediations": [],
+        "hostVerifications": [],
+        "auditRuns": [],
+        "links": [],
+        "page": { "hasMore": false, "nextCursor": null }
+      }
+    },
+    "firstCodingWithoutManager": {
+      "query": { "taskId": "task-first-coding", "codingStageRunId": "stage-coding-1" },
+      "notes": "Missing Manager before the first Coding stage is normal, not a system error.",
+      "response": {
+        "schemaVersion": 1,
+        "taskId": "task-first-coding",
+        "codingStageRunId": "stage-coding-1",
+        "available": true,
+        "unavailableReason": null,
+        "snapshotReadAtEpochMillis": 1725600001000,
+        "taskVersion": 8,
+        "taskStatus": "EXECUTING",
+        "paused": false,
+        "head": {
+          "available": true,
+          "unavailableReason": null,
+          "stateVersion": 1,
+          "stateHash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "records": [
+            {
+              "id": "AC-001",
+              "kind": "REQUIREMENT",
+              "blocking": true,
+              "text": "homepage marker",
+              "status": "PENDING",
+              "evidenceRefs": [],
+              "sourceStageRunId": "",
+              "blockedReason": ""
+            }
+          ],
+          "recordsTruncated": false
+        },
+        "codingStages": [
+          {
+            "stageRunId": "stage-coding-1",
+            "role": "CODING_AGENT",
+            "attemptNo": 1,
+            "status": "SUCCEEDED",
+            "resultArtifactId": "art-coding-1",
+            "startedAtEpochMillis": 1725600000500,
+            "finishedAtEpochMillis": 1725600000900
+          }
+        ],
+        "qaStages": [],
+        "commands": [
+          {
+            "commandId": "cmd-coding-1",
+            "stage": "ROLE_EXECUTION:CODING_AGENT",
+            "role": "CODING_AGENT",
+            "status": "SUCCEEDED",
+            "stageRunId": "stage-coding-1",
+            "stageLinkReason": null,
+            "commandAttemptNo": 1,
+            "remediationRoundId": null,
+            "remediationKind": null,
+            "remediationNo": null,
+            "remediationSourceStageRunId": null,
+            "createdAtEpochMillis": 1725600000400,
+            "updatedAtEpochMillis": 1725600000900
+          }
+        ],
+        "decisions": [],
+        "remediations": [],
+        "hostVerifications": [],
+        "auditRuns": [
+          {
+            "auditRunId": "audit-coding-1",
+            "subjectStageRunId": "stage-coding-1",
+            "subjectRole": "CODING_AGENT",
+            "commandId": "cmd-coding-1",
+            "completion": "INCOMPLETE",
+            "integrity": "CLEAN",
+            "contractAudit": "ALIGNED",
+            "verified": [],
+            "missing": ["AC-001"],
+            "untrusted": [],
+            "blockers": [],
+            "sourceRefs": [],
+            "createdAtEpochMillis": 1725600000910
+          }
+        ],
+        "links": [
+          {
+            "fromType": "AUDIT",
+            "fromId": "audit-coding-1",
+            "toType": "COMMAND",
+            "toId": "cmd-coding-1",
+            "relation": "AUDITS",
+            "available": true,
+            "unavailableReason": null
+          },
+          {
+            "fromType": "AUDIT",
+            "fromId": "audit-coding-1",
+            "toType": "STAGE",
+            "toId": "stage-coding-1",
+            "relation": "AUDITS",
+            "available": true,
+            "unavailableReason": null
+          }
+        ],
+        "page": { "hasMore": false, "nextCursor": null }
+      }
+    },
+    "twoQaAttemptsAndRevisionNotHead": {
+      "query": { "taskId": "task-w1e-shape", "codingStageRunId": "stage-coding-gap" },
+      "notes": "decision.stateVersion=8, head=10. stateAtDecision must be revision 8.",
+      "w1eThreeSnapshots": [
+        "pending-ac003",
+        "post-gap-qa",
+        "head-v10"
+      ],
+      "response": {
+        "schemaVersion": 1,
+        "taskId": "task-w1e-shape",
+        "codingStageRunId": "stage-coding-gap",
+        "available": true,
+        "unavailableReason": null,
+        "snapshotReadAtEpochMillis": 1725600002000,
+        "taskVersion": 20,
+        "taskStatus": "EXECUTING",
+        "paused": false,
+        "head": {
+          "available": true,
+          "unavailableReason": null,
+          "stateVersion": 10,
+          "stateHash": "sha256:1010101010101010101010101010101010101010101010101010101010101010",
+          "records": [
+            {
+              "id": "AC-001",
+              "kind": "REQUIREMENT",
+              "blocking": true,
+              "text": "build",
+              "status": "COMPLETED",
+              "evidenceRefs": [
+                {
+                  "auditRunId": "audit-qa-2",
+                  "sourceKind": "QA_REPORT",
+                  "uri": "rd-evidence://task-w1e-shape/ac-001",
+                  "sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                }
+              ],
+              "sourceStageRunId": "stage-qa-2",
+              "blockedReason": ""
+            },
+            {
+              "id": "AC-003",
+              "kind": "REQUIREMENT",
+              "blocking": true,
+              "text": "gap route",
+              "status": "COMPLETED",
+              "evidenceRefs": [
+                {
+                  "auditRunId": "audit-qa-2",
+                  "sourceKind": "QA_REPORT",
+                  "uri": "rd-evidence://task-w1e-shape/ac-003",
+                  "sha256": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                }
+              ],
+              "sourceStageRunId": "stage-qa-2",
+              "blockedReason": ""
+            }
+          ],
+          "recordsTruncated": false
+        },
+        "codingStages": [
+          {
+            "stageRunId": "stage-coding-1",
+            "role": "CODING_AGENT",
+            "attemptNo": 1,
+            "status": "SUCCEEDED",
+            "resultArtifactId": "art-coding-1",
+            "startedAtEpochMillis": 1725600001100,
+            "finishedAtEpochMillis": 1725600001200
+          },
+          {
+            "stageRunId": "stage-coding-gap",
+            "role": "CODING_AGENT",
+            "attemptNo": 2,
+            "status": "SUCCEEDED",
+            "resultArtifactId": "art-coding-gap",
+            "startedAtEpochMillis": 1725600001500,
+            "finishedAtEpochMillis": 1725600001600
+          }
+        ],
+        "qaStages": [
+          {
+            "stageRunId": "stage-qa-1",
+            "role": "QA_AGENT",
+            "attemptNo": 1,
+            "status": "SUCCEEDED",
+            "resultArtifactId": "art-qa-1",
+            "startedAtEpochMillis": 1725600001300,
+            "finishedAtEpochMillis": 1725600001400
+          },
+          {
+            "stageRunId": "stage-qa-2",
+            "role": "QA_AGENT",
+            "attemptNo": 2,
+            "status": "SUCCEEDED",
+            "resultArtifactId": "art-qa-2",
+            "startedAtEpochMillis": 1725600001700,
+            "finishedAtEpochMillis": 1725600001800
+          }
+        ],
+        "commands": [
+          {
+            "commandId": "cmd-hv-1",
+            "stage": "HOST_VERIFY",
+            "role": "REQUIREMENT_DELIVERY",
+            "status": "SUCCEEDED",
+            "stageRunId": "stage-coding-1",
+            "stageLinkReason": null,
+            "commandAttemptNo": 1,
+            "remediationRoundId": null,
+            "remediationKind": null,
+            "remediationNo": null,
+            "remediationSourceStageRunId": null,
+            "createdAtEpochMillis": 1725600001250,
+            "updatedAtEpochMillis": 1725600001290
+          },
+          {
+            "commandId": "cmd-manager-1",
+            "stage": "MANAGER_DECIDE:cmd-hv-1",
+            "role": "REQUIREMENT_DELIVERY",
+            "status": "SUCCEEDED",
+            "stageRunId": null,
+            "stageLinkReason": "HOST_ONLY_COMMAND",
+            "commandAttemptNo": 1,
+            "remediationRoundId": null,
+            "remediationKind": null,
+            "remediationNo": null,
+            "remediationSourceStageRunId": null,
+            "createdAtEpochMillis": 1725600001410,
+            "updatedAtEpochMillis": 1725600001420
+          }
+        ],
+        "decisions": [
+          {
+            "managerCommandId": "cmd-manager-1",
+            "roundNo": 1,
+            "sourceCommandId": "cmd-hv-1",
+            "decisionHash": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "route": "EXECUTE",
+            "executorRoute": "QA_AGENT",
+            "targetRecordIds": [],
+            "boundedContractPreview": "host-verify succeeded; continue QA",
+            "boundedContractTruncated": false,
+            "rationale": "host-verify succeeded; continue QA",
+            "stateVersion": 8,
+            "stateHash": "sha256:0808080808080808080808080808080808080808080808080808080808080808",
+            "stateAtDecision": {
+              "available": true,
+              "unavailableReason": null,
+              "stateVersion": 8,
+              "stateHash": "sha256:0808080808080808080808080808080808080808080808080808080808080808",
+              "records": [
+                {
+                  "id": "AC-003",
+                  "kind": "REQUIREMENT",
+                  "blocking": true,
+                  "text": "gap route",
+                  "status": "PENDING",
+                  "evidenceRefs": [],
+                  "sourceStageRunId": "",
+                  "blockedReason": ""
+                }
+              ],
+              "recordsTruncated": false
+            },
+            "commandCreatedAtEpochMillis": 1725600001410
+          }
+        ],
+        "remediations": [],
+        "hostVerifications": [
+          {
+            "runId": "hv-1",
+            "codingStageRunId": "stage-coding-1",
+            "parentRunId": null,
+            "status": "SUCCEEDED",
+            "docsOnly": false,
+            "failureCategory": null
+          }
+        ],
+        "auditRuns": [],
+        "links": [
+          {
+            "fromType": "DECISION",
+            "fromId": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "toType": "COMMAND",
+            "toId": "cmd-hv-1",
+            "relation": "DECIDED_AFTER",
+            "available": true,
+            "unavailableReason": null
+          },
+          {
+            "fromType": "HOST_VERIFY",
+            "fromId": "hv-1",
+            "toType": "STAGE",
+            "toId": "stage-coding-1",
+            "relation": "VERIFIES",
+            "available": true,
+            "unavailableReason": null
+          }
+        ],
+        "page": { "hasMore": false, "nextCursor": null }
+      }
+    },
+    "missingRevision": {
+      "notes": "decision.stateVersion=8 but revision 8 is absent → available=false, do not substitute head 10.",
+      "stateAtDecision": {
+        "available": false,
+        "unavailableReason": "REVISION_UNAVAILABLE",
+        "stateVersion": 8,
+        "stateHash": "sha256:0808080808080808080808080808080808080808080808080808080808080808",
+        "records": [],
+        "recordsTruncated": false
+      }
+    },
+    "outsidePage": {
+      "notes": "In-page decision points at cmd-hv-1 which is outside this page. Keep the id.",
+      "link": {
+        "fromType": "DECISION",
+        "fromId": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "toType": "COMMAND",
+        "toId": "cmd-hv-1",
+        "relation": "DECIDED_AFTER",
+        "available": false,
+        "unavailableReason": "OUTSIDE_PAGE"
+      }
+    },
+    "crossTaskRefused": {
+      "notes": "taskA command must not surface taskB stage summary.",
+      "link": {
+        "fromType": "COMMAND",
+        "fromId": "cmd-a",
+        "toType": "STAGE",
+        "toId": null,
+        "relation": "EXECUTES",
+        "available": false,
+        "unavailableReason": "CROSS_TASK_REFUSED"
+      }
+    },
+    "stageResultPreviewOnly": {
+      "endpoint": "GET /admin/rd-tasks/{taskId}/stage-runs/{stageRunId}/result",
+      "response": {
+        "taskId": "task-legacy",
+        "stageRunId": "stage-old",
+        "role": "CODING_AGENT",
+        "attemptNo": 1,
+        "artifactId": "art-old",
+        "commandId": null,
+        "finalizationId": null,
+        "source": "ARTIFACT_PREVIEW",
+        "available": false,
+        "unavailableReason": "FULL_RESULT_NOT_PERSISTED_OR_NOT_BOUND",
+        "contentType": "application/json",
+        "content": "{\"preview\":true}",
+        "truncated": true,
+        "contentSha256": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "downloadPath": null
+      }
+    }
+  }
+}
