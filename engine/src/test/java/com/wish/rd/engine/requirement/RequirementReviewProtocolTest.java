@@ -58,4 +58,20 @@ class RequirementReviewProtocolTest {
         assertFalse(RequirementReviewProtocol.asksOperator(json));
         assertFalse(RequirementReviewProtocol.failsClosed(json));
     }
+
+    @Test
+    void approvedWithAdvisoryMissingInformationStillProceeds() {
+        String json = """
+                {
+                  "decision": "APPROVED",
+                  "feasibility": "CAN_DO",
+                  "missingInformation": ["标记样式未指定（默认次要色文本）"],
+                  "status": "SUCCESS"
+                }
+                """;
+
+        assertEquals(RequirementReviewProtocol.Disposition.PROCEED,
+                RequirementReviewProtocol.disposition(json));
+        assertFalse(RequirementReviewProtocol.asksOperator(json));
+    }
 }

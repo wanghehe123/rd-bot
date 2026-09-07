@@ -2860,6 +2860,71 @@ class RequirementDeliveryEngineTest {
     }
 
     @Test
+    void shouldEndBudgetExhaustedCodingAttemptAsFailedNeedsHumanWithoutAutoRepair() {
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(),
+                new InMemoryRdTaskStatusEventStore(),
+                generator());
+        InMemoryTaskMaterialStore materialStore = new InMemoryTaskMaterialStore();
+        RdRequirementTask task = createRequirementTask(
+                registry,
+                materialStore,
+                "7820000000032",
+                "增加订单催单功能",
+                "订单详情页可以催单",
+                "预算耗尽必须诚实结束，不得伪装成功或无限返工。"
+        );
+        AgentStageRunStore stageRunStore = new InMemoryAgentStageRunStore();
+        RecordingAgentWorkflowAlertSink alertSink = new RecordingAgentWorkflowAlertSink();
+        java.util.concurrent.atomic.AtomicInteger codingInvocations = new java.util.concurrent.atomic.AtomicInteger();
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry,
+                materialStore,
+                request -> {
+                    if (request.role() == AgentRole.CODING_AGENT) {
+                        codingInvocations.incrementAndGet();
+                        return RequirementExecutionResult.failure(
+                                request.taskId(),
+                                "Pi did not complete the required result lifecycle.",
+                                "{\"status\":\"FAILED\",\"summary\":\"Agent stopped after exhausting the "
+                                        + "coding-benchmark turn/token budget\",\"failureCategory\":\"BUDGET_EXCEEDED\","
+                                        + "\"errorMessage\":\"BUDGET_EXCEEDED: maxAgentTurns=40 turns=40 "
+                                        + "cumulativeUsage=123456\"}"
+                        );
+                    }
+                    return RequirementExecutionResult.success(
+                            request.taskId(),
+                            request.role().name() + " 完成",
+                            "",
+                            roleResultJson(request.role())
+                    );
+                },
+                new RequirementContextBuilder(),
+                new RequirementPlanGenerator(),
+                new RuleBasedRequirementPolicyGate(),
+                new AgentStagePlanner(new AtomicStageIdSupplier()),
+                stageRunStore,
+                new RoleContextBuilder(),
+                new InMemoryRoleContextPackageStore(),
+                alertSink,
+                WorkflowExperienceStore.noop()
+        );
+
+        RequirementDeliveryResult result = engine.submit(task.taskId());
+
+        // 预算耗尽：不晋升 COMPLETED，保留可识别的预算原因，且不自动派发新一轮 Coding 返工
+        assertEquals(RdTaskStatus.FAILED_NEEDS_HUMAN, result.status());
+        assertTrue(result.errorMessage().contains("BUDGET_EXCEEDED")
+                || result.resultJson().contains("BUDGET_EXCEEDED"), () -> result.errorMessage());
+        assertEquals(1, codingInvocations.get());
+        AgentStageRun codingStage = stageRunStore.listByTask(task.taskId()).stream()
+                .filter(stage -> stage.role() == AgentRole.CODING_AGENT)
+                .findFirst()
+                .orElseThrow();
+        assertEquals(AgentStageStatus.FAILED_NEEDS_HUMAN, codingStage.status());
+    }
+
+    @Test
     void shouldEnterWaitingApprovalFromRecoveringWhenPolicyRequiresApproval() {
         RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
                 new InMemoryRdTaskStore(),

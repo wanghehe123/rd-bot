@@ -43,6 +43,12 @@ public final class RequirementReviewProtocol {
         if (hardFail(status) || hardFail(decision) || hardFail(feasibility)) {
             return Disposition.FAIL_CLOSED;
         }
+        // Explicit approval proceeds even when the agent lists advisory gaps under
+        // missingInformation (common with APPROVED/CAN_DO). Only NEED_INFO* or
+        // missingInformation without approval force an operator ASK.
+        if (isApproved(decision) || isApproved(status)) {
+            return Disposition.PROCEED;
+        }
         if (needInfo(status) || needInfo(decision) || needInfo(feasibility) || hasMissingInformation(root)) {
             return Disposition.ASK_OPERATOR;
         }
@@ -103,6 +109,13 @@ public final class RequirementReviewProtocol {
 
     private static boolean needInfo(String value) {
         return "NEED_INFO".equals(value);
+    }
+
+    private static boolean isApproved(String value) {
+        return switch (value) {
+            case "APPROVED", "PASS", "PASSED", "GO", "SUCCESS", "OK" -> true;
+            default -> false;
+        };
     }
 
     private static boolean hasMissingInformation(JsonNode root) {
