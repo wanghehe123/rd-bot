@@ -202,6 +202,32 @@ class RoleContextBuilderTest {
         assertTrue(context.omittedEvidenceIds().contains("history-irrelevant"));
     }
 
+    @Test
+    void hostMaterialsAreVerifiedByDefault() {
+        RoleContextBuilder builder = new RoleContextBuilder();
+        RdRequirementTask task = RdRequirementTask.created(
+                "task-trust-1",
+                new CreateRequirementTaskCommand(
+                        "信任标记",
+                        "P1",
+                        "https://github.com/example/waimai.git",
+                        "example",
+                        "waimai",
+                        "main",
+                        "ok",
+                        List.of("通过"),
+                        false
+                ),
+                1_783_000_000_000L
+        );
+        List<TaskMaterial> materials = List.of(
+                material("mat-code", "代码索引", "Controller 类、Service 方法、测试命令。")
+        );
+        RoleContextPackage coder = builder.build("ctx-trust", task, materials,
+                "CODING_AGENT", 8_000, 1_783_000_000_001L);
+        assertEquals(RoleContextEvidence.TRUST_VERIFIED, coder.evidence().getFirst().trust());
+    }
+
     private TaskMaterial material(String id, String title, String preview) {
         return new TaskMaterial(
                 id,

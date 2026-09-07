@@ -173,8 +173,6 @@ public class RequirementDeliveryEngine {
     private static final Logger log = LoggerFactory.getLogger(RequirementDeliveryEngine.class);
     /** 单角色阶段最大 attempt 数，防止协议失败引发的盲重试风暴（审查报告 F2）。 */
     private static final int MAX_ROLE_ATTEMPTS = 3;
-    /** 单次回注的失败明细上限，防止巨型校验错误把 prompt 撑爆。 */
-    private static final int MAX_FAILURE_FEEDBACK_CHARS = 4_000;
     /** 单个上游阶段随交接清单传导的环境备忘条数上限，防止 prompt 膨胀。 */
     private static final int MAX_ENVIRONMENT_NOTES = 8;
     private static final Comparator<AgentStageRun> STAGE_RUN_RECENCY = Comparator
@@ -5634,17 +5632,15 @@ public class RequirementDeliveryEngine {
         if (failedStage == null || failedStage.role() == checkpoint.retryFromRole()) {
             return "";
         }
-        String detail = failedStage.errorMessage();
-        if (detail.isBlank()) {
-            return "";
-        }
-        if (detail.length() > MAX_FAILURE_FEEDBACK_CHARS) {
-            detail = detail.substring(0, MAX_FAILURE_FEEDBACK_CHARS) + "...(truncated)";
-        }
+        // Host audited gap only — never inject failedStage.errorMessage / stderr walls.
+        String gap = auditedGapSection(checkpoint.taskId());
+        String detail = gap.isBlank()
+                ? "尚无已审计状态/缺口不可用。原始失败文本只在 RESULT_JSON / AGENT_EVENTS。"
+                : gap;
         return """
                 ## 下游 %s 失败反馈（本次打回原因）
                 %s
-                请针对以上反馈修正本角色产出，不要原样重复上一轮工作。
+                请针对以上已审计缺口修正本角色产出，不要原样重复上一轮工作。
                 """.formatted(failedStage.role().name(), detail).strip();
     }
 

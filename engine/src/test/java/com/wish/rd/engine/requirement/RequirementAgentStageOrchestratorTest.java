@@ -52,6 +52,9 @@ import com.wish.rd.rag.runtime.RagStreamTaskRegistry;
 import com.wish.rd.rag.runtime.model.RdRequirementTask;
 import com.wish.rd.rag.runtime.model.TaskMaterial;
 import com.wish.rd.rag.runtime.model.RdTaskStatus;
+import com.wish.rd.engine.retry.model.TaskFailurePhase;
+import com.wish.rd.engine.retry.model.TaskRetryCheckpoint;
+import com.wish.rd.engine.retry.model.TaskRetryPoint;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
 import org.junit.jupiter.api.Test;
 
@@ -691,7 +694,8 @@ class RequirementAgentStageOrchestratorTest {
                 .initializeIfAbsent(harness.task.withConcurrency(1L, 1L));
         harness.orchestrator.setAuditedTaskStateStore(audited);
         HostVerifyRemediationPackageBuilder.Package frozen = new HostVerifyRemediationPackageBuilder()
-                .build("verify-9", "coding-1", 1, "PRODUCT_DEFECT", "BUILD exit 1: cannot find symbol Foo");
+                .build("verify-9", "coding-1", 1, "PRODUCT_DEFECT",
+                        "BUILD exit 1: stderr-secret-fixture-unique cannot find symbol Foo");
 
         RequirementExecutionResult result = harness.orchestrator.runRemediationRole(
                 plan, harness.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION,
@@ -707,6 +711,7 @@ class RequirementAgentStageOrchestratorTest {
         assertTrue(codingPrompt.contains("hash:"), codingPrompt);
         assertTrue(codingPrompt.contains("HOST_VERIFY_FIX"), codingPrompt);
         assertTrue(codingPrompt.contains(HostVerifyRemediationPackageBuilder.CONTAINER_PATH), codingPrompt);
+        assertFalse(codingPrompt.contains("stderr-secret-fixture-unique"), codingPrompt);
         assertFalse(codingPrompt.contains("cannot find symbol Foo"), codingPrompt);
         assertFalse(codingPrompt.contains("上一轮失败反馈"), codingPrompt);
         RequirementExecutionRequest request = harness.executor.lastRequestByRole.get(AgentRole.CODING_AGENT);
@@ -1058,6 +1063,123 @@ class RequirementAgentStageOrchestratorTest {
         RequirementExecutionResult result = harness.orchestrator.run(
                 plan, harness.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION, null);
         assertNotNull(result);
+    }
+
+    @Test
+    void checkpointRollbackInjectsAuditedGapNotDownstreamErrorMessage() {
+        String marker = "stderr-secret-fixture-unique";
+        AgentWorkflowPlan plan = new AgentWorkflowPlan(
+                List.of(AgentRole.CODING_AGENT), false, false, 1, false, 2,
+                Map.of(AgentRole.CODING_AGENT, 1.0d), "TEST_DOWNSTREAM_GAP");
+        OrchestratorTestHarness harness = new OrchestratorTestHarness()
+                .prestageRoles(plan.roles())
+                .prestageRoleContexts(plan.roles());
+
+        long now = System.currentTimeMillis();
+        AgentStageRun failedQa = new AgentStageRun(
+                "qa-failed-1",
+                harness.task.taskId(),
+                AgentRole.QA_AGENT,
+                AgentStageStatus.FAILED_NEEDS_HUMAN,
+                1,
+                harness.task.taskId() + ":QA_AGENT:1",
+                "",
+                "",
+                "",
+                "",
+                "[]",
+                "",
+                "PRODUCT",
+                marker,
+                now,
+                now,
+                now,
+                now
+        );
+        harness.stageRunStore.save(failedQa);
+
+        InMemoryAuditedTaskStateStore audited = new InMemoryAuditedTaskStateStore();
+        new AuditedTaskStatePolicyBootstrap(audited)
+                .initializeIfAbsent(harness.task.withConcurrency(1L, 1L));
+        harness.orchestrator.setAuditedTaskStateStore(audited);
+        AuditedTaskState head = audited.head(harness.task.taskId()).orElseThrow();
+
+        TaskRetryPoint point = new TaskRetryPoint(
+                harness.task.taskId(),
+                TaskFailurePhase.AGENT_ROLE,
+                AgentRole.CODING_AGENT,
+                failedQa.stageRunId(),
+                "",
+                "",
+                "qa failed",
+                harness.task.updateTimeEpochMillis());
+        TaskRetryCheckpoint checkpoint = TaskRetryCheckpoint.created(
+                "cp-downstream-1", point, 1, "idem-downstream-1", RdTaskStatus.FAILED_NEEDS_HUMAN, now);
+
+        RequirementExecutionResult result = harness.orchestrator.run(
+                plan, harness.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION, checkpoint);
+        assertNotNull(result);
+
+        String codingPrompt = harness.executor.lastPromptByRole.get(AgentRole.CODING_AGENT);
+        assertNotNull(codingPrompt);
+        assertTrue(codingPrompt.contains("下游 QA_AGENT 失败反馈"), codingPrompt);
+        assertTrue(codingPrompt.contains("GATE-BUILD"), codingPrompt);
+        assertTrue(codingPrompt.contains(head.stateHash()), codingPrompt);
+        assertFalse(codingPrompt.contains(marker), codingPrompt);
+    }
+
+    @Test
+    void checkpointRollbackWithoutHeadEmitsUnavailableNotRawError() {
+        String marker = "stderr-secret-fixture-unique";
+        AgentWorkflowPlan plan = new AgentWorkflowPlan(
+                List.of(AgentRole.CODING_AGENT), false, false, 1, false, 2,
+                Map.of(AgentRole.CODING_AGENT, 1.0d), "TEST_DOWNSTREAM_NO_HEAD");
+        OrchestratorTestHarness harness = new OrchestratorTestHarness()
+                .prestageRoles(plan.roles())
+                .prestageRoleContexts(plan.roles());
+
+        long now = System.currentTimeMillis();
+        harness.stageRunStore.save(new AgentStageRun(
+                "qa-failed-2",
+                harness.task.taskId(),
+                AgentRole.QA_AGENT,
+                AgentStageStatus.FAILED_NEEDS_HUMAN,
+                1,
+                harness.task.taskId() + ":QA_AGENT:1",
+                "",
+                "",
+                "",
+                "",
+                "[]",
+                "",
+                "PRODUCT",
+                marker,
+                now,
+                now,
+                now,
+                now
+        ));
+
+        TaskRetryPoint point = new TaskRetryPoint(
+                harness.task.taskId(),
+                TaskFailurePhase.AGENT_ROLE,
+                AgentRole.CODING_AGENT,
+                "qa-failed-2",
+                "",
+                "",
+                "qa failed",
+                harness.task.updateTimeEpochMillis());
+        TaskRetryCheckpoint checkpoint = TaskRetryCheckpoint.created(
+                "cp-downstream-2", point, 1, "idem-downstream-2", RdTaskStatus.FAILED_NEEDS_HUMAN, now);
+
+        RequirementExecutionResult result = harness.orchestrator.run(
+                plan, harness.task, List.of(), EMPTY_CONTEXT, EMPTY_PLAN, ALLOWED_DECISION, checkpoint);
+        assertNotNull(result);
+
+        String codingPrompt = harness.executor.lastPromptByRole.get(AgentRole.CODING_AGENT);
+        assertNotNull(codingPrompt);
+        assertTrue(codingPrompt.contains("尚无已审计状态/缺口不可用"), codingPrompt);
+        assertFalse(codingPrompt.contains(marker), codingPrompt);
     }
 
     @Test

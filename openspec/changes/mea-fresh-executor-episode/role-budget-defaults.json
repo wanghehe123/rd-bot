@@ -1,0 +1,7 @@
+{
+  "status": "NOT_FROZEN",
+  "reason": "B07 full 12x3 samples were not run (operator directed slim-only). Cannot compute ceil(1.5 * P95(actualTurns|tokens)) per role. Refusing silent 0 defaults that would disable episode budgets.",
+  "formula": "ceil(1.5 * P95(actualTurns)) and ceil(1.5 * P95(actualInputTokens+actualOutputTokens)); require >=3 valid samples per role",
+  "freezeSourceWhenAbsent": "RD_PI_MAX_AGENT_TURNS + RD_PI_MAX_TOTAL_TOKENS env at snapshot time (episodeBudgetStatus=FROZEN_FROM_ENV)",
+  "roles": {}
+}

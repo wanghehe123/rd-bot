@@ -485,7 +485,10 @@ public final class DeepRetrievalOrchestrator {
             missing.add("REQUIREMENT_MATERIAL");
         }
         if (consumer == RetrievalConsumerType.AGENT_ROLE && role != null) {
-            boolean hasRoleEvidence = selected.stream().filter(item -> !item.sharedRoot()).anyMatch(item -> switch (role) {
+            boolean hasRoleEvidence = selected.stream()
+                    .filter(item -> !item.sharedRoot())
+                    .filter(RoleContextEvidence::verified)
+                    .anyMatch(item -> switch (role) {
                 case SOLUTION_ARCHITECT -> ARCHITECT_TYPES.contains(item.requiredEvidenceType());
                 case CODING_AGENT -> CODING_TYPES.contains(item.requiredEvidenceType());
                 case QA_AGENT -> QA_TYPES.contains(item.requiredEvidenceType());
@@ -547,7 +550,9 @@ public final class DeepRetrievalOrchestrator {
                 "role-specific RAG evidence was unavailable; bounded repository discovery is required",
                 1.0d,
                 "REPOSITORY_DISCOVERY",
-                false
+                false,
+                RoleContextEvidence.TRUST_VERIFIED,
+                ""
         );
     }
 
@@ -748,7 +753,9 @@ public final class DeepRetrievalOrchestrator {
                 "directed handoff manifest; content verified before executor attachment",
                 1.0d,
                 evidenceType,
-                false
+                false,
+                RoleContextEvidence.TRUST_VERIFIED,
+                ""
         ));
     }
 

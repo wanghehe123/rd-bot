@@ -764,6 +764,14 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                         && "QA_AGENT".equals(snapshot.role())
         );
         request.put("attemptNo", snapshot.attemptNo());
+        int maxAgentTurns = snapshotJson.path("maxAgentTurns").asInt(0);
+        int maxTotalTokens = snapshotJson.path("maxTotalTokens").asInt(0);
+        if (maxAgentTurns > 0) {
+            request.put("maxAgentTurns", maxAgentTurns);
+        }
+        if (maxTotalTokens > 0) {
+            request.put("maxTotalTokens", maxTotalTokens);
+        }
         appendInitialAgentState(request, snapshot, command, snapshotJson);
         request.put("resourceManifestPath", "/work/input/resource-manifest.json");
         request.put("skillManifestPath", "/work/input/skill-manifest.json");
