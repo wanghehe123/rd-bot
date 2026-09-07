@@ -684,7 +684,23 @@ public class RequirementAgentStageOrchestrator {
                 );
             }
             if (role == AgentRole.REQUIREMENT_REVIEWER) {
-                // 需求评审角色完成后，补充一次业务门控：NEED/HUMAN 或异常状态 -> FAILED_NEEDS_HUMAN（不进入下一角色）。
+                // NEED_INFO is a valid protocol result: succeed the stage and stop later roles
+                // so Manager can ASK. REJECTED/UNSAFE/FAILED still fail-close.
+                if (RequirementReviewProtocol.asksOperator(roleResult.resultJson())) {
+                    stage = transitionStage(stage, AgentStageStatus.VERIFYING, "", "");
+                    stage = transitionStage(stage, AgentStageStatus.SUCCEEDED, "", "");
+                    stageResults.add(stageResultJson(role, roleResult));
+                    captureExperience(stage, roleResult, experienceTypeForRole(role));
+                    return RequirementExecutionResult.success(
+                            task.taskId(),
+                            firstNonBlank(
+                                    roleResult.summary(),
+                                    RequirementReviewProtocol.askReason(roleResult.resultJson(), "")
+                            ),
+                            "",
+                            aggregateAgentResultsJson("NEED_INFO", pullRequestUrl, stageResults)
+                    );
+                }
                 ReviewGateDecision reviewGateDecision = requirementReviewGateDecision(roleResult);
                 if (reviewGateDecision.needsHuman()) {
                     AgentStageRun failedStage = transitionStage(
@@ -3515,12 +3531,15 @@ public class RequirementAgentStageOrchestrator {
                         firstNonBlank(result.summary(), "requirement review result json must be an object")
                 );
             }
+            if (RequirementReviewProtocol.failsClosed(result.resultJson())) {
+                return new ReviewGateDecision(true, requirementReviewNeedsHumanReason(result, root));
+            }
+            if (RequirementReviewProtocol.asksOperator(result.resultJson())) {
+                return new ReviewGateDecision(false, "");
+            }
             String status = normalizedCode(root.path("status"));
             String decision = normalizedCode(root.path("decision"));
             String feasibility = normalizedCode(root.path("feasibility"));
-            if (requiresHuman(status) || requiresHuman(decision) || requiresHuman(feasibility)) {
-                return new ReviewGateDecision(true, requirementReviewNeedsHumanReason(result, root));
-            }
             if (status.isBlank() && decision.isBlank() && feasibility.isBlank()) {
                 return new ReviewGateDecision(
                         true,
@@ -3544,13 +3563,6 @@ public class RequirementAgentStageOrchestrator {
                 text(root.path("summary")),
                 "requirement review needs human input"
         );
-    }
-
-    private boolean requiresHuman(String value) {
-        return switch (value) {
-            case "NEED_INFO", "NEEDS_HUMAN", "UNSAFE", "REJECTED", "REJECT", "FAILED", "FAILURE", "BLOCKED" -> true;
-            default -> false;
-        };
     }
 
     private String normalizedCode(JsonNode node) {

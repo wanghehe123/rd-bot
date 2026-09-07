@@ -152,6 +152,7 @@ import com.wish.rd.engine.requirement.manager.ManagerDecision;
 import com.wish.rd.engine.requirement.manager.ManagerDecisionStore;
 import com.wish.rd.engine.requirement.manager.ManagerPolicy;
 import com.wish.rd.engine.requirement.manager.ManagerRoute;
+import com.wish.rd.engine.requirement.manager.OperatorMaterialNeedDetector;
 import com.wish.rd.engine.requirement.manager.impl.InMemoryManagerDecisionStore;
 import com.wish.rd.engine.requirement.policy.model.RequirementPolicyRunState;
 import com.wish.rd.engine.provider.ProviderSideEffectStatusPort;
@@ -1092,8 +1093,18 @@ public class RequirementDeliveryEngine {
                 activeRetry
         );
         RdTask afterStages = taskRegistry.getTask(requirementTask.taskId());
-        if (afterStages.status() == RdTaskStatus.WAITING_APPROVAL) {
+        if (afterStages.status() == RdTaskStatus.WAITING_APPROVAL
+                || afterStages.status() == RdTaskStatus.WAITING_USER_INPUT) {
             return currentResult((RdRequirementTask) afterStages);
+        }
+        if (RequirementReviewProtocol.asksOperator(executionResult.resultJson())) {
+            RdRequirementTask waiting = taskRegistry.markRequirementWaitingUserInput(
+                    requirementTask.taskId(),
+                    RequirementReviewProtocol.askReason(
+                            executionResult.resultJson(), executionResult.summary()),
+                    executionResult.resultJson()
+            );
+            return currentResult(waiting);
         }
         if (!executionResult.success()) {
             String reason = executionResult.errorMessage().isBlank()
@@ -1502,9 +1513,8 @@ public class RequirementDeliveryEngine {
         mutations.add(RequirementTaskMutation.snapshotUpdate(
                 RdTaskStatus.EXECUTING, "", execution.resultJson(), execution.pullRequestUrl(), "", ""));
         return attachRoleClaims(
-                plan(task, command, mutations, CommandDisposition.SUCCEEDED, role == AgentRole.QA_AGENT
-                        ? new ContinuationSpec("REQUIREMENT_DELIVERY", ManagerDecideStages.forSource(command.commandId()))
-                        : roleContinuation(role)),
+                plan(task, command, mutations, CommandDisposition.SUCCEEDED, roleContinuation(
+                        role, command, execution.resultJson())),
                 task,
                 command,
                 role,
@@ -1600,11 +1610,15 @@ public class RequirementDeliveryEngine {
         AuditedTaskState head = auditedTaskStateStore == null
                 ? null
                 : auditedTaskStateStore.head(task.taskId()).orElse(null);
-        boolean needUserInput = !UserAnswerResumeStages.isResume(previousStage)
-                && head != null
+        boolean blockedNeedUserInput = head != null
                 && head.records().stream().anyMatch(record ->
                 record.status() == AuditedRecordStatus.BLOCKED
                         && record.blockedReason().toUpperCase(Locale.ROOT).contains("NEED_USER_INPUT"));
+        boolean missingOperatorMaterial = OperatorMaterialNeedDetector.requiresOperatorInput(
+                task, taskMaterials(task));
+        boolean reviewerNeedInfo = RequirementReviewProtocol.asksOperator(task.executionResultJson());
+        boolean needUserInput = !UserAnswerResumeStages.isResume(previousStage)
+                && (blockedNeedUserInput || missingOperatorMaterial || reviewerNeedInfo);
         int usedCodingAttempts = (int) stageRunStore.listByTask(task.taskId()).stream()
                 .filter(stage -> stage.role() == AgentRole.CODING_AGENT)
                 .count();
@@ -2377,7 +2391,23 @@ public class RequirementDeliveryEngine {
                 + " requires task status " + expectedStatus + " but was " + task.status());
     }
 
-    private ContinuationSpec roleContinuation(AgentRole role) {
+    private ContinuationSpec roleContinuation(
+            AgentRole role,
+            RequirementStageCommand command,
+            String resultJson
+    ) {
+        if ((role == AgentRole.REQUIREMENT_REVIEWER || role == AgentRole.SOLUTION_ARCHITECT)
+                && command != null
+                && RequirementReviewProtocol.asksOperator(resultJson)) {
+            return new ContinuationSpec(
+                    "REQUIREMENT_DELIVERY",
+                    ManagerDecideStages.forSource(command.commandId()));
+        }
+        if (role == AgentRole.QA_AGENT) {
+            return new ContinuationSpec(
+                    "REQUIREMENT_DELIVERY",
+                    ManagerDecideStages.forSource(command == null ? "" : command.commandId()));
+        }
         if (role == AgentRole.CODING_AGENT) {
             return new ContinuationSpec("REQUIREMENT_DELIVERY", "HOST_VERIFY");
         }
@@ -5083,12 +5113,15 @@ public class RequirementDeliveryEngine {
                         firstNonBlank(result.summary(), "requirement review result json must be an object")
                 );
             }
+            if (RequirementReviewProtocol.failsClosed(result.resultJson())) {
+                return new RequirementReviewGateDecision(true, requirementReviewNeedsHumanReason(result, root));
+            }
+            if (RequirementReviewProtocol.asksOperator(result.resultJson())) {
+                return RequirementReviewGateDecision.proceed();
+            }
             String status = normalizedCode(root.path("status"));
             String decision = normalizedCode(root.path("decision"));
             String feasibility = normalizedCode(root.path("feasibility"));
-            if (requiresHuman(status) || requiresHuman(decision) || requiresHuman(feasibility)) {
-                return new RequirementReviewGateDecision(true, requirementReviewNeedsHumanReason(result, root));
-            }
             if (status.isBlank() && decision.isBlank() && feasibility.isBlank()) {
                 return new RequirementReviewGateDecision(
                         true,
@@ -5112,13 +5145,6 @@ public class RequirementDeliveryEngine {
                 text(root.path("summary")),
                 "requirement review needs human input"
         );
-    }
-
-    private boolean requiresHuman(String value) {
-        return switch (value) {
-            case "NEED_INFO", "NEEDS_HUMAN", "UNSAFE", "REJECTED", "REJECT", "FAILED", "FAILURE", "BLOCKED" -> true;
-            default -> false;
-        };
     }
 
     private String normalizedCode(JsonNode node) {
@@ -5659,6 +5685,7 @@ public class RequirementDeliveryEngine {
                     - 只做需求评审，不修改代码，不创建 PR。
                     - 把本轮实测发现的环境事实（缺依赖、替代命令、必需环境变量、可用测试入口）写入 result.json 的 environmentNotes，供下游直接沿用。
                     - 输出结构化需求评审结果，明确能否做、缺失信息、风险和验收覆盖。
+                    - NEED_INFO 仅当缺少操作员才能提供的事实（账号、密钥、时间窗口、业务规则确认，或材料明确写了故意省略/故意未提供）。验收标准已给出可实现的标记、路由或页面行为时必须 APPROVED，不得因为提示文案或失败文案不够细就 NEED_INFO。
                     - 当评审允许进入下一角色时，使用已安装的 role-handoff-document Skill，把可执行交接写入 /work/output/handoff/next.md；预算见 context.json 的 roleHandoffMaxTokens。
                     - 交接文档承载详细约束、验收、风险和待确认项；result.json 中只保留 next_prompt 的简短指针，绝不写对象存储地址或凭据。
                     - 结果必须写入 /work/output/result.json，且只使用当前角色输出 JSON 协议。

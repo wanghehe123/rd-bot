@@ -59,6 +59,9 @@ import com.wish.rd.rag.runtime.impl.InMemoryTaskMaterialStore;
 import com.wish.rd.rag.runtime.model.CreateRequirementTaskCommand;
 import com.wish.rd.rag.runtime.model.RdRequirementTask;
 import com.wish.rd.rag.runtime.model.RdTaskStatus;
+import com.wish.rd.rag.runtime.model.TaskMaterial;
+import com.wish.rd.rag.runtime.model.TaskMaterialSourceType;
+import com.wish.rd.rag.runtime.model.TaskMaterialType;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -139,6 +142,90 @@ class RequirementDeliveryStageExecutionTest {
         assertEquals("ROLE_EXECUTION:SOLUTION_ARCHITECT", proposal.continuation().stage());
         verify(orchestrator, org.mockito.Mockito.times(2)).run(
                 any(), any(), anyList(), any(), any(), any(), isNull());
+    }
+
+    @Test
+    void reviewerNeedInfoContinuesToManagerDecideInsteadOfFailingClosed() {
+        InMemoryRdTaskStatusEventStore events = new InMemoryRdTaskStatusEventStore();
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(), events, SnowflakeIdGenerator.defaultGenerator());
+        RdRequirementTask task = executingTask(registry, "reviewer need info");
+        RequirementPolicyRun authorization = appliedRun(
+                "reviewer-need-info-policy", task.taskId(), task.version(), task.fencingToken());
+        RequirementPolicyRunStore policies = mock(RequirementPolicyRunStore.class);
+        when(policies.findById(authorization.id())).thenReturn(Optional.of(authorization));
+        RequirementAgentStageOrchestrator orchestrator = mock(RequirementAgentStageOrchestrator.class);
+        when(orchestrator.run(any(), any(), anyList(), any(), any(), any(), isNull()))
+                .thenReturn(RequirementExecutionResult.success(
+                        task.taskId(),
+                        "需求缺少操作员才能提供的窗口",
+                        "",
+                        """
+                                {
+                                  "decision": "NEED_INFO",
+                                  "feasibility": "NEED_INFO",
+                                  "missingInformation": ["上线窗口"],
+                                  "status": "NEED_INFO"
+                                }
+                                """));
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry, new InMemoryTaskMaterialStore(), request -> {
+                    throw new AssertionError("the bounded role orchestrator must own execution");
+                });
+        engine.setRequirementPolicyRunStore(policies);
+        engine.setStageOrchestrator(orchestrator);
+        RequirementStageCommand command = roleCommand(
+                task, authorization.id(), AgentRole.REQUIREMENT_REVIEWER, "reviewer-need-info-command");
+
+        RequirementStageExecutionPlan proposal = engine.planStage(command);
+
+        assertEquals(CommandDisposition.SUCCEEDED, proposal.commandDisposition());
+        assertEquals("REQUIREMENT_DELIVERY", proposal.continuation().role());
+        assertEquals(ManagerDecideStages.forSource(command.commandId()), proposal.continuation().stage());
+        assertEquals(RdTaskStatus.EXECUTING, proposal.mutations().getFirst().toStatus());
+        assertTrue(proposal.mutations().getFirst().executionResultJson().contains("NEED_INFO"));
+    }
+
+    @Test
+    void managerDecideAfterReviewerNeedInfoAsksForOperatorInput() {
+        InMemoryRdTaskStatusEventStore events = new InMemoryRdTaskStatusEventStore();
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(), events, SnowflakeIdGenerator.defaultGenerator());
+        String needInfoJson = """
+                {
+                  "decision": "NEED_INFO",
+                  "feasibility": "NEED_INFO",
+                  "missingInformation": ["上线窗口"],
+                  "status": "NEED_INFO"
+                }
+                """;
+        RdRequirementTask task = executingTask(registry, "manager ask after reviewer", List.of(), needInfoJson);
+        long now = System.currentTimeMillis();
+        InMemoryAuditedTaskStateStore audited = new InMemoryAuditedTaskStateStore();
+        new AuditedTaskStatePolicyBootstrap(audited).initializeIfAbsent(task);
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry, new InMemoryTaskMaterialStore(), request -> {
+                    throw new AssertionError("manager must not call the role executor");
+                });
+        engine.setAuditedTaskStateStore(audited);
+        InMemoryRequirementStageCommandStore commands = new InMemoryRequirementStageCommandStore();
+        commands.enqueue(RequirementStageCommand.pending(
+                "reviewer-source", task.taskId(), task.version(), task.fencingToken(),
+                AgentRole.REQUIREMENT_REVIEWER.name(), "ROLE_EXECUTION:REQUIREMENT_REVIEWER", 0, 3, now + 60_000L,
+                ScheduleResourceClass.PROVIDER, Set.of(ScheduleResourceClass.PROVIDER),
+                "_default", "provider", "P1", now));
+        engine.setStageCommandStore(commands);
+        RequirementStageCommand manager = RequirementStageCommand.pending(
+                "manager-after-reviewer", task.taskId(), task.version(), task.fencingToken(),
+                "REQUIREMENT_DELIVERY", ManagerDecideStages.forSource("reviewer-source"), 0, 3, now + 60_000L,
+                ScheduleResourceClass.GENERIC, Set.of(ScheduleResourceClass.GENERIC),
+                "_default", "memory", "P1", now);
+
+        RequirementStageExecutionPlan proposal = engine.planStage(manager);
+
+        assertEquals(com.wish.rd.engine.requirement.manager.ManagerRoute.ASK, proposal.managerDecision().route());
+        assertTrue(proposal.continuation().isTerminal());
+        assertEquals(RdTaskStatus.WAITING_USER_INPUT, proposal.mutations().getLast().toStatus());
     }
 
     @Test
@@ -743,6 +830,58 @@ class RequirementDeliveryStageExecutionTest {
         assertEquals(1, proposal.mutations().size());
         assertEquals("MANAGER_DECIDE:last-role-command", proposal.continuation().stage());
         assertEquals("REQUIREMENT_DELIVERY", proposal.continuation().role());
+    }
+
+    @Test
+    void managerAfterHostVerifyAsksWhenOperatorMaterialIsExplicitlyIncomplete() {
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(), new InMemoryRdTaskStatusEventStore(),
+                SnowflakeIdGenerator.defaultGenerator());
+        RdRequirementTask task = executingTask(registry, "manager ask incomplete material");
+        long now = System.currentTimeMillis();
+        InMemoryTaskMaterialStore materials = new InMemoryTaskMaterialStore();
+        materials.save(new TaskMaterial(
+                "mat-w2",
+                task.taskId(),
+                TaskMaterialType.REQUIREMENT_DOC,
+                TaskMaterialSourceType.MANUAL_TEXT,
+                "故意不完整需求",
+                "",
+                "text/plain",
+                "sha256:w2",
+                "P3-W2-ASK-MARKER：本需求故意省略关键页面路径与验收细节，迫使 Manager ASK。",
+                "",
+                "",
+                "",
+                "{}",
+                now,
+                now));
+        InMemoryAuditedTaskStateStore audited = new InMemoryAuditedTaskStateStore();
+        new AuditedTaskStatePolicyBootstrap(audited).initializeIfAbsent(task);
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry, materials, request -> {
+                    throw new AssertionError("manager must not call the role executor");
+                });
+        engine.setAuditedTaskStateStore(audited);
+        InMemoryRequirementStageCommandStore commands = new InMemoryRequirementStageCommandStore();
+        commands.enqueue(RequirementStageCommand.pending(
+                "host-verify-ask", task.taskId(), task.version(), task.fencingToken(),
+                "REQUIREMENT_DELIVERY", "HOST_VERIFY", 0, 3, now + 60_000L,
+                ScheduleResourceClass.GENERIC, Set.of(ScheduleResourceClass.GENERIC),
+                "_default", "memory", "P1", now));
+        engine.setStageCommandStore(commands);
+        RequirementStageCommand manager = RequirementStageCommand.pending(
+                "manager-ask-after-hv", task.taskId(), task.version(), task.fencingToken(),
+                "REQUIREMENT_DELIVERY", "MANAGER_DECIDE:host-verify-ask", 0, 3, now + 60_000L,
+                ScheduleResourceClass.GENERIC, Set.of(ScheduleResourceClass.GENERIC),
+                "_default", "memory", "P1", now);
+
+        RequirementStageExecutionPlan proposal = engine.planStage(manager);
+
+        assertEquals(com.wish.rd.engine.requirement.manager.ManagerRoute.ASK, proposal.managerDecision().route());
+        assertTrue(proposal.continuation().isTerminal());
+        assertEquals(RdTaskStatus.WAITING_USER_INPUT, proposal.mutations().getLast().toStatus());
+        assertNull(proposal.piQaRemediationIntent());
     }
 
     @Test

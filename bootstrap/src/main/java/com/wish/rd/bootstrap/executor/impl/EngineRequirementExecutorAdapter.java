@@ -343,7 +343,10 @@ public final class EngineRequirementExecutorAdapter implements RequirementExecut
                     toResultJson(request, repairResult)
             );
         }
-        boolean success = repairResult.status() == RepairExecutionStatus.SUCCESS;
+        boolean protocolNeedInfo = repairResult.status() == RepairExecutionStatus.NEED_INFO
+                && (request.role() == AgentRole.REQUIREMENT_REVIEWER
+                || request.role() == AgentRole.SOLUTION_ARCHITECT);
+        boolean success = repairResult.status() == RepairExecutionStatus.SUCCESS || protocolNeedInfo;
         if (!success) {
             String reason = repairResult.errorMessage().isBlank()
                     ? "requirement execution failed: " + repairResult.status()

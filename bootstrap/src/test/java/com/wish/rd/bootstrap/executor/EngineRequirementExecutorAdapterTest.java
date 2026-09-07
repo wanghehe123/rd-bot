@@ -279,6 +279,50 @@ class EngineRequirementExecutorAdapterTest {
     }
 
     @Test
+    void reviewerNeedInfoIsASuccessfulProtocolResult() throws IOException {
+        String agentResultJson = """
+                {
+                  "status": "NEED_INFO",
+                  "decision": "NEED_INFO",
+                  "feasibility": "NEED_INFO",
+                  "missingInformation": ["上线窗口"],
+                  "risks": [],
+                  "acceptanceCoverage": []
+                }
+                """;
+        RepairExecutorPort repairExecutor = ignored -> new RepairExecutionResult(
+                RepairExecutionStatus.NEED_INFO,
+                "缺少操作员窗口",
+                "",
+                List.of(),
+                Map.of("__agentResultJson", agentResultJson),
+                Map.of("provider", "minimax", "protocol", "openai-chat-completions"),
+                Map.of(),
+                Map.of(),
+                Map.of(),
+                ""
+        );
+        EngineRequirementExecutorAdapter adapter = new EngineRequirementExecutorAdapter(repairExecutor);
+
+        RequirementExecutionResult result = adapter.execute(new RequirementExecutionRequest(
+                "task-1001",
+                task(),
+                List.of(),
+                "review requirement",
+                AgentRole.REQUIREMENT_REVIEWER,
+                "{\"packageId\":\"ctx-1\"}",
+                false,
+                "[]"
+        ));
+
+        JsonNode resultJson = OBJECT_MAPPER.readTree(result.resultJson());
+        assertTrue(result.success());
+        assertEquals("", result.errorMessage());
+        assertEquals("NEED_INFO", resultJson.path("decision").asText());
+        assertEquals("NEED_INFO", resultJson.path("status").asText());
+    }
+
+    @Test
     void shouldRejectLegacySuccessfulQaResultInsteadOfFabricatingEvidence() throws IOException {
         RepairExecutorPort repairExecutor = ignored -> new RepairExecutionResult(
                 RepairExecutionStatus.SUCCESS,

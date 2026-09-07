@@ -854,6 +854,35 @@ public final class RagStreamTaskRegistry {
     }
 
     /**
+     * 将需求任务推进到 WAITING_USER_INPUT，等待操作员补充材料。
+     *
+     * @param taskId              任务 ID
+     * @param errorMessage        需要补充的原因
+     * @param executionResultJson 评审或 Manager ASK 快照
+     * @return 新任务快照
+     */
+    public RdRequirementTask markRequirementWaitingUserInput(
+            String taskId,
+            String errorMessage,
+            String executionResultJson
+    ) {
+        return withTaskLock(taskId, () -> {
+            RdRequirementTask existing = getRequirementTask(taskId);
+            if (existing.status() == RdTaskStatus.WAITING_USER_INPUT) {
+                return existing;
+            }
+            return transitionAndSave(
+                    existing,
+                    RdTaskStatus.WAITING_USER_INPUT,
+                    "",
+                    executionResultJson,
+                    "",
+                    errorMessage
+            );
+        });
+    }
+
+    /**
      * 将需求任务推进到 EXECUTING。
      *
      * @param taskId         任务 ID
