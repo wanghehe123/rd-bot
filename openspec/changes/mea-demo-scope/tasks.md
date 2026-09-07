@@ -9,23 +9,23 @@
 
 ## 2. D01 前端接口修复
 
-- [ ] 2.1 `codingMeaService.ts`：query 统一为 `codingStageRunId`；Manager 全文独立 wire type 读 `boundedContract`；审计记录适配 `id/text/evidenceRefs`（EvidenceRef 原样保留 uri/sha256 结构）
-- [ ] 2.2 `RdTaskDetailPage.tsx`：`loadCodingMea` 传 `{ codingStageRunId: stageRunId }`，保留 generation guard
-- [ ] 2.3 `codingMeaModel.ts`：移除 role+attempt / round / 第一条 decision 等无证据回退，使用 `sourceCommandId` / `links` / `remediations` 实际字段；无法准确关联显示「当前记录暂无法关联」
-- [ ] 2.4 `RoleDeliverablesPanel.tsx`/`roleDeliverableModel.ts`：QA 证据 URL 带 taskId（`/admin/rd-tasks/${taskId}/qa-evidence/${artifactId}/content`）
-- [ ] 2.5 对应测试更新并通过（codingMeaService / codingMeaModel / roleDeliverableModel / viteProxy 等）
+- [x] 2.1 `codingMeaService.ts`：query 统一为 `codingStageRunId`；Manager 全文独立 wire type 读 `boundedContract`；审计记录适配 `id/text/evidenceRefs`（EvidenceRef 原样保留 uri/sha256 结构）
+- [x] 2.2 `RdTaskDetailPage.tsx`：`loadCodingMea` 传 `{ codingStageRunId: stageRunId }`，保留 generation guard
+- [x] 2.3 `codingMeaModel.ts`：移除 role+attempt / round / 第一条 decision 等无证据回退，使用 `sourceCommandId` / `links` / `remediations` 实际字段；无法准确关联显示「当前记录暂无法关联」
+- [x] 2.4 `RoleDeliverablesPanel.tsx`/`roleDeliverableModel.ts`：QA 证据 URL 带 taskId（`/admin/rd-tasks/${taskId}/qa-evidence/${artifactId}/content`）
+- [x] 2.5 对应测试更新并通过（codingMeaService / codingMeaModel / roleDeliverableModel / viteProxy 等）
 
 ## 3. D02 后端失败底线
 
-- [ ] 3.1 `DockerPiAgentExecutor.validateRoleProtocolResult` 透传 bridge `failureCategory`（BUDGET_EXCEEDED 不再被改写为 PI_BRIDGE_PROTOCOL）；executor 级断言
-- [ ] 3.2 Host 窄断言：预算失败不晋升 COMPLETED、不派发无限 Coding 修复，输出明确失败/需人工原因
-- [ ] 3.3 迁入 `RequirementReviewProtocol` false-ASK 修复（仅 disposition 方法 + isApproved helper + 单测）；不带入 command reopen / deadline / 重调度实验
+- [x] 3.1 `DockerPiAgentExecutor.validateRoleProtocolResult` 透传 bridge `failureCategory`（BUDGET_EXCEEDED 不再被改写为 PI_BRIDGE_PROTOCOL）；executor 级断言
+- [x] 3.2 Host 窄断言：预算失败不晋升 COMPLETED、不派发无限 Coding 修复，输出明确失败/需人工原因
+- [x] 3.3 迁入 `RequirementReviewProtocol` false-ASK 修复（仅 disposition 方法 + isApproved helper + 单测）；不带入 command reopen / deadline / 重调度实验
 
 ## 4. D03 组合回归
 
-- [ ] 4.1 前端：聚焦测试 + `npm run typecheck` + `npm run build`（一次生成静态 bundle）
-- [ ] 4.2 后端：聚焦测试（读取 Controller、engine 失败处理、executor 归类）；组合候选 jar 构建一次并记录 hash
-- [ ] 4.3 `deploy/cloud-server/mea-live/verify_demo.py`：普通 HTTP 读取断言脚本（列表/shell/overview/role-prompts/coding-mea/stage result + 两个负例）
+- [x] 4.1 前端：聚焦测试 + `npm run typecheck` + `npm run build`（一次生成静态 bundle）
+- [x] 4.2 后端：聚焦测试（读取 Controller、engine 失败处理、executor 归类）；组合候选 jar 构建一次并记录 hash
+- [x] 4.3 `deploy/cloud-server/mea-live/verify_demo.py`：普通 HTTP 读取断言脚本已建（列表/shell/overview/role-prompts/coding-mea/stage result + 两个负例）；云端候选上的实际执行归 D04
 
 ## 5. D04/D05 真机演示与交接
 
