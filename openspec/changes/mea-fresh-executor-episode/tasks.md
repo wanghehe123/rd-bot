@@ -25,4 +25,4 @@
 - [x] 3.3 `role-budget-defaults.json` = `NOT_FROZEN`（缺 B07 每角色≥3 样本，不填假 0）
 - [ ] 3.4 BUDGET_EXCEEDED → Host blocker 专测（bridge 已分类；Host 晋升路径待补断言）
 - [x] 3.5 旧 snapshot 无预算字段仍可解码；有字段则重试复用冻结值
-- [ ] 3.6 P2-W1/W2/W3 真机（需授权部署/镜像）；未跑保持未勾选
+- [x] 3.6 Slim P2 真机预算探针 PASS（task `7502657531727187968`，`FROZEN_FROM_ENV`）；ISO/GAP SKIPPED；**未**跑完整 P2-W1/W2/W3 / 12×3（见 `docs/superpowers/qa/2026-09-07-mea-p2-slim-b11.md`）

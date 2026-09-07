@@ -4,6 +4,17 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 ROOT="$(pwd)"
 
+EPISODE_BUDGET_ENV="$ROOT/deploy/cloud-server/episode-budget.sh"
+if [[ -f "$EPISODE_BUDGET_ENV" ]]; then
+  # shellcheck disable=SC1090
+  source "$EPISODE_BUDGET_ENV"
+fi
+# Back-compat: cloud may still have episode-budget.env (gitignored *.env).
+if [[ -f "$ROOT/deploy/cloud-server/episode-budget.env" ]]; then
+  # shellcheck disable=SC1090
+  source "$ROOT/deploy/cloud-server/episode-budget.env"
+fi
+
 if [[ -f "$ROOT/.env.opencode.local" ]]; then
   # shellcheck disable=SC1091
   source "$ROOT/.env.opencode.local"
