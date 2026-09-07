@@ -8,7 +8,7 @@ import { toast } from "sonner";
  * 响应错误统一通过 sonner 弹出提示。
  */
 const instance: AxiosInstance = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL || "",
+  baseURL: (import.meta as unknown as { env?: { VITE_API_BASE_URL?: string } }).env?.VITE_API_BASE_URL || "",
   timeout: 30000
 });
 

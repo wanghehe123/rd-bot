@@ -407,23 +407,48 @@ function VerificationRunSection({
 
       {/* 步骤列表: BUILD & STATIC */}
       {!run.docsOnly ? (
-        <div className="space-y-2">
-          <StepDetailRow
-            taskId={taskId}
-            runId={run.runId}
-            stepName="BUILD"
-            step={buildStep}
-            artifacts={run.artifacts}
-          />
-          <StepDetailRow
-            taskId={taskId}
-            runId={run.runId}
-            stepName="STATIC"
-            step={staticStep}
-            artifacts={run.artifacts}
-            disabledByPriorFailure={buildStep?.status === "FAILED"}
-          />
-        </div>
+        run.status === "SUCCEEDED" ? (
+          <details className="rounded border border-slate-200 bg-slate-50/40 p-2 text-xs">
+            <summary className="cursor-pointer font-medium text-slate-700 hover:text-slate-900">
+              步骤详情（构建与静态检查均已通过）
+            </summary>
+            <div className="mt-2 space-y-2 border-t border-slate-200 pt-2">
+              <StepDetailRow
+                taskId={taskId}
+                runId={run.runId}
+                stepName="BUILD"
+                step={buildStep}
+                artifacts={run.artifacts}
+              />
+              <StepDetailRow
+                taskId={taskId}
+                runId={run.runId}
+                stepName="STATIC"
+                step={staticStep}
+                artifacts={run.artifacts}
+                disabledByPriorFailure={buildStep?.status === "FAILED"}
+              />
+            </div>
+          </details>
+        ) : (
+          <div className="space-y-2">
+            <StepDetailRow
+              taskId={taskId}
+              runId={run.runId}
+              stepName="BUILD"
+              step={buildStep}
+              artifacts={run.artifacts}
+            />
+            <StepDetailRow
+              taskId={taskId}
+              runId={run.runId}
+              stepName="STATIC"
+              step={staticStep}
+              artifacts={run.artifacts}
+              disabledByPriorFailure={buildStep?.status === "FAILED"}
+            />
+          </div>
+        )
       ) : null}
     </section>
   );

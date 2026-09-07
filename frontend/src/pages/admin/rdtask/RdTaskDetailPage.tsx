@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Activity, CheckCircle2, ChevronLeft, Download, FileArchive, FileInput, FileText, GitPullRequest, History, Image as ImageIcon, MessageSquare, Pause, Play, RotateCcw, ShieldCheck, TerminalSquare, Upload, UsersRound, X } from "lucide-react";
 import { toast } from "sonner";
@@ -24,6 +24,8 @@ import {
   taskStatusNotice,
   type ExpectedStageIdentity
 } from "@/pages/admin/rdtask/roleWorkbenchModel";
+import { getCodingMea, type CodingMeaResponse } from "@/services/codingMeaService";
+import { buildCodingMeaView, type CodingMeaView } from "@/pages/admin/rdtask/codingMeaModel";
 
 import {
   getRdTask,
@@ -228,6 +230,9 @@ export function RdTaskDetailPage() {
   const [auditRuns, setAuditRuns] = useState<AuditRunList | null>(null);
   const [auditedStateError, setAuditedStateError] = useState("");
   const [loadingAuditedState, setLoadingAuditedState] = useState(false);
+  const [codingMeaResponse, setCodingMeaResponse] = useState<CodingMeaResponse | null>(null);
+  const [codingMeaError, setCodingMeaError] = useState("");
+  const [loadingCodingMea, setLoadingCodingMea] = useState(false);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [approving, setApproving] = useState(false);
@@ -245,16 +250,19 @@ export function RdTaskDetailPage() {
   const aiReviewLoadSeqRef = useRef(0);
   const hostVerificationLoadSeqRef = useRef(0);
   const auditedStateLoadSeqRef = useRef(0);
+  const codingMeaLoadSeqRef = useRef(0);
   const coreLoadSeqRef = useRef(0);
   const overviewLoadSeqRef = useRef(0);
   const retrievalDetailLoadSeqRef = useRef(0);
   const aiReviewDetailLoadSeqRef = useRef(0);
   const coreLoadInFlightRef = useRef("");
   const rolePromptInFlightRef = useRef("");
+  const codingMeaInFlightRef = useRef("");
   const auditContentLoadedRef = useRef("");
   const requestGuardRef = useRef(createTaskRequestGuard());
   const loadedRolePromptSignatureRef = useRef<string | null>(null);
   const loadedRoleEvidenceSignatureRef = useRef<string | null>(null);
+  const loadedCodingMeaSignatureRef = useRef<string | null>(null);
 
   const viewParam = searchParams.get("view");
   const view: TaskDetailView = viewParam === "delivery" || viewParam === "audit" ? viewParam : "roles";
@@ -530,6 +538,31 @@ export function RdTaskDetailPage() {
     }
   }, [taskId]);
 
+  const loadCodingMea = useCallback(async (stageRunId: string) => {
+    const requestToken = requestGuardRef.current.capture(taskId);
+    const requestKey = `${requestToken.taskId}:${requestToken.generation}:${stageRunId}`;
+    if (codingMeaInFlightRef.current === requestKey) return;
+    const requestSeq = ++codingMeaLoadSeqRef.current;
+    codingMeaInFlightRef.current = requestKey;
+
+    setLoadingCodingMea(true);
+    try {
+      const response = await getCodingMea(taskId, { stageRunId });
+      if (requestSeq !== codingMeaLoadSeqRef.current || !requestGuardRef.current.isCurrent(requestToken)) return;
+      setCodingMeaResponse(response);
+      setCodingMeaError("");
+      loadedCodingMeaSignatureRef.current = `${stageRunId}:${requestToken.generation}`;
+    } catch (error) {
+      if (requestSeq !== codingMeaLoadSeqRef.current || !requestGuardRef.current.isCurrent(requestToken)) return;
+      setCodingMeaError(getErrorMessage(error, "加载 Coding MEA 协作追踪失败"));
+    } finally {
+      if (codingMeaInFlightRef.current === requestKey) codingMeaInFlightRef.current = "";
+      if (requestSeq === codingMeaLoadSeqRef.current && requestGuardRef.current.isCurrent(requestToken)) {
+        setLoadingCodingMea(false);
+      }
+    }
+  }, [taskId]);
+
   const loadRoleEvidenceData = useCallback(async (signature: string) => {
     const requestToken = requestGuardRef.current.capture(taskId);
     const requestSeq = ++roleEvidenceLoadSeqRef.current;
@@ -728,6 +761,12 @@ export function RdTaskDetailPage() {
     loadedRoleEvidenceSignatureRef.current = null;
     auditContentLoadedRef.current = "";
     overviewLoadSeqRef.current += 1;
+    codingMeaLoadSeqRef.current += 1;
+    codingMeaInFlightRef.current = "";
+    loadedCodingMeaSignatureRef.current = null;
+    setCodingMeaResponse(null);
+    setCodingMeaError("");
+    setLoadingCodingMea(false);
     setRolePromptStages([]);
     setExecutionOverview(null);
     setEvents([]);
@@ -772,6 +811,8 @@ export function RdTaskDetailPage() {
       loadSeqRef.current += 1;
       rolePromptLoadSeqRef.current += 1;
       roleEvidenceLoadSeqRef.current += 1;
+      codingMeaLoadSeqRef.current += 1;
+      codingMeaInFlightRef.current = "";
       materialLoadSeqRef.current += 1;
       recoveryLoadSeqRef.current += 1;
       aiReviewLoadSeqRef.current += 1;
@@ -797,16 +838,42 @@ export function RdTaskDetailPage() {
   }, [loadAuditContent, view]);
 
   useEffect(() => {
-    if (view !== "roles" || selectedRoleTab !== "evidence") return;
+    if (view !== "roles") return;
     if (!executionOverview || rolePromptSignature === loadedRolePromptSignatureRef.current) return;
     void loadRolePrompts(rolePromptSignature);
-  }, [executionOverview, loadRolePrompts, rolePromptSignature, selectedRoleTab, view]);
+  }, [executionOverview, loadRolePrompts, rolePromptSignature, view]);
 
   useEffect(() => {
-    if (view !== "roles" || selectedRoleTab !== "evidence" || !rolePromptError) return;
+    if (view !== "roles" || !rolePromptError) return;
     const stop = scheduleActiveDetailRefresh(() => loadRolePrompts(rolePromptSignature));
     return stop;
-  }, [loadRolePrompts, rolePromptError, rolePromptSignature, selectedRoleTab, view]);
+  }, [loadRolePrompts, rolePromptError, rolePromptSignature, view]);
+
+  const selectedStageRun = useMemo(() => {
+    const stages = executionOverview?.stageRuns || [];
+    if (selectedAttemptNo) {
+      return stages.find((s) => s.role === selectedRole && s.attemptNo === selectedAttemptNo)
+        || stages.find((s) => s.role === selectedRole)
+        || stages[0];
+    }
+    return stages.find((s) => s.role === selectedRole) || stages[0];
+  }, [executionOverview?.stageRuns, selectedAttemptNo, selectedRole]);
+
+  const selectedStageRunId = selectedStageRun?.stageRunId || "";
+
+  const codingMeaView = useMemo(() => {
+    if (!codingMeaResponse || !selectedStageRunId) return null;
+    return buildCodingMeaView(codingMeaResponse, selectedStageRunId);
+  }, [codingMeaResponse, selectedStageRunId]);
+
+  useEffect(() => {
+    if (view !== "roles" || (selectedRole !== "CODING_AGENT" && selectedRole !== "BUG_CODING_AGENT")) return;
+    if (!selectedStageRunId) return;
+    const requestGen = requestGuardRef.current.capture(taskId).generation;
+    const currentSig = `${selectedStageRunId}:${requestGen}`;
+    if (currentSig === loadedCodingMeaSignatureRef.current) return;
+    void loadCodingMea(selectedStageRunId);
+  }, [loadCodingMea, selectedRole, selectedStageRunId, taskId, view]);
 
   useEffect(() => {
     if (!task) return;
@@ -1378,11 +1445,15 @@ export function RdTaskDetailPage() {
                 failureRecoveryLoading={loadingFailureRecovery}
                 failureRecoveryError={failureRecoveryError}
                 hostVerifications={hostVerifications}
+                codingMeaView={codingMeaView}
+                codingMeaLoading={loadingCodingMea}
+                codingMeaError={codingMeaError}
                 selectedRole={selectedRole}
                 selectedAttemptNo={selectedAttemptNo}
                 selectedTab={selectedRoleTab}
                 onSelectionChange={(role, attemptNo) => updateWorkspaceQuery({ role, attempt: attemptNo })}
                 onTabChange={(tab) => updateWorkspaceQuery({ tab })}
+                onNavigateToQaAttempt={(attemptNo) => updateWorkspaceQuery({ role: "QA_AGENT", attempt: attemptNo })}
                 onInspectRetrievalRun={inspectRetrievalRun}
                 onRefresh={() => refreshAll(task)}
                 captureTaskActionGuard={captureTaskActionGuard}

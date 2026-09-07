@@ -21,6 +21,9 @@ import {
 } from "@/components/admin/rdtask/TaskFailureRecoveryWorkbench";
 import { ReadableAgentTrace } from "@/components/admin/rdtask/ReadableAgentTrace";
 import { RoleEffectiveContextCard } from "@/components/admin/rdtask/RoleEffectiveContextCard";
+import { RoleAgentStateCard } from "@/components/admin/rdtask/RoleAgentStateCard";
+import { RoleDeliverablesPanel } from "@/components/admin/rdtask/RoleDeliverablesPanel";
+import type { CodingMeaView } from "@/pages/admin/rdtask/codingMeaModel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -140,11 +143,15 @@ type TaskRoleWorkbenchProps = {
   failureRecoveryLoading: boolean;
   failureRecoveryError: string;
   hostVerifications?: HostVerificationList | null;
+  codingMeaView?: CodingMeaView | null;
+  codingMeaLoading?: boolean;
+  codingMeaError?: string;
   selectedRole: string;
   selectedAttemptNo?: number;
   selectedTab: RoleWorkbenchTab;
   onSelectionChange: (role: string, attemptNo?: number) => void;
   onTabChange: (tab: RoleWorkbenchTab) => void;
+  onNavigateToQaAttempt?: (qaAttemptNo: number) => void;
   onInspectRetrievalRun: (run: RetrievalRun) => Promise<void>;
   onRefresh: () => Promise<void>;
   captureTaskActionGuard: CaptureTaskActionGuard;
@@ -168,11 +175,15 @@ export function TaskRoleWorkbench({
   failureRecoveryLoading,
   failureRecoveryError,
   hostVerifications,
+  codingMeaView = null,
+  codingMeaLoading = false,
+  codingMeaError = "",
   selectedRole,
   selectedAttemptNo,
   selectedTab,
   onSelectionChange,
   onTabChange,
+  onNavigateToQaAttempt,
   onInspectRetrievalRun,
   onRefresh,
   captureTaskActionGuard
@@ -229,6 +240,14 @@ export function TaskRoleWorkbench({
       onSelectionChange(selection.role, selection.attemptNo);
     }
   }, [onSelectionChange, selectedAttemptNo, selectedRole, selection.attemptNo, selection.role]);
+
+  const handleNavigateToQaAttempt = useCallback((qaAttemptNo: number) => {
+    if (onNavigateToQaAttempt) {
+      onNavigateToQaAttempt(qaAttemptNo);
+    } else {
+      onSelectionChange("QA_AGENT", qaAttemptNo);
+    }
+  }, [onNavigateToQaAttempt, onSelectionChange]);
 
   return (
     <section className="overflow-hidden border border-slate-200 bg-white" aria-labelledby="role-workbench-title">
@@ -346,47 +365,67 @@ export function TaskRoleWorkbench({
           ) : (
             <Tabs value={selectedTab} onValueChange={(value) => onTabChange(value as RoleWorkbenchTab)}>
               <TabsList className="grid h-11 w-full grid-cols-4 border-b border-slate-200 bg-white px-3 sm:w-[680px] sm:border-r">
-                <InspectorTab value="issues">结果与问题</InspectorTab>
-                <InspectorTab value="evidence">输入与证据</InspectorTab>
-                <InspectorTab value="runs">运行记录</InspectorTab>
+                <InspectorTab value="issues">产物与证据</InspectorTab>
+                <InspectorTab value="evidence">Prompt</InspectorTab>
                 <InspectorTab value="trace">执行轨迹</InspectorTab>
+                <InspectorTab value="runs">运行记录</InspectorTab>
               </TabsList>
-              <TabsContent value="issues" className="m-0">
-                <RoleResultPanel
-                  stage={selectedStage}
-                  recovery={selectedRecovery}
-                  recoveryLoading={recoveryExpectedForSelectedAttempt && failureRecoveryLoading}
-                  recoveryError={recoveryExpectedForSelectedAttempt ? failureRecoveryError : ""}
-                  task={task}
-                  materials={materials}
-                  onRefresh={onRefresh}
-                  captureTaskActionGuard={captureTaskActionGuard}
-                />
-              </TabsContent>
-              <TabsContent value="evidence" className="m-0">
-                <RoleEvidencePanel
-                  stage={selectedStage}
-                  promptStage={selectedPrompt}
-                  promptLoading={promptLoading}
-                  promptError={promptError}
-                  evidenceLoading={evidenceLoading}
-                  qaEvidence={selectedQaEvidence}
-                  qaEvidenceError={qaEvidenceError}
-                  retrievalRuns={selectedRetrievalRuns}
-                  retrievalError={retrievalError}
-                  onInspectRetrievalRun={onInspectRetrievalRun}
-                />
-              </TabsContent>
-              <TabsContent value="runs" className="m-0">
-                <div className="space-y-4 px-4 py-5 sm:px-5">
-                  <RuntimeExecutionProfilePanel taskId={task.taskId} stage={selectedStage} />
-                  <TaskRuntimeOverridePanel task={task} stage={selectedStage} />
-                  <RoleHistoryPanel role={selectedRoleView} overview={overview} selectedStageRunId={selectedStage.stageRunId} />
+              <div className="grid gap-4 lg:grid-cols-3">
+                <div className="min-w-0 lg:col-span-2">
+                  <TabsContent value="issues" className="m-0">
+                    <RoleDeliverablesPanel
+                      taskId={task.taskId}
+                      stage={selectedStage}
+                      promptStage={selectedPrompt}
+                      qaEvidence={selectedQaEvidence}
+                      materials={materials}
+                      hostVerifications={hostVerifications}
+                      recovery={selectedRecovery}
+                      recoveryLoading={recoveryExpectedForSelectedAttempt && failureRecoveryLoading}
+                      recoveryError={recoveryExpectedForSelectedAttempt ? failureRecoveryError : ""}
+                      codingMeaView={codingMeaView}
+                      codingMeaLoading={codingMeaLoading}
+                      codingMeaError={codingMeaError}
+                      onNavigateToQaAttempt={handleNavigateToQaAttempt}
+                      onRefresh={onRefresh}
+                      captureTaskActionGuard={captureTaskActionGuard}
+                    />
+                  </TabsContent>
+                  <TabsContent value="evidence" className="m-0">
+                    <RoleEvidencePanel
+                      stage={selectedStage}
+                      promptStage={selectedPrompt}
+                      promptLoading={promptLoading}
+                      promptError={promptError}
+                      evidenceLoading={evidenceLoading}
+                      qaEvidence={selectedQaEvidence}
+                      qaEvidenceError={qaEvidenceError}
+                      retrievalRuns={selectedRetrievalRuns}
+                      retrievalError={retrievalError}
+                      onInspectRetrievalRun={onInspectRetrievalRun}
+                    />
+                  </TabsContent>
+                  <TabsContent value="runs" className="m-0">
+                    <div className="space-y-4 px-4 py-5 sm:px-5">
+                      <RuntimeExecutionProfilePanel taskId={task.taskId} stage={selectedStage} />
+                      <TaskRuntimeOverridePanel task={task} stage={selectedStage} />
+                      <RoleHistoryPanel role={selectedRoleView} overview={overview} selectedStageRunId={selectedStage.stageRunId} />
+                    </div>
+                  </TabsContent>
+                  <TabsContent value="trace" className="m-0">
+                    <ExecutionTracePanel taskId={task.taskId} stage={selectedStage} />
+                  </TabsContent>
                 </div>
-              </TabsContent>
-              <TabsContent value="trace" className="m-0">
-                <ExecutionTracePanel taskId={task.taskId} stage={selectedStage} />
-              </TabsContent>
+                <aside className="min-w-0 p-4 sm:p-5 lg:pl-0 lg:col-span-1 lg:sticky lg:top-16 lg:self-start">
+                  <RoleAgentStateCard
+                    stage={selectedStage}
+                    promptStage={selectedPrompt}
+                    promptLoading={promptLoading}
+                    promptError={promptError}
+                    isLatestAttempt={selectedAttempt?.stageRunId === selectedRoleView?.latestStage?.stageRunId}
+                  />
+                </aside>
+              </div>
             </Tabs>
           )}
         </TabsContent>
@@ -572,6 +611,7 @@ function RoleEvidencePanel({
         promptStage={promptStage}
         promptLoading={promptLoading}
         promptError={promptError}
+        includeLatestStateTab={false}
       />
 
       <section>

@@ -7,11 +7,14 @@ const workbench = readFileSync(
   "utf8"
 );
 
-test("renders a role-first workspace with three focused views", () => {
+test("renders a role-first workspace with deliverables, prompt, trace, and runs views", () => {
   assert.match(workbench, /角色工作台/);
-  assert.match(workbench, /结果与问题/);
-  assert.match(workbench, /输入与证据/);
+  assert.match(workbench, /产物与证据/);
+  assert.match(workbench, /Prompt/);
+  assert.match(workbench, /执行轨迹/);
   assert.match(workbench, /运行记录/);
+  assert.match(workbench, /RoleDeliverablesPanel/);
+  assert.match(workbench, /RoleAgentStateCard/);
   assert.match(workbench, /buildRoleWorkbench/);
   assert.match(workbench, /selectRoleAttempt/);
   assert.match(workbench, /TabsList/);
