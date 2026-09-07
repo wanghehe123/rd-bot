@@ -35,6 +35,8 @@ public class PiCredentialRelayService {
     private static final int BAD_GATEWAY = 502;
     /** Bounded, redacted excerpt length for non-2xx upstream bodies in Host logs. */
     private static final int ERROR_BODY_LOG_MAX_BYTES = 512;
+    private static final String OPENCODE_SESSION_HEADER = "x-opencode-session";
+    private static final String RELAY_USER_AGENT = "rd-bot-pi-relay/1.0";
     private static final List<String> REQUEST_HEADER_ALLOWLIST = List.of(
             "accept",
             "content-type",
@@ -42,7 +44,8 @@ public class PiCredentialRelayService {
             "anthropic-beta",
             "openai-organization",
             "openai-project",
-            "user-agent"
+            "user-agent",
+            OPENCODE_SESSION_HEADER
     );
     private static final List<String> RESPONSE_HEADER_ALLOWLIST = List.of(
             "content-type",
@@ -139,6 +142,13 @@ public class PiCredentialRelayService {
             URI upstreamUri = upstreamUri(authorized.relayPolicy().upstreamBaseUrl(), safePath);
             Map<String, String> outboundHeaders = sanitizedRequestHeaders(headers);
             injectCredential(outboundHeaders, authorized);
+            ensureOpenCodeRoutingHeaders(
+                    outboundHeaders,
+                    authorized.relayPolicy().upstreamBaseUrl(),
+                    providerId,
+                    taskId,
+                    stageRunId
+            );
             UpstreamResponse upstream = upstreamClient.forward(new UpstreamRequest(
                     upstreamUri,
                     safeMethod,
@@ -330,6 +340,57 @@ public class PiCredentialRelayService {
         }
     }
 
+    /**
+     * OpenCode Go rejects intermittent traffic without a stable conversation session id
+     * ({@code x-opencode-session}) and prefers a non-generic User-Agent. Preserve a
+     * Pi-supplied session when present; otherwise bind the stage run (fallback task).
+     */
+    static void ensureOpenCodeRoutingHeaders(
+            Map<String, String> headers,
+            String upstreamBaseUrl,
+            String providerId,
+            String taskId,
+            String stageRunId
+    ) {
+        if (headers == null || !isOpenCodeUpstream(upstreamBaseUrl, providerId)) {
+            return;
+        }
+        if (!hasHeaderIgnoreCase(headers, OPENCODE_SESSION_HEADER)) {
+            String session = firstNonBlank(stageRunId, taskId);
+            if (!session.isBlank()) {
+                headers.put(OPENCODE_SESSION_HEADER, session);
+            }
+        }
+        if (!hasHeaderIgnoreCase(headers, "user-agent")) {
+            headers.put("User-Agent", RELAY_USER_AGENT);
+        }
+    }
+
+    private static boolean isOpenCodeUpstream(String upstreamBaseUrl, String providerId) {
+        String provider = providerId == null ? "" : providerId.toLowerCase(Locale.ROOT);
+        String base = upstreamBaseUrl == null ? "" : upstreamBaseUrl.toLowerCase(Locale.ROOT);
+        return provider.contains("opencode") || base.contains("opencode.ai");
+    }
+
+    private static boolean hasHeaderIgnoreCase(Map<String, String> headers, String name) {
+        for (String key : headers.keySet()) {
+            if (key != null && key.equalsIgnoreCase(name)) {
+                String value = headers.get(key);
+                if (value != null && !value.isBlank()) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static String firstNonBlank(String primary, String fallback) {
+        if (primary != null && !primary.isBlank()) {
+            return primary.strip();
+        }
+        return fallback == null ? "" : fallback.strip();
+    }
+
     private static String normalizeMethod(String method) {
         return method == null ? "" : method.strip().toUpperCase(Locale.ROOT);
     }
@@ -355,6 +416,7 @@ public class PiCredentialRelayService {
             case "request-id" -> "Request-Id";
             case "x-request-id" -> "X-Request-Id";
             case "x-api-key" -> "X-Api-Key";
+            case OPENCODE_SESSION_HEADER -> OPENCODE_SESSION_HEADER;
             default -> lowerCaseName;
         };
     }
