@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 96" width="320" height="96" role="img" aria-label="RD-Bot logo">
+  <defs>
+    <linearGradient id="rdbg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1e293b"/>
+      <stop offset="1" stop-color="#0f172a"/>
+    </linearGradient>
+    <linearGradient id="rdaccent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#38bdf8"/>
+      <stop offset="1" stop-color="#34d399"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="312" height="88" rx="20" fill="url(#rdbg)" stroke="#334155" stroke-width="2"/>
+  <g fill="none" stroke="url(#rdaccent)" stroke-width="4" stroke-linecap="round">
+    <path d="M56 30 v20 a16 16 0 0 0 16 16 h8 a16 16 0 0 0 16 -16 v-20"/>
+    <path d="M76 66 v10"/>
+    <circle cx="48" cy="26" r="4" fill="#38bdf8" stroke="none"/>
+    <circle cx="104" cy="26" r="4" fill="#34d399" stroke="none"/>
+  </g>
+  <text x="140" y="48" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="30" font-weight="700" fill="#f1f5f9">RD-Bot</text>
+  <text x="140" y="70" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="12" fill="#94a3b8">auditable AI delivery</text>
+</svg>

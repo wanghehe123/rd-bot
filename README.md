@@ -1,312 +1,227 @@
-# RD-Bot
+<p align="center">
+  <img src="assets/readme/logo.svg" alt="RD-Bot logo" width="320" />
+</p>
 
-**AI 驱动的研发交付编排平台**（Spring Boot 模块化单体）
+<h1 align="center">RD-Bot</h1>
 
-[![Java](https://img.shields.io/badge/Java-21-orange)](https://openjdk.org/)
-[![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.5.7-brightgreen)](https://spring.io/projects/spring-boot)
-[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+<p align="center">
+  Turn a written requirement into an <strong>auditable, verified pull request</strong> —<br/>
+  an orchestrated Manager → Execute → Audit delivery chain of AI coding agents.
+</p>
 
-RD-Bot 把飞书 IM / 管理台需求转化为**可治理的多角色自动化交付流水线**：任务级 RAG 构建工程上下文，在 Docker 隔离沙箱中运行 Pi Agent，自动验证并创建可审查 PR，同时沉淀完整审计证据。
+<p align="center">
+  <a href="README.zh-CN.md">中文说明</a> ·
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="MIT" /></a>
+  <img src="https://img.shields.io/badge/Java-21-orange" alt="Java 21" />
+  <img src="https://img.shields.io/badge/Spring%20Boot-3.5.x-brightgreen" alt="Spring Boot" />
+  <img src="https://img.shields.io/badge/React-18-61dafb" alt="React 18" />
+  <img src="https://img.shields.io/badge/Docker-required-2496ED" alt="Docker" />
+</p>
 
-> 不是「会改代码的聊天机器人」，而是 **AI-native Software Delivery Harness（研发流程自动化控制面）**。
+> [!WARNING]
+> **Experimental / Developer Preview.** RD-Bot is a single-machine, self-hosted
+> experiment maintained by one person. The admin API has **no authentication**:
+> the stack publishes only on `127.0.0.1` and must never be exposed to the
+> internet. There is no SLA and no multi-user support.
 
----
+<p align="center">
+  <img src="assets/readme/hero-dashboard.webp" alt="RD-Bot admin dashboard" width="880" />
+</p>
 
-## 核心特性
+## Why RD-Bot
 
-### 多角色 Agent 流水线
+Most coding agents stop at "the model said it worked". RD-Bot is a delivery
+harness: a written requirement becomes a governed pipeline where every step
+leaves evidence.
 
-```
-需求评审 → 方案架构 → 编码执行 → QA 验证 → PR 交付
-```
+- **Input**: a requirement (title, expected result, acceptance criteria,
+  optional materials) submitted from the admin console.
+- **Four-role agent pipeline**: requirement reviewer → solution architect →
+  coding agent → QA agent. Each role runs in an isolated Pi agent container.
+- **Deterministic audit**: every stage result is audited against the frozen
+  plan; an unverified claim cannot promote the task to "completed".
+- **Host verification**: after coding, the host independently replays build and
+  static checks against the work tree.
+- **Delivery output**: a real work branch and pull request on a GitHub
+  repository you have explicitly authorized, with the full evidence chain
+  (stage runs, commands, artifacts, QA evidence) stored in PostgreSQL + MinIO
+  and browsable in the admin console.
 
-| 角色 | 职责边界 |
-|------|----------|
-| `REQUIREMENT_REVIEWER` | 完整性 / 安全性 / 可执行性评审；不改代码、不创建 PR |
-| `SOLUTION_ARCHITECT` | 基于 RAG 证据输出可执行方案与 handoff |
-| `CODING_AGENT` | Docker 沙箱改代码、跑测试，准备候选 PR body |
-| `QA_AGENT` | 真实验收与回归；证据不全则阻断交付 |
+## How it works
 
-### 任务级 RAG 与安全沙箱
-
-- 多通道检索 → 结构化 `ContextPackage` / 角色上下文包
-- Docker 隔离：`/work/repo` · `/work/input` · `/work/output` · `/work/cache`
-- 仓库 / 分支白名单；Secret 扫描；Provider 密钥仅环境变量注入
-
-### Skill Hub 与治理
-
-- Skill 目录、角色绑定、风险门禁（LOW / MEDIUM / HIGH → `WAITING_APPROVAL`）
-- Pi 原生 Skill 显式加载：系统提示渐进披露 `description`
-- 可选「强制引导」：`forceGuide` 时在 Prompt 末尾追加用户 `guidePrompt`
-- 修复队列：Redis Stream（替代 RocketMQ）
-
----
-
-## 架构概览
-
-```
- Clients / Events                Delivery
- ┌──────────────────┐           ┌─────────────────┐
- │ React+Vite 管理台 │           │ GitHub / Git    │
- │ Feishu Webhook   │           │ Branches + PRs  │
- └────────┬─────────┘           └────────▲────────┘
-          │                              │
-          ▼                              │
- ┌────────────────────────────────────────────────────────────┐
- │                     bootstrap（宿主）                        │
- │  REST / 管理控制器 · Postgres+MyBatis · Redis/Redisson     │
- │  RustFS/S3 · Docker · 外部适配器                            │
- └───────────────────────────┬────────────────────────────────┘
-                             │
-     ┌───────────────────────┼───────────────────────┐
-     ▼                       ▼                       ▼
- ┌─────────┐           ┌──────────┐           ┌──────────┐
- │ engine  │           │   rag    │           │   exec   │
- │ 编排    │──────────▶│ 知识上下文│◀──────────│ 执行面   │
- └────┬────┘           └──────────┘           └────┬─────┘
-      │                                            │
-      │  RequirementExecutorPort                   │ AgentRuntimeRouter
-      │  （需求执行桥）                              │
-      └────────────────────┬───────────────────────┘
-                           ▼
-              DockerPiAgentExecutor（唯一容器执行路径）
-                           ▲
- ┌─────────────────────────┴─────────────────────────┐
- │ skill：目录 · 角色绑定 · Manifest 校验 · 物化到     │
- │        /work/input/skills + skill-manifest.json    │
- └───────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    A["Requirement<br/>(admin console)"] --> B["Requirement Reviewer"]
+    B --> C["Solution Architect"]
+    C --> D["Coding Agent<br/>(isolated container)"]
+    D --> E["Host Verify<br/>(build + static)"]
+    E --> F["QA Agent<br/>(browser evidence)"]
+    F --> G["Deterministic Audit<br/>(criteria + evidence)"]
+    G --> H["Delivery<br/>(branch + PR)"]
 ```
 
-**依赖方向（强制）**：`bootstrap → engine|exec|skill|rag`；`engine|exec|skill → rag`。禁止反向依赖。
+The PostgreSQL database is the state truth: task state transitions, stage
+commands, agent attempts, audit records and the migration ledger are all
+durable rows. Agent containers are ephemeral and isolated: they never see the
+Docker socket, your home directory, or your API keys — model access goes
+through a hardened credential-relay sidecar.
 
-### 需求执行桥
+## Quick start
 
-`RequirementDeliveryEngine` / `RequirementAgentStageOrchestrator`
-→ `RequirementExecutorPort`（bootstrap 适配）
-→ `AgentRuntimeRouter`
-→ `DockerPiAgentExecutor`
-
-`AgentRuntimeType` 仍保留 `CLAUDE_CODE` / `MODEL_ONLY` 枚举值以便读取历史快照，但已无对应执行器：真被请求时 router 抛 `UnsupportedAgentRuntimeException`。
-
-每次 attempt：物化 resource / skill manifest → 写 `request.json` → Pi bridge 加载原生 Skill → 宿主 Validator 验收。
-
-### 存储分工
-
-| 层 | 职责 |
-|----|------|
-| **PostgreSQL** | 事实源：任务、状态事件、阶段 run、检索 run、配置 |
-| **Redis** | 协调：分布式锁、模型健康状态 |
-| **RustFS / S3** | 内容：大产物、QA 证据、可选 Pi 原始事件 / session |
-| **Docker** | 隔离：每 attempt 独立 workspace |
-
----
-
-## 显式状态机
-
-权威定义：`RdTaskTransitionPolicy` · `AgentStageTransitions` · `RetrievalRunTransitionPolicy`。
-
-### 任务级 `RdTaskStatus`（需求交付主链）
-
-```
-CREATED → MATERIAL_COLLECTING → MATERIAL_READY → CONTEXT_BUILDING → CONTEXT_READY
-  → PLAN_GENERATING → PLAN_GENERATED → WAITING_POLICY
-  → [WAITING_APPROVAL?] → EXECUTING → VERIFYING → CREATING_PR
-  → SUBMITTED → REPORTING → COMPLETED → MERGED
-```
-
-- 策略可在 `PLAN_GENERATED` 后进入 `WAITING_APPROVAL`
-- 失败态（`REJECTED` / `FAILED_RETRYABLE` / `FAILED_NEEDS_HUMAN` / `CANCELLED` / `DEAD_LETTERED`）可转入 `RECOVERING`（分支，非并行链）
-
-### Agent 阶段级 `AgentStageStatus`（含 `attemptNo`）
-
-```
-PENDING → CONTEXT_READY → DISPATCHING → RUNNING
-  → COLLECTING_RESULT → VERIFYING → SUCCEEDED
-```
-
-- `FAILED_RETRYABLE` 是**本次 attempt 终态**；重试新建 `attemptNo`
-- 另有 `FAILED_NEEDS_HUMAN` / `CANCELLED` / `SKIPPED` 等出口
-
-### 落库对照
-
-| 概念 | 主要表 / 存储 |
-|------|----------------|
-| 任务快照 | `rd_tasks` |
-| 任务时间线 | `rd_task_status_events`（append-only） |
-| Agent attempt | `rd_agent_stage_runs` · `rd_agent_stage_events` · `rd_agent_private_artifacts` |
-| 角色上下文 / 检索 | `rd_role_context_packages` · `rd_rag_retrieval_runs` |
-| 重试 / 调度 | `rd_task_retry_checkpoints` · `rd_requirement_delivery_jobs` |
-| QA / 大文件 | RustFS URI · `rd_qa_evidence_objects` |
-
----
-
-## 模块说明
-
-| 模块 | 职责 |
-|------|------|
-| `bootstrap` | Spring Boot 宿主、REST、管理前端静态资源、Postgres/Redis/S3/Docker/飞书适配 |
-| `engine` | `RequirementDeliveryEngine`、阶段编排、状态机与策略 |
-| `rag` | 知识库、检索、角色上下文包、任务运行时端口与 Trace |
-| `exec` | `AgentRuntimeRouter`、Pi Docker 执行器、结果 / QA Validator |
-| `skill` | Skill 目录端口、安装编排、角色白名单与风险门禁 |
-| `frontend` | React + Vite 管理台（任务 / 项目 / RAG / Skill Hub） |
-
----
-
-## 快速开始
-
-### 环境要求
-
-| 依赖 | 版本 / 说明 |
-|------|-------------|
-| JDK | 21+ |
-| Docker + Docker Compose | 20+ / Compose v2；`docker compose up` 拉起 Postgres（含 **pgvector**）、Redis、MinIO |
-| Node.js | 18+（前端开发，可选） |
-
-> **安全**：`/admin` 当前**无鉴权**。仅在本机或可信网络使用；详见 [SECURITY.md](SECURITY.md)。
-
-### 本地启动
+Requirements: one machine with **Docker Engine / Docker Desktop and Compose
+v2** (macOS Apple silicon and Linux x86_64/arm64 are the tested shapes). You do
+not need JDK, Maven, Node.js or psql on the host.
 
 ```bash
-docker compose up -d
-./scripts/bootstrap-db.sh
-cp bootstrap/src/main/resources/application-local.example.yaml \
-  bootstrap/src/main/resources/application-local.yaml
-# optional: cp .env.example .env.local   # then export $(grep -v '^#' .env.local | xargs)
-./mvnw install -DskipTests
-# application-local.yaml is gitignored and excluded from the boot jar — load it explicitly:
-SPRING_PROFILES_ACTIVE=local \
-SPRING_CONFIG_ADDITIONAL_LOCATION=optional:file:./bootstrap/src/main/resources/application-local.yaml \
-  ./mvnw -pl bootstrap spring-boot:run
-open http://127.0.0.1:18080/admin/
+git clone https://github.com/wanghehe123/rd-bot.git
+cd rd-bot
+./scripts/rd-bot.sh up
 ```
 
-Compose 默认：数据库 **`rdbot`**（`postgres` / `postgres`）、Redis `6379`、MinIO `9000`（`rustfsadmin` / `rustfsadmin`）。迁移细节见 `bootstrap/src/main/resources/sql/postgres/README.md`。本地 profile 默认关闭 Agent Docker 运行时与飞书监听，适合先冒烟管理台。
+`up` generates `deploy/docker/runtime.env` (random secrets, `0600`), builds the
+Pi, QA and application images, then starts PostgreSQL 16 + pgvector, Redis 7,
+MinIO, the migrations and the backend. When everything is healthy it prints:
 
-**完整 Agent 交付**前再构建 Pi 镜像，并打开运行时 / 白名单 / Provider Key（见下方环境变量）：
+```text
+[rd-bot] admin UI: http://127.0.0.1:18080/admin
+```
+
+Stop the stack with `./scripts/rd-bot.sh down` — volumes and workspaces are
+kept. Deleting data requires the explicit `./scripts/rd-bot.sh purge --yes`.
+
+## First real task
+
+Before agents can run, the dashboard's first-run checklist walks you through:
+
+1. **Configure a model provider** — register an OpenAI/Anthropic-compatible
+   endpoint and store its API key (keys are submitted to the backend's
+   credential storage only; they never touch the browser or the git repo).
+2. **Create a project** pointing at a GitHub repository you authorize RD-Bot
+   to operate on.
+3. **Submit a requirement** — pick a small, well-scoped change and watch the
+   role pipeline run, each stage producing readable artifacts and evidence.
+
+Until a provider key and a GitHub credential are configured, task submission
+is blocked with an explicit message — RD-Bot does not fake success.
+
+## Screenshots
+
+| | |
+| --- | --- |
+| ![Task workbench on desktop](assets/readme/task-workbench.webp) | Task workbench: role pipeline, prompts, artifacts and audit details |
+| ![Requirement delivery flow](assets/readme/requirement-flow.webp) | Requirement delivery chain with per-stage evidence |
+| ![Mobile workbench](assets/readme/task-mobile.webp) | Same workbench on a 390×844 viewport |
+
+<img src="assets/readme/quickstart.gif" alt="Quick start: from ./scripts/rd-bot.sh up to the admin dashboard" width="880" />
+
+## Current capabilities
+
+| Area | Status | Notes |
+| --- | --- | --- |
+| Single-machine Docker self-hosting | **Current** | `./scripts/rd-bot.sh`, migrations, persistence, restart-safe |
+| Requirement delivery pipeline (4 roles, audited) | **Current** | Pi runtime only; PostgreSQL store only |
+| Host verification (build/static replay) | **Current** | Node/Java/Python baseline inside the app container |
+| GitHub delivery (branch + PR on authorized repos) | **Current** | PAT you provide; real PRs in your repos |
+| Admin console (tasks, projects, evidence, delivery metrics) | **Current** | Unauthenticated — loopback only |
+| Project-scoped agent memory | **Experimental** | Disabled by default; not part of the supported path |
+| Feishu/Lark IM intake, webhooks | **Not supported** | Disabled by default; off in the Docker overlay |
+| OpenViking external knowledge projection | **Experimental** | Disabled by default |
+| Public exposure, RBAC, multi-user, HA | **Planned / not supported** | See roadmap |
+
+## Configuration
+
+All runtime configuration lives in `deploy/docker/runtime.env` (generated on
+first `up`, never committed). Shape, not values:
+
+```ini
+RD_BOT_PORT=18080                       # host publish (loopback only)
+DOCKER_GID=0                            # socket group inside containers
+RD_BOT_WORKSPACE_ROOT=/abs/path/.rd-bot-data/workspaces
+RD_BOT_EGRESS_NETWORK=rd-bot-egress
+POSTGRES_PASSWORD=...                   # generated
+RUSTFS_SECRET_ACCESS_KEY=...            # generated (MinIO)
+RD_AGENT_RUNTIME_MUTATION_TOKEN=...     # generated; empty = mutations denied
+RD_EXECUTOR_PI_CPU_LIMIT=4              # must be <= host CPU count
+RD_EXECUTOR_PI_MEMORY_LIMIT=8g
+```
+
+See [`deploy/docker/README.md`](deploy/docker/README.md) and
+[`deploy/docker/runtime.env.example`](deploy/docker/runtime.env.example) for
+the full list. Model provider keys are configured in the admin console
+(**Model providers**), not in env files.
+
+## Operations
+
+| Command | Behavior |
+| --- | --- |
+| `./scripts/rd-bot.sh doctor` | read-only environment check (daemon, socket, port, disk, CPU/RAM) |
+| `./scripts/rd-bot.sh up` | first-run env generation + image builds + start |
+| `./scripts/rd-bot.sh status` | service states + admin address |
+| `./scripts/rd-bot.sh logs [service]` | follow logs |
+| `./scripts/rd-bot.sh restart` | restart; data preserved |
+| `./scripts/rd-bot.sh down` | stop; volumes and workspaces preserved |
+| `./scripts/rd-bot.sh purge --yes` | delete this project's volumes + `.rd-bot-data` |
+
+## Security model
+
+- **No login.** The admin API is unauthenticated; the boundary is the network:
+  native runs bind `127.0.0.1`, Docker publishes `127.0.0.1` only. Do not
+  expose it.
+- **Docker socket**: mounted read-write into the `rd-bot` service only (this is
+  how the backend launches isolated agent containers). Agent containers never
+  receive the socket, host directories, or credentials.
+- **Credentials**: provider keys live in the backend's credential storage;
+  agent containers reach models only through the credential relay. Runtime
+  mutation endpoints fail closed without `RD_AGENT_RUNTIME_MUTATION_TOKEN`.
+- **External intake off**: Feishu/Lark intake, local listener and ticket
+  write-back are disabled in the defaults and again in the Docker overlay.
+
+Details and reporting: [`SECURITY.md`](SECURITY.md).
+
+## Troubleshooting
+
+| Symptom | What to do |
+| --- | --- |
+| `docker daemon is not running` | Start Docker Desktop / the docker service; `doctor` re-checks |
+| Port 18080 already in use | Stop the occupier or set `RD_BOT_PORT` in `deploy/docker/runtime.env` |
+| Socket permission denied | `doctor` prints the fix for your platform (never `chmod 666`) |
+| Image build fails mid-download | Usually a flaky CDN — rerun `up`; browser cache can be seeded from a previous QA tag (see `bootstrap/src/main/resources/executor/pi/README.md`) |
+| Migration "DRIFT" error | A SQL file changed after it was applied; follow the message, inspect `rd_schema_migrations` |
+| Agents can't run | The dashboard checklist shows the missing provider/GitHub configuration |
+
+## Development and testing
+
+Native toolchain for development: JDK 21, Node.js 22, Docker. The fast gate:
 
 ```bash
-docker build -f bootstrap/src/main/resources/executor/pi/Dockerfile \
-  -t rd-bot/pi-agent:local bootstrap/src/main/resources/executor/pi
-docker build -f bootstrap/src/main/resources/executor/pi/Dockerfile.qa \
-  -t rd-bot/pi-agent-qa:local bootstrap/src/main/resources/executor/pi
+./scripts/test-open-source-core.sh   # focused backend + frontend + Pi bridge + OpenSpec
+./mvnw test                          # full backend suite
 ```
 
-### 前端开发
+Behavioral changes go through [OpenSpec](openspec/) proposals; repository rules
+live in [`AGENTS.md`](AGENTS.md) and [`RULE.md`](RULE.md). See
+[`CONTRIBUTING.md`](CONTRIBUTING.md) for the minimum setup.
 
-```bash
-cd frontend && npm install && npm run dev
-# Vite :5173，代理 /admin/* → 后端 18080
-```
+## Roadmap and known limitations
 
-### 常用环境变量
-
-本地 profile 的连接串以 `application-local.yaml` 为准；也可覆盖：
-
-```bash
-export POSTGRES_URL="jdbc:postgresql://127.0.0.1:5432/rdbot"
-export POSTGRES_USERNAME="postgres"
-export POSTGRES_PASSWORD="postgres"
-export RD_EXECUTOR_AGENT_RUNTIME_ENABLED=true
-export RD_EXECUTOR_PI_IMAGE=rd-bot/pi-agent:local
-export RD_EXECUTOR_PI_QA_IMAGE=rd-bot/pi-agent-qa:local
-```
-
-**完整 Agent 交付另需密钥与仓库白名单**（否则仅管理台冒烟）：
-
-```bash
-export GITHUB_PAT="..."                    # 或 GH_TOKEN；创建 PR / clone
-# Provider API keys（按 execution profile 实际引用，常见）：
-export OPENCODE_API_KEY="..."
-export DEEPSEEK_API_KEY="..."
-export LONGCAT_API_KEY="..."
-export MINIMAX_API_KEY="..."
-# Docker 执行面仓库 / 分支白名单（application.yaml → rd.executor.docker.security）
-export RD_EXECUTOR_DOCKER_ALLOWED_REPOSITORY_URL="https://github.com/your-org/your-repo.git"
-export RD_EXECUTOR_DOCKER_ALLOWED_REPOSITORY="your-org/your-repo"
-export RD_EXECUTOR_DOCKER_ALLOWED_BASE_BRANCH="main"
-export RD_EXECUTOR_DOCKER_ALLOWED_WORK_BRANCH="repair/*"
-export RD_EXECUTOR_DOCKER_ALLOWED_REQUIREMENT_BRANCH="requirement/*"
-```
-
-可选：`.env.example` 可复制为 `.env` 供 Compose / shell 引用。维护者私有启动脚本见 `scripts/owner/`（非贡献者必需）。
-
-改动 Pi bridge（`bootstrap/src/main/resources/executor/pi`）后需重建镜像，否则容器仍用旧规则。
-
----
-
-## Skill Hub
-
-| 能力 | 说明 |
-|------|------|
-| 管理页 | `/admin/skills`：目录、上传、角色绑定、强制引导、HIGH 审批 |
-| API | `/admin/skills` · `/admin/skills/upload` · `/admin/skills/role-bindings/{role}` |
-| 运行时 | 按角色物化到 `/work/input/skills/{id}`；Pi `additionalSkillPaths` 显式加载（保持 `noSkills: true` 阻断仓库自动扫描） |
-| 两层启用 | ① 系统提示披露 desc；② `forceGuide` 追加 `guidePrompt` |
-
----
-
-## 核心 API（节选）
-
-```bash
-# 任务
-curl -X POST http://127.0.0.1:18080/admin/rd-tasks/requirements -H 'Content-Type: application/json' -d '{...}'
-curl http://127.0.0.1:18080/admin/rd-tasks/{taskId}
-
-# Skill Hub
-curl http://127.0.0.1:18080/admin/skills
-curl http://127.0.0.1:18080/admin/skills/role-bindings
-```
-
-| 管理台路径 | 功能 |
-|------------|------|
-| `/admin/dashboard` | 总览 |
-| `/admin/knowledge` | 知识库 |
-| `/admin/projects` | 项目与执行配置 |
-| `/admin/rd-tasks` | 任务工作台 |
-| `/admin/skills` | Skill Hub |
-| `/admin/traces` | 执行追踪 |
-| `/admin/observability` | 交付观测 |
-
----
-
-## 测试
-
-```bash
-./mvnw test
-./mvnw -pl engine,exec,skill,bootstrap -am test
-
-# Pi bridge
-cd bootstrap/src/main/resources/executor/pi && npm test
-```
-
----
-
-## 技术栈
-
-| 层面 | 技术 |
-|------|------|
-| 语言 / 框架 | Java 21 · Spring Boot 3.5 |
-| 事实库 | PostgreSQL + MyBatis-Plus |
-| 协调 | Redis · Redisson（锁 + Redis Stream） |
-| 对象存储 | S3 兼容（RustFS / MinIO） |
-| 执行 | Docker · Pi Agent（主） |
-| 前端 | React 18 · Vite · Tailwind · Radix |
-| 构建 | Maven 多模块 |
-
----
-
-## 设计原则
-
-1. **模型可替换**：Provider 是 worker，不是系统核心。
-2. **PR-based 交付**：Agent 永不直接合并主干。
-3. **证据驱动**：prompt / result / log / diff / QA 证据可回放。
-4. **端口-适配器**：飞书、GitHub、队列、模型 SDK 可 Mock。
-5. **显式状态机 + 持久化事件**：跨实例状态不依赖 JVM 内存。
-6. **安全纵深**：白名单、Secret 扫描、Docker 隔离、Skill 显式路径加载。
-
----
+- Single-node only; no HA, no horizontal scaling, no backup automation.
+- Abnormal interruption (kill -9, power loss mid-stage) may require manual
+  recovery through the failure-recovery views; clean restarts are tested.
+- One OS/arch is verified per release (recorded in the release notes);
+  other platforms are untested, not unsupported-by-design.
+- Public exposure, RBAC, multi-user, webhook signing and horizontal agent
+  fleets are future work.
+- The maintainer speaks Chinese and English; issue response is best-effort.
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE) — see also [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+for dependency, base image and asset boundaries.
+
+## Acknowledgements
+
+README structure takes inspiration from the self-hosting projects
+[n8n](https://github.com/n8n-io/n8n), [Open WebUI](https://github.com/open-webui/open-webui),
+[Dify](https://github.com/langgenius/dify) and [Immich](https://github.com/immich-app/immich);
+no content, branding or assets were copied. Their trademarks belong to their
+owners.
