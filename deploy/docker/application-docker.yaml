@@ -1,0 +1,23 @@
+# Docker 部署的安全边界 overlay（openspec/changes/prepare-personal-open-source-release）。
+# 经 SPRING_CONFIG_ADDITIONAL_LOCATION 显式加载；本文件只读挂载进容器 /config/。
+# 职责：
+# 1) 容器内监听全部接口（宿主发布面由 Compose 限定 127.0.0.1）；
+# 2) 即使主配置未来漂移，也再次显式关闭全部未验证外部入口；
+# 3) mutation token 不提供公共默认值，未配置时 AgentRuntimeMutationAccessPolicy fail closed。
+server:
+  address: ${SERVER_ADDRESS:0.0.0.0}
+
+rd:
+  executor:
+    agent-runtime:
+      mutation-token: ${RD_AGENT_RUNTIME_MUTATION_TOKEN:}
+  feishu:
+    im:
+      enabled: ${FEISHU_IM_ENABLED:false}
+      local-listener:
+        enabled: ${FEISHU_IM_LOCAL_LISTENER_ENABLED:false}
+      write-back:
+        enabled: ${FEISHU_IM_WRITE_BACK_ENABLED:false}
+  ticket:
+    write-back:
+      enabled: ${RD_TICKET_WRITE_BACK_ENABLED:false}

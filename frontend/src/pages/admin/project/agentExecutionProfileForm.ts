@@ -41,7 +41,7 @@ export function agentProfileSaveError(input: {
 export function agentRuntimeMutationError(error: unknown): string | null {
   const status = httpStatus(error);
   if (status === 403) {
-    return "操作令牌不正确。本地请填写 local-agent-runtime";
+    return "操作令牌不正确。请输入部署环境配置的 RD_AGENT_RUNTIME_MUTATION_TOKEN";
   }
   if (status === 503) {
     return "后端未配置 Agent 运行时操作令牌（RD_AGENT_RUNTIME_MUTATION_TOKEN）";

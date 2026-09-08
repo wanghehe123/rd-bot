@@ -60,7 +60,7 @@ test("project list no longer contains the old Pi coding-only banner", async () =
 test("maps mutation 403/503 to an actionable token message", () => {
   assert.equal(
     agentRuntimeMutationError({ response: { status: 403 } }),
-    "操作令牌不正确。本地请填写 local-agent-runtime"
+    "操作令牌不正确。请输入部署环境配置的 RD_AGENT_RUNTIME_MUTATION_TOKEN"
   );
   assert.match(String(agentRuntimeMutationError({ response: { status: 503 } })), /未配置/);
   assert.equal(agentRuntimeMutationError({ response: { status: 400 } }), null);

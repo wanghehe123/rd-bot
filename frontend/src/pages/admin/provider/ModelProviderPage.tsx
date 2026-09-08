@@ -67,8 +67,6 @@ import {
   type ModelProviderProtocol
 } from "@/services/modelProviderService";
 
-const DEFAULT_MUTATION_TOKEN = "local-agent-runtime";
-
 const INITIAL_DRAFT: ModelProviderMetadataInput & { providerId: string } = {
   providerId: "",
   displayName: "",
@@ -299,10 +297,10 @@ export function ModelProviderPage() {
             size="sm"
             variant="outline"
             className="h-8 shrink-0 text-xs text-slate-600 hover:text-slate-900"
-            onClick={() => setMutationToken(DEFAULT_MUTATION_TOKEN)}
-            title="填入本地默认令牌"
+            onClick={() => setMutationToken("")}
+            title="清空令牌输入"
           >
-            本地默认
+            清空
           </Button>
         </div>
       </div>

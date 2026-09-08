@@ -32,17 +32,18 @@ T00 的产物即本 change 自身。验收 ID（Axx-y）与计划一致。
 
 ## T03 默认安全边界
 
-- [ ] T03.1 默认配置增加 `server.address: ${SERVER_ADDRESS:127.0.0.1}`
-- [ ] T03.2 Docker overlay 容器内 `0.0.0.0` + Compose 仅映射 `127.0.0.1:${RD_BOT_PORT:-18080}:18080`，两层都有测试
-- [ ] T03.3 `FEISHU_IM_ENABLED`、local listener、write-back 默认全部 false；Docker 模板显式再关闭
-- [ ] T03.4 删除全部公开固定 mutation/upload token 默认值；空 token 保持 fail closed
-- [ ] T03.5 OpenViking、project-memory worker/reconcile/projection 保持默认关闭
-- [ ] T03.6 不新增默认登录；user/password 模块不在 README 宣传为安全认证
-- [ ] T03.7 启动日志输出一次安全范围摘要（无凭据内容）
-- [ ] A03-1 原生默认 127.0.0.1；容器内全接口但宿主仅 loopback
-- [ ] A03-2 无配置时飞书入口/listener/write-back 不启动
-- [ ] A03-3 无 token 的 mutation 仍被拒绝；仓库无公共固定 token
-- [ ] A03-4 启动日志无凭据泄露
+- [x] T03.1 默认配置增加 `server.address: ${SERVER_ADDRESS:127.0.0.1}`
+- [x] T03.2 Docker overlay 容器内 `0.0.0.0` + Compose 仅映射 `127.0.0.1:${RD_BOT_PORT:-18080}:18080`（overlay 默认值由 `ApplicationSecureDefaultsTest` 钉住；resolved Compose 断言在 T06 contract test 落地）
+- [x] T03.3 `FEISHU_IM_ENABLED`、local listener、write-back、ticket write-back 默认全部 false；Docker overlay 显式再关闭
+- [x] T03.4 无公共固定 mutation/upload token 默认值（后端占位符本已为空；移除前端 3 处 `local-agent-runtime` 提示/按钮并重建 bundle）；空 token fail closed 由新增 `AgentRuntimeMutationAccessPolicyTest` 钉住
+- [x] T03.5 OpenViking 默认 false 复核；project-memory worker/reconcile/projection 默认 false 复核
+- [x] T03.6 不新增默认登录；SECURITY.md 已声明 user/password 不是安全边界
+- [x] T03.7 新增 `SecurityPostureLogger`：启动输出一次安全范围摘要（地址/开关/store），测试钉住不含凭据值
+- [x] A03-1 原生默认 127.0.0.1；容器内 overlay 默认 0.0.0.0（宿主 loopback 发布在 T06/E03 实测）
+- [x] A03-2 无配置时飞书入口/listener/write-back 不启动（wiring 测试以显式 enabled=true 验证装配路径）
+- [x] A03-3 无 token 的 mutation 仍被拒绝（503）；仓库无公共固定 token（源码+bundle rg 清零）
+- [x] A03-4 启动安全摘要无凭据（`SecurityPostureLoggerTest`）
+- 注：`FeishuImBeanWiringTest` 当前失败为审查基线 W1 组已知错误（缺 `ProjectMemoryMutationAuthorizer`，与本任务无关），归 T09 整改。
 
 ## T04 Pi/QA 镜像首次构建链
 

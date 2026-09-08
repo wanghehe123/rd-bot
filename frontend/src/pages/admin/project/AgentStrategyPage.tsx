@@ -439,16 +439,6 @@ export function AgentStrategyPage() {
               {showToken ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
             </button>
           </div>
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="h-8 shrink-0 text-xs text-slate-600 hover:text-slate-900"
-            onClick={() => setDraft((current) => ({ ...current, mutationToken: "local-agent-runtime" }))}
-            title="填入本地默认令牌"
-          >
-            本地默认
-          </Button>
         </div>
       </div>
 
