@@ -489,7 +489,7 @@ Unit: `RequirementAgentStageOrchestratorTest` asserts the section builder; `Requ
 
 ### Task 11: Phase 3 — Dynamic Manager (`mea-manager-decision-command`)
 
-**2026-09-06 状态（本文仍是计划；真值见交接）：** P3 开发已完成（change 未归档、本轮未 commit）。P3-W1 三角色/有界缺口由真机 W1e 证明；`COMPLETED`+PR 不是 Task 11 原文退出条件。P3-W2/W3 仅单测。入口：`docs/superpowers/qa/2026-09-06-mea-p3-manager-handoff.md`。
+**2026-09-06 状态（本文仍是计划；真值见交接与主 spec）：** P3 已归档为 `openspec/changes/archive/2026-09-06-mea-manager-decision-command/`，主 spec `openspec/specs/requirement/manager-decision-command/spec.md`。P3-W1 三角色/有界缺口由真机 W1e 证明；`COMPLETED`+PR 不是 Task 11 原文退出条件。P3-W2/W3 仅单测。入口：`docs/superpowers/qa/2026-09-06-mea-p3-manager-handoff.md`。
 
 Depends on phase 1 state + preferably phase 2 prompts.
 

@@ -2,8 +2,8 @@
 
 日期：2026-09-06  
 仓库：`/Users/wish233/Documents/RD-Bot`  
-OpenSpec change：`openspec/changes/mea-manager-decision-command/`（**已实现，未归档**）  
-本轮 **没有 git commit**，也 **没有** 把 change archive 进 `openspec/specs/`。
+OpenSpec change：`openspec/changes/archive/2026-09-06-mea-manager-decision-command/`（**已归档**）
+主 spec：`openspec/specs/requirement/manager-decision-command/spec.md`。代码已于 `3fcd7db6` 推到 `origin/main`；归档本身尚未单独 commit。
 
 状态分类（`docs/openspec/historical-spec-provenance-audit.md`）：
 
@@ -42,18 +42,20 @@ OpenSpec change：`openspec/changes/mea-manager-decision-command/`（**已实现
 ## 2. 给下一个 Agent 的入口
 
 ```text
-你在 /Users/wish233/Documents/RD-Bot。P3 Manager（mea-manager-decision-command）开发已完成、未归档、未 commit。
+你在 /Users/wish233/Documents/RD-Bot。P3 Manager 已归档。
 
 先读：
 1. 本文件 docs/superpowers/qa/2026-09-06-mea-p3-manager-handoff.md
 2. docs/superpowers/qa/2026-09-06-mea-p3-w1e-triangle-evidence.json
 3. RULE.md 3.5.3（Manager 双权威 / MANAGER_GAP_FIX / WAITING_USER_INPUT / paused claim）
 4. AGENTS.md（Pi QA、不要把缺生命周期当成事件顺序证据）
-5. openspec/changes/mea-manager-decision-command/ 全部 artifacts
-6. docs/superpowers/plans/2026-09-04-mea-next-phases-waimai.md Task 11（退出条件原文）
+5. openspec/specs/requirement/manager-decision-command/spec.md（当前行为真值）
+6. openspec/changes/archive/2026-09-06-mea-manager-decision-command/（归档 artifacts）
+7. docs/superpowers/plans/2026-09-04-mea-next-phases-waimai.md Task 11（退出条件原文）
 
 不要：
-- 未经用户要求就 git commit、archive、push
+- 未经用户要求就 git commit、push
+- 直接改 openspec/specs/；后续行为必须新 change + delta
 - 重开架构（见第 8 节冻结决策）
 - 续跑 DEAD_LETTERED / FAILED 任务；要 COMPLETED 就新开 W1g，唯一标记
 - 把 W1 COMPLETED PR #38 当成 P3-W1 阶段退出
@@ -61,7 +63,6 @@ OpenSpec change：`openspec/changes/mea-manager-decision-command/`（**已实现
 - pkill -f bootstrap jar（用 deploy/cloud-server/start-backend.sh，按 /proc cmdline 杀）
 
 若用户要真机 CLOSED-LOOP COMPLETED：先 package+rsync+restart（必须带上本机 ENVIRONMENT 守卫和 QA 阶段 SUCCEEDED 修复），再提交新任务，见第 9 节。
-若用户要 archive：先 openspec-verify-change；5.2 勾选的是「真机路由证据已记录」，不是「W2/W3 真机已跑」。
 ```
 
 ---
@@ -230,7 +231,7 @@ W1c/W1d 的 Manager round 2 已经是 `EXECUTE CODING` + `AC-003`，与 W1e 同�
 
 ## 7. P3 任务清单收口
 
-`openspec/changes/mea-manager-decision-command/tasks.md`：
+`openspec/changes/archive/2026-09-06-mea-manager-decision-command/tasks.md`：
 
 - 1.1–4.3、5.1：原先已勾。5.1 在 2026-09-06 **带上后续硬化测试重跑**（命令见 §11）。
 - 5.2：改为记录真机 W1 路由证据；W2/W3 标明仅单测。**不要把勾选理解成真机 ASK/pause 已跑。**
@@ -284,9 +285,9 @@ Postgres：`p22_task_manager_decisions.sql` 已在 VM 应用过；command 表主
 
 用户没要求就不要开。代码路径已在 §6.3。W2 不要占用 `WAITING_APPROVAL`。W3 确认 claim SQL 真的 join 到暂停行。
 
-### 9.3 Archive / commit
+### 9.3 归档后的后续
 
-用户没要求就不要做。Archive 前跑 `.claude/skills/openspec-verify-change/SKILL.md`（change 名 `mea-manager-decision-command`）。主 spec 同步只发生在 archive 之后。
+P3 已于 2026-09-06 归档。后续 Manager 行为变更必须新开 change + delta，禁止直接改 `openspec/specs/requirement/manager-decision-command/spec.md`。归档文件本身若要进远程，需用户再要求 commit/push。
 
 ---
 
@@ -370,7 +371,8 @@ Maven（2026-09-06，ENVIRONMENT 守卫之后，全部 BUILD SUCCESS）：
 | `docs/superpowers/qa/2026-09-06-mea-p3-w1e-triangle-evidence.json` | W1/W1c/W1d/W1e/W1f 紧凑摘录 |
 | `tmp-mea-waimai-shadow/p3-w1{,c,d,e,f}/` | 本机原始快照（gitignored） |
 | VM `ubuntu@106.55.13.166` `/tmp/mea-p3-w1{c,d,e,f}/` | 云端副本 |
-| `openspec/changes/mea-manager-decision-command/` | 未归档 change |
+| `openspec/specs/requirement/manager-decision-command/spec.md` | 归档后主 spec |
+| `openspec/changes/archive/2026-09-06-mea-manager-decision-command/` | 已归档 change |
 | `bootstrap/src/main/resources/sql/postgres/p22_task_manager_decisions.sql` | 决策表 + GAP_FIX CHECK |
 | `docs/superpowers/plans/2026-09-04-mea-next-phases-waimai.md` | P3 退出条件原文 |
 | `docs/superpowers/specs/2026-09-03-rd-bot-mea-transformation-plan.md` | 九阶段背景；K6 |
