@@ -29,6 +29,6 @@
 
 ## 5. D04/D05 真机演示与交接
 
-- [ ] 5.1 启动候选服务，一个桌面视口核对：切角色/Attempt、开 Prompt、开一条证据、刷新不串
-- [ ] 5.2 一条普通真实需求走到完成，打开真实 PR；用一个已有失败/空状态样本确认错误显示
-- [ ] 5.3 `docs/superpowers/qa/2026-09-08-mea-demo-acceptance.md`：候选 SHA、构建 hash、taskId/PR、命令结果、演示顺序、移出项明示
+- [x] 5.1 启动候选服务，一个桌面视口核对：切角色/Attempt、开 Prompt、开一条证据、刷新不串
+- [x] 5.2 一条普通真实需求走到完成，打开真实 PR；用一个已有失败/空状态样本确认错误显示
+- [x] 5.3 `docs/superpowers/qa/2026-09-08-mea-demo-acceptance.md`：候选 SHA、构建 hash、taskId/PR、命令结果、演示顺序、移出项明示

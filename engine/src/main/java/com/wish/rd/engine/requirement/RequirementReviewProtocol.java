@@ -9,8 +9,13 @@ import java.util.Locale;
 /**
  * Host classification for a requirement-reviewer protocol result.
  *
- * <p>{@code NEED_INFO} and non-empty {@code missingInformation} are valid operator-ASK
- * outcomes. {@code REJECTED}/{@code UNSAFE}/{@code FAILED} remain fail-closed.
+ * <p>An explicit {@code decision} of {@code NEED_INFO} always asks the operator, even
+ * when the execution {@code status} reports {@code SUCCESS}/{@code OK}. Otherwise,
+ * approval (an approved {@code decision}, or a {@code SUCCESS}/{@code OK} status with
+ * no NEED_INFO decision) proceeds even with advisory {@code missingInformation};
+ * {@code NEED_INFO} on {@code status}/{@code feasibility} or non-empty
+ * {@code missingInformation} without approval are operator-ASK outcomes.
+ * {@code REJECTED}/{@code UNSAFE}/{@code FAILED} remain fail-closed.
  */
 public final class RequirementReviewProtocol {
 
@@ -43,13 +48,19 @@ public final class RequirementReviewProtocol {
         if (hardFail(status) || hardFail(decision) || hardFail(feasibility)) {
             return Disposition.FAIL_CLOSED;
         }
+        // An explicit NEED_INFO decision asks the operator first: an execution status
+        // like SUCCESS/OK describes the run, not reviewer approval, and must not mask
+        // a real missing-input request.
+        if (needInfo(decision)) {
+            return Disposition.ASK_OPERATOR;
+        }
         // Explicit approval proceeds even when the agent lists advisory gaps under
-        // missingInformation (common with APPROVED/CAN_DO). Only NEED_INFO* or
-        // missingInformation without approval force an operator ASK.
+        // missingInformation (common with APPROVED/CAN_DO). Without approval,
+        // NEED_INFO on status/feasibility or missingInformation forces an operator ASK.
         if (isApproved(decision) || isApproved(status)) {
             return Disposition.PROCEED;
         }
-        if (needInfo(status) || needInfo(decision) || needInfo(feasibility) || hasMissingInformation(root)) {
+        if (needInfo(status) || needInfo(feasibility) || hasMissingInformation(root)) {
             return Disposition.ASK_OPERATOR;
         }
         if (status.isBlank() && decision.isBlank() && feasibility.isBlank()) {

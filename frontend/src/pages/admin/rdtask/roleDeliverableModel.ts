@@ -3,7 +3,9 @@ import type {
   RoleQaEvidenceLike,
   RoleStageLike
 } from "./roleWorkbenchModel.ts";
+import { isPlaceholderResultSummary } from "./workbenchSummaryModel.ts";
 import type { StageResultResponse } from "@/services/stageResultService.ts";
+import type { AuditedRecord, AuditedTaskState } from "@/services/rdTaskService.ts";
 
 /** 证据条目：优先复用后端下发 contentUrl，其余字段用于展示兜底。 */
 export type RoleQaEvidenceRef = RoleQaEvidenceLike & {
@@ -29,11 +31,13 @@ export interface ReportedCheckItem {
   detail?: string;
 }
 
-export interface AuditedCheckItem {
-  recordId: string;
-  title: string;
-  status: string;
-  evidenceIds: string[];
+/** Host 审计通过的验收记录，直接复用后端 wire 类型（id/text/evidenceRefs）。 */
+export type AuditedCheckItem = AuditedRecord;
+
+/** 任务级 PR 来源：RdTask.pullRequestUrl 是唯一权威 URL；workBranch 仅辅助展示。 */
+export interface TaskPrInput {
+  prUrl: string;
+  workBranch?: string;
 }
 
 export interface ArtifactLinkItem {
@@ -65,10 +69,16 @@ export interface RoleDeliverableView {
   status: string;
   executionSummary: string;
   deliverables: DeliverableItem[];
+  /** 全量结构化交付项（deliverables 是它的前三项兼容视图）。 */
+  allDeliverables: DeliverableItem[];
   reportedChecks: ReportedCheckItem[];
   auditedChecks: AuditedCheckItem[];
+  /** 当前任务最新 Host 审计 head 中不属于所选 Attempt 的阻断记录。 */
+  taskHeadGaps: AuditedCheckItem[];
   keyGaps: string[];
   keyEvidence: DeliverableEvidenceItem[];
+  /** 全量阶段证据（keyEvidence 是它的前五项兼容视图）。 */
+  allEvidence: DeliverableEvidenceItem[];
   totalEvidenceCount: number;
   artifactLinks: ArtifactLinkItem[];
   unavailableReason: string | null;
@@ -91,21 +101,8 @@ export interface RoleDeliverableInput {
     failureCategory?: string | null;
     errorMessage?: string;
   } | null;
-  auditedState?: {
-    records?: Array<{
-      recordId: string;
-      title: string;
-      status: string;
-      blocking: boolean;
-      evidenceIds?: string[];
-      sourceStageRunId?: string;
-    }>;
-  } | null;
-  taskPr?: {
-    prNumber?: number;
-    prUrl?: string;
-    workBranch?: string;
-  } | null;
+  auditedState?: Pick<AuditedTaskState, "records"> | null;
+  taskPr?: TaskPrInput | null;
   stageResult?: StageResultResponse | null;
 }
 
@@ -143,10 +140,15 @@ export function buildRoleDeliverables(input: RoleDeliverableInput): RoleDelivera
   const allDeliverables: DeliverableItem[] = [];
   const reportedChecks: ReportedCheckItem[] = [];
   const auditedChecks: AuditedCheckItem[] = [];
+  const taskHeadGaps: AuditedCheckItem[] = [];
   const keyGaps: string[] = [];
   const artifactLinks: ArtifactLinkItem[] = [];
 
-  let executionSummary = stage?.resultSummary || "";
+  // 占位 resultSummary（"ROLE result json"）不是真实执行概述，按缺失处理；
+  // 完整结果解析出的 summary 仍会在下方覆盖。
+  let executionSummary = isPlaceholderResultSummary(stage?.resultSummary)
+    ? ""
+    : (stage?.resultSummary || "");
   let unavailableReason: string | null = null;
 
   if (!stage && !promptStage) {
@@ -261,10 +263,10 @@ export function buildRoleDeliverables(input: RoleDeliverableInput): RoleDelivera
       }
     }
 
-    // 任务级 PR 明确标明 scope: "TASK"
-    if (taskPr && taskPr.prNumber) {
+    // 任务级 PR 明确标明 scope: "TASK"；URL 是唯一权威来源，编号仅从 URL 提取用于展示
+    if (taskPr?.prUrl) {
       artifactLinks.push({
-        name: `PR #${taskPr.prNumber}`,
+        name: prLinkName(taskPr.prUrl),
         type: "PULL_REQUEST",
         targetUrl: taskPr.prUrl,
         scope: "TASK"
@@ -301,29 +303,30 @@ export function buildRoleDeliverables(input: RoleDeliverableInput): RoleDelivera
       }
     }
 
-    // Host 审计状态与已审计记录关联
+    // Host API 返回的是任务最新状态。已完成记录保留在 task-head 区域；所有 blocking
+    // 且未完成的状态只有明确属于当前 Attempt 时才进入当前结论，其余记录单列。
     if (auditedState?.records) {
       for (const record of auditedState.records) {
         if (record.status === "COMPLETED") {
-          auditedChecks.push({
-            recordId: record.recordId,
-            title: record.title,
-            status: "COMPLETED",
-            evidenceIds: record.evidenceIds || []
-          });
-        } else if (record.blocking && record.status === "PENDING") {
-          keyGaps.push(`已审计阻断缺口: ${record.recordId} (${record.title}) 仍待完成`);
+          auditedChecks.push(record);
+        } else if (record.blocking) {
+          const sourceStageRunId = String(record.sourceStageRunId || "").trim();
+          if (sourceStageRunId && sourceStageRunId === stageRunId) {
+            keyGaps.push(`已审计阻断缺口: ${record.id} (${record.text}) [${record.status}] 仍待完成（${auditedRecordSourceLabel(record)}）`);
+          } else {
+            taskHeadGaps.push(record);
+          }
         }
       }
     }
   }
 
-  // 关键证据列表（最多默认展示 5 项）。
+  // 关键证据列表（最多默认展示 5 项，完整列表见 allEvidence）。
   // URL 优先用后端下发的 task-scoped contentUrl；仅在缺失时按当前 taskId 生成既有路径，
   // 禁止把一个 task 的证据引用换到另一个 task。
   const matchingQaEvidence = qaEvidence.filter((ev) => ev.stageRunId === stageRunId);
   const totalEvidenceCount = matchingQaEvidence.length;
-  const keyEvidence: DeliverableEvidenceItem[] = matchingQaEvidence.slice(0, 5).map((ev) => ({
+  const allEvidence: DeliverableEvidenceItem[] = matchingQaEvidence.map((ev) => ({
     id: ev.artifactId,
     name: ev.name || QA_EVIDENCE_TYPE_LABEL[ev.type || ""] || ev.artifactId,
     type: ev.type || ev.artifactId,
@@ -335,6 +338,7 @@ export function buildRoleDeliverables(input: RoleDeliverableInput): RoleDelivera
         ? `/admin/rd-tasks/${taskId}/qa-evidence/${ev.artifactId}/content`
         : undefined)
   }));
+  const keyEvidence = allEvidence.slice(0, 5);
 
   // 产物最多默认展示 3 项
   const deliverables = allDeliverables.slice(0, 3);
@@ -348,10 +352,13 @@ export function buildRoleDeliverables(input: RoleDeliverableInput): RoleDelivera
     status,
     executionSummary,
     deliverables,
+    allDeliverables,
     reportedChecks,
     auditedChecks,
+    taskHeadGaps,
     keyGaps,
     keyEvidence,
+    allEvidence,
     totalEvidenceCount,
     artifactLinks,
     unavailableReason,
@@ -371,6 +378,17 @@ function parseResultObject(value?: string | null): Record<string, unknown> | nul
   } catch {
     return null;
   }
+}
+
+/** 从 PR URL 提取编号用于展示；提取不到时退回通用标题，链接仍照常渲染。 */
+function prLinkName(url: string): string {
+  const match = /\/(?:pull|pulls|pull-requests|merge_requests)\/(\d+)/i.exec(url.trim());
+  return match ? `PR #${Number(match[1])}` : "Pull Request";
+}
+
+function auditedRecordSourceLabel(record: AuditedCheckItem): string {
+  const sourceStageRunId = String(record.sourceStageRunId || "").trim();
+  return sourceStageRunId ? `来源 ${sourceStageRunId}` : "来源未记录";
 }
 
 function asStringList(value: unknown): string[] {

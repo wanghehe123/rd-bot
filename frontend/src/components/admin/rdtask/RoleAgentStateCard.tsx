@@ -136,11 +136,6 @@ export function RoleAgentStateCard({
                 {STATUS_LABEL[stage.status] || stage.status}
               </Badge>
             ) : null}
-            {latestState?.sequence !== undefined && latestState.sequence > 0 ? (
-              <Badge variant="outline" className="border-slate-200 bg-white font-mono text-[11px] text-slate-600">
-                Seq #{latestState.sequence}
-              </Badge>
-            ) : null}
             {isStale ? (
               <Badge
                 variant="outline"
@@ -186,6 +181,7 @@ export function RoleAgentStateCard({
             查看 Hash 与标识信息
           </summary>
           <div className="mt-2 grid gap-1 rounded border border-slate-200 bg-white p-2 font-mono text-[10px]">
+            <div>Sequence: <span className="text-slate-800">{latestState?.sequence !== undefined && latestState.sequence > 0 ? `#${latestState.sequence}` : "未提供"}</span></div>
             <div>Prompt Hash: <span className="text-slate-800">{effectiveContext?.promptContentHash || promptStage?.prompt?.contentHash || "未提供"}</span></div>
             <div>State Hash: <span className="text-slate-800">{latestState?.contentHash || effectiveContext?.stateContentHash || "未提供"}</span></div>
             <div>Injection Hash: <span className="text-slate-800">{effectiveContext?.injectedBlockHash || "未提供"}</span></div>
@@ -242,16 +238,20 @@ export function AgentLatestStatePanel({ state }: { state: NonNullable<RdTaskRole
         {state.stageStartedAt ? <Metric label="阶段开始时间" value={state.stageStartedAt} /> : null}
       </div>
 
-      <div className="border border-slate-200 bg-slate-50/50 p-3 rounded">
-        <h5 className="mb-2 text-xs font-semibold text-slate-900">资源与预算</h5>
-        <div className="grid gap-2 text-xs sm:grid-cols-2">
-          <Metric label="Token 消耗" value={formatBudgetToken(state.budget)} />
-          <Metric label="上下文字符" value={formatBudgetContext(state.budget)} />
-          {state.budget?.deadlineEpochMillis ? (
-            <Metric label="截止时间" value={formatBudgetDeadline(state.budget)} />
-          ) : null}
+      <details className="border border-slate-200 bg-white rounded">
+        <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-slate-700">
+          资源与预算详情
+        </summary>
+        <div className="border-t border-slate-200 bg-slate-50/50 p-3">
+          <div className="grid gap-2 text-xs sm:grid-cols-2">
+            <Metric label="Token 消耗" value={formatBudgetToken(state.budget)} />
+            <Metric label="上下文字符" value={formatBudgetContext(state.budget)} />
+            {state.budget?.deadlineEpochMillis ? (
+              <Metric label="截止时间" value={formatBudgetDeadline(state.budget)} />
+            ) : null}
+          </div>
         </div>
-      </div>
+      </details>
 
       <div>
         <div className="flex items-center gap-1.5 mb-2">

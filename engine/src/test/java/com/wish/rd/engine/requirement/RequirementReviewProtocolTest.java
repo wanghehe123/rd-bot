@@ -74,4 +74,64 @@ class RequirementReviewProtocolTest {
                 RequirementReviewProtocol.disposition(json));
         assertFalse(RequirementReviewProtocol.asksOperator(json));
     }
+
+    @Test
+    void successStatusDoesNotOverrideNeedInfoDecision() {
+        String json = """
+                {
+                  "status": "SUCCESS",
+                  "decision": "NEED_INFO",
+                  "missingInformation": ["必需材料"]
+                }
+                """;
+
+        assertEquals(RequirementReviewProtocol.Disposition.ASK_OPERATOR,
+                RequirementReviewProtocol.disposition(json));
+        assertTrue(RequirementReviewProtocol.asksOperator(json));
+        assertFalse(RequirementReviewProtocol.failsClosed(json));
+    }
+
+    @Test
+    void normalizedNeedInfoDecisionAsksOperatorDespiteOkStatus() {
+        String json = """
+                {
+                  "decision": "need-info",
+                  "missingInformation": [],
+                  "status": "OK"
+                }
+                """;
+
+        assertEquals(RequirementReviewProtocol.Disposition.ASK_OPERATOR,
+                RequirementReviewProtocol.disposition(json));
+        assertTrue(RequirementReviewProtocol.asksOperator(json));
+    }
+
+    @Test
+    void missingInformationWithoutApprovalAsksOperator() {
+        String json = """
+                {
+                  "status": "COMPLETED",
+                  "missingInformation": ["缺少部署材料"]
+                }
+                """;
+
+        assertEquals(RequirementReviewProtocol.Disposition.ASK_OPERATOR,
+                RequirementReviewProtocol.disposition(json));
+        assertTrue(RequirementReviewProtocol.asksOperator(json));
+    }
+
+    @Test
+    void needInfoDecisionWithEmptyMissingInformationStillAsksOperator() {
+        String json = """
+                {
+                  "decision": "NEED_INFO",
+                  "missingInformation": []
+                }
+                """;
+
+        assertEquals(RequirementReviewProtocol.Disposition.ASK_OPERATOR,
+                RequirementReviewProtocol.disposition(json));
+        assertTrue(RequirementReviewProtocol.asksOperator(json));
+        assertFalse(RequirementReviewProtocol.failsClosed(json));
+    }
 }

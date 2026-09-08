@@ -245,6 +245,7 @@ export function RdTaskDetailPage() {
   const loadSeqRef = useRef(0);
   const rolePromptLoadSeqRef = useRef(0);
   const roleEvidenceLoadSeqRef = useRef(0);
+  const qaEvidenceLoadSeqRef = useRef(0);
   const materialLoadSeqRef = useRef(0);
   const recoveryLoadSeqRef = useRef(0);
   const aiReviewLoadSeqRef = useRef(0);
@@ -605,6 +606,23 @@ export function RdTaskDetailPage() {
     }
   }, [taskId]);
 
+  const loadQaEvidenceData = useCallback(async () => {
+    const requestToken = requestGuardRef.current.capture(taskId);
+    const requestSeq = ++qaEvidenceLoadSeqRef.current;
+    try {
+      const evidence = await getRdTaskQaEvidence(taskId);
+      if (requestSeq !== qaEvidenceLoadSeqRef.current || !requestGuardRef.current.isCurrent(requestToken)) return;
+      setQaEvidence(evidence || []);
+      setQaEvidenceError("");
+      setPanelErrors((current) => ({ ...current, qaEvidence: "" }));
+    } catch (error) {
+      if (requestSeq !== qaEvidenceLoadSeqRef.current || !requestGuardRef.current.isCurrent(requestToken)) return;
+      const message = getErrorMessage(error, "加载 QA 证据失败");
+      setQaEvidenceError(message);
+      setPanelErrors((current) => ({ ...current, qaEvidence: message }));
+    }
+  }, [taskId]);
+
   const loadFailureRecoveryData = useCallback(async (taskSnapshot: RdTask) => {
     const requestToken = requestGuardRef.current.capture(taskId);
     const requestSeq = ++recoveryLoadSeqRef.current;
@@ -739,15 +757,16 @@ export function RdTaskDetailPage() {
         ? refreshSupportingData(taskSnapshot)
         : selectedRoleTab === "evidence"
           ? loadRoleEvidenceData(rolePromptSignature)
-          : loadFailureRecoveryData(taskSnapshot);
+          : Promise.all([loadFailureRecoveryData(taskSnapshot), loadQaEvidenceData()]).then(() => undefined);
     await Promise.all([refreshCore(true), loadHostVerificationsData(), loadAuditedStateData(), panelRefresh]);
-  }, [loadAuditedStateData, loadFailureRecoveryData, loadHostVerificationsData, loadMaterialsData, loadRoleEvidenceData, refreshCore, refreshSupportingData, rolePromptSignature, selectedRoleTab, view]);
+  }, [loadAuditedStateData, loadFailureRecoveryData, loadHostVerificationsData, loadMaterialsData, loadQaEvidenceData, loadRoleEvidenceData, refreshCore, refreshSupportingData, rolePromptSignature, selectedRoleTab, view]);
 
   useEffect(() => {
     requestGuardRef.current.beginTask(taskId);
     loadSeqRef.current += 1;
     rolePromptLoadSeqRef.current += 1;
     roleEvidenceLoadSeqRef.current += 1;
+    qaEvidenceLoadSeqRef.current += 1;
     materialLoadSeqRef.current += 1;
     recoveryLoadSeqRef.current += 1;
     aiReviewLoadSeqRef.current += 1;
@@ -812,6 +831,7 @@ export function RdTaskDetailPage() {
       loadSeqRef.current += 1;
       rolePromptLoadSeqRef.current += 1;
       roleEvidenceLoadSeqRef.current += 1;
+      qaEvidenceLoadSeqRef.current += 1;
       codingMeaLoadSeqRef.current += 1;
       codingMeaInFlightRef.current = "";
       materialLoadSeqRef.current += 1;
@@ -893,11 +913,12 @@ export function RdTaskDetailPage() {
       return;
     }
     if (selectedRoleTab === "issues") {
-      void loadFailureRecoveryData(task);
+      void Promise.all([loadFailureRecoveryData(task), loadQaEvidenceData()]);
     }
   }, [
     loadFailureRecoveryData,
     loadMaterialsData,
+    loadQaEvidenceData,
     loadRoleEvidenceData,
     refreshSupportingData,
     rolePromptSignature,
@@ -1336,18 +1357,34 @@ export function RdTaskDetailPage() {
   }
 
   return (
-    <div className="space-y-6 pb-12">
+    <div className="space-y-4 pb-12">
       <div className="flex flex-wrap items-center justify-between gap-4">
-        <div className="space-y-1">
+        <div className="min-w-0 space-y-1">
           <div className="flex flex-wrap items-center gap-3">
             <h1 className="text-2xl font-bold tracking-tight text-slate-900">{task?.title || "任务详情"}</h1>
             {task ? <Badge className={STATUS_BADGE_CLASS[task.status]}>{task.status}</Badge> : null}
             {task?.taskType ? <Badge variant="outline">{task.taskType}</Badge> : null}
+            {task?.paused ? (
+              <Badge variant="outline" className="border-amber-300 bg-amber-50 font-medium text-amber-700">已暂停</Badge>
+            ) : null}
           </div>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500">
             <span>任务 ID: <code className="font-mono">{task?.taskId || taskId}</code></span>
+            {task ? (
+              <span>项目: <strong className="font-semibold text-slate-800">{task.projectName || task.projectKey || "-"}</strong></span>
+            ) : null}
+            {task ? (
+              <span>
+                当前流程: <strong className="font-semibold text-slate-800">
+                  {ROLE_LABEL[executionOverview?.currentRole || ""] || executionOverview?.currentRole || "-"}
+                </strong>
+                {" · "}{STAGE_STATUS_LABEL[executionOverview?.currentStageStatus || ""] || executionOverview?.currentStageStatus || "-"}
+              </span>
+            ) : null}
             <span>创建时间: {task?.createTimeEpochMillis ? <RelativeTime value={new Date(task.createTimeEpochMillis).toISOString()} /> : "-"}</span>
             <span>更新时间: {task?.updateTimeEpochMillis ? <RelativeTime value={new Date(task.updateTimeEpochMillis).toISOString()} /> : "-"}</span>
+            {task ? <span>累计 Token: {formatTokens(executionOverview?.tokenBudget?.actualAccumulatedTokens)}</span> : null}
+            {task && auditedState?.present ? <span>{auditedCoverage(auditedState.records).label}</span> : null}
           </div>
         </div>
 
@@ -1389,6 +1426,24 @@ export function RdTaskDetailPage() {
               从失败阶段重试
             </Button>
           ) : null}
+          {task && task.taskType === "REQUIREMENT" && canSubmitRequirementTask(task) ? (
+            <Button size="sm" onClick={handleSubmitTask} disabled={submitting}>
+              <Play className="mr-1.5 h-4 w-4 text-emerald-600" />
+              {submitting ? "提交中..." : "开始推进"}
+            </Button>
+          ) : null}
+          {task?.status === "AWAITING_BUDGET_APPROVAL" ? (
+            <Button size="sm" onClick={() => setBudgetApprovalOpen(true)} disabled={approving}>
+              <CheckCircle2 className="mr-1.5 h-4 w-4 text-emerald-600" />
+              审批预算
+            </Button>
+          ) : null}
+          {task && canAnswerRequirement(task) ? (
+            <Button size="sm" onClick={() => setAnswerOpen(true)} disabled={answering}>
+              <MessageSquare className="mr-1.5 h-4 w-4 text-violet-600" />
+              提交补充信息
+            </Button>
+          ) : null}
         </div>
       </div>
 
@@ -1398,33 +1453,10 @@ export function RdTaskDetailPage() {
         </div>
       ) : null}
 
-      {task ? (
-        <div className="space-y-6">
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50/50 p-4">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-xs font-medium text-slate-600">快速操作：</span>
-              {task.taskType === "REQUIREMENT" && canSubmitRequirementTask(task) ? (
-                <Button size="sm" onClick={handleSubmitTask} disabled={submitting}>
-                  <Play className="mr-1.5 h-4 w-4 text-emerald-600" />
-                  {submitting ? "提交中..." : "开始推进"}
-                </Button>
-              ) : null}
-              {task.status === "AWAITING_BUDGET_APPROVAL" ? (
-                <Button size="sm" onClick={() => setBudgetApprovalOpen(true)} disabled={approving}>
-                  <CheckCircle2 className="mr-1.5 h-4 w-4 text-emerald-600" />
-                  审批预算
-                </Button>
-              ) : null}
-              {canAnswerRequirement(task) ? (
-                <Button size="sm" onClick={() => setAnswerOpen(true)} disabled={answering}>
-                  <MessageSquare className="mr-1.5 h-4 w-4 text-violet-600" />
-                  提交补充信息
-                </Button>
-              ) : null}
-            </div>
-          </div>
+      {task ? <TaskHeaderNotice task={task} /> : null}
 
-          <TaskSummaryBand task={task} overview={executionOverview} auditedState={auditedState} />
+      {task ? (
+        <div className="space-y-4">
           <TaskViewNavigation view={view} onChange={(nextView) => updateWorkspaceQuery({ view: nextView })} />
 
           {view === "roles" ? (
@@ -1446,6 +1478,7 @@ export function RdTaskDetailPage() {
                 failureRecoveryLoading={loadingFailureRecovery}
                 failureRecoveryError={failureRecoveryError}
                 hostVerifications={hostVerifications}
+                auditedState={auditedState}
                 codingMeaView={codingMeaView}
                 codingMeaLoading={loadingCodingMea}
                 codingMeaError={codingMeaError}
@@ -1459,12 +1492,14 @@ export function RdTaskDetailPage() {
                 onRefresh={() => refreshAll(task)}
                 captureTaskActionGuard={captureTaskActionGuard}
               />
+              <PanelErrorsNotice errors={pickPanelErrors(panelErrors, ["qaEvidence"])} />
               <HostVerificationCard
                 taskId={task.taskId}
                 verificationList={hostVerifications}
                 loading={loadingHostVerifications}
                 error={hostVerificationsError}
                 onSelectCodingAttempt={(attemptNo) => updateWorkspaceQuery({ role: "CODING_AGENT", attempt: attemptNo })}
+                compact
               />
             </div>
           ) : null}
@@ -1848,95 +1883,34 @@ export function RdTaskDetailPage() {
   );
 }
 
-function TaskSummaryBand({
-  task,
-  overview,
-  auditedState
-}: {
-  task: RdTask;
-  overview: RdTaskExecutionOverview | null;
-  auditedState: AuditedTaskState | null;
-}) {
-  const coverage = auditedCoverage(auditedState?.records);
-  return (
-    <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm sm:p-5" aria-label="任务摘要">
-      <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="outline" className={cn("font-medium", STATUS_BADGE_CLASS[task.status] || "")}>{task.status}</Badge>
-            {task.paused ? <Badge variant="outline" className="border-amber-300 bg-amber-50 font-medium text-amber-700">已暂停</Badge> : null}
-            <Badge variant="outline" className="border-slate-200 bg-slate-50 font-normal text-slate-600">
-              {task.taskType === "REQUIREMENT" ? "需求交付" : "Bug 修复"}
-            </Badge>
-            {auditedState?.present ? (
-              <Badge variant="outline" className="border-teal-200 bg-teal-50 font-medium text-teal-800">
-                {coverage.label}
-              </Badge>
-            ) : null}
-            <span className="text-xs text-slate-300">·</span>
-            <span className="font-mono text-xs font-semibold text-slate-600">{task.priority || "未设置优先级"}</span>
-          </div>
-          <div className="mt-2.5 flex flex-wrap items-center gap-x-5 gap-y-1 text-xs text-slate-600">
-            <span className="flex items-center gap-1.5">
-              <span className="text-slate-400">项目</span>
-              <strong className="font-semibold text-slate-900">{task.projectName || task.projectKey || "-"}</strong>
-            </span>
-            <span className="flex items-center gap-1.5 min-w-0">
-              <span className="text-slate-400">任务 ID</span>
-              <code className="break-all font-mono text-slate-800">{task.taskId}</code>
-            </span>
-            <span className="flex items-center gap-1.5">
-              <span className="text-slate-400">更新于</span>
-              <RelativeTime value={new Date(task.updateTimeEpochMillis).toISOString()} />
-            </span>
-          </div>
-        </div>
-        <dl className="grid grid-cols-2 gap-3 rounded-lg border border-slate-100 bg-slate-50/70 p-3 text-xs sm:grid-cols-4 xl:shrink-0">
-          <SummaryMetric label="当前角色" value={ROLE_LABEL[overview?.currentRole || ""] || overview?.currentRole || "-"} />
-          <SummaryMetric label="阶段状态" value={STAGE_STATUS_LABEL[overview?.currentStageStatus || ""] || overview?.currentStageStatus || "-"} />
-          <SummaryMetric label="累计 Token" value={formatTokens(overview?.tokenBudget.actualAccumulatedTokens)} />
-          <SummaryMetric label="任务耗时" value={formatDuration(overview?.elapsedMillis)} />
-        </dl>
+/** 任务级状态提示条：仅在有等待材料/恢复中/阻断信息时渲染，不输出空容器。 */
+function TaskHeaderNotice({ task }: { task: RdTask }) {
+  if (task.status === "WAITING_USER_INPUT") {
+    return (
+      <div className="flex items-start gap-2.5 rounded-lg border border-violet-200 bg-violet-50/90 p-3 text-sm text-violet-950">
+        <span className="font-semibold shrink-0">等待补充信息：</span>
+        <span className="break-words">{task.errorMessage || "Manager 需要操作员材料后才能继续。此状态不是策略预算审批。"}</span>
       </div>
-      {(() => {
-        if (task.status === "WAITING_USER_INPUT") {
-          return (
-            <div className="mt-4 flex items-start gap-2.5 rounded-lg border border-violet-200 bg-violet-50/90 p-3 text-sm text-violet-950">
-              <span className="font-semibold shrink-0">等待补充信息：</span>
-              <span className="break-words">{task.errorMessage || "Manager 需要操作员材料后才能继续。此状态不是策略预算审批。"}</span>
-            </div>
-          );
-        }
-        const notice = taskStatusNotice(task);
-        if (notice.kind === "recovery") {
-          return (
-            <div className="mt-4 flex items-start gap-2.5 rounded-lg border border-sky-200 bg-sky-50/90 p-3 text-sm text-sky-950">
-              <span className="font-semibold shrink-0">恢复中：</span>
-              <span className="break-words">{notice.message}</span>
-            </div>
-          );
-        }
-        if (notice.kind === "blocker") {
-          return (
-            <div className="mt-4 flex items-start gap-2.5 rounded-lg border border-rose-200 bg-rose-50/90 p-3 text-sm text-rose-900">
-              <span className="font-semibold shrink-0">当前阻断：</span>
-              <span className="break-words">{notice.message}</span>
-            </div>
-          );
-        }
-        return null;
-      })()}
-    </section>
-  );
-}
-
-function SummaryMetric({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="min-w-0">
-      <dt className="text-[11px] font-medium text-slate-500">{label}</dt>
-      <dd className="mt-0.5 truncate font-semibold text-slate-900" title={value}>{value}</dd>
-    </div>
-  );
+    );
+  }
+  const notice = taskStatusNotice(task);
+  if (notice.kind === "recovery") {
+    return (
+      <div className="flex items-start gap-2.5 rounded-lg border border-sky-200 bg-sky-50/90 p-3 text-sm text-sky-950">
+        <span className="font-semibold shrink-0">恢复中：</span>
+        <span className="break-words">{notice.message}</span>
+      </div>
+    );
+  }
+  if (notice.kind === "blocker") {
+    return (
+      <div className="flex items-start gap-2.5 rounded-lg border border-rose-200 bg-rose-50/90 p-3 text-sm text-rose-900">
+        <span className="font-semibold shrink-0">当前阻断：</span>
+        <span className="break-words">{notice.message}</span>
+      </div>
+    );
+  }
+  return null;
 }
 
 function TaskViewNavigation({ view, onChange }: { view: TaskDetailView; onChange: (view: TaskDetailView) => void }) {
@@ -1958,7 +1932,7 @@ function TaskViewNavigation({ view, onChange }: { view: TaskDetailView; onChange
             aria-selected={active}
             onClick={() => onChange(item.value)}
             className={cn(
-              "flex min-h-10 min-w-0 items-center justify-center gap-2 rounded-md px-2 py-2 text-xs font-medium transition-all sm:text-sm",
+              "flex min-h-9 min-w-0 items-center justify-center gap-2 rounded-md px-2 py-1.5 text-xs font-medium transition-all sm:text-sm",
               active ? "bg-white text-slate-900 shadow-sm font-semibold" : "text-slate-600 hover:bg-white/50 hover:text-slate-900"
             )}
           >

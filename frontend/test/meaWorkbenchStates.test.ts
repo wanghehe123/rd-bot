@@ -38,11 +38,24 @@ test("preserves task stage inspection when task is paused without forging cancel
 });
 
 test("implements 2/3 main column and 1/3 sticky sidebar layout on desktop", () => {
+  // V2: 单份响应式 DOM——状态卡 DOM 在前（窄屏先于内容 tabs），桌面通过显式 grid 放置到右列
   assert.match(roleWorkbench, /lg:grid-cols-3/);
-  assert.match(roleWorkbench, /lg:col-span-2/);
-  assert.match(roleWorkbench, /lg:col-span-1/);
+  assert.match(roleWorkbench, /lg:col-start-3 lg:row-start-1/);
+  assert.match(roleWorkbench, /lg:col-start-1 lg:col-span-2/);
   assert.match(roleWorkbench, /lg:sticky/);
   assert.match(roleWorkbench, /lg:top-16/);
+});
+
+test("keeps the selected attempt status before the content tabs with a single status DOM", () => {
+  // 窄屏：aside（状态卡）在 DOM 中先于内容 TabsList，且只有一份状态组件
+  const asideIndex = roleWorkbench.indexOf("RoleAgentStateCard");
+  const tabsListIndex = roleWorkbench.indexOf('value="issues">产物与证据');
+  assert.ok(asideIndex >= 0);
+  assert.ok(tabsListIndex > asideIndex);
+  assert.equal((roleWorkbench.match(/<RoleAgentStateCard/g) || []).length, 1);
+  // 所选阶段行显示当前/历史标签，不再使用占位 resultSummary 副标题
+  assert.match(roleWorkbench, /当前 Attempt|历史 Attempt/);
+  assert.doesNotMatch(roleWorkbench, /selectedStage\?\.resultSummary/);
 });
 
 test("provides compact collapsible view on mobile (390px/900px) to prevent pushing deliverables off first screen", () => {

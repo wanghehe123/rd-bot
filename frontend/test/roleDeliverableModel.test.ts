@@ -79,9 +79,10 @@ test("buildRoleDeliverables for CODING_AGENT: Attempt 1 reported PASSED does not
       codingStageRunId: "stage-code-2",
       status: "SUCCEEDED"
     },
+    // PR 来源只有任务 DTO 的 pullRequestUrl，没有独立 prNumber 字段
     taskPr: {
-      prNumber: 42,
-      prUrl: "https://github.com/org/repo/pull/42"
+      prUrl: "https://github.com/org/repo/pull/42",
+      workBranch: "rd/task-750"
     }
   };
 
@@ -90,10 +91,24 @@ test("buildRoleDeliverables for CODING_AGENT: Attempt 1 reported PASSED does not
   assert.equal(viewAttempt1.reportedChecks.some((c) => c.name === "Agent 自报测试" && c.status === "PASSED"), true);
   // Must NOT display Host Verified badge since codingStageRunId doesn't match Attempt 1!
   assert.equal(viewAttempt1.deliverables.some((d) => d.badge === "HOST_VERIFIED"), false);
-  // Task PR is marked as scope: TASK
+  // Task PR is marked as scope: TASK; PR number is derived from the URL
   const prLink = viewAttempt1.artifactLinks.find((l) => l.type === "PULL_REQUEST");
   assert.equal(prLink?.scope, "TASK");
   assert.equal(prLink?.name, "PR #42");
+  assert.equal(prLink?.targetUrl, "https://github.com/org/repo/pull/42");
+
+  // URL 中提取不到编号时链接仍要渲染，只退回通用标题
+  const viewPrWithoutNumber = buildRoleDeliverables({
+    ...inputAttempt1,
+    taskPr: { prUrl: "https://git.example.com/org/repo/-/changes" }
+  });
+  const genericPrLink = viewPrWithoutNumber.artifactLinks.find((l) => l.type === "PULL_REQUEST");
+  assert.equal(genericPrLink?.name, "Pull Request");
+  assert.equal(genericPrLink?.targetUrl, "https://git.example.com/org/repo/-/changes");
+
+  // 没有 pullRequestUrl 时完全不渲染 PR 链接
+  const viewPrAbsent = buildRoleDeliverables({ ...inputAttempt1, taskPr: null });
+  assert.equal(viewPrAbsent.artifactLinks.some((l) => l.type === "PULL_REQUEST"), false);
 
   // Coding Attempt 2 with matching Host Verification
   const inputAttempt2 = {
@@ -139,11 +154,39 @@ test("buildRoleDeliverables for QA_AGENT: distinguishes QA reported checks from 
       })
     },
     // However, in audited head state, AC-003 is still PENDING!
+    // auditedState 记录使用后端 wire 字段：id / text / evidenceRefs（对象数组）
     auditedState: {
       records: [
-        { recordId: "AC-001", title: "结算金额", status: "COMPLETED", blocking: true, evidenceIds: ["ev-1"] },
-        { recordId: "AC-002", title: "优惠券抵扣", status: "COMPLETED", blocking: true, evidenceIds: ["ev-2"] },
-        { recordId: "AC-003", title: "超时赔付说明", status: "PENDING", blocking: true, evidenceIds: [] }
+        {
+          id: "AC-001",
+          kind: "ACCEPTANCE",
+          text: "结算金额",
+          status: "COMPLETED",
+          blocking: true,
+          evidenceRefs: [{ auditRunId: "ar-1", sourceKind: "QA_COMMAND_LOG", uri: "qa-evidence/console/run-1", sha256: "hash-1" }],
+          sourceStageRunId: "stage-qa-1",
+          blockedReason: ""
+        },
+        {
+          id: "AC-002",
+          kind: "ACCEPTANCE",
+          text: "优惠券抵扣",
+          status: "COMPLETED",
+          blocking: true,
+          evidenceRefs: [],
+          sourceStageRunId: "stage-qa-1",
+          blockedReason: ""
+        },
+        {
+          id: "AC-003",
+          kind: "ACCEPTANCE",
+          text: "超时赔付说明",
+          status: "PENDING",
+          blocking: true,
+          evidenceRefs: [],
+          sourceStageRunId: "stage-qa-1",
+          blockedReason: ""
+        }
       ]
     },
     qaEvidence: [
@@ -159,10 +202,18 @@ test("buildRoleDeliverables for QA_AGENT: distinguishes QA reported checks from 
 
   // But auditedChecks only has the 2 that are COMPLETED in auditedState
   assert.equal(view.auditedChecks.length, 2);
-  assert.equal(view.auditedChecks.some((c) => c.recordId === "AC-003"), false);
+  assert.equal(view.auditedChecks.some((c) => c.id === "AC-003"), false);
+  assert.equal(view.auditedChecks.every((c) => c.status === "COMPLETED"), true);
 
-  // AC-003 is flagged as a key gap in Host audited state
-  assert.equal(view.keyGaps.some((g) => g.includes("AC-003") && g.includes("仍待完成")), true);
+  // 审计记录按 wire 字段透传：id/text 与 evidenceRefs（uri + sourceKind）
+  const auditedFirst = view.auditedChecks.find((c) => c.id === "AC-001");
+  assert.equal(auditedFirst?.text, "结算金额");
+  assert.equal(auditedFirst?.evidenceRefs.length, 1);
+  assert.equal(auditedFirst?.evidenceRefs[0]?.uri, "qa-evidence/console/run-1");
+  assert.equal(auditedFirst?.evidenceRefs[0]?.sourceKind, "QA_COMMAND_LOG");
+
+  // AC-003 is flagged as a key gap in Host audited state (id + text)
+  assert.equal(view.keyGaps.some((g) => g.includes("AC-003") && g.includes("超时赔付说明") && g.includes("仍待完成")), true);
 
   // Evidence list contains the 2 items matching stage-qa-1
   assert.equal(view.keyEvidence.length, 2);
@@ -234,4 +285,159 @@ test("buildRoleDeliverables handles unstructured or missing results with explici
     }
   });
   assert.equal(unstructuredView.unavailableReason, "尚无可展示的结构化产物");
+});
+
+test("buildRoleDeliverables keeps task-head records out of a historical QA attempt conclusion", () => {
+  const view = buildRoleDeliverables({
+    taskId: "task-750",
+    role: "QA_AGENT",
+    stage: {
+      stageRunId: "stage-qa-1",
+      role: "QA_AGENT",
+      status: "SUCCEEDED",
+      attemptNo: 1,
+      resultPreview: JSON.stringify({ summary: "QA Attempt 1", acceptanceResults: [] })
+    },
+    auditedState: {
+      records: [
+        {
+          id: "AC-CURRENT",
+          kind: "ACCEPTANCE",
+          blocking: true,
+          text: "当前 Attempt 缺口",
+          status: "PENDING",
+          evidenceRefs: [],
+          sourceStageRunId: "stage-qa-1",
+          blockedReason: ""
+        },
+        {
+          id: "AC-OTHER-COMPLETED",
+          kind: "ACCEPTANCE",
+          blocking: true,
+          text: "后续 Attempt 已完成",
+          status: "COMPLETED",
+          evidenceRefs: [],
+          sourceStageRunId: "stage-qa-2",
+          blockedReason: ""
+        },
+        {
+          id: "AC-OTHER-PENDING",
+          kind: "ACCEPTANCE",
+          blocking: true,
+          text: "后续 Attempt 阻断",
+          status: "PENDING",
+          evidenceRefs: [],
+          sourceStageRunId: "stage-qa-2",
+          blockedReason: ""
+        },
+        {
+          id: "AC-UNKNOWN-PENDING",
+          kind: "ACCEPTANCE",
+          blocking: true,
+          text: "来源未记录的阻断",
+          status: "PENDING",
+          evidenceRefs: [],
+          sourceStageRunId: "",
+          blockedReason: ""
+        }
+      ]
+    }
+  });
+
+  // 任务最新 head 的已完成记录保留真实来源，但不伪装成 stage-qa-1 的结论。
+  assert.equal(view.auditedChecks.some((record) => record.id === "AC-OTHER-COMPLETED"), true);
+  assert.equal(view.auditedChecks.find((record) => record.id === "AC-OTHER-COMPLETED")?.sourceStageRunId, "stage-qa-2");
+  assert.equal(view.keyGaps.some((gap) => gap.includes("AC-CURRENT")), true);
+  assert.equal(view.keyGaps.some((gap) => gap.includes("AC-OTHER-PENDING")), false);
+  assert.equal(view.keyGaps.some((gap) => gap.includes("AC-UNKNOWN-PENDING")), false);
+
+  // 异轮及来源未知的 head 阻断单列，供 Host task-head 区域展示。
+  assert.deepEqual(
+    view.taskHeadGaps.map((record) => [record.id, record.sourceStageRunId]),
+    [["AC-OTHER-PENDING", "stage-qa-2"], ["AC-UNKNOWN-PENDING", ""]]
+  );
+});
+
+test("buildRoleDeliverables routes every blocking non-completed audit status by source", () => {
+  const view = buildRoleDeliverables({
+    taskId: "task-750",
+    role: "QA_AGENT",
+    stage: {
+      stageRunId: "stage-qa-1",
+      role: "QA_AGENT",
+      status: "SUCCEEDED",
+      attemptNo: 1,
+      resultPreview: JSON.stringify({ summary: "QA Attempt 1", acceptanceResults: [] })
+    },
+    auditedState: {
+      records: [
+        {
+          id: "AC-BLOCKED",
+          kind: "ACCEPTANCE",
+          blocking: true,
+          text: "当前 Attempt 已阻断",
+          status: "BLOCKED",
+          evidenceRefs: [],
+          sourceStageRunId: "stage-qa-1",
+          blockedReason: "命令失败"
+        },
+        {
+          id: "AC-UNTRUSTED",
+          kind: "ACCEPTANCE",
+          blocking: true,
+          text: "后续 Attempt 尚未核验",
+          status: "UNTRUSTED",
+          evidenceRefs: [],
+          sourceStageRunId: "stage-qa-2",
+          blockedReason: ""
+        }
+      ]
+    }
+  });
+
+  assert.equal(view.keyGaps.some((gap) => gap.includes("AC-BLOCKED") && gap.includes("BLOCKED")), true);
+  assert.equal(view.taskHeadGaps.some((record) => record.id === "AC-UNTRUSTED" && record.status === "UNTRUSTED"), true);
+});
+
+test("buildRoleDeliverables keeps allDeliverables/allEvidence complete while default views stay bounded", () => {
+  // 真实任务形状：所选 QA 阶段 23 条证据，另有跨阶段记录不得进入任一列表
+  const evidence = Array.from({ length: 23 }, (_, i) => ({
+    artifactId: `qa-evidence/art-${i}`,
+    stageRunId: i < 20 ? "stage-qa-1" : "stage-qa-OTHER"
+  }));
+  const view = buildRoleDeliverables({
+    taskId: "task-750",
+    role: "QA_AGENT",
+    stage: {
+      stageRunId: "stage-qa-1",
+      role: "QA_AGENT",
+      status: "SUCCEEDED",
+      attemptNo: 1,
+      resultPreview: JSON.stringify({
+        summary: "QA 完成",
+        acceptanceResults: Array.from({ length: 6 }, (_, i) => ({
+          criteria: `AC-00${i + 1}`,
+          status: "PASSED"
+        }))
+      })
+    },
+    qaEvidence: evidence
+  });
+
+  assert.equal(view.totalEvidenceCount, 20);
+  assert.equal(view.keyEvidence.length, 5);
+  assert.equal(view.allEvidence.length, 20);
+  assert.equal(view.hasMoreEvidence, true);
+  // 所有列表内的证据都属于所选阶段；跨阶段记录不进入任一列表
+  for (const ev of view.allEvidence) {
+    assert.equal(ev.stageRunId, "stage-qa-1");
+  }
+  assert.equal(view.allEvidence.some((ev) => ev.stageRunId === "stage-qa-OTHER"), false);
+  assert.equal(view.keyEvidence.every((ev) => view.allEvidence.includes(ev)), true);
+  // keyEvidence 是 allEvidence 的前五项兼容视图
+  assert.deepEqual(view.keyEvidence.map((ev) => ev.id), view.allEvidence.slice(0, 5).map((ev) => ev.id));
+
+  // 6 项自报检查全部进入完整模型；QA 不再只有一段长执行概述
+  assert.equal(view.reportedChecks.length, 6);
+  assert.equal(view.allDeliverables.length, 0);
 });

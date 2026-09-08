@@ -42,7 +42,9 @@ test("separates Agent self-reported checks from Host audited checks in deliverab
 });
 
 test("fetches full stage result on-demand and guards preview truncation", () => {
-  assert.match(roleDeliverablesPanel, /getStageResult\(taskId, stage\.stageRunId\)/);
+  assert.match(roleDeliverablesPanel, /getCompleteStageResult\(\s*taskId,\s*stage\.stageRunId/);
+  assert.match(roleDeliverablesPanel, /stageResultIdentity/);
+  assert.match(roleDeliverablesPanel, /token === fullResultTokenRef\.current/);
   assert.match(roleDeliverablesPanel, /stageResult\.source === "ARTIFACT_PREVIEW"/);
   assert.match(roleDeliverablesPanel, /当前结果为预览截断，未生成完整下载文件/);
   assert.match(roleDeliverablesPanel, /stageResult\.source === "FINALIZATION_RESULT"/);
