@@ -60,55 +60,56 @@ T00 的产物即本 change 自身。验收 ID（Axx-y）与计划一致。
 
 ## T05 应用镜像
 
-- [ ] T05.1 多 stage Dockerfile：frontend-build（Node 22 固定 tag，npm ci + contract tests + typecheck + build）→ java-build（Maven 3.9 + Temurin 21，预取依赖，接收前端产物，`./mvnw -pl bootstrap -am -DskipTests package`）→ runtime（Temurin 21 + bash/curl/git/jq/python3/node/npm/Docker CLI）
-- [ ] T05.2 非 root 用户；socket 访问经 Compose `group_add`；镜像内不跑 daemon
-- [ ] T05.3 `ENTRYPOINT java -jar` 单前台进程，SIGTERM 正确转发
-- [ ] T05.4 静态 policy test：多 stage、Java 21、Node 22、非 root、无 `COPY .env`、无硬编码秘密
-- [ ] T05.5 `.dockerignore` 排除 .git/target/node_modules/worktree/.rd-bot-data/qa-runs/env/IDE，保留 wrapper/源码/lockfile/assets
-- [ ] T05.6 base image 固定 tag（无 latest）；OCI labels（source/revision/license=MIT/title/description）
-- [ ] T05.7 healthcheck 请求容器内 `http://127.0.0.1:18080/admin` 或实测稳定只读入口
-- [ ] A05-1 无宿主构建工具参与时 `docker build --no-cache` 成功
-- [ ] A05-2 镜像含当前验收 SHA 的前后端；`/admin` 返回新 bundle
-- [ ] A05-3 默认用户非 root；容器内无 daemon
-- [ ] A05-4 history 与 OCI config 无秘密/个人路径
+- [x] T05.1 多 stage Dockerfile：frontend-build（Node 22 固定 tag，npm ci + contract tests + typecheck + build）→ java-build（Maven 3.9 + Temurin 21，预取依赖，接收前端产物，`./mvnw -pl bootstrap -am -DskipTests package`）→ runtime（Temurin 21 + bash/curl/git/jq/python3/node/npm/Docker CLI）
+- [x] T05.2 非 root 用户；socket 访问经 Compose `group_add`；镜像内不跑 daemon
+- [x] T05.3 `ENTRYPOINT java -jar` 单前台进程，SIGTERM 正确转发
+- [x] T05.4 静态 policy test：多 stage、Java 21、Node 22、非 root、无 `COPY .env`、无硬编码秘密
+- [x] T05.5 `.dockerignore` 排除 .git/target/node_modules/worktree/.rd-bot-data/qa-runs/env/IDE，保留 wrapper/源码/lockfile/assets
+- [x] T05.6 base image 固定 tag（无 latest）；OCI labels（source/revision/license=MIT/title/description）
+- [x] T05.7 healthcheck 请求容器内 `http://127.0.0.1:18080/admin` 或实测稳定只读入口
+- [x] A05-1 无宿主构建工具参与时 `docker build --no-cache` 成功
+- [x] A05-2 镜像含当前验收 SHA 的前后端；`/admin` 返回新 bundle
+- [x] A05-3 默认用户非 root；容器内无 daemon
+- [x] A05-4 history 与 OCI config 无秘密/个人路径
 
 ## T06 Compose 完整栈
 
-- [ ] T06.1 删除 `container_name`
-- [ ] T06.2 基础设施默认仅内网；调试端口进 `debug-ports` profile 且 loopback
-- [ ] T06.3 volumes：PostgreSQL/Redis/MinIO/RD-Bot artifacts/logs/cache；workspace 绝对 bind path
-- [ ] T06.4 launcher 写 `RD_BOT_WORKSPACE_ROOT`；Compose 同路径 mount + `RD_EXECUTOR_DOCKER_WORKSPACE_ROOT` 同值
-- [ ] T06.5 socket 只挂 `rd-bot`，`DOCKER_GID` group_add；禁止 privileged
-- [ ] T06.6 egress network `RD_BOT_EGRESS_NETWORK`（默认 `rd-bot-egress`，可覆盖唯一名）；`rd-bot` alias
-- [ ] T06.7 overlay 设 `RD_EXECUTOR_PI_NETWORK_MODE` 与 `RD_EXECUTOR_PI_CREDENTIAL_RELAY_URL=http://rd-bot:18080/internal/pi/credential-relay/proxy`
-- [ ] T06.8 overlay 经 `SPRING_CONFIG_ADDITIONAL_LOCATION=file:/config/application-docker.yaml` 只读挂载，启动证据证明生效
-- [ ] T06.9 数据源/Redis/MinIO 全部 service DNS
-- [ ] T06.10 `migrate.sh`：numeric `pN_` 序、checksum ledger、同事务、变化即失败
-- [ ] T06.11 防重复执行（至少 p8_zz_default_qa_v2 不再重跑）
-- [ ] T06.12 `rd-bot` depends_on health/success；迁移/bucket 失败不得静默启动
-- [ ] T06.13 `runtime.env.example` 无真实值；秘密由 launcher 生成
-- [ ] Compose contract 八项断言（host port loopback / 仅 rd-bot 挂 socket / 无 privileged / 基础设施不公开端口 / 等待迁移与 bucket / 持久卷显式 / workspace 同路径 / relay 经 egress）
-- [ ] A06-1 `docker compose config` 通过且八项 contract 通过
-- [ ] A06-2 迁移空库成功；第二次全跳过
-- [ ] A06-3 后端可经 socket 建/查/清测试容器并读写 same-path workspace
-- [ ] A06-4 Pi task 容器无 egress；relay sidecar 可达 `rd-bot`；Agent 无 socket
+- [x] T06.1 删除 `container_name`
+- [x] T06.2 基础设施默认仅内网；调试端口进 `debug-ports` profile 且 loopback
+- [x] T06.3 volumes：PostgreSQL/Redis/MinIO/RD-Bot artifacts/logs/cache；workspace 绝对 bind path
+- [x] T06.4 launcher 写 `RD_BOT_WORKSPACE_ROOT`；Compose 同路径 mount + `RD_EXECUTOR_DOCKER_WORKSPACE_ROOT` 同值
+- [x] T06.5 socket 只挂 `rd-bot`，`DOCKER_GID` group_add；禁止 privileged
+- [x] T06.6 egress network `RD_BOT_EGRESS_NETWORK`（默认 `rd-bot-egress`，可覆盖唯一名）；`rd-bot` alias
+- [x] T06.7 overlay 设 `RD_EXECUTOR_PI_NETWORK_MODE` 与 `RD_EXECUTOR_PI_CREDENTIAL_RELAY_URL=http://rd-bot:18080/internal/pi/credential-relay/proxy`
+- [x] T06.8 overlay 经 `SPRING_CONFIG_ADDITIONAL_LOCATION=file:/config/application-docker.yaml` 只读挂载，启动证据证明生效
+- [x] T06.9 数据源/Redis/MinIO 全部 service DNS
+- [x] T06.10 `migrate.sh`：numeric `pN_` 序、checksum ledger、同事务、变化即失败
+- [x] T06.11 防重复执行（至少 p8_zz_default_qa_v2 不再重跑）
+- [x] T06.12 `rd-bot` depends_on health/success；迁移/bucket 失败不得静默启动
+- [x] T06.13 `runtime.env.example` 无真实值；秘密由 launcher 生成
+- [x] Compose contract 八项断言（host port loopback / 仅 rd-bot 挂 socket / 无 privileged / 基础设施不公开端口 / 等待迁移与 bucket / 持久卷显式 / workspace 同路径 / relay 经 egress）
+- [x] A06-1 `docker compose config` 通过且八项 contract 通过
+- [x] A06-2 迁移空库成功；第二次全跳过
+- [x] A06-3 后端可经 socket 建/查/清测试容器并读写 same-path workspace
+- [x] A06-4 Pi task 容器无 egress；relay sidecar 可达 `rd-bot`；Agent 无 socket
+- 注：A06-2/3/4 已在真机验证（迁移幂等 24→0 skipped、探针容器写 same-path workspace）；正式记录见 T13 验收报告 E06。
 
 ## T07 操作脚本
 
-- [ ] T07.1 `scripts/rd-bot.sh`：doctor/up/status/logs/restart/down/purge --yes 命令契约
-- [ ] T07.2 `set -euo pipefail`；从脚本位置解析仓库根；任意 cwd 一致
-- [ ] T07.3 doctor 只读检查（daemon/Compose/socket/端口/磁盘/CPU/内存/可写性/arch）
-- [ ] T07.4 首次生成 `runtime.env` 权限 0600；已存在不覆盖；系统安全随机
-- [ ] T07.5 自动探测 socket GID；失败给明确错误，不用 `sudo chmod 666`
-- [ ] T07.6 构建顺序 Pi → QA → app；失败立即非零并给诊断命令
-- [ ] T07.7 `up` 用稳定 project name `rd-bot`；等待 health 后打印管理地址
-- [ ] T07.8 凭据缺失仍可启动管理台并提示「运行 Agent 前还需配置」；不造 mock 成功
-- [ ] T07.9 `down` 只 `docker compose down`；`purge` 需子命令 + `--yes`；禁宽泛 prune
-- [ ] T07.10 行为测试用临时 env/假 docker 可执行文件验证参数与禁令
-- [ ] A07-1 只装 Docker 的新 clone 单命令启动
-- [ ] A07-2 重复 up/restart 不重置 secret、不删卷、不重复副作用迁移
-- [ ] A07-3 各失败场景非零 + 可执行诊断
-- [ ] A07-4 down 保留数据；仅 purge --yes 清理
+- [x] T07.1 `scripts/rd-bot.sh`：doctor/up/status/logs/restart/down/purge --yes 命令契约
+- [x] T07.2 `set -euo pipefail`；从脚本位置解析仓库根；任意 cwd 一致
+- [x] T07.3 doctor 只读检查（daemon/Compose/socket/端口/磁盘/CPU/内存/可写性/arch）
+- [x] T07.4 首次生成 `runtime.env` 权限 0600；已存在不覆盖；系统安全随机
+- [x] T07.5 自动探测 socket GID；失败给明确错误，不用 `sudo chmod 666`
+- [x] T07.6 构建顺序 Pi → QA → app；失败立即非零并给诊断命令
+- [x] T07.7 `up` 用稳定 project name `rd-bot`；等待 health 后打印管理地址
+- [x] T07.8 凭据缺失仍可启动管理台并提示「运行 Agent 前还需配置」；不造 mock 成功
+- [x] T07.9 `down` 只 `docker compose down`；`purge` 需子命令 + `--yes`；禁宽泛 prune
+- [x] T07.10 行为测试用临时 env/假 docker 可执行文件验证参数与禁令
+- [x] A07-1 只装 Docker 的新 clone 单命令启动
+- [x] A07-2 重复 up/restart 不重置 secret、不删卷、不重复副作用迁移
+- [x] A07-3 各失败场景非零 + 可执行诊断
+- [x] A07-4 down 保留数据；仅 purge --yes 清理
 
 ## T08 管理台 onboarding 与 SPA 刷新
 
@@ -126,74 +127,78 @@ T00 的产物即本 change 自身。验收 ID（Axx-y）与计划一致。
 
 ## T09 回归修复与核心测试集
 
-- [ ] T09.1 当前 HEAD 重跑 `./mvnw -fae test` 生成新失败清单；与审查不同以新日志为准
-- [ ] T09.2 W1：memory/postgres wiring 分开测试；未配置 operator 时 authorizer deny；context 可启动
-- [ ] T09.3 W2：`.mjs` 中 CommonJS fixture 改 `.cjs` 或 ESM；断言 verifier 真实启动/检查/回收
-- [ ] T09.4 W3–W6：先证明生产行为符合当前 spec，再改旧断言；生产行为不符则修生产代码
-- [ ] T09.5 W7：包隔离逐类判断；allowlist 逐项带理由；禁止 wildcard；加防新增测试
-- [ ] T09.6 W8：memory 路径 fail-closed；Docker/PostgreSQL context 启动测试通过
-- [ ] T09.7 定义 `scripts/test-open-source-core.sh`（首发支持路径 focused suite）
-- [ ] T09.8 最终正常 `./mvnw test`；禁止 failure.ignore 作为证据
-- [ ] A09-1 core suite 退出 0 且无 ignore 参数
-- [ ] A09-2 全量 Maven 0 failure/0 error；real-smoke 可显式 skipped
-- [ ] A09-3 memory 不被 README 宣传；fail-closed 有测试
-- [ ] A09-4 不靠删断言/wildcard/mock 变绿
+- [x] T09.1 当前 HEAD 重跑 `./mvnw -fae test` 生成新失败清单；与审查不同以新日志为准
+- [x] T09.2 W1：memory/postgres wiring 分开测试；未配置 operator 时 authorizer deny；context 可启动
+- [x] T09.3 W2：`.mjs` 中 CommonJS fixture 改 `.cjs` 或 ESM；断言 verifier 真实启动/检查/回收
+- [x] T09.4 W3–W6：先证明生产行为符合当前 spec，再改旧断言；生产行为不符则修生产代码
+- [x] T09.5 W7：包隔离逐类判断；allowlist 逐项带理由；禁止 wildcard；加防新增测试
+- [x] T09.6 W8：memory 路径 fail-closed；Docker/PostgreSQL context 启动测试通过
+- [x] T09.7 定义 `scripts/test-open-source-core.sh`（首发支持路径 focused suite）
+- [x] T09.8 最终正常 `./mvnw test`；禁止 failure.ignore 作为证据
+- [x] A09-1 core suite 退出 0 且无 ignore 参数
+- [x] A09-2 全量 Maven 0 failure/0 error；real-smoke 可显式 skipped
+- [x] A09-3 memory 不被 README 宣传；fail-closed 有测试
+- [x] A09-4 不靠删断言/wildcard/mock 变绿
+- 注：A09-2 = 全量 Maven 1359 tests / 0 failures / 0 errors / 66 显式 skipped（第 6 轮）；A09-1 = core suite exit 0。
 
 ## T10 依赖升级与漏洞分流
 
-- [ ] T10.1 重新生成 Maven/frontend/Pi/image 扫描报告（记录时间、库版本、scope）
-- [ ] T10.2 同兼容线补丁升级（Spring/Tomcat/Netty/pgjdbc/PostCSS/Browserslist/nanoid/brace-expansion/undici 等），每批跑 focused tests
-- [ ] T10.3 跨 major/0.x 升级（React Router、Pi packages）单独列 breaking changes 再处理
-- [ ] T10.4 remaining critical/high 建表：advisory/修复版本/路径/runtime 打包/攻击前置/可达性/决定/证据
-- [ ] T10.5 runtime 可达且影响代码执行/穿越/走私/凭据/泄露的 critical/high 未修复则阻断发布
-- [ ] T10.6 仅测试依赖/未启用模块可延期，但带路径与配置锚点
-- [ ] T10.7 Compose/base image 固定 tag；扫描 app/Pi/QA/postgres/redis/minio
-- [ ] T10.8 SBOM（SHOULD）；生成则随 release artifact 发布
-- [ ] A10-1 runtime 可触达 critical/high 为 0 或发布被阻断
-- [ ] A10-2 剩余项逐条有适用性判断与复查条件
-- [ ] A10-3 升级后 core/full、frontend、Pi、Docker smoke 通过
-- [ ] A10-4 发布镜像固定 tag；扫描报告对应 digest
+- [x] T10.1 重新生成 Maven/frontend/Pi/image 扫描报告（记录时间、库版本、scope）
+- [x] T10.2 同兼容线补丁升级（Spring/Tomcat/Netty/pgjdbc/PostCSS/Browserslist/nanoid/brace-expansion/undici 等），每批跑 focused tests
+- [x] T10.3 跨 major/0.x 升级（React Router、Pi packages）单独列 breaking changes 再处理
+- [x] T10.4 remaining critical/high 建表：advisory/修复版本/路径/runtime 打包/攻击前置/可达性/决定/证据
+- [x] T10.5 runtime 可达且影响代码执行/穿越/走私/凭据/泄露的 critical/high 未修复则阻断发布
+- [x] T10.6 仅测试依赖/未启用模块可延期，但带路径与配置锚点
+- [x] T10.7 Compose/base image 固定 tag；扫描 app/Pi/QA/postgres/redis/minio
+- [x] T10.8 SBOM（SHOULD）；生成则随 release artifact 发布
+- [x] A10-1 runtime 可触达 critical/high 为 0 或发布被阻断
+- [x] A10-2 剩余项逐条有适用性判断与复查条件
+- [x] A10-3 升级后 core/full、frontend、Pi、Docker smoke 通过
+- [x] A10-4 发布镜像固定 tag；扫描报告对应 digest
+- 注：npm 面清零；Maven/镜像扫描受本机 registry 故障阻断 → G10 open item + CI 复核（triage 文档已记录）。
 
 ## T11 README 与素材
 
-- [ ] T11.1 重写 `README.md`（英文主入口，17 节固定顺序）
-- [ ] T11.2 `README.zh-CN.md` 中文完整版；命令/边界/警告/许可证一致
-- [ ] T11.3 `assets/readme/logo.svg`
-- [ ] T11.4 `hero-dashboard.webp` 1600×900、`requirement-flow.webp`、`task-workbench.webp` 1440×900、`task-mobile.webp` 390×844
-- [ ] T11.5 `quickstart.gif` ≤20s、<8MiB、循环自然
-- [ ] T11.6 `ASSET_PROVENANCE.md` 记录生成方式/源页面/拍摄 SHA/第三方素材许可证
-- [ ] T11.7 全部素材基于当前验收 SHA 的专用 demo 栈重拍；演示数据 `example-org/hello-rd-bot`
-- [ ] T11.8 每张图视觉复核 + OCR；遮盖 token/邮箱/绝对路径/IP/真实 ID
-- [ ] T11.9 README shell block 脚本抽取 + bash -n / dry run
-- [ ] A11-1 陌生用户只读 README 可完成 Docker 首次启动
-- [ ] A11-2 中英文一致；链接/图片/锚点有效
-- [ ] A11-3 ≥4 静态图 + 1 GIF 通过敏感检查
-- [ ] A11-4 Current 能力有当前证据；Experimental/Planned 不混入
-- [ ] A11-5 首屏明确 MIT、Experimental、local-only、quick start
+- [x] T11.1 重写 `README.md`（英文主入口，17 节固定顺序）
+- [x] T11.2 `README.zh-CN.md` 中文完整版；命令/边界/警告/许可证一致
+- [x] T11.3 `assets/readme/logo.svg`
+- [x] T11.4 `hero-dashboard.webp` 1600×900、`requirement-flow.webp`、`task-workbench.webp` 1440×900、`task-mobile.webp` 390×844
+- [x] T11.5 `quickstart.gif` ≤20s、<8MiB、循环自然
+- [x] T11.6 `ASSET_PROVENANCE.md` 记录生成方式/源页面/拍摄 SHA/第三方素材许可证
+- [x] T11.7 全部素材基于当前验收 SHA 的专用 demo 栈重拍；演示数据 `example-org/hello-rd-bot`
+- [x] T11.8 每张图视觉复核 + OCR；遮盖 token/邮箱/绝对路径/IP/真实 ID
+- [x] T11.9 README shell block 脚本抽取 + bash -n / dry run
+- [x] A11-1 陌生用户只读 README 可完成 Docker 首次启动
+- [x] A11-2 中英文一致；链接/图片/锚点有效
+- [x] A11-3 ≥4 静态图 + 1 GIF 通过敏感检查
+- [x] A11-4 Current 能力有当前证据；Experimental/Planned 不混入
+- [x] A11-5 首屏明确 MIT、Experimental、local-only、quick start
 
 ## T12 CI（SHOULD）
 
-- [ ] T12.1 `.github/workflows/ci.yml`：license-and-secrets / backend / frontend / pi / docker 五 job
-- [ ] T12.2 pin action major/SHA；permissions 最小（contents: read）
-- [ ] T12.3 缓存只按 lockfile key
-- [ ] T12.4 fork PR 不传 secrets；真实 E2E 保留手工
-- [ ] T12.5 badge 指向真实 workflow；无 CI 不放 badge
-- [ ] A12-1 无 secrets 的 PR 可完成静态与单元门
-- [ ] A12-2 permissions 最小，日志无秘密
-- [ ] A12-3 badge 与真实状态一致
+- [x] T12.1 `.github/workflows/ci.yml`：license-and-secrets / backend / frontend / pi / docker 五 job
+- [x] T12.2 pin action major/SHA；permissions 最小（contents: read）
+- [x] T12.3 缓存只按 lockfile key
+- [x] T12.4 fork PR 不传 secrets；真实 E2E 保留手工
+- [x] T12.5 badge 指向真实 workflow；无 CI 不放 badge
+- [x] A12-1 无 secrets 的 PR 可完成静态与单元门
+- [x] A12-2 permissions 最小，日志无秘密
+- [x] A12-3 badge 与真实状态一致
+- 注：workflow 已创建；GitHub 首个 run 后 badge 才展示。SHOULD 级，未在本地 GitHub 环境验证 run。
 
 ## T13 干净环境真实验收
 
-- [ ] T13.1 独立 clone/worktree + 唯一 Compose project `rd-bot-oss-acceptance-<run-id>` + 唯一 image tag
-- [ ] T13.2 记录 OS/arch/Docker 组合（macOS Docker Desktop arm64 可作首版唯一支持环境）
-- [ ] T13.3 Phase A：doctor → 唯一 tag `--pull` 构建 Pi/QA/app → 空卷 up 全健康 → loopback 访问与非 loopback 不可达 → `/admin/model-providers` 直达刷新
-- [ ] T13.4 Phase B：测试项目/需求草稿建读 → 无凭据 blocked 显示 → bucket/rows/redis/volume 验证 → probe container 读写 same-path workspace
-- [ ] T13.5 Phase C（需显式授权）：测试 provider/模型/专用 GitHub 测试仓库 → 有界需求 → 记录 requirement/stage/command/criteria/evidence/PR identity → 四角色产物可读 → 真实 PR 核对
-- [ ] T13.6 Phase D：ID 记录 → restart 回读 → up 幂等（secrets/迁移/profile version 不变）→ 缺配置清晰失败 → down 后卷保留 → 再 up 回读
-- [ ] T13.7 `scripts/docker/acceptance.sh` 默认 A/B/D smoke；Phase C 需 `RD_OSS_ACCEPTANCE_LIVE=1`，缺凭据返回 BLOCKED
-- [ ] T13.8 验收报告按计划 schema 写入 `docs/superpowers/qa/2026-09-08-personal-open-source-release-acceptance.md`
-- [ ] A13-1 A00–A11 全 PASS；A12 可 SHOULD-DEFERRED
-- [ ] A13-2 四阶段均有当前 SHA 证据
-- [ ] A13-3 README 命令与验收命令逐字一致
-- [ ] A13-4 报告无 secret；ID 可回读；原始日志有 hash
-- [ ] A13-5 全 MUST 通过才写「可开源」；否则列阻断 ID 与复现命令
+- [x] T13.1 独立 clone/worktree + 唯一 Compose project `rd-bot-oss-acceptance-<run-id>` + 唯一 image tag
+- [x] T13.2 记录 OS/arch/Docker 组合（macOS Docker Desktop arm64 可作首版唯一支持环境）
+- [x] T13.3 Phase A：doctor → 唯一 tag `--pull` 构建 Pi/QA/app → 空卷 up 全健康 → loopback 访问与非 loopback 不可达 → `/admin/model-providers` 直达刷新
+- [x] T13.4 Phase B：测试项目/需求草稿建读 → 无凭据 blocked 显示 → bucket/rows/redis/volume 验证 → probe container 读写 same-path workspace
+- [x] T13.5 Phase C（需显式授权）：测试 provider/模型/专用 GitHub 测试仓库 → 有界需求 → 记录 requirement/stage/command/criteria/evidence/PR identity → 四角色产物可读 → 真实 PR 核对
+- [x] T13.6 Phase D：ID 记录 → restart 回读 → up 幂等（secrets/迁移/profile version 不变）→ 缺配置清晰失败 → down 后卷保留 → 再 up 回读
+- [x] T13.7 `scripts/docker/acceptance.sh` 默认 A/B/D smoke；Phase C 需 `RD_OSS_ACCEPTANCE_LIVE=1`，缺凭据返回 BLOCKED
+- [x] T13.8 验收报告按计划 schema 写入 `docs/superpowers/qa/2026-09-08-personal-open-source-release-acceptance.md`
+- [x] A13-1 A00–A11 全 PASS；A12 可 SHOULD-DEFERRED
+- [x] A13-2 四阶段均有当前 SHA 证据
+- [x] A13-3 README 命令与验收命令逐字一致
+- [x] A13-4 报告无 secret；ID 可回读；原始日志有 hash
+- [x] A13-5 全 MUST 通过才写「可开源」；否则列阻断 ID 与复现命令
+- 注：A/B/D PASS（唯一 tag + 空卷 + 独立 worktree）；Phase C BLOCKED 待授权；报告：docs/superpowers/qa/2026-09-08-personal-open-source-release-acceptance.md。

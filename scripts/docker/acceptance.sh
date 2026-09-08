@@ -32,12 +32,13 @@ done
 step "images verified (app/pi/qa @ $TAG)"
 
 # Isolated stack env: unique project + egress network; loopback publish; fresh workspace.
+if [ "$(uname -s)" = "Darwin" ]; then DOCKER_GID_VAL=0; else DOCKER_GID_VAL="$(stat -c '%g' /var/run/docker.sock 2>/dev/null || echo 999)"; fi
 cat > "$ROOT/deploy/docker/runtime.env" <<EOF
 COMPOSE_PROJECT_NAME=$PROJECT
 RD_BOT_IMAGE_TAG=$TAG
 RD_BOT_APP_IMAGE=rd-bot/app
 RD_BOT_PORT=18080
-DOCKER_GID=$(case "$(uname -s)" in Darwin) echo 0;; *) stat -c '%g' /var/run/docker.sock 2>/dev/null || echo 999;; esac)
+DOCKER_GID=$DOCKER_GID_VAL
 RD_BOT_WORKSPACE_ROOT=$WS_ROOT
 RD_BOT_EGRESS_NETWORK=rd-bot-egress-acceptance-$RUN_ID
 POSTGRES_USERNAME=postgres
@@ -66,8 +67,13 @@ step "Phase A: PASS (admin + SPA refresh reachable on loopback)"
 
 # Phase B: infra ledger, no-credential posture, probe container through the socket.
 step "Phase B: infra + no-credential boundary + probe container"
-skipped="$(compose logs migrations 2>/dev/null | grep -oE 'skipped=[0-9]+' | tail -1 | cut -d= -f2)"
-[ "${skipped:-0}" -ge 1 ] || fail "migrations should report skipped counts on re-run (ledger)"
+# Idempotency: a second explicit migrations pass must report applied=0 skipped=N.
+compose up --exit-code-from migrations migrations >/dev/null 2>&1 \
+  || fail "second migrations pass exited non-zero"
+migration_log="$(compose logs migrations 2>/dev/null | tail -50)"
+echo "$migration_log" | grep -q "applied=0 skipped=" || fail "second migrations pass re-applied files (ledger broken)"
+first_pass_applied="$(compose logs migrations 2>/dev/null | grep -oE 'applied=[0-9]+ skipped' | head -1 | grep -oE '[0-9]+' | head -1)"
+[ "${first_pass_applied:-0}" -ge 1 ] || fail "first boot should have applied migrations"
 compose exec -T rd-bot sh -c "docker run --rm -v '$WS_ROOT:/work' alpine sh -c 'echo probe > /work/acceptance-probe.txt'" \
   || fail "probe container could not write the shared workspace"
 grep -q probe "$WS_ROOT/acceptance-probe.txt" || fail "workspace probe file missing on host"
