@@ -12,6 +12,14 @@
     <name>RD-Bot</name>
     <description>Research and development automation bot with migrated RAG capabilities.</description>
 
+    <licenses>
+        <license>
+            <name>MIT License</name>
+            <url>https://opensource.org/licenses/MIT</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
+
     <modules>
         <module>rag</module>
         <module>engine</module>

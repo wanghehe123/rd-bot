@@ -4,7 +4,7 @@
 
 [![Java](https://img.shields.io/badge/Java-21-orange)](https://openjdk.org/)
 [![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.5.7-brightgreen)](https://spring.io/projects/spring-boot)
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 RD-Bot 把飞书 IM / 管理台需求转化为**可治理的多角色自动化交付流水线**：任务级 RAG 构建工程上下文，在 Docker 隔离沙箱中运行 Pi Agent，自动验证并创建可审查 PR，同时沉淀完整审计证据。
 
@@ -309,4 +309,4 @@ cd bootstrap/src/main/resources/executor/pi && npm test
 
 ## License
 
-[Apache License 2.0](LICENSE)
+[MIT](LICENSE)
