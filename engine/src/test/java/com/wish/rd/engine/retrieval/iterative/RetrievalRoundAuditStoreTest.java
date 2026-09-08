@@ -1,5 +1,7 @@
 package com.wish.rd.engine.retrieval.iterative;
 
+import com.wish.rd.engine.retrieval.iterative.impl.InMemoryRetrievalRoundAuditStore;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.List;

@@ -24,6 +24,12 @@ import { getErrorMessage } from "@/utils/error";
 import { formatFullDateTime } from "@/utils/time";
 import { getProjectsPage, type RdProjectPage } from "@/services/projectService";
 import { getDashboardOverview, type DashboardTaskSummary, type RdDashboardOverview } from "@/services/dashboardService";
+import { listModelProviders } from "@/services/modelProviderService";
+import {
+  onboardingChecklist,
+  onboardingComplete,
+  type OnboardingProviderSnapshot
+} from "./dashboard/onboarding";
 
 import {
   formatAvailabilityRatio,
@@ -230,6 +236,8 @@ export function DashboardPage() {
         </div>
       ) : null}
 
+      <OnboardingChecklistCard projects={projects} />
+
       <section className="dashboard-metric-grid" aria-label="项目交付核心指标">
         {metrics.map((metric) => (
           <DashboardMetric
@@ -389,6 +397,71 @@ export function DashboardPage() {
         </aside>
       </div>
     </div>
+  );
+}
+
+function OnboardingChecklistCard({ projects }: { projects: RdProjectPage["records"] }) {
+  const [providers, setProviders] = useState<OnboardingProviderSnapshot[] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    listModelProviders()
+      .then((profiles) => {
+        if (!cancelled) setProviders(profiles);
+      })
+      .catch(() => {
+        // 引导卡片尽力而为：provider 列表读取失败时不阻塞 Dashboard 其余内容。
+        if (!cancelled) setProviders([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (providers == null) {
+    return null;
+  }
+  const steps = onboardingChecklist({ providers, projects });
+  if (onboardingComplete(steps)) {
+    return null;
+  }
+
+  return (
+    <Card className="dashboard-section-card" aria-label="首次配置引导">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-lg">
+          <ClipboardList aria-hidden="true" />
+          首次配置引导
+        </CardTitle>
+        <CardDescription>
+          完成以下步骤即可运行第一条真实需求交付。凭据只提交到后端安全存储，不会保存在浏览器。
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {steps.map((step, index) => (
+          <Link
+            key={step.id}
+            to={step.href}
+            className="flex items-start gap-3 rounded-md border border-slate-200 px-3 py-2 hover:border-primary/40 hover:bg-slate-50"
+          >
+            <span
+              className={step.done
+                ? "mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-emerald-700"
+                : "mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500"}
+              aria-hidden="true"
+            >
+              {step.done ? <CheckCircle2 className="h-4 w-4" /> : index + 1}
+            </span>
+            <span>
+              <span className="block text-sm font-medium text-slate-800">
+                {step.done ? `✓ ${step.label}` : step.label}
+              </span>
+              <span className="block text-xs text-slate-500">{step.description}</span>
+            </span>
+          </Link>
+        ))}
+      </CardContent>
+    </Card>
   );
 }
 

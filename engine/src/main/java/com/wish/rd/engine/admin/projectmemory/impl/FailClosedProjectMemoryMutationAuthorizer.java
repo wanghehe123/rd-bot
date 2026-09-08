@@ -1,4 +1,11 @@
-package com.wish.rd.engine.admin.projectmemory;
+package com.wish.rd.engine.admin.projectmemory.impl;
+
+import com.wish.rd.engine.admin.projectmemory.ProjectMemoryMutationAction;
+import com.wish.rd.engine.admin.projectmemory.ProjectMemoryMutationAuthorizer;
+import com.wish.rd.engine.admin.projectmemory.ProjectMemoryMutationCapability;
+import com.wish.rd.engine.admin.projectmemory.ProjectMemoryMutationDeniedException;
+import com.wish.rd.engine.admin.projectmemory.ProjectMemoryGovernanceAuditSink;
+import com.wish.rd.engine.admin.projectmemory.TrustedOperatorPrincipal;
 
 /** Fail-closed authorizer requiring {@link ProjectMemoryMutationCapability#PROJECT_MEMORY_GOVERN}. */
 public final class FailClosedProjectMemoryMutationAuthorizer implements ProjectMemoryMutationAuthorizer {

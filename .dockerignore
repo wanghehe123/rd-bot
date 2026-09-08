@@ -1,0 +1,49 @@
+# Keep the build context small and free of local state/secrets.
+.git/
+.gitignore
+.worktrees/
+worktrees/
+target/
+**/target/
+build/
+out/
+node_modules/
+**/node_modules/
+
+# Local runtime data, QA evidence, workspaces and caches
+.rd-bot-data/
+qa-runs/
+logs/
+work/
+tmp/
+tmp-*/
+outputs/
+lark-output/
+.playwright-cli/
+frontend/test-results/
+frontend/.playwright-cli/
+.codegraph/
+.superpowers/
+.qoder/
+private-repos/
+
+# Local env files and credentials (also guarded by policy tests)
+*.env
+!*.example
+*.local
+application-local.yaml
+application-local.yml
+deploy/openviking/ov.conf.rendered
+sk/
+
+# IDE / OS noise
+.idea/
+.vscode/
+.cursor/
+.vs/
+*.iml
+.DS_Store
+
+# Docs and generated assets not needed inside the image
+docs/
+openspec/changes/*/fixtures/

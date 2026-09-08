@@ -1,4 +1,4 @@
-package com.wish.rd.engine.retrieval.iterative;
+package com.wish.rd.engine.retrieval.iterative.model;
 
 import java.util.LinkedHashSet;
 import java.util.Set;

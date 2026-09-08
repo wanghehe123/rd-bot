@@ -1,5 +1,7 @@
 package com.wish.rd.engine.retrieval.iterative;
 
+import com.wish.rd.engine.retrieval.iterative.model.RetrievalIterationState;
+
 import java.util.Objects;
 
 /**

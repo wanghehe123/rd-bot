@@ -277,6 +277,9 @@ export function ProjectMemoryPage() {
             <CardTitle className="flex items-center gap-2 text-lg">
               <Brain className="h-5 w-5 text-primary" />
               项目记忆
+              <Badge variant="outline" className="border-amber-200 bg-amber-50 text-amber-700">
+                Experimental · 首发不支持
+              </Badge>
             </CardTitle>
             <CardDescription>
               {projectState.data?.name || projectId || "未选择项目"}

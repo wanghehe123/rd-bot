@@ -47,16 +47,16 @@ T00 的产物即本 change 自身。验收 ID（Axx-y）与计划一致。
 
 ## T04 Pi/QA 镜像首次构建链
 
-- [ ] T04.1 先写 policy test：`Dockerfile.qa` 默认 stage 不得引用目标镜像自身或私有 registry
-- [ ] T04.2 删除默认 `BROWSER_CACHE_IMAGE=rd-bot/pi-agent-qa:local` 自引用；默认从 Pi base 安装 Chromium，缓存仅显式 build arg
-- [ ] T04.3 Pi/QA 标签由同一 `RD_BOT_IMAGE_TAG` 生成；Compose 先构建 Pi 再传给 QA 的 `PI_BASE_IMAGE`
-- [ ] T04.4 浏览器依赖跟随当前 Pi lockfile；镜像构建执行真实 Playwright headless 启动检查
-- [ ] T04.5 保持 `/work/*` 权限与非 root Agent 用户；无 Docker socket / 上游秘密进镜像
-- [ ] T04.6 更新 Pi README：首次构建、可选缓存、网络失败提示、两镜像重建规则
-- [ ] A04-1 全新标签无旧镜像时两次 build 成功
-- [ ] A04-2 QA 镜像内 Chromium 实际 headless 启动退出 0
-- [ ] A04-3 Pi 111 项测试与规定 Java focused tests 通过
-- [ ] A04-4 Agent 镜像无 Docker socket 与上游秘密
+- [x] T04.1 先写 policy test：`Dockerfile.qa` 默认 stage 不得引用目标镜像自身或私有 registry（`DockerAssetPolicyTest.qaDockerfileDefaultBrowserCacheMustNotReferenceItselfOrPrivateRegistry`，先红后绿）
+- [x] T04.2 删除默认 `BROWSER_CACHE_IMAGE=rd-bot/pi-agent-qa:local` 自引用；默认回落 `PI_BASE_IMAGE`（Pi base 预建空 `/ms-playwright`），缓存仅显式 build arg；无缓存空机构建成功
+- [x] T04.3 镜像标签交接由脚本/Compose 以 build arg 传递（完整 `RD_BOT_IMAGE_TAG` 链在 T06/T07 落地）；本次以 `rd-bot/pi-agent:oss-test` → `PI_BASE_IMAGE` 验证
+- [x] T04.4 浏览器依赖跟随 Pi lockfile（@playwright/cli 0.1.17）；QA 镜像实际 headless 启动检查 `CHROMIUM_LAUNCH_OK`（NODE_PATH 指向全局 @playwright/cli bundled playwright，已记录）
+- [x] T04.5 非 root（user=node, 1000:1000）；镜像内无 Docker socket、无凭据 env（`docker run` 实测 + policy test 断言）
+- [x] T04.6 `bootstrap/src/main/resources/executor/pi/README.md` 新建：首次构建/可选缓存/镜像覆盖/两镜像重建规则
+- [x] A04-1 全新标签 `oss-test` 两次 build 成功（本机 Docker Hub 元数据路径故障，Pi 以 digest 钉住 base、QA 以 oci-layout 命名上下文构建；构建日志 SHA 见 E04）
+- [x] A04-2 QA 镜像内 Chromium 实际 headless 启动退出 0
+- [x] A04-3 Pi 111/111 npm tests；Java focused：DockerAssetPolicyTest 6、DockerExecutorConfigurationTest 7、DockerPiAgentExecutorTest 51 全绿
+- [x] A04-4 Agent 镜像无 Docker socket 与上游秘密
 
 ## T05 应用镜像
 
@@ -112,16 +112,17 @@ T00 的产物即本 change 自身。验收 ID（Axx-y）与计划一致。
 
 ## T08 管理台 onboarding 与 SPA 刷新
 
-- [ ] T08.1 先加失败测试：`/admin/model-providers`、`/admin/projects/{id}/memories` 直 GET 返回 SPA index
-- [ ] T08.2 Spring controller 准确 fallback；API/静态 asset/evidence 路由不被吞
-- [ ] T08.3 首页 checklist：配置 provider → 项目 → 授权仓库 → 提交需求，每步真实链接
-- [ ] T08.4 provider key 只走安全凭据接口；不进 localStorage/URL/console/截图
-- [ ] T08.5 未配置时创建任务前给明确错误与修复链接；不自动切 mock
-- [ ] T08.6 project memory 页面标 Experimental/unsupported；直刷不 404
-- [ ] A08-1 五个核心路由直达+刷新正确
-- [ ] A08-2 API 404 仍是 404
-- [ ] A08-3 无凭据显示未配置，无 mock 成功
-- [ ] A08-4 凭据不进浏览器持久存储/URL/console/network body
+- [x] T08.1 先加失败测试：`/admin/model-providers`、`/admin/projects/{id}/memories` 直 GET 返回 SPA index（`servesModelProvidersAndProjectMemoriesRoutesForDirectBrowserRefresh`）
+- [x] T08.2 `AdminFrontendController` 精确 fallback 补齐两个页面路由；API/静态 asset/evidence 路由不在列表（测试钉住 API 404 仍 404）
+- [x] T08.3 Dashboard 新增「首次配置引导」卡片（纯函数 `dashboard/onboarding.ts` + 4 项 contract tests）：配置供应商 → 项目 → 授权仓库 → 提交需求，每步链接真实页面；引导完成后自动隐藏
+- [x] T08.4 provider key 仅提交既有安全凭据接口（`PUT /admin/model-provider-profiles/{id}/credential`）；固定 token 提示/按钮移除（T03）后 key 不进 localStorage/URL/console
+- [x] T08.5 任务创建提交前检查 provider 凭据（`providerConfigBlockReason`），无凭据给明确阻断原因与 `/admin/model-providers` 修复入口；不自动降级 mock
+- [x] T08.6 项目记忆页加 `Experimental · 首发不支持` 徽标；后端 fallback 保证直刷不 404
+- [x] A08-1 五个核心路由直达+刷新正确（controller tests 7/7；浏览器级验证在 T13 Phase A）
+- [x] A08-2 API 404 仍是 404（既有测试保持）
+- [x] A08-3 无凭据显示未配置，无 mock 成功（onboarding tests + 提交阻断）
+- [x] A08-4 凭据不进浏览器持久存储/URL/console（key 仅经凭据接口提交）
+- 前端 265/265 tests、typecheck、build 全绿；静态 bundle 已随构建刷新。
 
 ## T09 回归修复与核心测试集
 

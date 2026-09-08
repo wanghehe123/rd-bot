@@ -95,7 +95,7 @@ class CleanHostVerifierWorkspaceFactoryTest {
                             patch,
                             sha256(patch),
                             configuredPort,
-                            "node server.mjs --port " + configuredPort
+                            "node server.cjs --port " + configuredPort
                     ),
                     new HostVerifierWorkspaceRequest("task-1", "stage-1", "CURRENT", true)
             );
@@ -300,7 +300,7 @@ class CleanHostVerifierWorkspaceFactoryTest {
             this.command = command;
             Files.writeString(workspace.repoDirectory().resolve("replayed.txt"), "host replay");
             if (runtimeServer) {
-                Files.writeString(workspace.repoDirectory().resolve("server.mjs"), RUNTIME_SERVER, StandardCharsets.UTF_8);
+                Files.writeString(workspace.repoDirectory().resolve("server.cjs"), RUNTIME_SERVER, StandardCharsets.UTF_8);
             }
             return new RepositoryOperationResult(Map.of("prepared", "true"));
         }

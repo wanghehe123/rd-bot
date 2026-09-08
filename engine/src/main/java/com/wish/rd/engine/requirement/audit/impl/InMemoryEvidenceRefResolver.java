@@ -1,4 +1,7 @@
-package com.wish.rd.engine.requirement.audit;
+package com.wish.rd.engine.requirement.audit.impl;
+
+import com.wish.rd.engine.requirement.audit.EvidenceRefResolverPort;
+import com.wish.rd.engine.requirement.audit.EvidenceRef;
 
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;

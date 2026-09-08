@@ -1,8 +1,11 @@
 ARG PI_BASE_IMAGE=rd-bot/pi-agent:local
-# Previous local QA image supplies Playwright browsers so Mac rebuilds are not
-# blocked on flaky CDN downloads. First-time builds still need an existing cache
-# tag, or `playwright install` downloads Chromium as before.
-ARG BROWSER_CACHE_IMAGE=rd-bot/pi-agent-qa:local
+# Optional browser cache. It defaults to the Pi base image itself, whose
+# /ms-playwright directory is empty, so first-time builds download Chromium via the
+# `playwright install` step below and the build never depends on a pre-existing QA
+# image. To speed up rebuilds, pass an explicit
+# `--build-arg BROWSER_CACHE_IMAGE=<previous rd-bot/pi-agent-qa tag>`; the tag is
+# only a cache seed and is never required.
+ARG BROWSER_CACHE_IMAGE=${PI_BASE_IMAGE}
 FROM ${BROWSER_CACHE_IMAGE} AS browser-cache
 FROM ${PI_BASE_IMAGE}
 

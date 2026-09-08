@@ -32,8 +32,8 @@ RUN npm ci --omit=dev --registry=${NPM_REGISTRY} && npm cache clean --force
 COPY src ./src
 COPY protocol ./protocol
 
-RUN mkdir -p /work/input /work/output /work/cache /work/pi-agent \
-    && chown -R node:node /opt/rd-pi-bridge /work
+RUN mkdir -p /work/input /work/output /work/cache /work/pi-agent /ms-playwright \
+    && chown -R node:node /opt/rd-pi-bridge /work /ms-playwright
 
 USER node
 ENTRYPOINT ["node", "/opt/rd-pi-bridge/src/rd-pi-bridge.mjs"]

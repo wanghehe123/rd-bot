@@ -19,6 +19,8 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+import { listModelProviders } from "@/services/modelProviderService";
+import { providerConfigBlockReason } from "@/pages/dashboard/onboarding";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -1040,6 +1042,12 @@ function RdTaskEditDialog({ open, mode, task, onOpenChange, onSuccess }: RdTaskE
             content: fileContent,
             mimeType: localFile!.type || "text/plain"
           };
+        }
+        // 首发合同 T08：无可用 provider 时在创建前给明确阻断原因与修复入口，不自动降级 mock。
+        const blockReason = providerConfigBlockReason(await listModelProviders().catch(() => []));
+        if (blockReason) {
+          toast.error(`${blockReason}（可前往 /admin/model-providers 配置）`, { duration: 8000 });
+          return;
         }
         const created = await createRequirementTask({
           title: trimmed,

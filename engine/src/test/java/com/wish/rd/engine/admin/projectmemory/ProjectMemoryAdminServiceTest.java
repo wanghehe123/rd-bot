@@ -1,5 +1,7 @@
 package com.wish.rd.engine.admin.projectmemory;
 
+import com.wish.rd.engine.admin.projectmemory.impl.FailClosedProjectMemoryMutationAuthorizer;
+
 import com.wish.rd.engine.admin.projectmemory.model.ProjectMemoryAdminDetailView;
 import com.wish.rd.engine.admin.projectmemory.model.ProjectMemoryAdminMutationResult;
 import com.wish.rd.engine.admin.projectmemory.model.ProjectMemoryAdminSummaryView;

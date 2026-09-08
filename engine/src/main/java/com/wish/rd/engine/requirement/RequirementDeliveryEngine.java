@@ -111,7 +111,7 @@ import com.wish.rd.engine.requirement.policy.model.RequirementPolicyRun;
 import com.wish.rd.engine.requirement.verify.HostVerificationPort;
 import com.wish.rd.engine.requirement.answer.UserAnswerResumeStages;
 import com.wish.rd.engine.requirement.audit.HostVerifySubject;
-import com.wish.rd.engine.requirement.audit.InMemoryEvidenceRefResolver;
+import com.wish.rd.engine.requirement.audit.impl.InMemoryEvidenceRefResolver;
 import com.wish.rd.engine.requirement.verify.HostVerificationStore;
 import com.wish.rd.engine.requirement.verify.model.HostVerificationArtifact;
 import com.wish.rd.engine.requirement.verify.model.HostVerificationRun;

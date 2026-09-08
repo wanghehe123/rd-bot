@@ -1,4 +1,7 @@
-package com.wish.rd.engine.retrieval.iterative;
+package com.wish.rd.engine.retrieval.iterative.impl;
+
+import com.wish.rd.engine.retrieval.iterative.RetrievalRoundAudit;
+import com.wish.rd.engine.retrieval.iterative.RetrievalRoundAuditStore;
 
 import java.util.Comparator;
 import java.util.LinkedHashMap;

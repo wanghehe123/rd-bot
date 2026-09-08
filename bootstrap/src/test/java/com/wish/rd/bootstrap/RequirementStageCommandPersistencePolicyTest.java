@@ -29,8 +29,9 @@ class RequirementStageCommandPersistencePolicyTest {
         String mapper = Files.readString(PROJECT_ROOT.resolve(
                 "bootstrap/src/main/java/com/wish/rd/bootstrap/persistence/mapper/RequirementStageCommandMapper.java"));
         assertTrue(mapper.contains("FOR UPDATE SKIP LOCKED"));
-        assertTrue(mapper.contains("attempt_no < max_attempts"));
-        assertTrue(mapper.contains("EXTRACT(EPOCH FROM (#{now} - created_at))"));
+        // W3：mapper 的 claim/recovery SQL 已用 `command.` 别名限定列（XML 内 `&lt;` 转义），语义不变。
+        assertTrue(mapper.contains("command.attempt_no < command.max_attempts"));
+        assertTrue(mapper.contains("EXTRACT(EPOCH FROM (#{now} - command.created_at))"));
 
         assertTrue(Files.exists(PROJECT_ROOT.resolve(
                 "bootstrap/src/main/java/com/wish/rd/bootstrap/persistence/entity/RequirementStageCommandRow.java")));

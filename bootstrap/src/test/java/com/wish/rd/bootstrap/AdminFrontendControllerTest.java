@@ -135,4 +135,19 @@ class AdminFrontendControllerTest {
                 .andExpect(content().string(containsString("admin-knowledge.css")))
                 .andExpect(content().string(containsString("admin-knowledge.js")));
     }
+
+    @Test
+    void servesModelProvidersAndProjectMemoriesRoutesForDirectBrowserRefresh() throws Exception {
+        // B12：这两个 SPA 页面直连/刷新此前落到 404；必须回退 SPA index，且不影响 API 路由。
+        for (String route : new String[]{
+                "/admin/model-providers",
+                "/admin/projects/project-1/memories"
+        }) {
+            mockMvc.perform(get(route).accept(MediaType.TEXT_HTML))
+                    .andExpect(status().isOk())
+                    .andExpect(content().string(containsString(ADMIN_TITLE)))
+                    .andExpect(content().string(containsString("id=\"root\"")))
+                    .andExpect(content().string(containsString("admin-knowledge.js")));
+        }
+    }
 }

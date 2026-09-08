@@ -2,8 +2,8 @@ package com.wish.rd.bootstrap.controller.admin.projectmemory;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.wish.rd.engine.admin.projectmemory.FailClosedProjectMemoryMutationAuthorizer;
-import com.wish.rd.engine.admin.projectmemory.InMemoryProjectMemoryPurgeConfirmTokenStore;
+import com.wish.rd.engine.admin.projectmemory.impl.FailClosedProjectMemoryMutationAuthorizer;
+import com.wish.rd.engine.admin.projectmemory.impl.InMemoryProjectMemoryPurgeConfirmTokenStore;
 import com.wish.rd.engine.admin.projectmemory.ProjectMemoryAdminMutationService;
 import com.wish.rd.engine.admin.projectmemory.ProjectMemoryAdminService;
 import com.wish.rd.engine.admin.projectmemory.ProjectMemoryGovernanceAuditSink;

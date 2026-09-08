@@ -1100,7 +1100,7 @@ class InMemoryRequirementStageFinalizationPortTest {
     }
 
     @Test
-    void hostVerifyFailureFinalizationWritesStructuredProvenanceAndRecoversFromCoding() {
+    void hostVerifyFailureFinalizationWritesStructuredProvenanceAndRetriesDedicatedHostVerifyRoute() {
         long now = 1_784_910_600_000L;
         String taskId = "task-host-verify";
         InMemoryRdTaskStore taskStore = new InMemoryRdTaskStore();
@@ -1167,7 +1167,9 @@ class InMemoryRequirementStageFinalizationPortTest {
         TaskRetryRoute route = new TaskRetryRoutePlanner().plan(snapshot.retryPoint());
         assertEquals(TaskFailurePhase.HOST_VERIFY, snapshot.retryPoint().failurePhase());
         assertEquals(AgentRole.CODING_AGENT, snapshot.retryPoint().retryFromRole());
-        assertEquals("ROLE_EXECUTION:CODING_AGENT", route.firstStage());
+        // W5/当前 spec：HOST_VERIFY 失败的操作员重试首条 durable command 必须是 HOST_VERIFY 专用路线，
+        // 不得再开 Coding attempt（RULE.md §3.5.3）。
+        assertEquals("HOST_VERIFY", route.firstStage());
     }
 
     @Test

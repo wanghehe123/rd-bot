@@ -202,13 +202,15 @@ class PostgresRequirementStageCommandStoreTest {
         }
         String source = Files.readString(sourcePath);
 
-        assertTrue(source.contains("attempt_no < max_attempts"),
+        // W3：claim SQL 现以 `command.` 表别名限定列名（`&lt;`/`&gt;` 为 MyBatis XML 转义），
+        // 约束语义不变：exhausted 命令不得被批量 claim、按年龄加权、跳锁、排除零 fence。
+        assertTrue(source.contains("command.attempt_no &lt; command.max_attempts"),
                 "batch claims must never reclaim an exhausted command");
-        assertTrue(source.contains("EXTRACT(EPOCH FROM (#{now} - created_at))"),
+        assertTrue(source.contains("EXTRACT(EPOCH FROM (#{now} - command.created_at))"),
                 "batch claims must apply a bounded age boost before locking rows");
         assertTrue(source.contains("FOR UPDATE SKIP LOCKED"),
                 "batch claims must retain cross-instance row-level exclusion");
-        assertTrue(source.contains("fencing_token > 0"),
+        assertTrue(source.contains("command.fencing_token &gt; 0"),
                 "worker-visible claim and recovery queries must exclude legacy zero-fence commands");
     }
 

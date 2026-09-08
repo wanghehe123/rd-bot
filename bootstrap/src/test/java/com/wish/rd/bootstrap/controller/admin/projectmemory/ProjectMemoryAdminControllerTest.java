@@ -1,6 +1,6 @@
 package com.wish.rd.bootstrap.controller.admin.projectmemory;
 
-import com.wish.rd.engine.admin.projectmemory.FailClosedProjectMemoryMutationAuthorizer;
+import com.wish.rd.engine.admin.projectmemory.impl.FailClosedProjectMemoryMutationAuthorizer;
 import com.wish.rd.engine.admin.projectmemory.ProjectMemoryAdminMutationService;
 import com.wish.rd.engine.admin.projectmemory.ProjectMemoryAdminService;
 import com.wish.rd.engine.admin.projectmemory.ProjectMemoryGovernanceAuditSink;
@@ -8,7 +8,7 @@ import com.wish.rd.engine.admin.projectmemory.ProjectMemoryMutationAction;
 import com.wish.rd.engine.admin.projectmemory.ProjectMemoryMutationCapability;
 import com.wish.rd.engine.admin.projectmemory.TrustedOperatorPrincipal;
 import com.wish.rd.engine.admin.projectmemory.TrustedOperatorPrincipalProvider;
-import com.wish.rd.engine.admin.projectmemory.InMemoryProjectMemoryPurgeConfirmTokenStore;
+import com.wish.rd.engine.admin.projectmemory.impl.InMemoryProjectMemoryPurgeConfirmTokenStore;
 import com.wish.rd.engine.admin.projectmemory.ProjectMemoryPurgeService;
 import com.wish.rd.framework.id.SnowflakeIdGenerator;
 import com.wish.rd.rag.project.RdProjectService;

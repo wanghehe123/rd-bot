@@ -7,11 +7,17 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+/**
+ * T09/W7：公开接口实现必须落在 .impl 包；本测试同时是「禁止新增未审查违规」的守卫。
+ * 历史违规按计划 W7 逐类列出豁免（每类一条理由，禁止 wildcard/整域排除）。
+ * 豁免防漂移：违规行以 `路径 -> FQCN` 形式匹配豁免键，豁免键删除或源文件移动都会让守卫失败。
+ */
 class ImplementationPackageIsolationPolicyTest {
 
     private static final Pattern PACKAGE_PATTERN = Pattern.compile("(?m)^package\\s+([a-zA-Z0-9_.]+);");
@@ -27,6 +33,40 @@ class ImplementationPackageIsolationPolicyTest {
     private static final List<String> AGGREGATE_ROOT_EXEMPTIONS = List.of(
             "com.wish.rd.rag.knowledge.KnowledgeDocumentMutationEngine"
     );
+
+private static final Map<String, String> LEGACY_IMPL_PACKAGE_EXEMPTIONS = Map.ofEntries(
+            Map.entry("com.wish.rd.bootstrap.executor.RdProjectRegisteredRepositoryCatalog",
+                    "RULE.md §1.1 allowlist / §十一 凭据解析锚点类；保留"),
+            Map.entry("com.wish.rd.bootstrap.executor.StoredThenSystemAuthEnvironmentResolver",
+                    "RULE.md §1.1 allowlist / §十一 凭据解析锚点类；保留"),
+            Map.entry("com.wish.rd.bootstrap.observability.PostgresDeliveryObservabilitySnapshotAdapter",
+                    "bootstrap 适配层 observability 实现（delivery/observability spec 冻结面）；保留"),
+            Map.entry("com.wish.rd.bootstrap.observability.UnavailableDeliveryObservabilitySnapshotAdapter",
+                    "bootstrap 适配层 observability 实现（delivery/observability spec 冻结面）；保留"),
+            Map.entry("com.wish.rd.bootstrap.verify.ArtifactHostVerificationPatchSource",
+                    "RULE.md §3.5.3 逐字锚点类（CleanHostVerificationWorkspaceFactory/HostVerificationExecutorAdapter 等）；包名即合同，保留"),
+            Map.entry("com.wish.rd.bootstrap.verify.CleanHostVerificationWorkspaceFactory",
+                    "RULE.md §3.5.3 逐字锚点类（CleanHostVerificationWorkspaceFactory/HostVerificationExecutorAdapter 等）；包名即合同，保留"),
+            Map.entry("com.wish.rd.bootstrap.verify.GitHostVerificationChangeSetResolver",
+                    "RULE.md §3.5.3 逐字锚点类（CleanHostVerificationWorkspaceFactory/HostVerificationExecutorAdapter 等）；包名即合同，保留"),
+            Map.entry("com.wish.rd.bootstrap.verify.HostVerificationExecutorAdapter",
+                    "RULE.md §3.5.3 逐字锚点类（CleanHostVerificationWorkspaceFactory/HostVerificationExecutorAdapter 等）；包名即合同，保留")
+    );
+
+    @Test
+    void everyExemptionMustStillPointAtAnExistingSourceFile() {
+        for (String fq : LEGACY_IMPL_PACKAGE_EXEMPTIONS.keySet()) {
+            String relative = fq.replace(".", "/") + ".java";
+            boolean exists = false;
+            for (Path root : MODULE_ROOTS) {
+                if (Files.exists(root.resolve(relative))) {
+                    exists = true;
+                    break;
+                }
+            }
+            assertTrue(exists, "stale exemption (source moved or deleted): " + fq);
+        }
+    }
 
     @Test
     void anExemptionMustBeBackedByADocumentedAggregateRoot() throws IOException {
@@ -45,23 +85,22 @@ class ImplementationPackageIsolationPolicyTest {
 
     @Test
     void publicInterfaceImplementationsShouldLiveUnderImplPackages() throws IOException {
-        List<Path> roots = List.of(
-                Path.of("src", "main", "java"),
-                Path.of("..", "rag", "src", "main", "java"),
-                Path.of("..", "engine", "src", "main", "java"),
-                Path.of("..", "exec", "src", "main", "java"),
-                Path.of("..", "skill", "src", "main", "java")
-        );
         List<String> violations = new ArrayList<>();
-        for (Path root : roots) {
+        for (Path root : MODULE_ROOTS) {
             try (var files = Files.walk(root.normalize())) {
                 files.filter(path -> path.toString().endsWith(".java"))
                         .forEach(path -> collectViolation(path, violations));
             }
         }
 
-        assertTrue(violations.isEmpty(), () -> "interface implementations must live in impl packages:\n"
-                + String.join("\n", violations));
+        List<String> unreviewed = violations.stream()
+                .filter(line -> LEGACY_IMPL_PACKAGE_EXEMPTIONS.keySet().stream()
+                        .noneMatch(line::endsWith))
+                .toList();
+        assertTrue(unreviewed.isEmpty(), () ->
+                "new interface implementations must live in impl packages (or be reviewed into "
+                        + "LEGACY_IMPL_PACKAGE_EXEMPTIONS with a per-class reason):\n"
+                        + String.join("\n", unreviewed));
     }
 
     private void collectViolation(Path path, List<String> violations) {
@@ -76,6 +115,9 @@ class ImplementationPackageIsolationPolicyTest {
             if (AGGREGATE_ROOT_EXEMPTIONS.contains(qualifiedName)) {
                 return;
             }
+            if (LEGACY_IMPL_PACKAGE_EXEMPTIONS.containsKey(qualifiedName)) {
+                return;
+            }
             if (!packageName.endsWith(".impl") && !packageName.contains(".impl.")) {
                 violations.add(path.normalize() + " -> " + qualifiedName);
             }
@@ -88,4 +130,12 @@ class ImplementationPackageIsolationPolicyTest {
         Matcher matcher = PACKAGE_PATTERN.matcher(content);
         return matcher.find() ? matcher.group(1) : "";
     }
+
+    private static final List<Path> MODULE_ROOTS = List.of(
+            Path.of("src", "main", "java"),
+            Path.of("..", "rag", "src", "main", "java"),
+            Path.of("..", "engine", "src", "main", "java"),
+            Path.of("..", "exec", "src", "main", "java"),
+            Path.of("..", "skill", "src", "main", "java")
+    );
 }

@@ -1,5 +1,7 @@
 package com.wish.rd.engine.project.memory;
 
+import com.wish.rd.engine.project.memory.impl.InMemoryProjectMemoryGateBindingStore;
+
 import com.wish.rd.engine.project.memory.model.ProjectMemoryGateThresholds;
 import com.wish.rd.engine.project.memory.model.ProjectMemorySecurityAlert;
 import com.wish.rd.engine.project.memory.model.ProjectMemorySecurityAlertType;

@@ -1,4 +1,6 @@
-package com.wish.rd.engine.project.memory;
+package com.wish.rd.engine.project.memory.impl;
+
+import com.wish.rd.engine.project.memory.ProjectMemoryGateBindingStore;
 
 import com.wish.rd.engine.project.memory.model.ProjectMemoryGateBinding;
 

@@ -1,5 +1,7 @@
 package com.wish.rd.engine.requirement.audit;
 
+import com.wish.rd.engine.requirement.audit.impl.InMemoryEvidenceRefResolver;
+
 import com.wish.rd.engine.requirement.verify.model.HostVerificationStatus;
 import org.junit.jupiter.api.Test;
 

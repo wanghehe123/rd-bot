@@ -12,10 +12,10 @@ import java.nio.charset.StandardCharsets;
 /**
  * 管理后台前端路由控制器。
  *
- * <p>将 /admin、/admin/dashboard、/admin/knowledge、/admin/rd-tasks、/admin/projects、
- * /admin/projects/{projectId}/agent-strategy、/admin/users、/admin/skills、/admin/traces、
- * /admin/evaluations、/admin/settings 等前端路由统一回退到
+ * <p>将 /admin 与全部前端页面路由（dashboard、knowledge、rd-tasks、projects、model-providers、
+ * memories、users、skills、traces、evaluations、observability、settings 等）统一回退到
  * 类路径下的静态 index.html，以支持单页应用（SPA）的前端直连刷新。
+ * 仅精确匹配页面导航路径；API、静态 asset 与证据内容路由不在此列，不会被兜底吞掉。</p>
  */
 @Controller
 public final class AdminFrontendController {
@@ -31,6 +31,8 @@ public final class AdminFrontendController {
             "/admin/rd-tasks/{taskId}",
             "/admin/projects",
             "/admin/projects/{projectId}/agent-strategy",
+            "/admin/projects/{projectId}/memories",
+            "/admin/model-providers",
             "/admin/users",
             "/admin/skills",
             "/admin/traces",

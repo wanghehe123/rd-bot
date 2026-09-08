@@ -40,6 +40,28 @@ class DockerAssetPolicyTest {
     }
 
     @Test
+    void qaDockerfileDefaultBrowserCacheMustNotReferenceItselfOrPrivateRegistry() throws IOException {
+        String dockerfile = readAsset("Dockerfile.qa");
+
+        // 空机器首次构建合同：browser-cache 阶段默认回落到 Pi 基础镜像（其中 /ms-playwright
+        // 为空目录），默认路径必须真实执行 `playwright install chromium`；镜像缓存只能通过
+        // 显式 --build-arg BROWSER_CACHE_IMAGE=<旧 QA 镜像> 启用，禁止默认自引用。
+        assertFalse(dockerfile.contains("BROWSER_CACHE_IMAGE=rd-bot/pi-agent-qa:local"),
+                "QA image must not default to its own tag as browser cache");
+        assertTrue(dockerfile.contains("ARG BROWSER_CACHE_IMAGE=${PI_BASE_IMAGE}"),
+                "browser-cache stage must default to the Pi base image");
+        assertTrue(dockerfile.contains("FROM ${BROWSER_CACHE_IMAGE} AS browser-cache"));
+        assertFalse(dockerfile.contains("ghcr.io/"), "no private registry defaults");
+        assertFalse(dockerfile.contains("registry.cn-"), "no private registry defaults");
+
+        // 与其配套：Pi 基础镜像必须预先创建空的 /ms-playwright，COPY --from 才能在无缓存时成功。
+        String baseDockerfile = readAsset("Dockerfile");
+        assertTrue(Pattern.compile("mkdir -p[^\\n]*/ms-playwright").matcher(baseDockerfile).find(),
+                "Pi base image must provide an empty /ms-playwright for the QA copy source");
+        assertTrue(baseDockerfile.contains("chown -R node:node /opt/rd-pi-bridge /work /ms-playwright"));
+    }
+
+    @Test
     void qaDockerfileShouldPinPlaywrightCliAndInstallChromium() throws IOException {
         String dockerfile = readAsset("Dockerfile.qa");
 

@@ -28,6 +28,7 @@ import org.junit.jupiter.api.Test;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class TaskRetryEngineCheckpointInitializationTest {
 
@@ -47,18 +48,23 @@ class TaskRetryEngineCheckpointInitializationTest {
                 provenance, new TaskRetryPointResolver(), new TaskFailureDiagnosticParser());
         RecordingDispatcher dispatcher = new RecordingDispatcher();
         AtomicInteger ids = new AtomicInteger(100);
+        InMemoryRequirementStageCommandStore commands = new InMemoryRequirementStageCommandStore();
         TaskRetryEngine engine = new TaskRetryEngine(
                 tasks, stages, retrievals, reviews, checkpoints, new InMemoryTaskMaterialStore(), recovery,
                 new TaskRetryPointResolver(), dispatcher, () -> Integer.toString(ids.incrementAndGet()), () -> 1_000L);
         engine.setRequirementRetryDispatchTransactionPort(new InMemoryRequirementRetryDispatchTransactionAdapter(
-                tasks, checkpoints, new InMemoryRequirementStageCommandStore(),
-                new InMemoryTaskRetryAttemptBindingStore()));
+                tasks, checkpoints, commands, new InMemoryTaskRetryAttemptBindingStore()));
 
         var checkpoint = engine.retry("task-1", "USER");
 
-        assertEquals("101", checkpoint.checkpointId());
-        assertEquals("102", checkpoint.dispatchCommandId());
-        assertEquals("101", dispatcher.dispatchedCheckpointId);
+        // W4：初始化期间会为 checkpoint/attempt/binding/command 生成多个 ID，禁止断言全局序号；
+        // 只断言身份关联——dispatch command 必须存在且绑定到本 checkpoint，唤醒走 checkpoint 通道。
+        assertTrue(commands.findById(checkpoint.dispatchCommandId()).isPresent(),
+                "checkpoint dispatch command must be persisted");
+        commands.findById(checkpoint.dispatchCommandId()).ifPresent(command ->
+                assertEquals(checkpoint.checkpointId(), command.retryCheckpointId(),
+                        "dispatch command must reference its retry checkpoint"));
+        assertEquals(checkpoint.checkpointId(), dispatcher.dispatchedCheckpointId);
         assertEquals("", dispatcher.legacyTaskId);
     }
 

@@ -1,21 +1,25 @@
 package com.wish.rd.bootstrap.projectmemory;
 
-import com.wish.rd.engine.admin.projectmemory.FailClosedProjectMemoryMutationAuthorizer;
-import com.wish.rd.engine.admin.projectmemory.InMemoryProjectMemoryPurgeConfirmTokenStore;
+import com.wish.rd.engine.admin.projectmemory.impl.FailClosedProjectMemoryMutationAuthorizer;
+import com.wish.rd.engine.admin.projectmemory.impl.InMemoryProjectMemoryPurgeConfirmTokenStore;
 import com.wish.rd.engine.admin.projectmemory.ProjectMemoryGovernanceAuditSink;
 import com.wish.rd.engine.admin.projectmemory.ProjectMemoryMutationAuthorizer;
 import com.wish.rd.engine.admin.projectmemory.ProjectMemoryMutationAction;
+import com.wish.rd.engine.admin.projectmemory.ProjectMemoryMutationDeniedException;
 import com.wish.rd.engine.admin.projectmemory.ProjectMemoryPurgeConfirmTokenStore;
 import com.wish.rd.engine.admin.projectmemory.TrustedOperatorPrincipal;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
-/** Wires fail-closed governance authorizer and audit sink for project memory admin mutations. */
+/**
+ * Wires fail-closed governance authorizer and audit sink for project memory admin mutations.
+ * 故意不按 {@code rd.knowledge.store} 条件装配（T09/W1）：memory store 不是首发支持面，
+ * 但 governance mutation 无论 store 模式都必须 fail closed 且 context 可启动；
+ * 未配置可信 operator 时 authorize 一律抛 {@link ProjectMemoryMutationDeniedException}。
+ */
 @Configuration(proxyBeanMethods = false)
-@ConditionalOnProperty(name = "rd.knowledge.store", havingValue = "postgres")
 public final class ProjectMemoryAdminConfiguration {
 
     @Bean

@@ -107,7 +107,16 @@ class MultiAgentOrchestrationSqlPolicyTest {
         assertTrue(content.contains("credential_environment_variable"));
         assertTrue(!content.toLowerCase().contains("api_key"));
         assertTrue(!content.toLowerCase().contains("secret_value"));
-        assertTrue(content.contains("'default-qa-v2'"));
+        // W3：default-qa-v2 种子已拆分到 p8_zz_default_qa_v2.sql（一次性 seed 迁移），
+        // 该迁移由迁移 ledger 保证只执行一次；p8 本体不得再内联该种子。
+        Path defaultQaSeed = Path.of(System.getProperty("user.dir"))
+                .resolve("src/main/resources/sql/postgres/p8_zz_default_qa_v2.sql");
+        String seedContent = Files.readString(defaultQaSeed);
+        // W3：default-qa v2 种子已拆分到 p8_zz_default_qa_v2.sql（v2 是 policy version 而非 id）；
+        // ON CONFLICT DO NOTHING + 迁移 ledger 保证重复启动不会重放该种子。
+        assertTrue(seedContent.contains("'default-qa'"));
+        assertTrue(seedContent.contains("ON CONFLICT (policy_id, version) DO NOTHING"));
+        assertTrue(seedContent.contains("tool_policy_version = 2"));
         assertTrue(content.contains("deny\":[\"edit\",\"write\"]"));
     }
 
