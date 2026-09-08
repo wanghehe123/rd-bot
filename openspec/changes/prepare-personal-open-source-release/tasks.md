@@ -5,30 +5,30 @@ T00 的产物即本 change 自身。验收 ID（Axx-y）与计划一致。
 
 ## T01 MIT 许可证切换
 
-- [ ] T01.1 读取当前 `LICENSE`；若仍是 Apache-2.0 则换为 OSI 标准 MIT 全文，署名 `Copyright (c) 2026 wanghehe123`
-- [ ] T01.2 根 POM 增加 `<licenses>`（MIT License / https://opensource.org/licenses/MIT / repo）
-- [ ] T01.3 两个 npm package 增加 `"license": "MIT"`，保留 `"private": true`
-- [ ] T01.4 README 中英文 badge、License 小节统一 MIT
-- [ ] T01.5 新建 `THIRD_PARTY_NOTICES.md`
-- [ ] T01.6 搜索全部 `Apache-2.0|Apache License` 残留并逐项判断，只更新项目声明
-- [ ] A01-1 根 LICENSE 为完整 MIT 标准文本
-- [ ] A01-2 README/POM/npm metadata 全部 MIT，无项目级 Apache 残留
-- [ ] A01-3 第三方 notice 保留真实第三方边界
+- [x] T01.1 读取当前 `LICENSE`；若仍是 Apache-2.0 则换为 OSI 标准 MIT 全文，署名 `Copyright (c) 2026 wanghehe123`
+- [x] T01.2 根 POM 增加 `<licenses>`（MIT License / https://opensource.org/licenses/MIT / repo）
+- [x] T01.3 两个 npm package 增加 `"license": "MIT"`，保留 `"private": true`
+- [x] T01.4 README 中英文 badge、License 小节统一 MIT（README.zh-CN.md 由 T11 创建时即为 MIT）
+- [x] T01.5 新建 `THIRD_PARTY_NOTICES.md`
+- [x] T01.6 搜索全部 `Apache-2.0|Apache License` 残留并逐项判断，只更新项目声明
+- [x] A01-1 根 LICENSE 为完整 MIT 标准文本
+- [x] A01-2 README/POM/npm metadata 全部 MIT，无项目级 Apache 残留
+- [x] A01-3 第三方 notice 保留真实第三方边界
 
 ## T02 公共卫生与敏感材料清理
 
-- [ ] T02.1 `git ls-files` 建立实际发布清单
-- [ ] T02.2 对 HEAD 与全部本地 refs 运行专用 secret scanner，记录工具与规则集
-- [ ] T02.3 图片/GIF/视频/PDF 人工检查或 OCR
-- [ ] T02.4 清点 `.playwright-cli/*.yml`、个人简历与历史验收材料；私有内容删除，fixture 用 `example-*`
-- [ ] T02.5 `deploy/cloud-server/start-backend.sh`、`start-cpa-tunnel.sh` 移出推荐入口或放入 unsupported 区并去个人化
-- [ ] T02.6 `.gitignore` 覆盖运行时 env/工作区/缓存/临时日志/生成截图源/本地数据目录，保留 `*.example` 与 `assets/readme/**`
-- [ ] T02.7 `SECURITY.md` 写明支持边界、私密报告方式、loopback 限制、Docker socket 风险、飞书未支持
-- [ ] T02.8 `CONTRIBUTING.md` 给出最小开发环境、分支/测试要求、OpenSpec 入口
-- [ ] A02-1 当前树与历史扫描无已确认真实凭据；疑似项逐条有处置
-- [ ] A02-2 公开图片/录屏无敏感数据且有来源记录
-- [ ] A02-3 推荐部署入口不改全局 Git、不跳过 SSH 验证、不连个人服务器
-- [ ] A02-4 本地运行文件被忽略，模板与 README 素材可跟踪
+- [x] T02.1 `git ls-files` 建立实际发布清单（2,786 个跟踪文件基线）
+- [x] T02.2 gitleaks 8.30.1 对 HEAD 工作树与全部 354 个本地 commits 扫描；0 确认真实凭据，24 处历史命中逐条判定（mock fixture/测试自造 PEM/已删文件历史 blob），1 处真实 Feishu wiki 节点 ID 为文档标识符非凭据（记录保留）
+- [x] T02.3 tracked 图片 25 张全部属历史 QA 验收截图（私有任务材料），按计划从发布分支整体移除，无需 OCR 保留判断；T11 素材全部重拍并单独 OCR
+- [x] T02.4 清点并移除：`resume_optimized.md`、`benchmarks/interview-claims/**`（34 文件）、5 份面试文档、`InterviewClaimsPackagePolicyTest`（守护对象已删）、`.playwright-cli/**`、未实施的 `cloud-server-live-verification` 变更
+- [x] T02.5 `start-cpa-tunnel.sh`（个人 VM + StrictHostKeyChecking=no）删除；`run-codex-memory-live-task.py`、`mea-live/**`（个人仓库硬编码）删除；`start-backend.sh` 去固定 token/全局 Git 改写/个人信息并标 UNSUPPORTED
+- [x] T02.6 `.gitignore` 增加 `.rd-bot-data/`、`deploy/docker/runtime.env`、`.playwright-cli/`、`assets/readme/_src/`；`*.example` 与 `assets/readme/**` 可跟踪已验证
+- [x] T02.7 `SECURITY.md` 重写：支持边界、私密报告、无鉴权控制面 loopback、Docker socket 信任边界、飞书默认关闭、token fail closed
+- [x] T02.8 `CONTRIBUTING.md` 新建：最小环境、分支/测试要求、OpenSpec 入口、安全问题报告
+- [x] A02-1 当前树与 354 commits 历史扫描均无已确认真实凭据；疑似项逐条判定记录于本清单与 E02
+- [x] A02-2 无公开图片/录屏遗留（历史截图全部移除，文本证据保留并加脱敏说明）
+- [x] A02-3 `start-backend.sh` 保留为 UNSUPPORTED 历史示例：无全局 Git 改写、无固定 token、无个人 IP、无 SSH 验证跳过
+- [x] A02-4 `runtime.env`/`.rd-bot-data` check-ignore 验证通过；`*.example` 模板可跟踪
 
 ## T03 默认安全边界
 

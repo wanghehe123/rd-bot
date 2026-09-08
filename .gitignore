@@ -85,6 +85,18 @@ tmp-codex-memory-run/
 outputs/
 feishu-wiki-auth.png
 
+# ===== 本地运行时（Docker 自托管）=====
+# RD-Bot Docker 栈的工作区、运行时 env 与本地数据目录；runtime.env 也被 *.env 覆盖。
+.rd-bot-data/
+deploy/docker/runtime.env
+
+# ===== 公开发布素材的原始录制物 =====
+# assets/readme/ 下只提交脱敏后的最终图/GIF；录制原片与截图源文件不提交。
+assets/readme/_src/
+
+# ===== Playwright CLI 会话产物（根目录）=====
+.playwright-cli/
+
 # ===== 本地环境与密钥 =====
 sk/env.yaml
 *.env

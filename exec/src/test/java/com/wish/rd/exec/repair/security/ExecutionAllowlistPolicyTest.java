@@ -64,14 +64,14 @@ class ExecutionAllowlistPolicyTest {
                 List.of("main"),
                 List.of("requirement/*"),
                 (url, ownerAndName) -> ownerAndName.equalsIgnoreCase(
-                        "wanghehe123/rd-bot-waimai-acceptance-20260624-141045"
+                        "example-org/hello-rd-bot"
                 )
         );
 
         assertTrue(policy.evaluate(command(
-                "wanghehe123",
-                "rd-bot-waimai-acceptance-20260624-141045",
-                "https://github.com/wanghehe123/rd-bot-waimai-acceptance-20260624-141045",
+                "example-org",
+                "hello-rd-bot",
+                "https://github.com/example-org/hello-rd-bot",
                 "main",
                 "requirement/7495092282882920448"
         )).allowed());
@@ -88,16 +88,16 @@ class ExecutionAllowlistPolicyTest {
         );
 
         var decision = policy.evaluate(command(
-                "wanghehe123",
-                "rd-bot-waimai-acceptance-20260624-141045",
-                "https://github.com/wanghehe123/rd-bot-waimai-acceptance-20260624-141045",
+                "example-org",
+                "hello-rd-bot",
+                "https://github.com/example-org/hello-rd-bot",
                 "main",
                 "requirement/7495092282882920448"
         ));
 
         assertFalse(decision.allowed());
         assertTrue(decision.reason().contains("repositoryUrl is not allowlisted"));
-        assertTrue(decision.reason().contains("wanghehe123/rd-bot-waimai-acceptance-20260624-141045"));
+        assertTrue(decision.reason().contains("example-org/hello-rd-bot"));
     }
 
     @Test
@@ -112,9 +112,9 @@ class ExecutionAllowlistPolicyTest {
         );
 
         assertFalse(policy.evaluate(command(
-                "wanghehe123",
-                "rd-bot-waimai-acceptance-20260624-141045",
-                "https://github.com/wanghehe123/rd-bot-waimai-acceptance-20260624-141045",
+                "example-org",
+                "hello-rd-bot",
+                "https://github.com/example-org/hello-rd-bot",
                 "main",
                 "feature/unbound"
         )).allowed());

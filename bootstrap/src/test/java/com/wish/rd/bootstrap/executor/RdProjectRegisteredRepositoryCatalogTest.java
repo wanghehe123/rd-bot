@@ -15,13 +15,13 @@ class RdProjectRegisteredRepositoryCatalogTest {
     @Test
     void shouldMatchEnabledProjectByUrlIgnoringGitSuffix() {
         RdProjectRegisteredRepositoryCatalog catalog = new RdProjectRegisteredRepositoryCatalog(store(
-                project("https://github.com/wanghehe123/rd-bot-waimai-acceptance-20260624-141045.git",
-                        "wanghehe123", "rd-bot-waimai-acceptance-20260624-141045", true, false)
+                project("https://github.com/example-org/hello-rd-bot.git",
+                        "example-org", "hello-rd-bot", true, false)
         ));
 
         assertTrue(catalog.contains(
-                "https://github.com/wanghehe123/rd-bot-waimai-acceptance-20260624-141045",
-                "wanghehe123/rd-bot-waimai-acceptance-20260624-141045"
+                "https://github.com/example-org/hello-rd-bot",
+                "example-org/hello-rd-bot"
         ));
     }
 

@@ -1,12 +1,13 @@
-# Cloud server profile (106.55.13.166) — copy to bootstrap/src/main/resources/application-local.yaml on the server.
-# Infrastructure binds to localhost on the VM; do not commit secrets.
+# Unsupported historical example: bare-metal/VM local-dev overlay profile.
+# The supported deployment path is the Docker Compose stack (see README.md).
+# Copy to bootstrap/src/main/resources/application-local.yaml only for local IDE runs;
+# do not commit secrets.
 #
 #   cp deploy/cloud-server/application-local.example.yaml \
 #      bootstrap/src/main/resources/application-local.yaml
 #
 # Start backend:
-#   cd ~/RD-Bot
-#   export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+#   export JAVA_HOME=/path/to/java-21
 #   SPRING_PROFILES_ACTIVE=local \
 #   SPRING_CONFIG_ADDITIONAL_LOCATION=optional:file:./bootstrap/src/main/resources/application-local.yaml \
 #     ./mvnw -pl bootstrap spring-boot:run

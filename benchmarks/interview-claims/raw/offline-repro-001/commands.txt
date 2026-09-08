@@ -1,1 +1,0 @@
-python3 benchmarks/interview-claims/runners/run-evaluation.py --run-id=offline-repro-001 --dataset=/Users/wish233/Documents/RD-Bot/benchmarks/interview-claims/datasets/v0/cases.jsonl --dataset-version=v0 --model=unspecified --top-k=5

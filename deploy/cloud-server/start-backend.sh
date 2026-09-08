@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# Start RD-Bot on 106.55.13.166 with Pi-friendly resource limits and provider env.
+# UNSUPPORTED historical example — bare-metal VM startup script from the maintainer's
+# private server. This is NOT the supported deployment path; the supported path is the
+# Docker Compose stack started via `./scripts/rd-bot.sh up` (see README.md).
+# This example is kept only to document the bare-metal JVM startup pattern
+# (resource limits, git timeout, nohup restart). It contains no host-specific values.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 ROOT="$(pwd)"
@@ -9,38 +13,30 @@ if [[ -f "$EPISODE_BUDGET_ENV" ]]; then
   # shellcheck disable=SC1090
   source "$EPISODE_BUDGET_ENV"
 fi
-# Back-compat: cloud may still have episode-budget.env (gitignored *.env).
+# Back-compat: server may still have episode-budget.env (gitignored *.env).
 if [[ -f "$ROOT/deploy/cloud-server/episode-budget.env" ]]; then
   # shellcheck disable=SC1090
   source "$ROOT/deploy/cloud-server/episode-budget.env"
 fi
 
-if [[ -f "$ROOT/.env.opencode.local" ]]; then
+if [[ -f "$ROOT/.env.local" ]]; then
   # shellcheck disable=SC1091
-  source "$ROOT/.env.opencode.local"
+  source "$ROOT/.env.local"
 fi
-
-# CPA via SSH tunnel (run deploy/cloud-server/start-cpa-tunnel.sh first).
-# Set CPA_API_KEY in .env.opencode.local or export before start.
 
 export GH_TOKEN="${GH_TOKEN:-${GITHUB_PAT:-}}"
 # Spring binds rd.github.code-platform.pat-token from GITHUB_PAT / GH_TOKEN; keep both set.
 export GITHUB_PAT="${GITHUB_PAT:-${GH_TOKEN:-}}"
-export RD_AGENT_RUNTIME_MUTATION_TOKEN="${RD_AGENT_RUNTIME_MUTATION_TOKEN:-local-agent-runtime}"
+# Fail closed: the runtime mutation token must be supplied by the operator. There is no
+# public default (see AgentRuntimeMutationAccessPolicy).
+if [[ -z "${RD_AGENT_RUNTIME_MUTATION_TOKEN:-}" ]]; then
+  echo "ERROR: RD_AGENT_RUNTIME_MUTATION_TOKEN is not set — runtime mutation would be denied." >&2
+  exit 1
+fi
+export RD_AGENT_RUNTIME_MUTATION_TOKEN
 export RD_EXECUTOR_PI_CPU_LIMIT="${RD_EXECUTOR_PI_CPU_LIMIT:-1.5}"
 export RD_EXECUTOR_PI_MEMORY_LIMIT="${RD_EXECUTOR_PI_MEMORY_LIMIT:-1500m}"
 export SERVER_PORT="${SERVER_PORT:-8080}"
-# Recover a leftover tokenized insteadOf before wiping url.* rewrites.
-if [[ -z "${GH_TOKEN}" ]]; then
-  recovered="$(git config --global --get-regexp '^url\.' 2>/dev/null \
-    | sed -n 's#^url\.https://x-access-token:\([^@]*\)@github.com/.*#\1#p' \
-    | head -1 || true)"
-  if [[ -n "${recovered}" ]]; then
-    export GH_TOKEN="${recovered}"
-    export GITHUB_PAT="${recovered}"
-  fi
-  unset recovered
-fi
 if [[ -z "${GH_TOKEN}" ]]; then
   echo "WARNING: GH_TOKEN/GITHUB_PAT empty — GitHub clone/PR will fail PAT_LOCAL_SMOKE" >&2
 fi
@@ -53,23 +49,11 @@ if [[ -z "${npm_config_registry:-}" && -f "${HOME}/.npmrc" ]]; then
   export npm_config_registry
 fi
 
-# Fetch the live waimai repo from the local bare mirror (github.com:443 is unreliable
-# on this VM). Push MUST still go to GitHub — never insteadOf both fetch and push to
-# the mirror (that yields BRANCH_CONFIRMED with a missing GitHub head).
-WAIMAI_HTTPS="https://github.com/wanghehe123/rd-bot-waimai-acceptance-20260624-141045.git"
-WAIMAI_MIRROR="${HOME}/mirror/waimai.git"
-while IFS= read -r key; do
-  git config --global --unset-all "$key" 2>/dev/null || true
-done < <(git config --global --name-only --get-regexp '^url\.' 2>/dev/null || true)
-if [[ -d "${WAIMAI_MIRROR}" ]]; then
-  git config --global "url.file://${WAIMAI_MIRROR}.insteadOf" "${WAIMAI_HTTPS}"
-fi
-# Ubuntu git (GnuTLS) + HTTP/2 to github.com:443 yields recv error -110 on push.
-git config --global http.version HTTP/1.1
-git config --global http.postBuffer 524288000
-if [[ -n "${GH_TOKEN:-}" ]]; then
-  git config --global url."https://x-access-token:${GH_TOKEN}@github.com/wanghehe123/rd-bot-waimai-acceptance-20260624-141045.git".pushInsteadOf "${WAIMAI_HTTPS}"
-fi
+# NOTE: this script deliberately does NOT touch the developer's global git config
+# (no url.*.insteadOf rewrites, no tokenized pushInsteadOf, no global http.* changes).
+# Transient-TLS mitigations for GitHub pushes are applied per-invocation by the
+# backend itself (see ProcessGitRepairWorkspaceRepository, RULE.md section on
+# GitHub TLS retry), never by rewriting the host's global git configuration.
 
 # Spring Boot loads ./application-local.yaml from the JVM cwd (not src/main/resources
 # after the jar is built). Keep src copy for local IDE runs; runtime overlay goes here.
@@ -91,9 +75,6 @@ for cmdline in /proc/[0-9]*/cmdline; do
 done
 sleep 2
 nohup env \
-  CPA_API_KEY="${CPA_API_KEY:-}" \
-  OPENCODE_API_KEY="${OPENCODE_API_KEY:-}" \
-  DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY:-}" \
   GH_TOKEN="${GH_TOKEN:-}" \
   GITHUB_PAT="${GITHUB_PAT:-}" \
   RD_AGENT_RUNTIME_MUTATION_TOKEN="$RD_AGENT_RUNTIME_MUTATION_TOKEN" \

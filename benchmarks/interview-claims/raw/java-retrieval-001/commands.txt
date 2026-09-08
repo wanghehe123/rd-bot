@@ -1,2 +1,0 @@
-./mvnw -q -pl engine -am -Dtest=IterativeRetrievalEvaluationTest -Dsurefire.failIfNoSpecifiedTests=false test
-python3 benchmarks/interview-claims/runners/run-evaluation.py --dataset=benchmarks/interview-claims/datasets/v1/cases.jsonl --dataset-version=v1 --single-results=benchmarks/interview-claims/datasets/v1/java-orchestration-single-pass.jsonl --iterative-results=benchmarks/interview-claims/datasets/v1/java-orchestration-iterative.jsonl --model=deterministic-fixture-search-port --budget=2000 --top-k=5 --run-id=java-retrieval-001

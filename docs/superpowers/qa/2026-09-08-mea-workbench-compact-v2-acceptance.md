@@ -1,3 +1,6 @@
+> 公开发布说明（2026-09-08）：本报告引用的截图 PNG 已因隐私原因从公开发布分支移除；文本证据仍为本报告权威内容。
+
+
 # MEA 工作台首屏精简 V2 验收记录
 
 日期：2026-09-08。分支：`codex/mea-workbench-compact`。工作区：`/Users/wish233/Documents/RD-Bot/.worktrees/mea-workbench-compact`。

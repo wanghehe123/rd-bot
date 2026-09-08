@@ -1,4 +1,0 @@
-{"caseId":"eval-direct","questionId":"R1","notes":"direct role evidence fixture"}
-{"caseId":"eval-rewrite","questionId":"R2","notes":"iterative rewrite recovers missing requirement material"}
-{"caseId":"eval-recover","questionId":"R3","notes":"iterative second round recovers a noisy first pass"}
-{"caseId":"eval-refusal","questionId":"R4","notes":"provider refusal fixture"}

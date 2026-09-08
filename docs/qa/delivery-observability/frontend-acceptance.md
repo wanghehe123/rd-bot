@@ -1,3 +1,6 @@
+> Public-release note (2026-09-08): the screenshot PNGs referenced below were removed from the public release branch for privacy; the textual evidence in this report remains authoritative.
+
+
 # Delivery observability frontend acceptance (WP-4 6.8 / WP-9.6)
 
 Captured **2026-08-15** against `http://127.0.0.1:18081/admin/observability` served by an isolated `spring-boot:run` (port 18081, database `rdbot_acceptance`, scheduling disabled). This is local CURRENT evidence, not a production layout sign-off.
