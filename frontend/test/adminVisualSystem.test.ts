@@ -116,7 +116,9 @@ test("loads route modules lazily behind a stable fallback", () => {
   assert.match(app, /lazy\(\(\) => import\(/);
   assert.match(app, /<Suspense fallback=\{<AdminRouteFallback \/>\}>/);
   assert.match(app, /function AdminRouteFallback/);
-  assert.match(app, /<BrowserRouter future=\{\{ v7_startTransition: true, v7_relativeSplatPath: true \}\}>/);
+  // react-router v7: v7_startTransition / v7_relativeSplatPath are the default
+  // behavior, so BrowserRouter is mounted without the v6 opt-in `future` prop.
+  assert.match(app, /<BrowserRouter>/);
   assert.match(layout, /<Suspense fallback=\{<AdminContentFallback \/>\}>[\s\S]*<Outlet \/>[\s\S]*<\/Suspense>/);
 });
 

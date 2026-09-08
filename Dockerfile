@@ -34,9 +34,11 @@ COPY bootstrap/pom.xml bootstrap/
 # Wrapper needs an executable bit; dependency prefetch keeps the source layer reusable.
 RUN chmod +x mvnw \
     && ./mvnw -B -q -pl bootstrap -am -DskipTests dependency:go-offline
+COPY . .
+# The freshly built SPA must win over any tracked bundle snapshot in the context:
+# keep this COPY after `COPY . .` so the image serves the current frontend build.
 COPY --from=frontend-build /src/bootstrap/src/main/resources/static/admin \
     bootstrap/src/main/resources/static/admin
-COPY . .
 RUN ./mvnw -B -pl bootstrap -am -DskipTests package
 
 # ---------------------------------------------------------------- runtime -----
@@ -44,6 +46,9 @@ FROM ${RUNTIME_IMAGE} AS runtime
 
 ARG TARGETARCH
 ARG DOCKER_CLI_VERSION=28.3.3
+# 默认使用 Docker 官方静态源；受限网络可在构建时用 DOCKER_CLI_URL 指向自有镜像目录
+# （目录布局需为 ${DOCKER_CLI_URL}/${TARGETARCH}/docker-${DOCKER_CLI_VERSION}.tgz）。
+ARG DOCKER_CLI_URL=https://download.docker.com/linux/static/stable
 
 # Operator toolchain used by the in-container host verifier when it replays target
 # repository commands: bash/curl/git/jq/python3 baseline plus Node 22/npm (copied
@@ -67,8 +72,10 @@ RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && ln -s /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
     && node --version && npm --version
 
-RUN curl -fsSL --retry 3 \
-        "https://download.docker.com/linux/static/stable/${TARGETARCH}/docker-${DOCKER_CLI_VERSION}.tgz" \
+# download.docker.com names the arm64 directory `aarch64`, not BuildKit's `arm64`.
+RUN DOCKER_CLI_ARCH="$(case "${TARGETARCH}" in amd64) echo x86_64;; arm64) echo aarch64;; *) echo "${TARGETARCH}";; esac)" \
+    && curl -fsSL --retry 3 \
+        "${DOCKER_CLI_URL}/${DOCKER_CLI_ARCH}/docker-${DOCKER_CLI_VERSION}.tgz" \
       | tar -xz -C /tmp \
     && install -m 0755 /tmp/docker/docker /usr/local/bin/docker \
     && rm -rf /tmp/docker \

@@ -34,7 +34,7 @@ function AdminRouteFallback() {
 
 export function App() {
   return (
-    <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+    <BrowserRouter>
       <Suspense fallback={<AdminRouteFallback />}>
         <Routes>
           <Route path="/" element={<Navigate to="/admin/dashboard" replace />} />

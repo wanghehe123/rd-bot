@@ -11,7 +11,7 @@
     "bridge": "node src/rd-pi-bridge.mjs"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "0.82.1",
+    "@earendil-works/pi-coding-agent": "^0.85.1",
     "typebox": "1.1.38"
   }
 }

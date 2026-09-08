@@ -1,71 +1,211 @@
+# RD-Bot single-machine self-hosting stack (openspec: docker-self-hosting).
+#
+# Operations go through ./scripts/rd-bot.sh (see README.md). The stack is scoped
+# by COMPOSE_PROJECT_NAME so isolated acceptance stacks never collide; do not add
+# container_name. Infrastructure ports stay internal — debugging uses the
+# `debug-ports` profile (loopback only).
+#
+# Security posture:
+# - only `rd-bot` mounts /var/run/docker.sock (no privileged mode anywhere);
+# - the app publishes on 127.0.0.1 only;
+# - Pi/QA task containers stay on task-local networks; only the hardened relay
+#   sidecar joins the egress network defined below.
+
 services:
   postgres:
     image: pgvector/pgvector:pg16
-    container_name: rd-bot-postgres
-    ports:
-      - "127.0.0.1:5432:5432"
+    expose:
+      - "5432"
     environment:
       POSTGRES_DB: rdbot
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: ${POSTGRES_USERNAME:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
     volumes:
       - rd-bot-postgres-data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d rdbot"]
       interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 12
       start_period: 10s
 
   redis:
-    image: redis:7
-    container_name: rd-bot-redis
-    ports:
-      - "127.0.0.1:6379:6379"
+    image: redis:7.4-bookworm
+    command: ["redis-server", "--appendonly", "yes"]
+    expose:
+      - "6379"
+    volumes:
+      - rd-bot-redis-data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
-      retries: 10
+      retries: 12
       start_period: 5s
 
   minio:
-    image: minio/minio
-    container_name: rd-bot-minio
-    command: server /data --console-address ":9001"
-    ports:
-      - "127.0.0.1:9000:9000"
-      - "127.0.0.1:9001:9001"
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    command: server /data --address ":9000"
+    expose:
+      - "9000"
     environment:
-      MINIO_ROOT_USER: rustfsadmin
-      MINIO_ROOT_PASSWORD: rustfsadmin
+      MINIO_ROOT_USER: ${RUSTFS_ACCESS_KEY_ID:?RUSTFS_ACCESS_KEY_ID is required}
+      MINIO_ROOT_PASSWORD: ${RUSTFS_SECRET_ACCESS_KEY:?RUSTFS_SECRET_ACCESS_KEY is required}
     volumes:
       - rd-bot-minio-data:/data
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 12
       start_period: 10s
 
   minio-init:
-    image: minio/mc
-    container_name: rd-bot-minio-init
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
     depends_on:
-      - minio
+      minio:
+        condition: service_healthy
     entrypoint: >
       /bin/sh -c "
       i=0;
-      until mc alias set local http://minio:9000 rustfsadmin rustfsadmin; do
+      until mc alias set local http://minio:9000 \"$$MINIO_ROOT_USER\" \"$$MINIO_ROOT_PASSWORD\"; do
         i=$$((i+1));
         if [ $$i -ge 30 ]; then exit 1; fi;
         sleep 1;
       done;
-      mc mb --ignore-existing local/biz;
+      mc mb --ignore-existing \"local/${RUSTFS_BUCKET:-biz}\";
       exit 0
       "
+    environment:
+      MINIO_ROOT_USER: ${RUSTFS_ACCESS_KEY_ID:?RUSTFS_ACCESS_KEY_ID is required}
+      MINIO_ROOT_PASSWORD: ${RUSTFS_SECRET_ACCESS_KEY:?RUSTFS_SECRET_ACCESS_KEY is required}
     restart: "no"
+
+  migrations:
+    image: pgvector/pgvector:pg16
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: ["bash", "/migrate.sh"]
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGUSER: ${POSTGRES_USERNAME:-postgres}
+      PGDATABASE: rdbot
+    volumes:
+      - ./bootstrap/src/main/resources/sql/postgres:/migrations:ro
+      - ./deploy/docker/migrate.sh:/migrate.sh:ro
+    restart: "no"
+
+  # Build-only profiles: `docker compose --profile build build pi-agent pi-agent-qa`.
+  # The launcher always builds Pi first, then passes its tag to the QA build.
+  pi-agent:
+    build:
+      context: ./bootstrap/src/main/resources/executor/pi
+      dockerfile: Dockerfile
+      args:
+        NODE_BASE_IMAGE: node:22.19.0-bookworm-slim
+    image: rd-bot/pi-agent:${RD_BOT_IMAGE_TAG:-oss-test}
+    profiles:
+      - build
+    entrypoint: ["true"]
+    restart: "no"
+
+  pi-agent-qa:
+    build:
+      context: ./bootstrap/src/main/resources/executor/pi
+      dockerfile: Dockerfile.qa
+      args:
+        PI_BASE_IMAGE: rd-bot/pi-agent:${RD_BOT_IMAGE_TAG:-oss-test}
+    image: rd-bot/pi-agent-qa:${RD_BOT_IMAGE_TAG:-oss-test}
+    profiles:
+      - build
+    depends_on:
+      pi-agent:
+        condition: service_completed_successfully
+    entrypoint: ["true"]
+    restart: "no"
+
+  rd-bot:
+    image: ${RD_BOT_APP_IMAGE:-rd-bot/app}:${RD_BOT_IMAGE_TAG:-oss-test}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      migrations:
+        condition: service_completed_successfully
+    ports:
+      # Host publish is loopback-only; the container listens on 0.0.0.0 via overlay.
+      - "127.0.0.1:${RD_BOT_PORT:-18080}:18080"
+    environment:
+      SERVER_ADDRESS: 0.0.0.0
+      SPRING_CONFIG_ADDITIONAL_LOCATION: file:/config/application-docker.yaml
+      POSTGRES_URL: jdbc:postgresql://postgres:5432/rdbot?client_encoding=UTF8
+      POSTGRES_USERNAME: ${POSTGRES_USERNAME:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      RUSTFS_URL: http://minio:9000
+      RUSTFS_BUCKET: ${RUSTFS_BUCKET:-biz}
+      RUSTFS_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY_ID:?RUSTFS_ACCESS_KEY_ID is required}
+      RUSTFS_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_ACCESS_KEY:?RUSTFS_SECRET_ACCESS_KEY is required}
+      RD_KNOWLEDGE_STORE: postgres
+      RD_AGENT_RUNTIME_MUTATION_TOKEN: ${RD_AGENT_RUNTIME_MUTATION_TOKEN:-}
+      RD_EXECUTOR_PI_IMAGE: rd-bot/pi-agent:${RD_BOT_IMAGE_TAG:-oss-test}
+      RD_EXECUTOR_PI_QA_IMAGE: rd-bot/pi-agent-qa:${RD_BOT_IMAGE_TAG:-oss-test}
+      # Only the hardened relay sidecar joins this egress network; task containers
+      # stay on task-local internal networks created by the backend.
+      RD_EXECUTOR_PI_NETWORK_MODE: ${RD_BOT_EGRESS_NETWORK:-rd-bot-egress}
+      RD_EXECUTOR_PI_CREDENTIAL_RELAY_URL: http://rd-bot:18080/internal/pi/credential-relay/proxy
+      RD_EXECUTOR_DOCKER_WORKSPACE_ROOT: ${RD_BOT_WORKSPACE_ROOT}
+      RD_EXECUTOR_DOCKER_GIT_TIMEOUT_SECONDS: "600"
+      RD_EXECUTOR_PI_MEMORY_LIMIT: ${RD_EXECUTOR_PI_MEMORY_LIMIT:-8g}
+      RD_EXECUTOR_PI_CPU_LIMIT: ${RD_EXECUTOR_PI_CPU_LIMIT:-4}
+    volumes:
+      # Docker socket: rd-bot ONLY, read-write, host GID injected via group_add.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Same absolute path inside the container so the HOST daemon can bind-mount
+      # task workspaces into Pi/QA agent containers.
+      - ${RD_BOT_WORKSPACE_ROOT}:${RD_BOT_WORKSPACE_ROOT}
+      - ./deploy/docker/application-docker.yaml:/config/application-docker.yaml:ro
+    group_add:
+      - "${DOCKER_GID:?DOCKER_GID is required}"
+    networks:
+      default:
+      egress:
+        aliases:
+          - rd-bot
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:18080/admin", "-o", "/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
+
+  # Debug access to infrastructure, loopback only, opt-in:
+  #   docker compose --profile debug-ports up -d
+  postgres-debug:
+    image: pgvector/pgvector:pg16
+    profiles:
+      - debug-ports
+    ports:
+      - "127.0.0.1:15432:5432"
+    command: ["true"]
+    restart: "no"
+
+networks:
+  egress:
+    # Fixed, overridable name so the backend can attach relay sidecars by name.
+    # Isolated acceptance stacks override RD_BOT_EGRESS_NETWORK with a run-id.
+    name: ${RD_BOT_EGRESS_NETWORK:-rd-bot-egress}
 
 volumes:
   rd-bot-postgres-data:
+  rd-bot-redis-data:
   rd-bot-minio-data:

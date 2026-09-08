@@ -564,7 +564,8 @@ class RequirementDeliveryDispatchServiceTest {
         RequirementDeliveryEngine engine = mock(RequirementDeliveryEngine.class);
         when(engine.evaluateFrozenPolicy(evaluate)).thenReturn(proposal);
         RequirementStageCommand apply = policyControlCommand(
-                "71002", taskId, 11L, 21L, "POLICY_APPLY", evaluate.commandId(), now + 1L);
+                // 可见时间用 now（而非 now+1）：断言调度行为，不与调度器时钟玩毫秒竞态（T09/W6）。
+                "71002", taskId, 11L, 21L, "POLICY_APPLY", evaluate.commandId(), now);
         commands.enqueue(apply);
         RequirementPolicyRun decided = policyRun(
                 evaluate.commandId(), taskId, plan, policy, "ALLOWED",
@@ -662,7 +663,7 @@ class RequirementDeliveryDispatchServiceTest {
         commands.enqueue(pending);
         RequirementStageCommand evaluate = commands.claimBatch("test-worker", now, 60_000L, 1).getFirst();
         RequirementStageCommand apply = policyControlCommand(
-                "73002", taskId, 11L, 21L, "POLICY_APPLY", evaluate.commandId(), now + 1L);
+                "73002", taskId, 11L, 21L, "POLICY_APPLY", evaluate.commandId(), now);
         commands.enqueue(apply);
         String plan = RequirementPolicyRun.canonicalizeJson(
                 "{\"taskId\":\"" + taskId + "\",\"implementationSteps\":[],"
@@ -715,7 +716,7 @@ class RequirementDeliveryDispatchServiceTest {
                 "74002", taskId, 12L, 22L, firstRole, "ROLE_EXECUTION:" + firstRole,
                 0, 3, now + 60_000L, ScheduleResourceClass.PROVIDER,
                 Set.of(ScheduleResourceClass.PROVIDER), "project-1", "provider", "P1",
-                policyRunId, now + 1L);
+                policyRunId, now);
         commands.enqueue(next);
         String plan = RequirementPolicyRun.canonicalizeJson(
                 "{\"taskId\":\"" + taskId + "\",\"implementationSteps\":[],"
@@ -728,7 +729,7 @@ class RequirementDeliveryDispatchServiceTest {
         RequirementPolicyApplyResult result = new RequirementPolicyApplyResult(
                 ledger, apply.succeeded(now + 1L), RequirementPolicyApplyDisposition.ALLOWED,
                 next, 12L, 22L);
-        RecordingPolicyControlPort policyPort = new RecordingPolicyControlPort(null, result);
+        RecordingPolicyControlPort policyPort = new RecordingPolicyControlPort(null, result, commands);
         RequirementDeliveryJobStore jobs = mock(RequirementDeliveryJobStore.class);
         RequirementStageExecutor generic = mock(RequirementStageExecutor.class);
         RequirementStageFinalizationPort finalizer = mock(RequirementStageFinalizationPort.class);
@@ -745,6 +746,10 @@ class RequirementDeliveryDispatchServiceTest {
         invokeRunClaimedCommand(dispatcher, apply, future);
 
         assertEquals(1, policyPort.applyCalls.get());
+        // T09/W6 生产 guard：source POLICY_APPLY 命令必须已被持久化收敛为 SUCCEEDED，
+        // continuation 才允许被公平调度器接走。
+        assertEquals(RequirementStageCommand.Status.SUCCEEDED,
+                commands.findById(apply.commandId()).orElseThrow().status());
         assertEquals(1, scheduled.get());
         assertEquals(policyRunId, next.policyRunId());
         assertFalse(future.isDone());
@@ -3036,6 +3041,7 @@ class RequirementDeliveryDispatchServiceTest {
     private static final class RecordingPolicyControlPort implements RequirementPolicyTransactionPort {
         private final RequirementPolicyEvaluationResult evaluationResult;
         private final RequirementPolicyApplyResult applyResult;
+        private final InMemoryRequirementStageCommandStore commandStore;
         private final AtomicInteger evaluationCalls = new AtomicInteger();
         private final AtomicInteger applyCalls = new AtomicInteger();
         private RecordRequirementPolicyDecisionCommand lastDecision;
@@ -3044,8 +3050,17 @@ class RequirementDeliveryDispatchServiceTest {
                 RequirementPolicyEvaluationResult evaluationResult,
                 RequirementPolicyApplyResult applyResult
         ) {
+            this(evaluationResult, applyResult, null);
+        }
+
+        private RecordingPolicyControlPort(
+                RequirementPolicyEvaluationResult evaluationResult,
+                RequirementPolicyApplyResult applyResult,
+                InMemoryRequirementStageCommandStore commandStore
+        ) {
             this.evaluationResult = evaluationResult;
             this.applyResult = applyResult;
+            this.commandStore = commandStore;
         }
 
         @Override
@@ -3065,6 +3080,12 @@ class RequirementDeliveryDispatchServiceTest {
                 RequirementStageCommand command, String leaseOwner, long nowEpochMillis
         ) {
             applyCalls.incrementAndGet();
+            // T09/W6：真实事务端口在收敛 source command 的同一事务里持久化 continuation；
+            // test double 必须复刻这一 store 语义，否则调度器的 durable-identity 路径
+            // 会因 in-flight source command 而推迟 continuation。
+            if (commandStore != null && applyResult != null) {
+                commandStore.completeAndEnqueue(command, leaseOwner, nowEpochMillis, applyResult.nextCommand());
+            }
             return applyResult;
         }
 
