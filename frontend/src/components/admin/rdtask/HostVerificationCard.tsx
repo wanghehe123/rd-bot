@@ -2,6 +2,8 @@ import { useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   Clock3,
   Download,
   FileCode,
@@ -184,6 +186,8 @@ export interface HostVerificationCardProps {
   loading?: boolean;
   error?: string;
   onSelectCodingAttempt?: (attemptNo?: number) => void;
+  /** 紧凑模式：成功验证压成一行概要（roles 视图用）；audit 视图保持完整卡片。 */
+  compact?: boolean;
 }
 
 export function HostVerificationCard({
@@ -191,9 +195,11 @@ export function HostVerificationCard({
   verificationList,
   loading = false,
   error,
-  onSelectCodingAttempt
+  onSelectCodingAttempt,
+  compact = false
 }: HostVerificationCardProps) {
   const [showHistory, setShowHistory] = useState(false);
+  const [compactOpen, setCompactOpen] = useState(false);
 
   if (loading) {
     return (
@@ -238,6 +244,81 @@ export function HostVerificationCard({
   const runs = verificationList?.runs || [];
   const latestRun = runs[0];
   const cheapRemediationsUsed = verificationList?.cheapRemediationsUsed ?? latestRun?.remediationCount ?? 0;
+
+  // 紧凑模式：仅当最新一轮成功/文档跳过且无失败信息时压成一行；失败仍走完整卡片直显失败原因
+  const latestSuccessLike = Boolean(
+    latestRun
+    && (latestRun.status === "SUCCEEDED" || latestRun.status === "SKIPPED_DOCS_ONLY")
+    && !latestRun.errorMessage
+  );
+  if (compact && latestSuccessLike && latestRun) {
+    const steps = latestRun.steps || [];
+    const buildStep = steps.find((step) => step.step === "BUILD");
+    const staticStep = steps.find((step) => step.step === "STATIC");
+    const stepSummary = latestRun.status === "SKIPPED_DOCS_ONLY"
+      ? "文档变更 · 跳过构建与静态检查"
+      : [
+        buildStep ? `构建${STEP_STATUS_LABELS[buildStep.status] || buildStep.status}` : "构建未执行",
+        staticStep ? `静态${STEP_STATUS_LABELS[staticStep.status] || staticStep.status}` : "静态未执行"
+      ].join(" · ");
+    return (
+      <section className="rounded-lg border border-slate-200 bg-white px-4 py-3" aria-label="宿主验证面板">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-xs">
+          <span className="flex items-center gap-1.5 font-semibold text-slate-950">
+            <Wrench className="h-4 w-4 text-teal-700" />
+            宿主验证
+          </span>
+          <HostVerificationStatusBadge status={latestRun.status} />
+          <span className="text-slate-600">{stepSummary}</span>
+          <span className="text-slate-500">
+            耗时 {formatDuration(latestRun.finishedAtEpochMillis ? latestRun.finishedAtEpochMillis - latestRun.startedAtEpochMillis : 0)}
+          </span>
+          <span className="text-slate-500">廉价返工 {cheapRemediationsUsed} / 2</span>
+          <button
+            type="button"
+            aria-expanded={compactOpen}
+            onClick={() => setCompactOpen((prev) => !prev)}
+            className="ml-auto inline-flex items-center gap-1 font-medium text-teal-700 hover:text-teal-900"
+          >
+            {compactOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+            {compactOpen ? "收起步骤" : "查看步骤"}
+          </button>
+        </div>
+        {compactOpen ? (
+          <div className="mt-3 border-t border-slate-100 pt-3">
+            <VerificationRunSection
+              taskId={taskId}
+              run={latestRun}
+              isLatest
+              onSelectCodingAttempt={onSelectCodingAttempt}
+            />
+            {runs.length > 1 ? (
+              <div className="mt-3 border-t border-slate-200 pt-3">
+                <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => setShowHistory((prev) => !prev)}>
+                  <History className="mr-1.5 h-3.5 w-3.5" />
+                  {showHistory ? "收起历史轮次" : `全部 ${runs.length} 轮`}
+                </Button>
+                {showHistory ? (
+                  <div className="mt-3 divide-y divide-slate-200 border border-slate-200 rounded-md">
+                    {runs.slice(1).map((run) => (
+                      <div key={run.runId} className="p-3">
+                        <VerificationRunSection
+                          taskId={taskId}
+                          run={run}
+                          isLatest={false}
+                          onSelectCodingAttempt={onSelectCodingAttempt}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </section>
+    );
+  }
 
   return (
     <Card className="border-slate-200 shadow-sm" aria-label="宿主验证面板">
@@ -407,23 +488,48 @@ function VerificationRunSection({
 
       {/* 步骤列表: BUILD & STATIC */}
       {!run.docsOnly ? (
-        <div className="space-y-2">
-          <StepDetailRow
-            taskId={taskId}
-            runId={run.runId}
-            stepName="BUILD"
-            step={buildStep}
-            artifacts={run.artifacts}
-          />
-          <StepDetailRow
-            taskId={taskId}
-            runId={run.runId}
-            stepName="STATIC"
-            step={staticStep}
-            artifacts={run.artifacts}
-            disabledByPriorFailure={buildStep?.status === "FAILED"}
-          />
-        </div>
+        run.status === "SUCCEEDED" ? (
+          <details className="rounded border border-slate-200 bg-slate-50/40 p-2 text-xs">
+            <summary className="cursor-pointer font-medium text-slate-700 hover:text-slate-900">
+              步骤详情（构建与静态检查均已通过）
+            </summary>
+            <div className="mt-2 space-y-2 border-t border-slate-200 pt-2">
+              <StepDetailRow
+                taskId={taskId}
+                runId={run.runId}
+                stepName="BUILD"
+                step={buildStep}
+                artifacts={run.artifacts}
+              />
+              <StepDetailRow
+                taskId={taskId}
+                runId={run.runId}
+                stepName="STATIC"
+                step={staticStep}
+                artifacts={run.artifacts}
+                disabledByPriorFailure={buildStep?.status === "FAILED"}
+              />
+            </div>
+          </details>
+        ) : (
+          <div className="space-y-2">
+            <StepDetailRow
+              taskId={taskId}
+              runId={run.runId}
+              stepName="BUILD"
+              step={buildStep}
+              artifacts={run.artifacts}
+            />
+            <StepDetailRow
+              taskId={taskId}
+              runId={run.runId}
+              stepName="STATIC"
+              step={staticStep}
+              artifacts={run.artifacts}
+              disabledByPriorFailure={buildStep?.status === "FAILED"}
+            />
+          </div>
+        )
       ) : null}
     </section>
   );

@@ -174,19 +174,7 @@ public final class RoleContextBuilder {
         return null;
       }
       String truncatedTitle = title.length() <= titleBudget ? title : title.substring(0, titleBudget);
-      return new RoleContextEvidence(
-          evidence.evidenceId(),
-          evidence.sourceType(),
-          evidence.sourceUri(),
-          truncatedTitle,
-          evidence.contentHash(),
-          referenceSummary,
-          evidence.collectedAtEpochMillis(),
-          evidence.selectionReason(),
-          evidence.relevanceScore(),
-          evidence.requiredEvidenceType(),
-          evidence.sharedRoot()
-      );
+      return copyEvidence(evidence, truncatedTitle, referenceSummary);
     }
 
     private String referenceOnlySummary(RoleContextEvidence evidence) {
@@ -194,18 +182,24 @@ public final class RoleContextBuilder {
     }
 
     private RoleContextEvidence withSummary(RoleContextEvidence evidence, String summary) {
+      return copyEvidence(evidence, evidence.title(), summary);
+    }
+
+    private RoleContextEvidence copyEvidence(RoleContextEvidence evidence, String title, String summary) {
       return new RoleContextEvidence(
           evidence.evidenceId(),
           evidence.sourceType(),
           evidence.sourceUri(),
-          evidence.title(),
+          title,
           evidence.contentHash(),
           summary,
           evidence.collectedAtEpochMillis(),
           evidence.selectionReason(),
           evidence.relevanceScore(),
           evidence.requiredEvidenceType(),
-          evidence.sharedRoot()
+          evidence.sharedRoot(),
+          evidence.trust(),
+          evidence.auditRunId()
       );
     }
 
@@ -220,7 +214,7 @@ public final class RoleContextBuilder {
         if (material == null || material.materialId().isBlank()) {
           continue;
         }
-        RoleContextEvidence evidence = new RoleContextEvidence(
+        RoleContextEvidence evidence = RoleContextEvidence.hostMaterial(
             material.materialId(),
             material.sourceType().name(),
             material.sourceUri(),

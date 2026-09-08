@@ -12,7 +12,8 @@ import {
   Radio,
   Search,
   ShieldCheck,
-  TerminalSquare
+  TerminalSquare,
+  XCircle
 } from "lucide-react";
 
 import {
@@ -21,6 +22,9 @@ import {
 } from "@/components/admin/rdtask/TaskFailureRecoveryWorkbench";
 import { ReadableAgentTrace } from "@/components/admin/rdtask/ReadableAgentTrace";
 import { RoleEffectiveContextCard } from "@/components/admin/rdtask/RoleEffectiveContextCard";
+import { RoleAgentStateCard } from "@/components/admin/rdtask/RoleAgentStateCard";
+import { RoleDeliverablesPanel } from "@/components/admin/rdtask/RoleDeliverablesPanel";
+import type { CodingMeaView } from "@/pages/admin/rdtask/codingMeaModel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -35,8 +39,10 @@ import {
   projectRoleResult,
   selectRoleAttempt
 } from "@/pages/admin/rdtask/roleWorkbenchModel";
+import { roleCardSummary } from "@/pages/admin/rdtask/workbenchSummaryModel";
 import { getRdTaskExecutionTrace } from "@/services/rdTaskService";
 import type {
+  AuditedTaskState,
   RdTask,
   RdTaskExecutionTrace,
   RdTaskExecutionOverview,
@@ -140,11 +146,16 @@ type TaskRoleWorkbenchProps = {
   failureRecoveryLoading: boolean;
   failureRecoveryError: string;
   hostVerifications?: HostVerificationList | null;
+  auditedState?: AuditedTaskState | null;
+  codingMeaView?: CodingMeaView | null;
+  codingMeaLoading?: boolean;
+  codingMeaError?: string;
   selectedRole: string;
   selectedAttemptNo?: number;
   selectedTab: RoleWorkbenchTab;
   onSelectionChange: (role: string, attemptNo?: number) => void;
   onTabChange: (tab: RoleWorkbenchTab) => void;
+  onNavigateToQaAttempt?: (qaAttemptNo: number) => void;
   onInspectRetrievalRun: (run: RetrievalRun) => Promise<void>;
   onRefresh: () => Promise<void>;
   captureTaskActionGuard: CaptureTaskActionGuard;
@@ -168,11 +179,16 @@ export function TaskRoleWorkbench({
   failureRecoveryLoading,
   failureRecoveryError,
   hostVerifications,
+  auditedState = null,
+  codingMeaView = null,
+  codingMeaLoading = false,
+  codingMeaError = "",
   selectedRole,
   selectedAttemptNo,
   selectedTab,
   onSelectionChange,
   onTabChange,
+  onNavigateToQaAttempt,
   onInspectRetrievalRun,
   onRefresh,
   captureTaskActionGuard
@@ -230,21 +246,46 @@ export function TaskRoleWorkbench({
     }
   }, [onSelectionChange, selectedAttemptNo, selectedRole, selection.attemptNo, selection.role]);
 
+  const handleNavigateToQaAttempt = useCallback((qaAttemptNo: number) => {
+    if (onNavigateToQaAttempt) {
+      onNavigateToQaAttempt(qaAttemptNo);
+    } else {
+      onSelectionChange("QA_AGENT", qaAttemptNo);
+    }
+  }, [onNavigateToQaAttempt, onSelectionChange]);
+
+  // 任务级 PR 只认任务 DTO 的 pullRequestUrl（TASK_PR 材料类型在系统里不存在）
+  const taskPrUrl = task.pullRequestUrl || task.executionEvidence?.pullRequestUrl || "";
+  const taskPrLink = taskPrUrl ? { prUrl: taskPrUrl, workBranch: task.workBranch || undefined } : null;
+
+  // 四角色卡的一句话产物摘要：只消费已加载字段（最近 Attempt 预览/任务级证据与审计），不发新请求
+  const roleCardSummaries = useMemo(() => new Map(roles.map((role) => [role.role, roleCardSummary({
+    taskId: task.taskId,
+    stage: role.latestStage,
+    qaEvidence,
+    auditedRecords: auditedState?.records || null,
+    hostVerification: hostVerifications?.runs[0] || null,
+    taskPrUrl
+  })])), [roles, qaEvidence, auditedState, hostVerifications, task.taskId, taskPrUrl]);
+
+  // 所选阶段行的副标题：阻断优先，其次所选 Attempt 自己的产物摘要（不使用占位 resultSummary）
+  const selectedStageHostVerify = useMemo(() => (
+    hostVerifications?.runs?.find((run) => run.codingStageRunId === selectedStage?.stageRunId) || null
+  ), [hostVerifications, selectedStage?.stageRunId]);
+  const selectedStageSummary = useMemo(() => selectedStage ? roleCardSummary({
+    taskId: task.taskId,
+    stage: selectedStage,
+    qaEvidence,
+    auditedRecords: auditedState?.records || null,
+    hostVerification: selectedStageHostVerify,
+    taskPrUrl
+  }) : "", [selectedStage, task.taskId, qaEvidence, auditedState, selectedStageHostVerify, taskPrUrl]);
+
   return (
     <section className="overflow-hidden border border-slate-200 bg-white" aria-labelledby="role-workbench-title">
-      <header className="border-b border-slate-200 px-4 py-4 sm:px-5">
+      <header className="border-b border-slate-200 px-4 py-2.5 sm:px-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h2 id="role-workbench-title" className="text-base font-semibold text-slate-950">角色工作台</h2>
-            <p className="mt-1 text-xs text-slate-600">围绕一个角色和 Attempt 查看问题、真实输入与完整运行记录。</p>
-          </div>
-          {overview ? (
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-600">
-              <span>阶段推进 <strong className="text-slate-900">{overview.progressCompleted}/{overview.progressTotal}</strong></span>
-              <span>当前角色 <strong className="text-slate-900">{ROLE_LABEL[overview.currentRole] || overview.currentRole || "-"}</strong></span>
-              <span>耗时 <strong className="text-slate-900">{formatDuration(overview.elapsedMillis)}</strong></span>
-            </div>
-          ) : null}
+          <h2 id="role-workbench-title" className="text-base font-semibold text-slate-950">角色工作台</h2>
         </div>
         {overviewError ? (
           <div className="mt-3 border-l-2 border-amber-500 bg-amber-50 px-3 py-2 text-xs text-amber-900">
@@ -272,7 +313,7 @@ export function TaskRoleWorkbench({
                 key={role.role}
                 value={role.role}
                 className={cn(
-                  "min-h-[76px] flex-col items-stretch justify-between rounded-lg border border-slate-200 bg-white px-3 py-2 text-left shadow-none",
+                  "min-h-[72px] flex-col items-stretch justify-between rounded-lg border border-slate-200 bg-white px-3 py-2 text-left shadow-none",
                   "hover:border-slate-300 hover:bg-slate-50",
                   "data-[state=active]:border-teal-500 data-[state=active]:bg-teal-50/60 data-[state=active]:text-slate-950 data-[state=active]:shadow-none"
                 )}
@@ -281,7 +322,7 @@ export function TaskRoleWorkbench({
                   <span className="truncate font-semibold text-slate-900">{ROLE_LABEL[role.role] || role.role}</span>
                   <RoleStatusIcon status={role.status} />
                 </span>
-                <span className="mt-1 flex w-full min-w-0 items-center justify-between gap-2 text-[11px] font-normal text-slate-600">
+                <span className="mt-0.5 flex w-full min-w-0 items-center justify-between gap-2 text-[11px] font-normal text-slate-600">
                   <span>{latestAttempt ? `Attempt ${latestAttempt.attemptNo}` : "尚未创建"}</span>
                   <span className={cn(
                     "truncate",
@@ -292,8 +333,10 @@ export function TaskRoleWorkbench({
                     {issueLabel}
                   </span>
                 </span>
-                <span className="mt-1 block w-full truncate text-[11px] font-normal text-slate-500">
-                  {role.blocker || (role.unboundPromptCount > 0 ? `${role.unboundPromptCount} 条 Prompt 绑定异常` : "无当前阻断")}
+                <span className="mt-0.5 block w-full truncate text-[11px] font-normal text-slate-500" title={roleCardSummaries.get(role.role) || ""}>
+                  {role.unboundPromptCount > 0
+                    ? `${role.unboundPromptCount} 条 Prompt 绑定异常`
+                    : roleCardSummaries.get(role.role) || "结构化摘要暂不可用"}
                 </span>
               </TabsTrigger>
             );
@@ -301,12 +344,27 @@ export function TaskRoleWorkbench({
         </TabsList>
 
         <TabsContent value={selection.role} className="m-0">
-          <div className="border-b border-slate-200 px-4 py-4 sm:px-5">
+          <div className="border-b border-slate-200 px-4 py-3 sm:px-5">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
                   <h3 className="text-lg font-semibold text-slate-950">{ROLE_LABEL[selection.role] || selection.role}</h3>
                   {selectedStage ? <StatusBadge status={selectedStage.status} /> : null}
+                  {selectedAttempt && selectedRoleView ? (
+                    <Badge
+                      variant="outline"
+                      className={cn(
+                        "text-[11px]",
+                        selectedAttempt.stageRunId === selectedRoleView.latestStage?.stageRunId
+                          ? "border-teal-300 bg-teal-50 text-teal-800"
+                          : "border-slate-300 bg-slate-50 text-slate-600"
+                      )}
+                    >
+                      {selectedAttempt.stageRunId === selectedRoleView.latestStage?.stageRunId
+                        ? "当前 Attempt"
+                        : `历史 Attempt ${selectedAttempt.attemptNo}`}
+                    </Badge>
+                  ) : null}
                   {selectedQaEvidence.length > 0 ? (
                     <Badge variant="outline" className="border-cyan-200 bg-cyan-50 text-cyan-800">
                       {selectedQaEvidence.length} 项 QA 证据
@@ -314,7 +372,7 @@ export function TaskRoleWorkbench({
                   ) : null}
                 </div>
                 <p className="mt-1 line-clamp-2 text-sm text-slate-600">
-                  {selectedRoleView?.blocker || selectedStage?.resultSummary || "选择 Attempt 后查看该角色的执行输入与结果。"}
+                  {selectedRoleView?.blocker || selectedStageSummary || "选择 Attempt 后查看该角色的执行输入与结果。"}
                 </p>
               </div>
               <div className="w-full shrink-0 sm:w-64">
@@ -344,50 +402,76 @@ export function TaskRoleWorkbench({
               {selectedRoleView?.blocker || "该角色尚未创建执行 Attempt。"}
             </div>
           ) : (
-            <Tabs value={selectedTab} onValueChange={(value) => onTabChange(value as RoleWorkbenchTab)}>
-              <TabsList className="grid h-11 w-full grid-cols-4 border-b border-slate-200 bg-white px-3 sm:w-[680px] sm:border-r">
-                <InspectorTab value="issues">结果与问题</InspectorTab>
-                <InspectorTab value="evidence">输入与证据</InspectorTab>
-                <InspectorTab value="runs">运行记录</InspectorTab>
-                <InspectorTab value="trace">执行轨迹</InspectorTab>
-              </TabsList>
-              <TabsContent value="issues" className="m-0">
-                <RoleResultPanel
-                  stage={selectedStage}
-                  recovery={selectedRecovery}
-                  recoveryLoading={recoveryExpectedForSelectedAttempt && failureRecoveryLoading}
-                  recoveryError={recoveryExpectedForSelectedAttempt ? failureRecoveryError : ""}
-                  task={task}
-                  materials={materials}
-                  onRefresh={onRefresh}
-                  captureTaskActionGuard={captureTaskActionGuard}
-                />
-              </TabsContent>
-              <TabsContent value="evidence" className="m-0">
-                <RoleEvidencePanel
+            <div className="lg:grid lg:grid-cols-3">
+              {/* 单份状态 DOM：窄屏位于内容 tabs 之前，桌面固定右列 */}
+              <aside className="border-b border-slate-200 bg-slate-50/30 p-4 sm:p-5 lg:col-start-3 lg:row-start-1 lg:border-b-0 lg:border-l lg:sticky lg:top-16 lg:self-start">
+                <RoleAgentStateCard
                   stage={selectedStage}
                   promptStage={selectedPrompt}
                   promptLoading={promptLoading}
                   promptError={promptError}
-                  evidenceLoading={evidenceLoading}
-                  qaEvidence={selectedQaEvidence}
-                  qaEvidenceError={qaEvidenceError}
-                  retrievalRuns={selectedRetrievalRuns}
-                  retrievalError={retrievalError}
-                  onInspectRetrievalRun={onInspectRetrievalRun}
+                  isLatestAttempt={selectedAttempt?.stageRunId === selectedRoleView?.latestStage?.stageRunId}
                 />
-              </TabsContent>
-              <TabsContent value="runs" className="m-0">
-                <div className="space-y-4 px-4 py-5 sm:px-5">
-                  <RuntimeExecutionProfilePanel taskId={task.taskId} stage={selectedStage} />
-                  <TaskRuntimeOverridePanel task={task} stage={selectedStage} />
-                  <RoleHistoryPanel role={selectedRoleView} overview={overview} selectedStageRunId={selectedStage.stageRunId} />
-                </div>
-              </TabsContent>
-              <TabsContent value="trace" className="m-0">
-                <ExecutionTracePanel taskId={task.taskId} stage={selectedStage} />
-              </TabsContent>
-            </Tabs>
+              </aside>
+              <div className="min-w-0 lg:col-start-1 lg:col-span-2 lg:row-start-1">
+                <Tabs value={selectedTab} onValueChange={(value) => onTabChange(value as RoleWorkbenchTab)}>
+                  <TabsList className="grid h-11 w-full grid-cols-4 border-b border-slate-200 bg-white px-3 sm:w-[680px] sm:border-r">
+                    <InspectorTab value="issues">产物与证据</InspectorTab>
+                    <InspectorTab value="evidence">Prompt</InspectorTab>
+                    <InspectorTab value="trace">执行轨迹</InspectorTab>
+                    <InspectorTab value="runs">运行记录</InspectorTab>
+                  </TabsList>
+                  <div>
+                    <TabsContent value="issues" className="m-0">
+                      <RoleDeliverablesPanel
+                        key={`${task.taskId}-${selectedStage.stageRunId}`}
+                        taskId={task.taskId}
+                        stage={selectedStage}
+                        promptStage={selectedPrompt}
+                        qaEvidence={selectedQaEvidence}
+                        materials={materials}
+                        hostVerifications={hostVerifications}
+                        auditedState={auditedState}
+                        taskPr={taskPrLink}
+                        recovery={selectedRecovery}
+                        recoveryLoading={recoveryExpectedForSelectedAttempt && failureRecoveryLoading}
+                        recoveryError={recoveryExpectedForSelectedAttempt ? failureRecoveryError : ""}
+                        codingMeaView={codingMeaView}
+                        codingMeaLoading={codingMeaLoading}
+                        codingMeaError={codingMeaError}
+                        onNavigateToQaAttempt={handleNavigateToQaAttempt}
+                        onRefresh={onRefresh}
+                        captureTaskActionGuard={captureTaskActionGuard}
+                      />
+                    </TabsContent>
+                    <TabsContent value="evidence" className="m-0">
+                      <RoleEvidencePanel
+                        stage={selectedStage}
+                        promptStage={selectedPrompt}
+                        promptLoading={promptLoading}
+                        promptError={promptError}
+                        evidenceLoading={evidenceLoading}
+                        qaEvidence={selectedQaEvidence}
+                        qaEvidenceError={qaEvidenceError}
+                        retrievalRuns={selectedRetrievalRuns}
+                        retrievalError={retrievalError}
+                        onInspectRetrievalRun={onInspectRetrievalRun}
+                      />
+                    </TabsContent>
+                    <TabsContent value="runs" className="m-0">
+                      <div className="space-y-4 px-4 py-5 sm:px-5">
+                        <RuntimeExecutionProfilePanel taskId={task.taskId} stage={selectedStage} />
+                        <TaskRuntimeOverridePanel task={task} stage={selectedStage} />
+                        <RoleHistoryPanel role={selectedRoleView} overview={overview} selectedStageRunId={selectedStage.stageRunId} />
+                      </div>
+                    </TabsContent>
+                    <TabsContent value="trace" className="m-0">
+                      <ExecutionTracePanel taskId={task.taskId} stage={selectedStage} />
+                    </TabsContent>
+                  </div>
+                </Tabs>
+              </div>
+            </div>
           )}
         </TabsContent>
       </Tabs>
@@ -572,6 +656,7 @@ function RoleEvidencePanel({
         promptStage={promptStage}
         promptLoading={promptLoading}
         promptError={promptError}
+        includeLatestStateTab={false}
       />
 
       <section>
@@ -1335,6 +1420,7 @@ function RoleStatusIcon({ status }: { status: string }) {
   if (status === "SUCCEEDED") return <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" aria-label="已成功" />;
   if (isFailedStageStatus(status)) return <AlertTriangle className="h-4 w-4 shrink-0 text-rose-600" aria-label="存在问题" />;
   if (isActiveStageStatus(status)) return <LoaderCircle className="h-4 w-4 shrink-0 animate-spin text-teal-600" aria-label="执行中" />;
+  if (status === "CANCELLED") return <XCircle className="h-4 w-4 shrink-0 text-slate-500" aria-label="已取消" />;
   return <Clock3 className="h-4 w-4 shrink-0 text-slate-400" aria-label="待开始" />;
 }
 

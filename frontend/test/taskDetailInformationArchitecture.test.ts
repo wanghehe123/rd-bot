@@ -8,15 +8,42 @@ const detailPage = readFileSync(
 );
 
 test("makes the role workbench the primary task-detail surface", () => {
-  assert.match(detailPage, /TaskSummaryBand/);
   assert.match(detailPage, /TaskRoleWorkbench/);
-  assert.ok(detailPage.indexOf("<TaskSummaryBand") < detailPage.indexOf("<TaskRoleWorkbench"));
+  // V2: 顶部只保留一套任务级摘要，旧摘要大卡与空快速操作容器不得回归
+  assert.doesNotMatch(detailPage, /TaskSummaryBand/);
+  assert.doesNotMatch(detailPage, /快速操作：/);
+  assert.ok(detailPage.indexOf("<TaskHeaderNotice") >= 0);
+  assert.ok(detailPage.indexOf("<TaskHeaderNotice") < detailPage.indexOf("<TaskRoleWorkbench"));
   assert.doesNotMatch(detailPage, /<RolePromptEvidenceCard/);
   assert.doesNotMatch(detailPage, /<ExecutionOverviewCard/);
   assert.doesNotMatch(
     detailPage,
     /function (?:RolePromptEvidenceCard|ExecutionOverviewCard|MetricBlock|StageRunRow|QaStageOutcome|QaScopeOutcome)\b/
   );
+});
+
+test("keeps waiting, recovery and blocker notices and merged quick actions in the compact header", () => {
+  // 原摘要大卡的等待/恢复/阻断提示迁到页头后必须仍然存在
+  assert.match(detailPage, /等待补充信息/);
+  assert.match(detailPage, /恢复中：<\/span>/);
+  assert.match(detailPage, /当前阻断：<\/span>/);
+  // 快速操作合并进页头操作区：三个条件与 handler 保留，false 时不渲染容器
+  assert.match(detailPage, /canSubmitRequirementTask\(task\) \? \(\n            <Button size="sm" onClick=\{handleSubmitTask\}/);
+  assert.match(detailPage, /task\?\.status === "AWAITING_BUDGET_APPROVAL" \? \(\n            <Button size="sm" onClick=\{\(\) => setBudgetApprovalOpen\(true\)\}/);
+  assert.match(detailPage, /canAnswerRequirement\(task\) \? \(\n            <Button size="sm" onClick=\{\(\) => setAnswerOpen\(true\)\}/);
+  // 页头次级行携带项目/流程/Token/审计计数
+  assert.match(detailPage, /当前流程:/);
+  assert.match(detailPage, /累计 Token:/);
+  assert.match(detailPage, /auditedCoverage\(auditedState\.records\)\.label/);
+});
+
+test("workbench header does not duplicate the task-level progress summary", () => {
+  const workbench = readFileSync(
+    new URL("../src/components/admin/rdtask/TaskRoleWorkbench.tsx", import.meta.url),
+    "utf8"
+  );
+  assert.doesNotMatch(workbench, /阶段推进/);
+  assert.match(workbench, /overviewError/);
 });
 
 test("moves task input and audit history behind explicit workspace views", () => {
@@ -59,6 +86,11 @@ test("loads prompt, evidence and audit blobs only when those views are selected"
   assert.match(detailPage, /view === "audit"/);
   assert.match(detailPage, /getRdTaskAuditContent\(taskId\)/);
   assert.match(detailPage, /view !== "roles" \|\| selectedRoleTab !== "evidence"/);
+});
+
+test("loads QA evidence for the default role deliverables tab without opening Prompt", () => {
+  assert.match(detailPage, /const loadQaEvidenceData = useCallback/);
+  assert.match(detailPage, /selectedRoleTab === "issues"[\s\S]*loadQaEvidenceData/);
 });
 
 test("serializes non-core detail polling and refreshes evidence when the stage signature changes", () => {

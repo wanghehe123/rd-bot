@@ -259,7 +259,39 @@ public final class EngineRequirementExecutionProfileResolver
         value.put("dynamicStateEnabled", dynamicStateEnabled);
         value.put("maxInjectedStateBytes", maxInjectedStateBytes);
         value.put("toolRetryPolicyVersion", "rd-tool-retry/v1");
+        putEpisodeBudget(value);
         return AgentManifestCanonicalJson.canonicalJson(value);
+    }
+
+    /**
+     * Freezes episode hard budgets into the snapshot when positive env values are present.
+     * Never writes 0 (that would silently disable bridge enforcement). B07 P95 defaults are
+     * tracked in {@code role-budget-defaults.json}; until that file is FROZEN, env is the
+     * only freeze source.
+     */
+    private static void putEpisodeBudget(Map<String, Object> value) {
+        int maxAgentTurns = positiveEnvInt("RD_PI_MAX_AGENT_TURNS");
+        int maxTotalTokens = positiveEnvInt("RD_PI_MAX_TOTAL_TOKENS");
+        if (maxAgentTurns > 0 && maxTotalTokens > 0) {
+            value.put("maxAgentTurns", maxAgentTurns);
+            value.put("maxTotalTokens", maxTotalTokens);
+            value.put("episodeBudgetStatus", "FROZEN_FROM_ENV");
+            return;
+        }
+        value.put("episodeBudgetStatus", "NOT_FROZEN");
+    }
+
+    private static int positiveEnvInt(String name) {
+        String raw = System.getenv(name);
+        if (raw == null || raw.isBlank()) {
+            return 0;
+        }
+        try {
+            int parsed = Integer.parseInt(raw.strip());
+            return parsed > 0 ? parsed : 0;
+        } catch (NumberFormatException ignored) {
+            return 0;
+        }
     }
 
     private AgentToolPolicy resolveToolPolicy(

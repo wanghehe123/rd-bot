@@ -430,4 +430,83 @@ public interface RequirementStageCommandMapper extends BaseMapper<RequirementSta
             @Param("now") OffsetDateTime now,
             @Param("limit") int limit
     );
+
+    /**
+     * First page of task-scoped commands (no cursor).
+     *
+     * @param taskId owning task
+     * @param limit maximum rows
+     * @return ordered rows
+     */
+    @Select("""
+            SELECT *
+              FROM rd_requirement_stage_commands
+             WHERE task_id = #{taskId}
+             ORDER BY created_at ASC, id ASC
+             LIMIT #{limit}
+            """)
+    List<RequirementStageCommandRow> listByTaskFirstPage(
+            @Param("taskId") long taskId,
+            @Param("limit") int limit
+    );
+
+    /**
+     * Task-scoped command page after an exclusive (created_at, id) cursor.
+     *
+     * @param taskId owning task
+     * @param afterCreatedAt exclusive created_at
+     * @param afterId exclusive id when timestamps tie
+     * @param limit maximum rows
+     * @return ordered rows
+     */
+    @Select("""
+            SELECT *
+              FROM rd_requirement_stage_commands
+             WHERE task_id = #{taskId}
+               AND (
+                    created_at > #{afterCreatedAt}
+                    OR (created_at = #{afterCreatedAt} AND id > #{afterId})
+               )
+             ORDER BY created_at ASC, id ASC
+             LIMIT #{limit}
+            """)
+    List<RequirementStageCommandRow> listByTaskAfter(
+            @Param("taskId") long taskId,
+            @Param("afterCreatedAt") OffsetDateTime afterCreatedAt,
+            @Param("afterId") Long afterId,
+            @Param("limit") int limit
+    );
+
+    /**
+     * All command ids for one task.
+     *
+     * @param taskId owning task
+     * @return ids
+     */
+    @Select("""
+            SELECT id
+              FROM rd_requirement_stage_commands
+             WHERE task_id = #{taskId}
+             ORDER BY created_at ASC, id ASC
+            """)
+    List<Long> listIdsByTask(@Param("taskId") long taskId);
+
+    /**
+     * Commands for one task bound to a retry binding.
+     *
+     * @param taskId owning task
+     * @param bindingId retry binding id
+     * @return matching rows
+     */
+    @Select("""
+            SELECT *
+              FROM rd_requirement_stage_commands
+             WHERE task_id = #{taskId}
+               AND target_retry_binding_id = #{bindingId}
+             ORDER BY created_at ASC, id ASC
+            """)
+    List<RequirementStageCommandRow> listByTargetRetryBinding(
+            @Param("taskId") long taskId,
+            @Param("bindingId") long bindingId
+    );
 }

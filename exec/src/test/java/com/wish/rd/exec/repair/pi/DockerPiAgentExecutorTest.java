@@ -1788,6 +1788,137 @@ class DockerPiAgentExecutorTest {
         assertEquals("PI_EVENT_PROTOCOL", result.rawResultJson().get("failureCategory"));
     }
 
+    @Test
+    void shouldPreserveBridgeBudgetExceededCategoryWhenAgentSettledWithoutRealResult() throws Exception {
+        // 真实预算 stop 形状：bridge 写入 BUDGET_EXCEEDED result.json，并以 BRIDGE_SYNTHETIC
+        // 来源提交 RESULT_SUBMITTED 后 AGENT_SETTLED（resultSubmitted 聚合保持 false）
+        String taskId = "task-budget";
+        DockerPiAgentExecutor executor = executor(
+                new BudgetExhaustedSyntheticRunner(taskId, "BRIDGE_SYNTHETIC"),
+                AgentExecutionEventSink.noop(),
+                ignored -> "secret"
+        );
+
+        RepairExecutionResult result = executor.execute(new AgentRuntimeExecutionRequest(
+                snapshotUnchecked("snapshot-budget", "stage-" + taskId, taskId),
+                command(taskId, "CODING_AGENT")
+        ));
+
+        assertEquals(RepairExecutionStatus.FAILED_VALIDATION, result.status());
+        assertEquals("BUDGET_EXCEEDED", result.rawResultJson().get("failureCategory"));
+        assertTrue(
+                String.valueOf(result.errorMessage()).contains("BUDGET_EXCEEDED"),
+                () -> "errorMessage=" + result.errorMessage()
+        );
+    }
+
+    @Test
+    void shouldPreserveBridgeBudgetExceededCategoryWhenSyntheticResultCompletesLifecycle() throws Exception {
+        // 生命周期聚合为完整（AGENT_RD_SUBMIT_RESULT 来源）但 result.json 是 synthetic failure 时，
+        // 非编码角色的 validateRoleProtocolResult 同样透传 bridge 声明的类别
+        String taskId = "task-budget-lifecycle";
+        DockerPiAgentExecutor executor = executor(
+                new BudgetExhaustedSyntheticRunner(taskId, "SOLUTION_ARCHITECT", "AGENT_RD_SUBMIT_RESULT"),
+                AgentExecutionEventSink.noop(),
+                ignored -> "secret"
+        );
+
+        RepairExecutionResult result = executor.execute(new AgentRuntimeExecutionRequest(
+                snapshot("snapshot-budget-lifecycle", "stage-" + taskId, taskId,
+                        AgentRuntimeType.PI, "", "SOLUTION_ARCHITECT"),
+                command(taskId, "SOLUTION_ARCHITECT")
+        ));
+
+        assertEquals(RepairExecutionStatus.FAILED_VALIDATION, result.status());
+        assertEquals("BUDGET_EXCEEDED", result.rawResultJson().get("failureCategory"));
+        assertTrue(
+                String.valueOf(result.errorMessage()).contains("BUDGET_EXCEEDED"),
+                () -> "errorMessage=" + result.errorMessage()
+        );
+    }
+
+    @Test
+    void shouldKeepGenericLifecycleAggregateWhenNoSyntheticResultWasPersisted() throws Exception {
+        // 无 result.json 的真实 missing-lifecycle（如容器被杀）仍走通用聚合文案
+        String taskId = "task-lifecycle-aggregate";
+        DockerPiAgentExecutor executor = executor(
+                new BudgetExhaustedSyntheticRunner(taskId, null),
+                AgentExecutionEventSink.noop(),
+                ignored -> "secret"
+        );
+
+        RepairExecutionResult result = executor.execute(new AgentRuntimeExecutionRequest(
+                snapshotUnchecked("snapshot-lifecycle", "stage-" + taskId, taskId),
+                command(taskId, "CODING_AGENT")
+        ));
+
+        assertEquals(RepairExecutionStatus.FAILED_VALIDATION, result.status());
+        assertEquals("PI_RESULT_PROTOCOL", result.rawResultJson().get("failureCategory"));
+        assertTrue(
+                String.valueOf(result.errorMessage()).contains("RESULT_SUBMITTED followed by AGENT_SETTLED"),
+                () -> "errorMessage=" + result.errorMessage()
+        );
+    }
+
+    /** 写入预算耗尽 synthetic 结果的容器替身。submittedSource 为 null 时不写 result.json。 */
+    private static final class BudgetExhaustedSyntheticRunner implements StreamingContainerRunnerPort {
+
+        private final String taskId;
+        private final String role;
+        private final String submittedSource;
+
+        private BudgetExhaustedSyntheticRunner(String taskId, String submittedSource) {
+            this(taskId, "CODING_AGENT", submittedSource);
+        }
+
+        private BudgetExhaustedSyntheticRunner(String taskId, String role, String submittedSource) {
+            this.taskId = taskId;
+            this.role = role;
+            this.submittedSource = submittedSource;
+        }
+
+        @Override
+        public boolean supportsNetworkPlans() {
+            return true;
+        }
+
+        @Override
+        public ContainerRunResult run(ContainerRunRequest request, ContainerOutputListener listener)
+                throws IOException {
+            Files.createDirectories(request.outputDirectory());
+            Path resultPath = request.outputDirectory().resolve("result.json");
+            if (submittedSource != null) {
+                Files.writeString(resultPath, """
+                        {
+                          "status": "FAILED",
+                          "summary": "Agent stopped after exhausting the coding-benchmark turn/token budget",
+                          "failureCategory": "BUDGET_EXCEEDED",
+                          "errorMessage": "BUDGET_EXCEEDED: maxAgentTurns=40 turns=40 cumulativeUsage=123456"
+                        }
+                        """, StandardCharsets.UTF_8);
+            }
+            String resultSource = submittedSource == null ? "BRIDGE_SYNTHETIC" : submittedSource;
+            String events = """
+                    {"protocol":"rd-agent-event/v1","eventType":"RUNTIME_READY","sourceSequence":1,"stageRunId":"stage-%s","taskId":"%s","role":"%s"}
+                    {"protocol":"rd-agent-event/v1","eventType":"AGENT_STARTED","sourceSequence":2,"stageRunId":"stage-%s","taskId":"%s","role":"%s"}
+                    {"protocol":"rd-agent-event/v1","eventType":"RESULT_SUBMITTED","sourceSequence":3,"stageRunId":"stage-%s","taskId":"%s","role":"%s","payload":{"source":"%s"}}
+                    {"protocol":"rd-agent-event/v1","eventType":"AGENT_SETTLED","sourceSequence":4,"stageRunId":"stage-%s","taskId":"%s","role":"%s"}
+                    """.formatted(
+                    taskId, taskId, role,
+                    taskId, taskId, role,
+                    taskId, taskId, role, resultSource,
+                    taskId, taskId, role
+            );
+            Files.writeString(request.outputDirectory().resolve("agent-events.jsonl"), events, StandardCharsets.UTF_8);
+            Files.writeString(request.outputDirectory().resolve("runtime-meta.json"), "{}\n", StandardCharsets.UTF_8);
+            listener.onStdout(events);
+            return new ContainerRunResult(
+                    0, 12L, "", "", resultPath, null, null, null, null,
+                    Map.of("containerName", request.containerName())
+            );
+        }
+    }
+
     private DockerPiAgentExecutor executor(
             StreamingContainerRunnerPort runner,
             AgentExecutionEventSink eventSink,

@@ -764,6 +764,14 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                         && "QA_AGENT".equals(snapshot.role())
         );
         request.put("attemptNo", snapshot.attemptNo());
+        int maxAgentTurns = snapshotJson.path("maxAgentTurns").asInt(0);
+        int maxTotalTokens = snapshotJson.path("maxTotalTokens").asInt(0);
+        if (maxAgentTurns > 0) {
+            request.put("maxAgentTurns", maxAgentTurns);
+        }
+        if (maxTotalTokens > 0) {
+            request.put("maxTotalTokens", maxTotalTokens);
+        }
         appendInitialAgentState(request, snapshot, command, snapshotJson);
         request.put("resourceManifestPath", "/work/input/resource-manifest.json");
         request.put("skillManifestPath", "/work/input/skill-manifest.json");
@@ -1611,6 +1619,19 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
                     );
                 }
             }
+            // 预算耗尽等 bridge 合成失败已写入带类别的 result.json（BRIDGE_SYNTHETIC 来源不算真实提交）；
+            // 此时保留 bridge 声明的原因，不让 BUDGET_EXCEEDED 伪装成未知生命周期异常
+            SyntheticBridgeFailureDetail synthetic = readSyntheticBridgeFailure(outputDirectory, runResult);
+            if (synthetic != null) {
+                return failed(
+                        RepairExecutionStatus.FAILED_VALIDATION,
+                        "Pi did not complete the required result lifecycle.",
+                        synthetic.category(),
+                        synthetic.message(),
+                        lifecycleMetadata,
+                        artifacts
+                );
+            }
             return failed(
                     RepairExecutionStatus.FAILED_VALIDATION,
                     "Pi did not complete the required result lifecycle.",
@@ -1789,6 +1810,43 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
         return receipt;
     }
 
+    /**
+     * 读取 bridge 在合成失败路径原子写入的 result.json。仅当容器正常退出且载荷声明为
+     * synthetic failure（PI_BRIDGE_PROTOCOL / PI_RESULT_RECOVERY / BUDGET_EXCEEDED）时返回
+     * 类别与原因，否则返回 null，让调用方保持通用 missing-lifecycle 聚合。
+     */
+    private SyntheticBridgeFailureDetail readSyntheticBridgeFailure(
+            Path outputDirectory,
+            ContainerRunResult runResult
+    ) {
+        if (runResult.exitCode() != 0) {
+            return null;
+        }
+        Path resultPath = outputDirectory.resolve("result.json").normalize();
+        if (!resultPath.startsWith(outputDirectory.toAbsolutePath().normalize())
+                || !Files.isRegularFile(resultPath, LinkOption.NOFOLLOW_LINKS)) {
+            return null;
+        }
+        try {
+            String rawJson = Files.readString(resultPath, StandardCharsets.UTF_8);
+            if (!PiBridgeResultPayloads.isSyntheticFailure(rawJson)) {
+                return null;
+            }
+            String category = PiBridgeResultPayloads.failureCategory(rawJson);
+            String message = PiBridgeResultPayloads.failureMessage(rawJson);
+            return new SyntheticBridgeFailureDetail(
+                    category.isBlank() ? "PI_BRIDGE_PROTOCOL" : category,
+                    message.isBlank() ? "Pi bridge recorded a synthetic failure result" : message
+            );
+        } catch (IOException exception) {
+            return null;
+        }
+    }
+
+    /** bridge 合成失败的归类与原因。 */
+    private record SyntheticBridgeFailureDetail(String category, String message) {
+    }
+
     private RepairExecutionResult validateRoleProtocolResult(
             String role,
             String rawJson,
@@ -1800,10 +1858,12 @@ public final class DockerPiAgentExecutor implements AgentRuntimeExecutorPort {
     ) {
         String bridgeFailure = PiBridgeResultPayloads.failureMessage(rawJson);
         if (!bridgeFailure.isBlank()) {
+            // 保留 bridge 声明的失败类别（如 BUDGET_EXCEEDED），预算耗尽不得被改写成通用协议失败
+            String bridgeCategory = PiBridgeResultPayloads.failureCategory(rawJson);
             return failed(
                     RepairExecutionStatus.FAILED_VALIDATION,
                     "Pi did not submit a structured role result.",
-                    "PI_BRIDGE_PROTOCOL",
+                    bridgeCategory.isBlank() ? "PI_BRIDGE_PROTOCOL" : bridgeCategory,
                     bridgeFailure,
                     dockerMetadata,
                     artifacts

@@ -100,6 +100,9 @@
 - 【强制】Pi credential-relay 单次上游等待必须与 `rd.executor.pi.execution-timeout-millis` / `RD_EXECUTOR_PI_EXECUTION_TIMEOUT_MILLIS`（默认 1h）对齐：sidecar `RD_PI_RELAY_TIMEOUT_MILLIS` 与 lease `RelayPolicy.requestTimeout` 都取该值。禁止再硬编码 60s；否则长上下文 QA 补全会被 sidecar/Host abort 成 502，Pi 会 `AGENT_SETTLED` 却没有 `rd_submit_result`。改 Java 注入即可，不必为改超时重建 Pi 镜像。
   - 代码：`DockerPiAgentExecutor.relayNetworkPlan`、`DockerPiAgentExecutor.relayPolicy`、`PiCredentialRelayService.JdkUpstreamClient`
   - 验证：`./mvnw -pl exec -am -Dtest=DockerPiAgentExecutorTest#shouldAlignCredentialRelayTimeoutWithPiExecutionTimeout -Dsurefire.failIfNoSpecifiedTests=false test`
+- 【强制】转发 OpenCode Go（`providerId` 含 `opencode` 或上游 host 含 `opencode.ai`）时，Host credential-relay 必须带稳定 `x-opencode-session`（优先透传 Pi 已给的值，否则绑定 `stageRunId`，再退 `taskId`），并在缺失时注入非通用 `User-Agent`（`rd-bot-pi-relay/1.0`）。禁止依赖上游间歇放行无 session 请求；缺 header 会 400 `MissingSessionID`，表面成 Pi lifecycle 聚合失败。
+  - 代码：`PiCredentialRelayService.ensureOpenCodeRoutingHeaders`、请求头 allowlist 中的 `x-opencode-session`
+  - 验证：`./mvnw -pl bootstrap -am -Dtest=PiCredentialRelayServiceTest#openCodeUpstreamGetsStableSessionAndRelayUserAgent,PiCredentialRelayServiceTest#openCodePreservesPiSuppliedSessionHeader,PiCredentialRelayServiceTest#nonOpenCodeUpstreamDoesNotInjectSessionHeader -Dsurefire.failIfNoSpecifiedTests=false test`
 - 【强制】Pi/QA agent 与 QA npm 预安装容器的 docker `--memory` 上限必须经 `rd.executor.pi.container-memory-limit` / `RD_EXECUTOR_PI_MEMORY_LIMIT` 下发（默认 `8g` 保持历史行为），不得回退为源码硬编码；空白回落默认值，非正 Docker 内存格式（如 `8 tb`、`0m`）必须在 `DockerPiAgentExecutor.Configuration` 装配期失败关闭。小内存宿主（如 2G ECS）必须收口该值（如 `1100m`），依赖 docker 默认 `--memory-swap=2x` 让 QA 突发在容器内受控颠簸而不是 OOM 宿主数据容器。同理，容器 `--cpus` 上限经 `rd.executor.pi.container-cpu-limit` / `RD_EXECUTOR_PI_CPU_LIMIT` 下发（默认 `4`）：**CPU 配额超过宿主 CPU 数时 docker run 以 exit 125 拒绝启动**（2026-08-21 杭州迁移真机实测：2 vCPU ECS 上 Pi 容器 30ms 秒退、零事件、聚合为 missing-lifecycle 报错），少于 4 核的宿主必须显式调低。
   - 代码：`DockerPiAgentExecutor.Configuration#normalizeMemoryLimit/#normalizeCpuLimit`、`DockerPiAgentExecutor#piSecurityPolicy`、`PiAgentExecutorProperties.containerMemoryLimit/containerCpuLimit`
   - 验证：`./mvnw -pl exec -am -Dtest='DockerPiAgentExecutorTest#shouldHonorConfiguredContainerMemoryLimitInThePiSecurityPolicy+shouldDefaultBlankContainerMemoryLimitAndRejectInvalidValues+shouldDefaultBlankContainerCpuLimitAndRejectInvalidValues' -Dsurefire.failIfNoSpecifiedTests=false test`
@@ -251,10 +254,14 @@ public RetrievalBundle retrieve(RetrievalRequest request) {
   - 代码：`CleanHostVerificationWorkspaceFactory.workBranch`、`HostVerificationExecutorAdapter.verify`、`HostVerificationCommandDetector`、`TaskRetryRoutePlanner`、`InMemoryRequirementRetryDispatchTransactionAdapter`
   - 验证：`./mvnw -pl exec -am -Dtest=HostVerificationCommandDetectorTest -Dsurefire.failIfNoSpecifiedTests=false test`；`./mvnw -pl engine -am -Dtest=TaskRetryRoutePlannerTest,TaskRetryEngineTest#hostVerifyFailureRetryRequeuesHostVerifyWithoutCreatingCodingAttempt,TaskRetryEngineTest#prPublicationRetryDoesNotCreateRoleAttempts -Dsurefire.failIfNoSpecifiedTests=false test`；`./mvnw -pl bootstrap -am -Dtest=CleanHostVerificationWorkspaceFactoryTest#prepareBuildsHostReplayCommandAndCallsCleanVerifierWithRuntimeDisabled,HostVerificationExecutorAdapterTest#prepareFailureRecordsEnvironmentRunInsteadOfThrowing,PostgresRequirementStageFinalizationAdapterTest#publicationFailureUsesCheckpointSourcePolicyWhenCommandPolicyIsBlank -Dsurefire.failIfNoSpecifiedTests=false test`
 - 【强制】HOST_VERIFY 以 `SUCCEEDED`/`SKIPPED_DOCS_ONLY` 结束、以及协议有效的 QA `SUCCEEDED` 之后，continuation 必须是 `REQUIREMENT_DELIVERY` / `MANAGER_DECIDE:<sourceCommandId>`（`sourceCommandId` 等于刚结束的 command id）。Coding 成功仍只续 `HOST_VERIFY`。Dispatcher 的 `nextRoleTarget` 必须读 `rd_task_manager_decisions` 与任意世代的 Manager command，禁止在普通世代角色都 SUCCEEDED 时无条件返回 `DETERMINISTIC_REVIEW`。Manager 有界缺口 Coding 使用 `MANAGER_GAP_FIX`（形状对齐 `HOST_VERIFY_FIX`，不要求 `piQaRemediationV2Enabled`）；intent 不可铸必须 `BLOCKED`，不得落入复核。`MANAGER_GAP_FIX` 必须同时满足 p20/p21/p22 的 rounds kind/number/targets 与 command generation CHECK。同一 `remediation_round_id` 必须从缺口 Coding 传到随后的 HOST_VERIFY 与 QA；QA 成功后的下一条 `MANAGER_DECIDE:*` 必须退出到普通世代。ASK 写入 `WAITING_USER_INPUT`（不得占用 `WAITING_APPROVAL`），恢复经 `POST /admin/rd-tasks/{id}/answer` 产生 `USER_ANSWER_RESUME:<sourceCommandId>`。claim/recoverable SQL 必须 join `rd_tasks`：`paused=true` 永不领取；`WAITING_USER_INPUT` 只允许 `USER_ANSWER_RESUME:%`。BugFix 图不得包含 `WAITING_USER_INPUT`。
-  - 代码：`RequirementDeliveryEngine.planManagerDecisionStage`、`RequirementDeliveryDispatchService.nextRoleTarget`、`p22_task_manager_decisions.sql`、`RequirementStageCommandMapper`
-  - 验证：`./mvnw -pl rag -Dtest=RdTaskTransitionPolicyTest -Dsurefire.failIfNoSpecifiedTests=false test`；`./mvnw -pl engine -am -Dtest=ManagerPolicyTest,RequirementDeliveryStageExecutionTest,RequirementDeliveryEngineTest,RequirementStageExecutionPlanCodecTest -Dsurefire.failIfNoSpecifiedTests=false test`；`./mvnw -pl bootstrap -am -Dtest=RequirementDeliveryDispatchServiceTest,RdTaskControllerTest,PiAgentRemediationSqlPolicyTest,ManagerDecisionPurityPolicyTest,RequirementCompletionWriterPolicyTest,PiRemediationFinalizationWriterTest -Dsurefire.failIfNoSpecifiedTests=false test`
+  `REQUIREMENT_REVIEWER` / `SOLUTION_ARCHITECT` 的协议结果 `NEED_INFO`（或非空 `missingInformation`）是合法 ASK 输入，不得在 adapter / orchestrator / `planRoleExecution` 打成 `FAILED_NEEDS_HUMAN`。Pi `RepairExecutionStatus.NEED_INFO` 必须映射为 `RequirementExecutionResult.success`；评审阶段 SUCCEEDED 后 continuation 必须是 `MANAGER_DECIDE:<reviewerCommandId>`；`planManagerDecisionStage` 必须把该 JSON 视为 `needUserInput`。`REJECTED` / `UNSAFE` / 硬 `FAILED` 仍失败关闭。
+  - 代码：`RequirementDeliveryEngine.planManagerDecisionStage`、`RequirementDeliveryDispatchService.nextRoleTarget`、`p22_task_manager_decisions.sql`、`RequirementStageCommandMapper`、`RequirementReviewProtocol`、`EngineRequirementExecutorAdapter`
+  - 验证：`./mvnw -pl rag -Dtest=RdTaskTransitionPolicyTest -Dsurefire.failIfNoSpecifiedTests=false test`；`./mvnw -pl engine -am -Dtest=ManagerPolicyTest,RequirementReviewProtocolTest,RequirementDeliveryStageExecutionTest,RequirementDeliveryEngineTest,RequirementStageExecutionPlanCodecTest -Dsurefire.failIfNoSpecifiedTests=false test`；`./mvnw -pl bootstrap -am -Dtest=EngineRequirementExecutorAdapterTest#reviewerNeedInfoIsASuccessfulProtocolResult,RequirementDeliveryDispatchServiceTest,RdTaskControllerTest,PiAgentRemediationSqlPolicyTest,ManagerDecisionPurityPolicyTest,RequirementCompletionWriterPolicyTest,PiRemediationFinalizationWriterTest -Dsurefire.failIfNoSpecifiedTests=false test`
 - 【强制】`QA_AGENT` 容器前后 tracked-tree 指纹必须写入 `dockerMetadataJson`（`QaExecutionMetadataKeys.WORKSPACE_FINGERPRINT_*` / `WORKSPACE_INTEGRITY`）。`VIOLATION` / `SUSPECT` 的 QA 结果不得晋升任何 `AuditedRecord`。
 - 【强制】PI-v2 QA `acceptanceResults[]` CURRENT 必带冻结集合内 `criteriaId`；提示词、`result-tool.mjs`、`QaEvidenceBundleValidator` 三处必须锁步，改后重建 `Dockerfile` 与 `Dockerfile.qa`。验证命令见 `openspec/changes/mea-audit-only-writeback/design.md`「验证命令」。
+- 【强制】交付观测成功率分子只计 `COMPLETED`，或当前为 `MERGED` 且 `statusEvents` 含 `COMPLETED`。`COMMITTED`、`WAITING_USER_INPUT`、`WAITING_APPROVAL` 是在途：有 PR、有 `terminalAt` 也不算成功、失败或观测终态。`paused` 是独立标记，不得当成成功/失败/终态。分类以 status events 的历史完成事实为准，禁止用「存在 PR」或仅凭当前枚举猜测 `MERGED`。
+  - 代码：`DeliveryObservabilityQueryService#isDeliverySuccess`、`#isOutcomeTerminal`
+  - 验证：`./mvnw -pl engine -am -Dtest=DeliveryObservabilityQueryServiceTest -Dsurefire.failIfNoSpecifiedTests=false test`
 
 ### 3.5.4 管理台任务项目筛选【强制】
 
@@ -642,6 +649,33 @@ public RetrievalBundle retrieve(RetrievalRequest request) {
   提交一份 `status=FAILED` 的结果——症状看着像"模型不听话"，实为容器权限。运行时已随
   Claude 栈移除，但这条挂载纪律对 Pi 及任何后续运行时同等有效。
 - 实测记录：`docs/superpowers/specs/2026-08-13-waimai-corpus-rag-comparison-report.md` §6.6。
+
+### 3.5.15 Coding MEA 只读快照与完整结果【强制】
+
+- 【强制】`GET /admin/rd-tasks/{taskId}/coding-mea` 与 stage result 读取必须在单一 PostgreSQL
+  只读事务 `Isolation.REPEATABLE_READ` 内聚合既有 Store/mapper；禁止新业务表、禁止 GET
+  触发 finalize / `ManagerPolicy.decide` / executor / publication / 任何更新端口。
+- 【强制】默认响应不得包含全量 Prompt、result、stderr 或 AGENT_EVENTS 正文；页外引用保留
+  ID 并标 `OUTSIDE_PAGE`。跨 task 的 stage/command/decision 引用必须 `available=false` 或
+  HTTP 404，不得泄漏他任务摘要。
+- 【强制】`stateAtDecision` 必须按 decision 的 `stateVersion`/`stateHash` 读 revision；缺失则
+  `available=false`，禁止用 head 顶替。Manager 展示时间只取已关联 Manager command 的
+  `createdAtEpochMillis`，不得改 `decisionHash` 或领域写入合同。
+- 【强制】完整结果链：stage → 精确 command（AuditRun / retry binding / durable identity）→
+  `rd_requirement_stage_finalizations.result_json` → 按角色解包；无 FINALIZED 绑定时只能
+  `ARTIFACT_PREVIEW` / `UNAVAILABLE`，不得假下载。
+- 代码：`PostgresCodingMeaReadAdapter`、`PostgresStageResultReadAdapter`、
+  `CodingMeaQueryEngine`、`StageResultQueryEngine`、`RdTaskCodingMeaController`、
+  `RdTaskStageResultController`
+- OpenSpec：`openspec/changes/mea-coding-read-model/`
+- 验证：
+  `./mvnw -pl engine -am -Dtest=CodingMeaQueryEngineTest,StageResultQueryEngineTest -Dsurefire.failIfNoSpecifiedTests=false test`；
+  `./mvnw -pl bootstrap -am -Dtest=PostgresCodingMeaReadAdapterTest,RdTaskCodingMeaControllerTest,RdTaskStageResultControllerTest -Dsurefire.failIfNoSpecifiedTests=false test`；
+  真库：`./mvnw -pl bootstrap -am -Drd.integration.coding-mea.enabled=true -Dtest=PostgresCodingMeaRepeatableReadRealSmokeTest -Dsurefire.failIfNoSpecifiedTests=false test`
+  （默认 throwaway `127.0.0.1:55432/rdbot_acceptance`；可用
+  `-Drd.integration.coding-mea.url=...` 覆盖）。
+- 联调 identity（只读）：W1e `7502196308401328128`、W1g `7502261872498970624`、
+  W2B `7502311153071165440`、W3J `7502300444828504064`。
 
 ### 3.6 聚合根（Aggregate Root）【强制用于"强一致实体群"】
 

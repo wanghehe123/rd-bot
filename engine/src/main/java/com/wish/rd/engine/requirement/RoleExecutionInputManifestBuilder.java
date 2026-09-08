@@ -152,7 +152,9 @@ final class RoleExecutionInputManifestBuilder {
               evidence.contentHash(),
               AgentManifestCanonicalJson.contentHash(evidence.summary()),
               false,
-              evidence.selectionReason()
+              evidence.selectionReason(),
+              evidence.trust(),
+              evidence.auditRunId()
       ));
     }
     if (role == AgentRole.QA_AGENT) {
@@ -165,7 +167,9 @@ final class RoleExecutionInputManifestBuilder {
               AgentManifestCanonicalJson.contentHash(json),
               AgentManifestCanonicalJson.contentHash(json),
               false,
-              "frozen acceptance-criteria ids for PI-v2 CURRENT criteriaId lockstep"
+              "frozen acceptance-criteria ids for PI-v2 CURRENT criteriaId lockstep",
+              "VERIFIED",
+              ""
       ));
     }
     return List.copyOf(entries);

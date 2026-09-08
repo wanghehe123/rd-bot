@@ -45,6 +45,42 @@ public interface RequirementStageCommandStore {
     /** Returns the durable command for one command identity, when present. */
     Optional<RequirementStageCommand> findById(String commandId);
 
+    /**
+     * Returns task-owned commands after an optional cursor, ordered by createdAt then id.
+     *
+     * @param taskId owning task
+     * @param afterCreatedAtEpochMillis exclusive createdAt, or 0 for the first page
+     * @param afterCommandId exclusive id when createdAt ties, or blank
+     * @param limit maximum rows
+     * @return page rows, never {@code null}
+     */
+    default List<RequirementStageCommand> listByTaskAfter(
+            String taskId, long afterCreatedAtEpochMillis, String afterCommandId, int limit
+    ) {
+        return List.of();
+    }
+
+    /**
+     * Returns every command id belonging to the task.
+     *
+     * @param taskId owning task
+     * @return ids, never {@code null}
+     */
+    default List<String> listIdsByTask(String taskId) {
+        return List.of();
+    }
+
+    /**
+     * Returns commands for one task bound to a retry binding.
+     *
+     * @param taskId owning task
+     * @param targetRetryBindingId binding id
+     * @return matching commands
+     */
+    default List<RequirementStageCommand> listByTargetRetryBinding(String taskId, String targetRetryBindingId) {
+        return List.of();
+    }
+
     List<RequirementStageCommand> claimBatch(
             String leaseOwner,
             long nowEpochMillis,

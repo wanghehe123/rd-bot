@@ -217,6 +217,140 @@ public final class DeliveryObservabilityFixtures {
     }
 
     /**
+     * COMMITTED with a PR URL and no COMPLETED status event. Must stay in-progress.
+     *
+     * @return committed-without-completion fixture
+     */
+    public static TaskFixture committedNoCompleteTask() {
+        Instant accepted = Instant.parse("2026-08-14T08:00:00Z");
+        Instant committed = Instant.parse("2026-08-14T08:30:00Z");
+        return new TaskFixture(
+                "2001",
+                PROJECT_A,
+                "committed-no-complete",
+                "COMMITTED",
+                accepted,
+                committed,
+                "https://github.example/pr/committed",
+                "",
+                List.of(
+                        event("CREATED", accepted, 0L),
+                        event("COMMITTED", committed, 0L)
+                ),
+                List.of(),
+                List.of()
+        );
+    }
+
+    /**
+     * MERGED after a COMPLETED status event. Counts as delivery success.
+     *
+     * @return merged-with-completed fixture
+     */
+    public static TaskFixture mergedWithCompleteTask() {
+        Instant accepted = Instant.parse("2026-08-14T09:00:00Z");
+        Instant completed = Instant.parse("2026-08-14T09:40:00Z");
+        Instant merged = Instant.parse("2026-08-14T09:50:00Z");
+        return new TaskFixture(
+                "2002",
+                PROJECT_A,
+                "merged-with-complete",
+                "MERGED",
+                accepted,
+                merged,
+                "https://github.example/pr/merged-complete",
+                "",
+                List.of(
+                        event("CREATED", accepted, 0L),
+                        event("COMPLETED", completed, 0L),
+                        event("MERGED", merged, 0L)
+                ),
+                List.of(),
+                List.of()
+        );
+    }
+
+    /**
+     * MERGED after COMMITTED only. Publication-terminal, not success or failure.
+     *
+     * @return merged-committed-only fixture
+     */
+    public static TaskFixture mergedCommittedOnlyTask() {
+        Instant accepted = Instant.parse("2026-08-14T10:00:00Z");
+        Instant committed = Instant.parse("2026-08-14T10:20:00Z");
+        Instant merged = Instant.parse("2026-08-14T10:30:00Z");
+        return new TaskFixture(
+                "2003",
+                PROJECT_A,
+                "merged-committed-only",
+                "MERGED",
+                accepted,
+                merged,
+                "https://github.example/pr/merged-committed",
+                "",
+                List.of(
+                        event("CREATED", accepted, 0L),
+                        event("COMMITTED", committed, 0L),
+                        event("MERGED", merged, 0L)
+                ),
+                List.of(),
+                List.of()
+        );
+    }
+
+    /**
+     * WAITING_USER_INPUT with a non-null terminalAt. Must stay in-progress.
+     *
+     * @return waiting-user-input fixture
+     */
+    public static TaskFixture waitingUserInputTask() {
+        Instant accepted = Instant.parse("2026-08-14T11:00:00Z");
+        Instant waiting = Instant.parse("2026-08-14T11:15:00Z");
+        return new TaskFixture(
+                "2004",
+                PROJECT_A,
+                "waiting-user-input",
+                "WAITING_USER_INPUT",
+                accepted,
+                waiting,
+                "",
+                "",
+                List.of(
+                        event("CREATED", accepted, 0L),
+                        event("WAITING_USER_INPUT", waiting, 0L)
+                ),
+                List.of(),
+                List.of()
+        );
+    }
+
+    /**
+     * WAITING_APPROVAL with a non-null terminalAt. Must stay in-progress.
+     *
+     * @return waiting-approval fixture
+     */
+    public static TaskFixture waitingApprovalTask() {
+        Instant accepted = Instant.parse("2026-08-14T12:00:00Z");
+        Instant waiting = Instant.parse("2026-08-14T12:10:00Z");
+        return new TaskFixture(
+                "2005",
+                PROJECT_A,
+                "waiting-approval",
+                "WAITING_APPROVAL",
+                accepted,
+                waiting,
+                "",
+                "",
+                List.of(
+                        event("CREATED", accepted, 0L),
+                        event("WAITING_APPROVAL", waiting, 0L)
+                ),
+                List.of(),
+                List.of()
+        );
+    }
+
+    /**
      * Terminal success whose provider metadata has no tokens or cost.
      *
      * @return missing-usage fixture

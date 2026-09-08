@@ -1,0 +1,151 @@
+{
+  "scope": "MEA slim Demo acceptance; not full phase governance",
+  "status": "PASS",
+  "branch": "codex/mea-demo",
+  "sourceHead": "f3e7bcc93285420cf5a320d242f2ec9c50fbe342",
+  "uncommittedFixes": true,
+  "build": {
+    "builtAtUtc": "2026-09-08T03:54:30.729567+00:00",
+    "jarSha256": "d707cdafa1d470a21f193131fef49323098bc3650459b53efd4243f1f0c56de4",
+    "jarBytes": 106783919,
+    "staticFileCount": 50,
+    "staticMismatches": [],
+    "compareToSha256": "5a3b0621f98b6868393b6d404b7f86602c8fc4284c6f0def1a0df68d41c10abf",
+    "nonStaticEntryCount": 57294,
+    "nonStaticDifferences": [],
+    "verifyScriptSha256": "130b951c3aed44da2a8b48b041ad6e15a349b9803826618c853efd4c3bcd1650"
+  },
+  "deployment": {
+    "oldPid": 3517573,
+    "oldSha256": "5a3b0621f98b6868393b6d404b7f86602c8fc4284c6f0def1a0df68d41c10abf",
+    "backup": "/home/ubuntu/rd-bot-rollbacks/5a3b0621f98b6868393b6d404b7f86602c8fc4284c6f0def1a0df68d41c10abf.jar",
+    "newSha256": "d707cdafa1d470a21f193131fef49323098bc3650459b53efd4243f1f0c56de4",
+    "businessTaskId": "7502920392433078272",
+    "businessStatus": "COMPLETED",
+    "startExit": 0,
+    "switchedAtEpoch": 1788839822.934601
+  },
+  "health": {
+    "/admin/dashboard": {
+      "status": 200,
+      "bytes": 761
+    },
+    "/admin/rd-tasks/7502920392433078272": {
+      "status": 200,
+      "bytes": 1736,
+      "taskStatus": "COMPLETED"
+    },
+    "jarSha256": "d707cdafa1d470a21f193131fef49323098bc3650459b53efd4243f1f0c56de4",
+    "listener": "State  Recv-Q Send-Q Local Address:Port Peer Address:PortProcess\nLISTEN 0      100                *:8080            *:*    users:((\"java\",pid=3542622,fd=127))\n"
+  },
+  "businessTaskId": "7502920392433078272",
+  "businessStatus": "COMPLETED",
+  "businessPr": {
+    "baseRefName": "main",
+    "changedFiles": 1,
+    "files": [
+      {
+        "path": "client/src/pages/customer/Home.tsx",
+        "additions": 26,
+        "deletions": 0,
+        "changeType": "MODIFIED"
+      }
+    ],
+    "headRefName": "requirement/7502920392433078272",
+    "headRefOid": "0d698b549d6b46aa454f752a00a1e0a4743d0cf6",
+    "isDraft": false,
+    "number": 40,
+    "state": "OPEN",
+    "title": "RD-Bot requirement: 首页增加营业说明区与展开收起交互（MEA-DEMO-20260908）",
+    "url": "https://github.com/wanghehe123/rd-bot-waimai-acceptance-20260624-141045/pull/40"
+  },
+  "apiChecks": [
+    {
+      "name": "read-final-business",
+      "PASS": 14,
+      "FAIL": 0,
+      "SKIP": 3,
+      "summary": {
+        "taskId": "7502920392433078272",
+        "base": "http://127.0.0.1:8080",
+        "result": "PASS",
+        "unverified": [
+          {
+            "item": "bounded Coding EXECUTE full text has non-empty contract",
+            "reason": "当前任务没有 EXECUTE→CODING_AGENT 且带 targetRecordIds 的 Manager 决策"
+          },
+          {
+            "item": "real stage without full result reports explicit unavailable JSON",
+            "reason": "该任务的 4 个真实 stage 中（最多探测 8 个）没有找到缺完整产物的阶段，明确 unavailable 契约未被验证"
+          },
+          {
+            "item": "real stage without full result: /result/content is explicit 404",
+            "reason": "该任务的 4 个真实 stage 中（最多探测 8 个）没有找到缺完整产物的阶段，明确 unavailable 契约未被验证"
+          }
+        ],
+        "unverifiedCount": 3
+      }
+    },
+    {
+      "name": "read-final-w1e",
+      "PASS": 17,
+      "FAIL": 0,
+      "SKIP": 0,
+      "summary": {
+        "taskId": "7502196308401328128",
+        "base": "http://127.0.0.1:8080",
+        "result": "PASS",
+        "unverified": [],
+        "unverifiedCount": 0
+      }
+    }
+  ],
+  "uiChecks": {
+    "qaDefaultEntryReloadWithoutPrompt": true,
+    "qaEvidenceCount": 23,
+    "agentReportedCheckCount": 6,
+    "hostAcStatus": {
+      "AC-001": "COMPLETED",
+      "AC-002": "COMPLETED"
+    },
+    "qaStageRunId": "7502920712605274115",
+    "screenshotLinkOpened": "/admin/rd-tasks/7502920392433078272/qa-evidence/7502929647697530880/content",
+    "sameTaskStageFullJsonParsed": true,
+    "codingMeaManagerExecutorAuditorVisible": true,
+    "codingPrLinkNumber": 40,
+    "cancelledCardLabelCorrect": true,
+    "historicalAttemptOldPreviewCleared": true,
+    "consoleErrorsAndWarnings": [],
+    "verificationMethod": "CUA browser navigation, reload, actual link click, Attempt switch, AX state and screenshots"
+  },
+  "tests": {
+    "frontend": {
+      "pass": 247,
+      "fail": 0
+    },
+    "rootFocusedFrontend": {
+      "pass": 16,
+      "fail": 0
+    },
+    "pythonHttpStub": {
+      "pass": 9,
+      "fail": 0
+    },
+    "typecheck": "PASS",
+    "openspecStrict": {
+      "pass": 21,
+      "fail": 0
+    },
+    "package": "PASS with -DskipTests"
+  },
+  "notVerified": [
+    "real BUDGET_EXCEEDED termination",
+    "PI_AGENT_STATE_V2 dynamic state in this project",
+    "P2 kill/recovery matrix"
+  ],
+  "knownLimits": [
+    "head sourceStageRunId empty; auditRun provenance join available",
+    "audit head needs manual refresh",
+    "QA original start.sh failed due missing TypeScript; equivalent production startup used"
+  ]
+}

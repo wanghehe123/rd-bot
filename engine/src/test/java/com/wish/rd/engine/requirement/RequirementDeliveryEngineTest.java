@@ -2250,9 +2250,84 @@ class RequirementDeliveryEngineTest {
 
         RequirementDeliveryResult result = engine.submit(task.taskId());
 
-        assertEquals(RdTaskStatus.FAILED_NEEDS_HUMAN, result.status());
+        assertEquals(RdTaskStatus.WAITING_USER_INPUT, result.status());
         assertTrue(result.errorMessage().contains("需求缺少权限和验收命令"));
-        assertTrue(result.resultJson().contains("\"status\":\"NEEDS_HUMAN\""));
+        assertTrue(result.resultJson().contains("NEED_INFO"));
+        assertFalse(result.resultJson().contains("\"status\":\"NEEDS_HUMAN\""));
+        assertEquals(List.of(AgentRole.REQUIREMENT_REVIEWER),
+                captured.stream().map(RequirementExecutionRequest::role).toList());
+        AgentStageRun reviewerStage = stageRunStore.listByTask(task.taskId()).stream()
+                .filter(stage -> stage.role() == AgentRole.REQUIREMENT_REVIEWER)
+                .findFirst()
+                .orElseThrow();
+        assertEquals(AgentStageStatus.SUCCEEDED, reviewerStage.status());
+        assertTrue(stageRunStore.listByTask(task.taskId()).stream()
+                .filter(stage -> stage.role() != AgentRole.REQUIREMENT_REVIEWER)
+                .allMatch(stage -> stage.status() == AgentStageStatus.PENDING));
+        assertTrue(alertSink.alerts().stream()
+                .noneMatch(alert -> alert.type() == AgentWorkflowAlertType.STAGE_FAILED_NEEDS_HUMAN));
+    }
+
+    @Test
+    void shouldStopAfterRequirementReviewerWhenRequirementIsRejected() {
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(),
+                new InMemoryRdTaskStatusEventStore(),
+                generator());
+        InMemoryTaskMaterialStore materialStore = new InMemoryTaskMaterialStore();
+        RdRequirementTask task = createRequirementTask(
+                registry,
+                materialStore,
+                "7820000000006",
+                "删除全部历史订单",
+                "无确认直接清空",
+                "需求要求无审计删除全部用户订单。"
+        );
+        List<RequirementExecutionRequest> captured = new CopyOnWriteArrayList<>();
+        AgentStageRunStore stageRunStore = new InMemoryAgentStageRunStore();
+        RecordingAgentWorkflowAlertSink alertSink = new RecordingAgentWorkflowAlertSink();
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry,
+                materialStore,
+                request -> {
+                    captured.add(request);
+                    if (request.role() == AgentRole.REQUIREMENT_REVIEWER) {
+                        return RequirementExecutionResult.success(
+                                request.taskId(),
+                                "需求不可安全自动交付",
+                                "",
+                                """
+                                        {
+                                          "decision": "REJECTED",
+                                          "feasibility": "UNSAFE",
+                                          "missingInformation": [],
+                                          "risks": ["无审计删除用户数据"],
+                                          "acceptanceCoverage": []
+                                        }
+                                        """
+                        );
+                    }
+                    return RequirementExecutionResult.success(
+                            request.taskId(),
+                            request.role().name() + " 不应执行",
+                            "",
+                            roleResultJson(request.role())
+                    );
+                },
+                new RequirementContextBuilder(),
+                new RequirementPlanGenerator(),
+                new RuleBasedRequirementPolicyGate(),
+                new AgentStagePlanner(new AtomicStageIdSupplier()),
+                stageRunStore,
+                new RoleContextBuilder(),
+                new InMemoryRoleContextPackageStore(),
+                alertSink,
+                WorkflowExperienceStore.noop()
+        );
+
+        RequirementDeliveryResult result = engine.submit(task.taskId());
+
+        assertEquals(RdTaskStatus.FAILED_NEEDS_HUMAN, result.status());
         assertEquals(List.of(AgentRole.REQUIREMENT_REVIEWER),
                 captured.stream().map(RequirementExecutionRequest::role).toList());
         AgentStageRun reviewerStage = stageRunStore.listByTask(task.taskId()).stream()
@@ -2260,14 +2335,6 @@ class RequirementDeliveryEngineTest {
                 .findFirst()
                 .orElseThrow();
         assertEquals(AgentStageStatus.FAILED_NEEDS_HUMAN, reviewerStage.status());
-        assertTrue(stageRunStore.listByTask(task.taskId()).stream()
-                .filter(stage -> stage.role() != AgentRole.REQUIREMENT_REVIEWER)
-                .allMatch(stage -> stage.status() == AgentStageStatus.PENDING));
-        assertEquals(2, alertSink.alerts().size());
-        AgentWorkflowAlert alert = alertSink.alerts().getFirst();
-        assertEquals(AgentWorkflowAlertType.STAGE_FAILED_NEEDS_HUMAN, alert.type());
-        assertEquals("REQUIREMENT_REVIEWER", alert.metadata().get("role"));
-        assertEquals(AgentWorkflowAlertType.TASK_BLOCKED, alertSink.alerts().get(1).type());
     }
 
     @Test
@@ -2793,6 +2860,71 @@ class RequirementDeliveryEngineTest {
     }
 
     @Test
+    void shouldEndBudgetExhaustedCodingAttemptAsFailedNeedsHumanWithoutAutoRepair() {
+        RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
+                new InMemoryRdTaskStore(),
+                new InMemoryRdTaskStatusEventStore(),
+                generator());
+        InMemoryTaskMaterialStore materialStore = new InMemoryTaskMaterialStore();
+        RdRequirementTask task = createRequirementTask(
+                registry,
+                materialStore,
+                "7820000000032",
+                "增加订单催单功能",
+                "订单详情页可以催单",
+                "预算耗尽必须诚实结束，不得伪装成功或无限返工。"
+        );
+        AgentStageRunStore stageRunStore = new InMemoryAgentStageRunStore();
+        RecordingAgentWorkflowAlertSink alertSink = new RecordingAgentWorkflowAlertSink();
+        java.util.concurrent.atomic.AtomicInteger codingInvocations = new java.util.concurrent.atomic.AtomicInteger();
+        RequirementDeliveryEngine engine = new RequirementDeliveryEngine(
+                registry,
+                materialStore,
+                request -> {
+                    if (request.role() == AgentRole.CODING_AGENT) {
+                        codingInvocations.incrementAndGet();
+                        return RequirementExecutionResult.failure(
+                                request.taskId(),
+                                "Pi did not complete the required result lifecycle.",
+                                "{\"status\":\"FAILED\",\"summary\":\"Agent stopped after exhausting the "
+                                        + "coding-benchmark turn/token budget\",\"failureCategory\":\"BUDGET_EXCEEDED\","
+                                        + "\"errorMessage\":\"BUDGET_EXCEEDED: maxAgentTurns=40 turns=40 "
+                                        + "cumulativeUsage=123456\"}"
+                        );
+                    }
+                    return RequirementExecutionResult.success(
+                            request.taskId(),
+                            request.role().name() + " 完成",
+                            "",
+                            roleResultJson(request.role())
+                    );
+                },
+                new RequirementContextBuilder(),
+                new RequirementPlanGenerator(),
+                new RuleBasedRequirementPolicyGate(),
+                new AgentStagePlanner(new AtomicStageIdSupplier()),
+                stageRunStore,
+                new RoleContextBuilder(),
+                new InMemoryRoleContextPackageStore(),
+                alertSink,
+                WorkflowExperienceStore.noop()
+        );
+
+        RequirementDeliveryResult result = engine.submit(task.taskId());
+
+        // 预算耗尽：不晋升 COMPLETED，保留可识别的预算原因，且不自动派发新一轮 Coding 返工
+        assertEquals(RdTaskStatus.FAILED_NEEDS_HUMAN, result.status());
+        assertTrue(result.errorMessage().contains("BUDGET_EXCEEDED")
+                || result.resultJson().contains("BUDGET_EXCEEDED"), () -> result.errorMessage());
+        assertEquals(1, codingInvocations.get());
+        AgentStageRun codingStage = stageRunStore.listByTask(task.taskId()).stream()
+                .filter(stage -> stage.role() == AgentRole.CODING_AGENT)
+                .findFirst()
+                .orElseThrow();
+        assertEquals(AgentStageStatus.FAILED_NEEDS_HUMAN, codingStage.status());
+    }
+
+    @Test
     void shouldEnterWaitingApprovalFromRecoveringWhenPolicyRequiresApproval() {
         RagStreamTaskRegistry registry = new RagStreamTaskRegistry(
                 new InMemoryRdTaskStore(),
@@ -2880,17 +3012,15 @@ class RequirementDeliveryEngineTest {
                     if (request.role() == AgentRole.REQUIREMENT_REVIEWER && executorCalls.get() == 1) {
                         return RequirementExecutionResult.success(
                                 request.taskId(),
-                                "需求缺少权限和验收命令，需要人工补充",
+                                "需求不可安全自动交付",
                                 "",
                                 """
                                         {
-                                          "decision": "NEED_INFO",
-                                          "feasibility": "NEED_INFO",
-                                          "missingInformation": ["权限边界", "真实验收命令"],
-                                          "risks": ["缺少失败提示会导致 QA 无法验收"],
-                                          "acceptanceCoverage": [
-                                            {"criteria":"前端构建通过","covered":false,"reason":"缺少命令"}
-                                          ]
+                                          "decision": "REJECTED",
+                                          "feasibility": "UNSAFE",
+                                          "missingInformation": [],
+                                          "risks": ["无审计删除用户数据"],
+                                          "acceptanceCoverage": []
                                         }
                                         """
                         );

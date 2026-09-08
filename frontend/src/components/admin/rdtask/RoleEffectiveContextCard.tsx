@@ -38,13 +38,15 @@ export interface RoleEffectiveContextCardProps {
   promptStage?: RdTaskRolePromptStage;
   promptLoading: boolean;
   promptError: string;
+  includeLatestStateTab?: boolean;
 }
 
 export function RoleEffectiveContextCard({
   stage,
   promptStage,
   promptLoading,
-  promptError
+  promptError,
+  includeLatestStateTab = true
 }: RoleEffectiveContextCardProps) {
   const [activeTab, setActiveTab] = useState<"effective" | "static" | "latestState">("effective");
 
@@ -151,12 +153,14 @@ export function RoleEffectiveContextCard({
             >
               静态 Prompt
             </TabsTrigger>
-            <TabsTrigger
-              value="latestState"
-              className="h-9 rounded-none border-b-2 border-transparent px-3 text-xs text-slate-600 data-[state=active]:border-teal-600 data-[state=active]:bg-transparent data-[state=active]:font-semibold data-[state=active]:text-teal-900"
-            >
-              最新状态
-            </TabsTrigger>
+            {includeLatestStateTab ? (
+              <TabsTrigger
+                value="latestState"
+                className="h-9 rounded-none border-b-2 border-transparent px-3 text-xs text-slate-600 data-[state=active]:border-teal-600 data-[state=active]:bg-transparent data-[state=active]:font-semibold data-[state=active]:text-teal-900"
+              >
+                最新状态
+              </TabsTrigger>
+            ) : null}
           </TabsList>
         </div>
 
@@ -270,24 +274,26 @@ export function RoleEffectiveContextCard({
           ) : null}
         </TabsContent>
 
-        <TabsContent value="latestState" className="m-0 p-4 sm:p-5">
-          {promptLoading ? <LoadingLine label="正在加载最新状态" /> : null}
-          {!promptLoading && promptError ? <PanelError message={promptError} /> : null}
-          {!promptLoading && !promptError && (!latestState || !latestState.available) ? (
-            <EmptyLine
-              label={
-                latestState?.unavailableReason
-                || (runtimeType !== "PI"
-                  ? "当前 Attempt 不是 PI，状态栏不适用"
-                  : "当前 Attempt 暂无最新状态快照。")
-              }
-            />
-          ) : null}
+        {includeLatestStateTab ? (
+          <TabsContent value="latestState" className="m-0 p-4 sm:p-5">
+            {promptLoading ? <LoadingLine label="正在加载最新状态" /> : null}
+            {!promptLoading && promptError ? <PanelError message={promptError} /> : null}
+            {!promptLoading && !promptError && (!latestState || !latestState.available) ? (
+              <EmptyLine
+                label={
+                  latestState?.unavailableReason
+                  || (runtimeType !== "PI"
+                    ? "当前 Attempt 不是 PI，状态栏不适用"
+                    : "当前 Attempt 暂无最新状态快照。")
+                }
+              />
+            ) : null}
 
-          {!promptLoading && !promptError && latestState?.available ? (
-            <AgentLatestStatePanel state={latestState} />
-          ) : null}
-        </TabsContent>
+            {!promptLoading && !promptError && latestState?.available ? (
+              <AgentLatestStatePanel state={latestState} />
+            ) : null}
+          </TabsContent>
+        ) : null}
       </Tabs>
     </section>
   );

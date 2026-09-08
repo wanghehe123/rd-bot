@@ -8,7 +8,9 @@ public record RoleExecutionEvidenceEntry(
     String contentHash,
     String excerptHash,
     boolean truncated,
-    String selectedReason
+    String selectedReason,
+    String trust,
+    String auditRunId
 ) {
 
   public RoleExecutionEvidenceEntry {
@@ -18,10 +20,36 @@ public record RoleExecutionEvidenceEntry(
     contentHash = normalizeHash(contentHash);
     excerptHash = normalizeHash(excerptHash);
     selectedReason = safe(selectedReason);
+    trust = normalizeTrust(trust);
+    auditRunId = safe(auditRunId);
+    if ("HINT".equals(trust)) {
+      auditRunId = "";
+    }
+  }
+
+  /** Backward-compatible constructor before trust fields existed. */
+  public RoleExecutionEvidenceEntry(
+      String sourceId,
+      String sourceType,
+      String factKind,
+      String contentHash,
+      String excerptHash,
+      boolean truncated,
+      String selectedReason
+  ) {
+    this(sourceId, sourceType, factKind, contentHash, excerptHash, truncated, selectedReason, "HINT", "");
   }
 
   private static String safe(String value) {
     return value == null ? "" : value.strip();
+  }
+
+  private static String normalizeTrust(String value) {
+    String normalized = safe(value).toUpperCase();
+    if ("VERIFIED".equals(normalized)) {
+      return "VERIFIED";
+    }
+    return "HINT";
   }
 
   private static String normalizeHash(String value) {

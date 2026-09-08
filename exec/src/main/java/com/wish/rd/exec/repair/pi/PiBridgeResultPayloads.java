@@ -39,6 +39,23 @@ public final class PiBridgeResultPayloads {
         return text(root, "summary");
     }
 
+    /**
+     * Returns the bridge-declared synthetic failure category (e.g. {@code BUDGET_EXCEEDED}),
+     * or an empty string when the payload is not a synthetic bridge failure. Hosts use this
+     * to keep the budget reason identifiable instead of collapsing every synthetic failure
+     * into {@code PI_BRIDGE_PROTOCOL}.
+     *
+     * @param rawJson bridge-written result payload
+     * @return declared failure category, uppercase; empty when not a synthetic failure
+     */
+    public static String failureCategory(String rawJson) {
+        JsonNode root = parse(rawJson);
+        if (root == null || !syntheticCategory(root)) {
+            return "";
+        }
+        return text(root, "failureCategory").toUpperCase(Locale.ROOT);
+    }
+
     private static boolean syntheticCategory(String rawJson) {
         return syntheticCategory(parse(rawJson));
     }

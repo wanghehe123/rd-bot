@@ -85,4 +85,126 @@ class PiCredentialRelayServiceTest {
         assertEquals(400, auditEvents.getFirst().status());
         assertTrue(auditEvents.stream().noneMatch(event -> event.toString().contains(rawCredential)));
     }
+
+    @Test
+    void openCodeUpstreamGetsStableSessionAndRelayUserAgent() {
+        InMemoryPiCredentialLeaseIssuer issuer = new InMemoryPiCredentialLeaseIssuer();
+        var lease = issuer.issue(
+                "task-opencode",
+                "stage-opencode",
+                "opencode-go",
+                "super-secret",
+                new PiCredentialLeaseIssuer.RelayPolicy(
+                        "https://opencode.ai/zen/go",
+                        List.of("POST"),
+                        List.of("/v1/messages"),
+                        false,
+                        1024,
+                        1024,
+                        Duration.ofSeconds(10)
+                ),
+                Duration.ofMinutes(5),
+                1
+        );
+        AtomicReferenceCapture capture = new AtomicReferenceCapture();
+        PiCredentialRelayService service = new PiCredentialRelayService(
+                issuer,
+                request -> {
+                    capture.request = request;
+                    return new PiCredentialRelayService.UpstreamResponse(
+                            200,
+                            Map.of("content-type", "application/json"),
+                            "{}".getBytes(StandardCharsets.UTF_8)
+                    );
+                },
+                event -> { }
+        );
+
+        PiCredentialRelayService.ProxyResponse response = service.proxy(
+                lease.token(),
+                "task-opencode",
+                "stage-opencode",
+                "opencode-go",
+                "POST",
+                "/v1/messages",
+                Map.of("content-type", "application/json"),
+                "{\"model\":\"qwen3.8-flash\"}".getBytes(StandardCharsets.UTF_8)
+        );
+
+        assertEquals(200, response.status());
+        assertEquals("stage-opencode", capture.request.headers().get("x-opencode-session"));
+        assertEquals("rd-bot-pi-relay/1.0", capture.request.headers().get("User-Agent"));
+        assertEquals("super-secret", capture.request.headers().get("X-Api-Key"));
+    }
+
+    @Test
+    void openCodePreservesPiSuppliedSessionHeader() {
+        InMemoryPiCredentialLeaseIssuer issuer = new InMemoryPiCredentialLeaseIssuer();
+        var lease = issuer.issue(
+                "task-opencode",
+                "stage-opencode",
+                "opencode-go",
+                "super-secret",
+                new PiCredentialLeaseIssuer.RelayPolicy(
+                        "https://opencode.ai/zen/go",
+                        List.of("POST"),
+                        List.of("/v1/messages"),
+                        false,
+                        1024,
+                        1024,
+                        Duration.ofSeconds(10)
+                ),
+                Duration.ofMinutes(5),
+                1
+        );
+        AtomicReferenceCapture capture = new AtomicReferenceCapture();
+        PiCredentialRelayService service = new PiCredentialRelayService(
+                issuer,
+                request -> {
+                    capture.request = request;
+                    return new PiCredentialRelayService.UpstreamResponse(
+                            200,
+                            Map.of(),
+                            new byte[0]
+                    );
+                },
+                event -> { }
+        );
+
+        service.proxy(
+                lease.token(),
+                "task-opencode",
+                "stage-opencode",
+                "opencode-go",
+                "POST",
+                "/v1/messages",
+                Map.of(
+                        "content-type", "application/json",
+                        "x-opencode-session", "pi-session-42",
+                        "user-agent", "pi-agent/1.0"
+                ),
+                "{}".getBytes(StandardCharsets.UTF_8)
+        );
+
+        assertEquals("pi-session-42", capture.request.headers().get("x-opencode-session"));
+        assertEquals("pi-agent/1.0", capture.request.headers().get("User-Agent"));
+    }
+
+    @Test
+    void nonOpenCodeUpstreamDoesNotInjectSessionHeader() {
+        Map<String, String> headers = new java.util.LinkedHashMap<>();
+        PiCredentialRelayService.ensureOpenCodeRoutingHeaders(
+                headers,
+                "https://provider.example.test/v1",
+                "provider-1",
+                "task-1",
+                "stage-1"
+        );
+        assertFalse(headers.containsKey("x-opencode-session"));
+        assertFalse(headers.containsKey("User-Agent"));
+    }
+
+    private static final class AtomicReferenceCapture {
+        private PiCredentialRelayService.UpstreamRequest request;
+    }
 }

@@ -322,6 +322,27 @@ public interface RequirementStageFinalizationMapper extends BaseMapper<Requireme
     RequirementStageFinalizationRow findLatestPrepared(@Param("commandId") Long commandId);
 
     /**
+     * Reads the newest finalized result for one command that still belongs to the task.
+     *
+     * @param taskId owning task
+     * @param commandId command id
+     * @return finalized row or null
+     */
+    @Select("""
+            SELECT *
+              FROM rd_requirement_stage_finalizations
+             WHERE task_id = #{taskId}
+               AND command_id = #{commandId}
+               AND state = 'FINALIZED'
+             ORDER BY attempt_no DESC
+             LIMIT 1
+            """)
+    RequirementStageFinalizationRow findLatestFinalized(
+            @Param("taskId") long taskId,
+            @Param("commandId") Long commandId
+    );
+
+    /**
      * Returns already-frozen outcome plans for one task so a later {@code recordOutcome} can assign
      * a unique remediation number before the ledger row exists.
      *

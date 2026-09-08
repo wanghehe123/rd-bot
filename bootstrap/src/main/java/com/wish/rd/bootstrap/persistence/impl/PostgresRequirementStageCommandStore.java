@@ -12,6 +12,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Optional;
 
@@ -71,6 +72,49 @@ public class PostgresRequirementStageCommandStore implements RequirementStageCom
     public Optional<RequirementStageCommand> findById(String commandId) {
         RequirementStageCommandRow row = mapper.findById(PostgresPersistenceSupport.parseId(commandId));
         return Optional.ofNullable(row).map(this::toCommand);
+    }
+
+    @Override
+    public List<RequirementStageCommand> listByTaskAfter(
+            String taskId, long afterCreatedAtEpochMillis, String afterCommandId, int limit
+    ) {
+        int pageLimit = Math.max(1, limit);
+        long taskPk = PostgresPersistenceSupport.parseId(taskId);
+        if (afterCreatedAtEpochMillis <= 0L
+                || afterCommandId == null
+                || afterCommandId.isBlank()) {
+            return mapper.listByTaskFirstPage(taskPk, pageLimit).stream()
+                    .map(this::toCommand)
+                    .toList();
+        }
+        return mapper.listByTaskAfter(
+                        taskPk,
+                        PostgresPersistenceSupport.toDateTime(afterCreatedAtEpochMillis),
+                        PostgresPersistenceSupport.parseId(afterCommandId),
+                        pageLimit)
+                .stream()
+                .map(this::toCommand)
+                .toList();
+    }
+
+    @Override
+    public List<String> listIdsByTask(String taskId) {
+        return mapper.listIdsByTask(PostgresPersistenceSupport.parseId(taskId)).stream()
+                .map(PostgresPersistenceSupport::idString)
+                .toList();
+    }
+
+    @Override
+    public List<RequirementStageCommand> listByTargetRetryBinding(String taskId, String targetRetryBindingId) {
+        if (targetRetryBindingId == null || targetRetryBindingId.isBlank()) {
+            return List.of();
+        }
+        return mapper.listByTargetRetryBinding(
+                        PostgresPersistenceSupport.parseId(taskId),
+                        PostgresPersistenceSupport.parseId(targetRetryBindingId))
+                .stream()
+                .map(this::toCommand)
+                .toList();
     }
 
     @Override

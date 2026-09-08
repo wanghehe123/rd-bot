@@ -18,6 +18,17 @@ public interface AuditedTaskStateStore {
     Optional<AuditedTaskState> head(String taskId);
 
     /**
+     * Loads one historical revision by version. Implementations must not substitute {@link #head}.
+     *
+     * @param taskId task id
+     * @param stateVersion revision version
+     * @return revision when present
+     */
+    default Optional<AuditedTaskState> findRevision(String taskId, long stateVersion) {
+        return Optional.empty();
+    }
+
+    /**
      * Writes {@code state_version=1} when the head is absent.
      *
      * <p>Same contract hash is idempotent. A different frozen-criteria hash fails closed.

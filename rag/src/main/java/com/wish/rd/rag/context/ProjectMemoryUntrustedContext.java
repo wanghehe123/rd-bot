@@ -23,7 +23,9 @@ public final class ProjectMemoryUntrustedContext {
                 """);
         for (RoleContextEvidence item : memoryEvidence) {
             block.append("- memory=").append(item.evidenceId()).append(" source=").append(item.sourceUri())
-                    .append(" hash=").append(item.contentHash()).append(" data=").append(item.summary()).append('\n');
+                    .append(" hash=").append(item.contentHash())
+                    .append(" trust=").append(item.trust().isBlank() ? "HINT" : item.trust())
+                    .append(" data=").append(item.summary()).append('\n');
         }
         return block.toString();
     }

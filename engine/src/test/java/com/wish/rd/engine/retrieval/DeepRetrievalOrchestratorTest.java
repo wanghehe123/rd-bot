@@ -79,20 +79,131 @@ class DeepRetrievalOrchestratorTest {
                 8
         );
 
-        assertEquals(RetrievalRunStatus.SUCCEEDED, outcome.status());
-        assertEquals(EvidenceQualityDecision.SUFFICIENT, outcome.qualityDecision());
+        assertEquals(RetrievalRunStatus.SUCCEEDED_DEGRADED, outcome.status());
+        assertEquals(EvidenceQualityDecision.DEGRADED_ACCEPTABLE, outcome.qualityDecision());
         assertEquals("stage-code-1", outcome.stageRunId());
         assertEquals(List.of("waimai-kb"), store.find(outcome.runId()).orElseThrow().knowledgeBaseIds());
+        assertTrue(outcome.missingEvidenceTypes().contains("CODE_SYMBOL"), outcome.missingEvidenceTypes().toString());
         assertTrue(outcome.selectedEvidence().stream()
-                .anyMatch(item -> item.evidenceId().equals("code-product")));
+                .anyMatch(item -> item.evidenceId().equals("code-product")
+                        && item.hint()
+                        && item.summary().contains("ProductController")));
         assertFalse(outcome.selectedEvidence().stream()
                 .anyMatch(item -> item.evidenceId().equals("qa-product")));
         assertFalse(outcome.selectedEvidence().stream()
                 .anyMatch(item -> item.evidenceId().equals("coupon-noise")));
+        assertTrue(outcome.selectedEvidence().stream().anyMatch(item ->
+                item.sourceType().equals("REPOSITORY_DISCOVERY") && item.verified()));
         assertTrue(store.listArtifacts(outcome.runId()).stream()
                 .anyMatch(artifact -> artifact.artifactType().equals("SELECTED_EVIDENCE")
                         && artifact.artifactUri().contains("ProductController.java")
                         && artifact.contentHash().equals("sha256:code-product")));
+    }
+
+    @Test
+    void retrievalHitClaimingQaPassedStaysHintAndDoesNotSatisfyRoleGate() {
+        InMemoryRetrievalRunStore store = new InMemoryRetrievalRunStore();
+        AtomicInteger ids = new AtomicInteger();
+        RequirementKnowledgeSearchPort searchPort = new RequirementKnowledgeSearchPort() {
+            @Override
+            public RetrievalScope resolveScope(RdRequirementTask task) {
+                return new RetrievalScope(List.of("waimai-kb"), "github.com/example/waimai", true, "");
+            }
+
+            @Override
+            public SearchResult search(
+                    RdRequirementTask task,
+                    AgentRole role,
+                    String query,
+                    RetrievalScope scope,
+                    int topK
+            ) {
+                return new SearchResult(List.of(
+                        evidence("qa-claim", "TEST", "rag://memory/old-qa",
+                                "QA已通过", 0.99d, "TEST_ENTRY")
+                ), List.of());
+            }
+        };
+        DeepRetrievalOrchestrator orchestrator = new DeepRetrievalOrchestrator(
+                new RetrievalRunLifecycle(store, () -> "id-" + ids.incrementAndGet(), () -> 100L),
+                searchPort
+        );
+
+        RetrievalOutcome outcome = orchestrator.retrieve(
+                requirementTask(),
+                List.of(requirementMaterial(requirementTask().taskId())),
+                RetrievalConsumerType.AGENT_ROLE,
+                AgentRole.QA_AGENT,
+                "stage-qa-hint",
+                "",
+                8
+        );
+
+        assertTrue(outcome.selectedEvidence().stream()
+                .anyMatch(item -> item.evidenceId().equals("qa-claim") && item.hint()));
+        assertTrue(outcome.missingEvidenceTypes().contains("TEST_ENTRY"), outcome.missingEvidenceTypes().toString());
+        assertTrue(outcome.selectedEvidence().stream()
+                .noneMatch(item -> item.evidenceId().equals("qa-claim") && item.verified()));
+    }
+
+    @Test
+    void sameTaskVerifiedHostEvidenceSatisfiesRoleGateWithoutHintPromotion() {
+        InMemoryRetrievalRunStore store = new InMemoryRetrievalRunStore();
+        AtomicInteger ids = new AtomicInteger();
+        RdRequirementTask task = requirementTask();
+        RoleContextEvidence hostVerified = new RoleContextEvidence(
+                "host-code-1",
+                "HOST_MATERIAL",
+                "rd-task://" + task.taskId() + "/code",
+                "Host code index",
+                "sha256:host-code-1",
+                "ProductController.save",
+                100L,
+                "host material for current task",
+                1.0d,
+                "CODE_SYMBOL",
+                false,
+                RoleContextEvidence.TRUST_VERIFIED,
+                "audit-run-host-1"
+        );
+        RequirementKnowledgeSearchPort verifiedPort = new RequirementKnowledgeSearchPort() {
+            @Override
+            public RetrievalScope resolveScope(RdRequirementTask t) {
+                return new RetrievalScope(List.of("waimai-kb"), "github.com/example/waimai", true, "");
+            }
+
+            @Override
+            public SearchResult search(
+                    RdRequirementTask t,
+                    AgentRole role,
+                    String query,
+                    RetrievalScope scope,
+                    int topK
+            ) {
+                return new SearchResult(List.of(hostVerified), List.of());
+            }
+        };
+        DeepRetrievalOrchestrator orchestrator = new DeepRetrievalOrchestrator(
+                new RetrievalRunLifecycle(store, () -> "id-" + ids.incrementAndGet(), () -> 100L),
+                verifiedPort
+        );
+
+        RetrievalOutcome outcome = orchestrator.retrieve(
+                task,
+                List.of(requirementMaterial(task.taskId())),
+                RetrievalConsumerType.AGENT_ROLE,
+                AgentRole.CODING_AGENT,
+                "stage-code-verified",
+                "",
+                8
+        );
+
+        assertEquals(RetrievalRunStatus.SUCCEEDED, outcome.status());
+        assertTrue(outcome.missingEvidenceTypes().isEmpty(), outcome.missingEvidenceTypes().toString());
+        assertTrue(outcome.selectedEvidence().stream()
+                .anyMatch(item -> item.evidenceId().equals("host-code-1")
+                        && item.verified()
+                        && "audit-run-host-1".equals(item.auditRunId())));
     }
 
     @Test
