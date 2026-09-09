@@ -63,6 +63,7 @@ RUSTFS_ACCESS_KEY_ID=rdbotminio
 RUSTFS_SECRET_ACCESS_KEY=$(random_hex)
 RUSTFS_BUCKET=biz
 RD_AGENT_RUNTIME_MUTATION_TOKEN=$(random_hex)
+GITHUB_PAT=
 RD_EXECUTOR_PI_CPU_LIMIT=4
 RD_EXECUTOR_PI_MEMORY_LIMIT=8g
 EOF
@@ -71,13 +72,36 @@ EOF
 }
 
 load_env() {
+  local create_workspace="${1:-yes}"
   [ -f "$ENV_FILE" ] || generate_env
   # shellcheck disable=SC1090
   set -a; source "$ENV_FILE"; set +a
   export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-rd-bot}"
   export RD_BOT_WORKSPACE_ROOT="${RD_BOT_WORKSPACE_ROOT:-$WORKSPACE_ROOT_DEFAULT}"
-  mkdir -p "$RD_BOT_WORKSPACE_ROOT"
+  [ "$create_workspace" = "no" ] || mkdir -p "$RD_BOT_WORKSPACE_ROOT"
   export RD_BOT_WORKSPACE_ROOT
+}
+
+validate_workspace_root_for_purge() {
+  local data_root="$ROOT/.rd-bot-data"
+  case "$RD_BOT_WORKSPACE_ROOT" in
+    "$data_root"|"$data_root"/*) ;;
+    *) fail "refusing purge: RD_BOT_WORKSPACE_ROOT must stay under $data_root (got $RD_BOT_WORKSPACE_ROOT)" ;;
+  esac
+  case "$RD_BOT_WORKSPACE_ROOT" in
+    *"/../"*|*"/.."|*"/./"*|*"/.")
+      fail "refusing purge: RD_BOT_WORKSPACE_ROOT must not contain '.' or '..' path segments"
+      ;;
+  esac
+  if [ -d "$data_root" ] && [ -e "$RD_BOT_WORKSPACE_ROOT" ]; then
+    local data_root_real workspace_root_real
+    data_root_real="$(cd "$data_root" && pwd -P)"
+    workspace_root_real="$(cd "$RD_BOT_WORKSPACE_ROOT" && pwd -P)"
+    case "$workspace_root_real" in
+      "$data_root_real"|"$data_root_real"/*) ;;
+      *) fail "refusing purge: resolved workspace path escapes $data_root_real" ;;
+    esac
+  fi
 }
 
 compose() {
@@ -167,9 +191,9 @@ cmd_up() {
   compose up -d --wait || fail "stack did not become healthy; run './scripts/rd-bot.sh logs' for details"
   local missing=0
   [ -n "${RD_AGENT_RUNTIME_MUTATION_TOKEN:-}" ] || { log "NOTE: RD_AGENT_RUNTIME_MUTATION_TOKEN empty — runtime mutations stay denied"; missing=1; }
-  log "NOTE: provider API keys and GitHub credentials are not part of runtime.env — configure them in the admin UI before running agents"
-  missing=1
-  [ "$missing" -eq 1 ] && log "run Agent work only after completing the configuration steps in the admin UI"
+  [ -n "${GITHUB_PAT:-}" ] || { log "NOTE: GITHUB_PAT empty — private-repository clone/push and PR publication are unavailable; set it in $ENV_FILE, then restart"; missing=1; }
+  log "NOTE: configure model-provider API keys in the admin UI before running agents"
+  [ "$missing" -eq 1 ] && log "complete the credential steps above before running a delivery that needs them"
   log "admin UI: http://127.0.0.1:${RD_BOT_PORT:-18080}/admin"
 }
 
@@ -203,10 +227,11 @@ cmd_down() {
 
 cmd_purge() {
   [ "${1:-}" = "--yes" ] || usage 1
-  load_env
-  log "purging project '${COMPOSE_PROJECT_NAME}': its volumes AND $RD_BOT_WORKSPACE_ROOT will be deleted"
+  load_env no
+  validate_workspace_root_for_purge
+  log "purging project '${COMPOSE_PROJECT_NAME}': its volumes AND $ROOT/.rd-bot-data will be deleted"
   compose down -v --remove-orphans
-  rm -rf "$RD_BOT_WORKSPACE_ROOT" "$ROOT/.rd-bot-data"
+  rm -rf "$ROOT/.rd-bot-data"
   log "purge complete"
 }
 

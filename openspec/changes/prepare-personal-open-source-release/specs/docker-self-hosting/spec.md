@@ -81,6 +81,16 @@ MUST 保留卷与工作区；清空数据 MUST 是要求显式 `--yes` 的单独
 - **WHEN** 执行普通 down 后检查卷与工作区
 - **THEN** 数据卷与 `.rd-bot-data` 工作区仍存在，重新 up 后数据可回读
 
+#### Scenario: purge 拒绝仓库数据目录之外的工作区
+
+- **WHEN** runtime.env 把 `RD_BOT_WORKSPACE_ROOT` 指向 `<repo>/.rd-bot-data` 之外并执行 `purge --yes`
+- **THEN** 脚本必须在调用 Compose 或删除文件前失败，外部目录与其中内容保持不变
+
+#### Scenario: 验收 smoke 不改写日常部署配置
+
+- **WHEN** 已存在 `deploy/docker/runtime.env` 时执行隔离验收 smoke
+- **THEN** smoke 使用 `.rd-bot-data/acceptance/<run-id>/` 下的独立临时 env，退出后原部署 env 字节不变
+
 ### Requirement: 容器化后端可继续创建 Agent 容器
 
 后端容器 SHALL 经只读写的 `/var/run/docker.sock`（宿主 GID 经 `group_add` 注入，非 privileged）访问宿主
@@ -103,8 +113,15 @@ MUST NOT 挂载给除 rd-bot 外的任何 service。
 仓库 SHALL 提供 `scripts/rd-bot.sh` 作为 README 唯一操作入口，支持 doctor/up/status/logs/restart/down 与
 要求显式确认的 purge。脚本 MUST 从自身位置解析仓库根（任意 cwd 行为一致），首次运行生成 `0600` 权限的
 runtime.env 且不覆盖已存在文件，构建顺序固定 Pi → QA → app，任一步失败 MUST 非零退出并给出下一条诊断命令。
+生成的 runtime.env MUST 包含显式空 `GITHUB_PAT` 槽位；操作输出与 README MUST 准确区分管理台配置的模型供应商
+凭据和 runtime.env 配置的 GitHub PAT，不得宣称 GitHub PAT 可在当前管理台配置或缺失时一定阻断任务提交。
 
 #### Scenario: 缺依赖时的诊断
 
 - **WHEN** daemon 未运行、端口被占用、socket 无权限或镜像构建失败时执行 up
 - **THEN** 脚本非零退出，输出针对该场景的可执行诊断，而不是静默继续或留下半启动状态
+
+#### Scenario: 首次生成凭据配置给出真实入口
+
+- **WHEN** 首次执行 up 且 GitHub PAT 尚未提供
+- **THEN** 生成的 runtime.env 保留空 `GITHUB_PAT=`，输出提示在该文件配置 PAT 并重启，且不把管理台描述为 GitHub PAT 配置入口

@@ -62,8 +62,8 @@ socket、你的主目录或 API key——模型访问只经过加固的 credenti
 ## 快速开始
 
 环境要求：一台装有 **Docker Engine / Docker Desktop 与 Compose v2** 的机器
-（已测形态：macOS Apple silicon、Linux x86_64/arm64）。宿主无需 JDK、Maven、
-Node.js 或 psql。
+。本版本已在 macOS Apple silicon 完成实机验收；Linux x86_64/arm64 是预期
+部署形态，但尚未完成真机验收。宿主无需 JDK、Maven、Node.js 或 psql。
 
 ```bash
 git clone https://github.com/wanghehe123/rd-bot.git
@@ -88,12 +88,16 @@ Agent 运行前，首页的「首次配置引导」会带你完成：
 
 1. **配置模型供应商**——登记一个 OpenAI/Anthropic 兼容端点并保存 API key
    （key 只提交到后端凭据存储；不进浏览器、不进 git 仓库）。
-2. **创建项目**——指向你授权 RD-Bot 操作的 GitHub 仓库。
-3. **提交需求**——选一个小而清晰的任务，观察角色流水线运行，
+2. **按需配置 GitHub 交付**——在 `deploy/docker/runtime.env` 设置
+   `GITHUB_PAT`，再执行 `./scripts/rd-bot.sh restart`。PAT 只保存在 gitignore
+   且权限为 `0600` 的 env 文件中，并仅传给后端。
+3. **创建项目**——指向你授权 RD-Bot 操作的 GitHub 仓库。
+4. **提交需求**——选一个小而清晰的任务，观察角色流水线运行，
    每个阶段都产出可阅读的产物与证据。
 
-在 provider key 与 GitHub 凭据配置完成之前，任务提交会被明确阻断——
-RD-Bot 不会伪造成功。
+缺少 provider key 或 GitHub PAT 时，受影响的 Agent 或 Git 操作会明确失败，
+不会产生 mock 成功。当前管理台只保存 provider key；GitHub PAT 必须按上面的
+env 文件步骤配置。
 
 ## 截图
 
@@ -132,6 +136,7 @@ RD_BOT_EGRESS_NETWORK=rd-bot-egress
 POSTGRES_PASSWORD=...                   # 自动生成
 RUSTFS_SECRET_ACCESS_KEY=...            # 自动生成（MinIO）
 RD_AGENT_RUNTIME_MUTATION_TOKEN=...     # 自动生成；留空 = 修改请求被拒绝
+GITHUB_PAT=                              # 私有 clone/push 与 PR 发布必需
 RD_EXECUTOR_PI_CPU_LIMIT=4              # 不得超过宿主 CPU 数
 RD_EXECUTOR_PI_MEMORY_LIMIT=8g
 ```
@@ -160,7 +165,8 @@ RD_EXECUTOR_PI_MEMORY_LIMIT=8g
   容器）。Agent 容器永远拿不到 socket、宿主目录或凭据。
 - **凭据**：供应商 key 存在后端凭据存储；Agent 容器只经 credential relay
   访问模型。没有 `RD_AGENT_RUNTIME_MUTATION_TOKEN` 时，运行时修改端点
-  fail closed。
+  fail closed。GitHub 交付从 gitignore 的 `runtime.env` 读取 `GITHUB_PAT`，
+  当前管理台不能配置该 PAT。
 - **外部入口默认关闭**：飞书接入、本地 listener 与工单写回在默认配置和
   Docker overlay 中双重关闭。
 
@@ -175,7 +181,7 @@ RD_EXECUTOR_PI_MEMORY_LIMIT=8g
 | socket 权限不足 | `doctor` 会给出对应平台的修法（永远不要 `chmod 666`） |
 | 镜像构建中断 | 多为 CDN 抖动——重跑 `up`；可用旧 QA 镜像做浏览器缓存种子（见 `bootstrap/src/main/resources/executor/pi/README.md`） |
 | 迁移报 "DRIFT" | SQL 文件在应用后又被改动；按报错提示检查 `rd_schema_migrations` |
-| Agent 无法运行 | 首页引导会指出缺少的 provider / GitHub 配置 |
+| Agent 无法运行 | 在管理台配置 provider key；私有 clone/push 或 PR 发布还需在 `deploy/docker/runtime.env` 设置 `GITHUB_PAT` 并重启 |
 
 ## 开发与测试
 

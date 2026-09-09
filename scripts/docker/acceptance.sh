@@ -18,8 +18,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUN_ID="$(date +%Y%m%d-%H%M%S)-$$"
 TAG="${ACCEPTANCE_TAG:-acceptance-$RUN_ID}"
 PROJECT="${ACCEPTANCE_PROJECT:-rd-bot-oss-acceptance-$RUN_ID}"
-ENV_FILE="${ACCEPTANCE_ENV_FILE:-$ROOT/deploy/docker/runtime.env}"
-WS_ROOT="$ROOT/.rd-bot-data/acceptance/$RUN_ID/workspaces"
+ACCEPTANCE_ROOT="$ROOT/.rd-bot-data/acceptance/$RUN_ID"
+ENV_FILE="$ACCEPTANCE_ROOT/runtime.env"
+WS_ROOT="$ACCEPTANCE_ROOT/workspaces"
 
 fail() { printf '[acceptance] FAIL: %s\n' "$*" >&2; exit 1; }
 step() { printf '[acceptance] == %s\n' "$*"; }
@@ -33,7 +34,8 @@ step "images verified (app/pi/qa @ $TAG)"
 
 # Isolated stack env: unique project + egress network; loopback publish; fresh workspace.
 if [ "$(uname -s)" = "Darwin" ]; then DOCKER_GID_VAL=0; else DOCKER_GID_VAL="$(stat -c '%g' /var/run/docker.sock 2>/dev/null || echo 999)"; fi
-cat > "$ROOT/deploy/docker/runtime.env" <<EOF
+mkdir -p "$WS_ROOT"
+cat > "$ENV_FILE" <<EOF
 COMPOSE_PROJECT_NAME=$PROJECT
 RD_BOT_IMAGE_TAG=$TAG
 RD_BOT_APP_IMAGE=rd-bot/app
@@ -50,10 +52,13 @@ RD_AGENT_RUNTIME_MUTATION_TOKEN=acceptance-token-$RUN_ID
 RD_EXECUTOR_PI_CPU_LIMIT=4
 RD_EXECUTOR_PI_MEMORY_LIMIT=8g
 EOF
-chmod 600 "$ROOT/deploy/docker/runtime.env"
+chmod 600 "$ENV_FILE"
 
 compose() { docker compose --env-file "$ENV_FILE" -f "$ROOT/docker-compose.yml" "$@"; }
-cleanup() { compose down -v --remove-orphans >/dev/null 2>&1 || true; }
+cleanup() {
+  compose down -v --remove-orphans >/dev/null 2>&1 || true
+  rm -f "$ENV_FILE"
+}
 trap cleanup EXIT
 
 # Phase A: empty-volume boot, all services healthy.

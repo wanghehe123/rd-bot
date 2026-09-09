@@ -69,8 +69,9 @@ through a hardened credential-relay sidecar.
 ## Quick start
 
 Requirements: one machine with **Docker Engine / Docker Desktop and Compose
-v2** (macOS Apple silicon and Linux x86_64/arm64 are the tested shapes). You do
-not need JDK, Maven, Node.js or psql on the host.
+v2**. This release was verified on macOS Apple silicon; Linux x86_64/arm64 is
+an intended deployment shape but has not yet had a real-machine acceptance run.
+You do not need JDK, Maven, Node.js or psql on the host.
 
 ```bash
 git clone https://github.com/wanghehe123/rd-bot.git
@@ -96,13 +97,17 @@ Before agents can run, the dashboard's first-run checklist walks you through:
 1. **Configure a model provider** — register an OpenAI/Anthropic-compatible
    endpoint and store its API key (keys are submitted to the backend's
    credential storage only; they never touch the browser or the git repo).
-2. **Create a project** pointing at a GitHub repository you authorize RD-Bot
+2. **Configure GitHub delivery when needed** — set `GITHUB_PAT` in
+   `deploy/docker/runtime.env`, then run `./scripts/rd-bot.sh restart`. The PAT
+   stays in the gitignored `0600` env file and is passed to the backend only.
+3. **Create a project** pointing at a GitHub repository you authorize RD-Bot
    to operate on.
-3. **Submit a requirement** — pick a small, well-scoped change and watch the
+4. **Submit a requirement** — pick a small, well-scoped change and watch the
    role pipeline run, each stage producing readable artifacts and evidence.
 
-Until a provider key and a GitHub credential are configured, task submission
-is blocked with an explicit message — RD-Bot does not fake success.
+A missing provider key or GitHub PAT cannot produce a mock success: the
+affected agent or Git operation fails explicitly. The current dashboard stores
+provider keys; GitHub PAT configuration is the env-file step above.
 
 ## Screenshots
 
@@ -141,6 +146,7 @@ RD_BOT_EGRESS_NETWORK=rd-bot-egress
 POSTGRES_PASSWORD=...                   # generated
 RUSTFS_SECRET_ACCESS_KEY=...            # generated (MinIO)
 RD_AGENT_RUNTIME_MUTATION_TOKEN=...     # generated; empty = mutations denied
+GITHUB_PAT=                              # required for private clone/push + PR publication
 RD_EXECUTOR_PI_CPU_LIMIT=4              # must be <= host CPU count
 RD_EXECUTOR_PI_MEMORY_LIMIT=8g
 ```
@@ -173,6 +179,8 @@ the full list. Model provider keys are configured in the admin console
 - **Credentials**: provider keys live in the backend's credential storage;
   agent containers reach models only through the credential relay. Runtime
   mutation endpoints fail closed without `RD_AGENT_RUNTIME_MUTATION_TOKEN`.
+  GitHub delivery reads `GITHUB_PAT` from the gitignored `runtime.env`; it is
+  not configured in the current admin console.
 - **External intake off**: Feishu/Lark intake, local listener and ticket
   write-back are disabled in the defaults and again in the Docker overlay.
 
@@ -187,7 +195,7 @@ Details and reporting: [`SECURITY.md`](SECURITY.md).
 | Socket permission denied | `doctor` prints the fix for your platform (never `chmod 666`) |
 | Image build fails mid-download | Usually a flaky CDN — rerun `up`; browser cache can be seeded from a previous QA tag (see `bootstrap/src/main/resources/executor/pi/README.md`) |
 | Migration "DRIFT" error | A SQL file changed after it was applied; follow the message, inspect `rd_schema_migrations` |
-| Agents can't run | The dashboard checklist shows the missing provider/GitHub configuration |
+| Agents can't run | Configure provider keys in the dashboard; for private clone/push or PR publication, set `GITHUB_PAT` in `deploy/docker/runtime.env` and restart |
 
 ## Development and testing
 

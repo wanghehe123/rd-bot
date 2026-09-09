@@ -54,6 +54,7 @@ grep -qE "^docker build " "$STUB_LOG" || fail_test "up must build the applicatio
 grep -qE "docker compose .* up -d --wait" "$STUB_LOG" || fail_test "up must wait for stack health"
 grep -q "admin UI: http://127.0.0.1:" <<<"$OUT" || fail_test "up must print the loopback admin URL"
 [ -f "$TMP/deploy/docker/runtime.env" ] || fail_test "up must generate deploy/docker/runtime.env"
+grep -qx 'GITHUB_PAT=' "$TMP/deploy/docker/runtime.env" || fail_test "generated runtime.env must expose an empty GITHUB_PAT slot"
 PERMS="$(stat -f '%Lp' "$TMP/deploy/docker/runtime.env" 2>/dev/null || stat -c '%a' "$TMP/deploy/docker/runtime.env")"
 [ "$PERMS" = "600" ] || fail_test "runtime.env must be 0600 (got $PERMS)"
 pass "up generates 0600 env, builds Pi -> QA -> app, waits health, prints loopback URL"
@@ -78,6 +79,21 @@ if run_launcher purge >/dev/null 2>&1; then
 fi
 [ -s "$STUB_LOG" ] && grep -q "down" "$STUB_LOG" && fail_test "purge without --yes must not touch the stack"
 pass "purge without --yes is rejected before any destructive action"
+
+# A tampered env must not expand purge beyond this checkout's .rd-bot-data.
+cp "$TMP/deploy/docker/runtime.env" "$TMP/deploy/docker/runtime.env.safe"
+OUTSIDE_WORKSPACE="$TMP-outside-workspace"
+mkdir -p "$OUTSIDE_WORKSPACE"
+touch "$OUTSIDE_WORKSPACE/keep.txt"
+printf '\nRD_BOT_WORKSPACE_ROOT=%s\n' "$OUTSIDE_WORKSPACE" >> "$TMP/deploy/docker/runtime.env"
+: > "$STUB_LOG"
+if run_launcher purge --yes >/dev/null 2>&1; then
+  fail_test "purge must reject a workspace outside .rd-bot-data"
+fi
+[ -f "$OUTSIDE_WORKSPACE/keep.txt" ] || fail_test "rejected purge must preserve the external workspace"
+[ ! -s "$STUB_LOG" ] || fail_test "rejected purge must fail before touching the Compose project"
+mv "$TMP/deploy/docker/runtime.env.safe" "$TMP/deploy/docker/runtime.env"
+pass "purge rejects an external workspace before any destructive action"
 
 mkdir -p "$TMP/.rd-bot-data/workspaces" && touch "$TMP/.rd-bot-data/workspaces/keep.txt"
 run_launcher purge --yes >/dev/null

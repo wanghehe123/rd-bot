@@ -25,4 +25,9 @@ See the root [README](../README.md) for the supported operation commands
   the backend is reachable as `rd-bot` on it for credential-relay traffic.
 - Isolated acceptance stacks must override `COMPOSE_PROJECT_NAME` and
   `RD_BOT_EGRESS_NETWORK` with run-id-unique values; volumes are project-scoped
-  automatically.
+  automatically. `scripts/docker/acceptance.sh` writes its generated secrets to
+  `.rd-bot-data/acceptance/<run-id>/runtime.env`; it never rewrites the normal
+  `deploy/docker/runtime.env`.
+- Model-provider keys are stored through the admin console. GitHub delivery
+  reads `GITHUB_PAT` from the gitignored `runtime.env`; restart the stack after
+  changing it.

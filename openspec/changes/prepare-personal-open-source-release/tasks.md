@@ -146,16 +146,16 @@ T00 的产物即本 change 自身。验收 ID（Axx-y）与计划一致。
 - [x] T10.1 重新生成 Maven/frontend/Pi/image 扫描报告（记录时间、库版本、scope）
 - [x] T10.2 同兼容线补丁升级（Spring/Tomcat/Netty/pgjdbc/PostCSS/Browserslist/nanoid/brace-expansion/undici 等），每批跑 focused tests
 - [x] T10.3 跨 major/0.x 升级（React Router、Pi packages）单独列 breaking changes 再处理
-- [x] T10.4 remaining critical/high 建表：advisory/修复版本/路径/runtime 打包/攻击前置/可达性/决定/证据
+- [ ] T10.4 remaining critical/high 建表：advisory/修复版本/路径/runtime 打包/攻击前置/可达性/决定/证据
 - [x] T10.5 runtime 可达且影响代码执行/穿越/走私/凭据/泄露的 critical/high 未修复则阻断发布
 - [x] T10.6 仅测试依赖/未启用模块可延期，但带路径与配置锚点
-- [x] T10.7 Compose/base image 固定 tag；扫描 app/Pi/QA/postgres/redis/minio
+- [ ] T10.7 Compose/base image 固定 tag；扫描 app/Pi/QA/postgres/redis/minio
 - [x] T10.8 SBOM（SHOULD）；生成则随 release artifact 发布
 - [x] A10-1 runtime 可触达 critical/high 为 0 或发布被阻断
-- [x] A10-2 剩余项逐条有适用性判断与复查条件
+- [ ] A10-2 剩余项逐条有适用性判断与复查条件
 - [x] A10-3 升级后 core/full、frontend、Pi、Docker smoke 通过
-- [x] A10-4 发布镜像固定 tag；扫描报告对应 digest
-- 注：npm 面清零；Maven/镜像扫描受本机 registry 故障阻断 → G10 open item + CI 复核（triage 文档已记录）。
+- [ ] A10-4 发布镜像固定 tag；扫描报告对应 digest
+- 注：fresh CycloneDX+OSV / Trivy 复扫发现 runtime-path Maven High/Critical。Pi/QA 已通过 Debian security upgrade 消除每张镜像 2 个可修且 Git/HTTPS 可达的 GnuTLS Critical，但其余镜像发现仍需逐项适用性分流，postgres/redis/minio 尚未扫描；G10 当前 BLOCKED，详见 triage 文档。
 
 ## T11 README 与素材
 
@@ -201,5 +201,5 @@ T00 的产物即本 change 自身。验收 ID（Axx-y）与计划一致。
 - [x] A13-3 README 命令与验收命令逐字一致
 - [x] A13-4 报告无 secret；ID 可回读；原始日志有 hash
 - [x] A13-5 全 MUST 通过才写「可开源」；否则列阻断 ID 与复现命令
-- 注：结论已更新为「可开源（MUST 全过；G10 附 CI 复核条件）」；G12 期间修复 4 项真实缺陷（Pi 凭据装配、sidecar query、容器 git 认证、acceptance.sh），全部带回归测试。
-- 注：A/B/D PASS（唯一 tag + 空卷 + 独立 worktree）；Phase C BLOCKED 待授权；报告：docs/superpowers/qa/2026-09-08-personal-open-source-release-acceptance.md。
+- 注：G12 仍为 PASS；fresh G10 证据把总发布结论降为 BLOCKED。分支可推送复核，但在依赖整改与复扫完成前不得公开发布。
+- 注：A/B/D PASS（唯一 tag + 空卷 + 独立 worktree）；Phase C 已于 2026-09-09 获维护者授权并完成，身份与证据见 `docs/superpowers/qa/2026-09-08-personal-open-source-release-acceptance.md`。

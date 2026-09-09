@@ -55,7 +55,9 @@ RUN sed -i "s|deb.debian.org|${DEBIAN_MIRROR}|g" /etc/apt/sources.list.d/debian.
 COPY rd-qa-evidence.mjs /usr/local/bin/rd-qa-evidence.mjs
 COPY playwright-cli.config.json /etc/rd-bot/playwright-cli.config.json
 RUN chmod 0755 /usr/local/bin/rd-qa-evidence.mjs \
-    && chmod 0644 /etc/rd-bot/playwright-cli.config.json
+    && chmod 0644 /etc/rd-bot/playwright-cli.config.json \
+    && NODE_PATH=/usr/local/lib/node_modules/@playwright/cli/node_modules \
+      node -e "const { chromium } = require('playwright'); chromium.launch({headless:true}).then(async browser => { await browser.close(); console.log('CHROMIUM_LAUNCH_OK'); })"
 
 USER node
 ENTRYPOINT ["node", "/opt/rd-pi-bridge/src/rd-pi-bridge.mjs"]

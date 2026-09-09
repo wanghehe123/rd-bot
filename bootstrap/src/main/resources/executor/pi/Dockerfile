@@ -16,6 +16,7 @@ WORKDIR /opt/rd-pi-bridge
 # prebuilt binary downloads fail (flaky GitHub releases on restricted networks).
 RUN sed -i "s|deb.debian.org|${DEBIAN_MIRROR}|g" /etc/apt/sources.list.d/debian.sources 2>/dev/null || true \
     && apt-get update \
+    && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends \
         build-essential \
         ca-certificates \
