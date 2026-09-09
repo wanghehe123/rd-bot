@@ -192,7 +192,7 @@ T00 的产物即本 change 自身。验收 ID（Axx-y）与计划一致。
 - [x] T13.2 记录 OS/arch/Docker 组合（macOS Docker Desktop arm64 可作首版唯一支持环境）
 - [x] T13.3 Phase A：doctor → 唯一 tag `--pull` 构建 Pi/QA/app → 空卷 up 全健康 → loopback 访问与非 loopback 不可达 → `/admin/model-providers` 直达刷新
 - [x] T13.4 Phase B：测试项目/需求草稿建读 → 无凭据 blocked 显示 → bucket/rows/redis/volume 验证 → probe container 读写 same-path workspace
-- [x] T13.5 Phase C（需显式授权）：测试 provider/模型/专用 GitHub 测试仓库 → 有界需求 → 记录 requirement/stage/command/criteria/evidence/PR identity → 四角色产物可读 → 真实 PR 核对
+- [x] T13.5 Phase C（维护者已授权，2026-09-09）：真实 PR `hello-rd-bot#1`；requirement `7503312963403649024` 四角色全 SUCCEEDED + HOST_VERIFY + 双 MANAGER_DECIDE + PUBLICATION COMMITTED；QA criteriaId AC-001 含 console/network/trace/desktop+mobile 证据；PR diff 本地 `npm test` fail 0
 - [x] T13.6 Phase D：ID 记录 → restart 回读 → up 幂等（secrets/迁移/profile version 不变）→ 缺配置清晰失败 → down 后卷保留 → 再 up 回读
 - [x] T13.7 `scripts/docker/acceptance.sh` 默认 A/B/D smoke；Phase C 需 `RD_OSS_ACCEPTANCE_LIVE=1`，缺凭据返回 BLOCKED
 - [x] T13.8 验收报告按计划 schema 写入 `docs/superpowers/qa/2026-09-08-personal-open-source-release-acceptance.md`
@@ -201,4 +201,5 @@ T00 的产物即本 change 自身。验收 ID（Axx-y）与计划一致。
 - [x] A13-3 README 命令与验收命令逐字一致
 - [x] A13-4 报告无 secret；ID 可回读；原始日志有 hash
 - [x] A13-5 全 MUST 通过才写「可开源」；否则列阻断 ID 与复现命令
+- 注：结论已更新为「可开源（MUST 全过；G10 附 CI 复核条件）」；G12 期间修复 4 项真实缺陷（Pi 凭据装配、sidecar query、容器 git 认证、acceptance.sh），全部带回归测试。
 - 注：A/B/D PASS（唯一 tag + 空卷 + 独立 worktree）；Phase C BLOCKED 待授权；报告：docs/superpowers/qa/2026-09-08-personal-open-source-release-acceptance.md。

@@ -143,7 +143,11 @@ function providerPath(rawUrl) {
   } catch {
     return "";
   }
-  if (parsed.search || parsed.hash || !parsed.pathname.startsWith("/") || parsed.pathname.includes("//")) {
+  // Anthropic SDK >= 5.30 appends `?beta=true` to beta message routes. The query
+  // never propagates (the Host proxy rebuilds the upstream URL from the path
+  // header alone), so a query is stripped here instead of rejected — rejecting
+  // would break every SDK release that appends benign query params.
+  if (!parsed.pathname.startsWith("/") || parsed.pathname.includes("//")) {
     return "";
   }
   const path = parsed.pathname;

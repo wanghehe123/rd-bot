@@ -55,8 +55,9 @@ test("forwards only a bounded Pi POST to the fixed Host proxy with sidecar-owned
   assert.equal(forwarded[0].init.headers["x-untrusted"], undefined);
 });
 
-test("rejects arbitrary methods, query routes, missing leases, and oversized bodies before the Host proxy", async (t) => {
+test("rejects arbitrary methods, missing leases, and oversized bodies before the Host proxy; strips benign query params", async (t) => {
   let calls = 0;
+  const forwardedPaths = [];
   const server = createRelayServer({
     hostRelayUrl: "http://host.docker.internal:18080/internal/pi/credential-relay/proxy",
     taskId: "task-1",
@@ -66,8 +67,9 @@ test("rejects arbitrary methods, query routes, missing leases, and oversized bod
     maxResponseBytes: 32,
     timeoutMillis: 1_000,
   }, {
-    fetchImpl: async () => {
+    fetchImpl: async (url, init) => {
       calls += 1;
+      forwardedPaths.push(init.headers["x-rd-pi-relay-path"]);
       return new Response("{}", { status: 200 });
     },
   });
@@ -76,11 +78,15 @@ test("rejects arbitrary methods, query routes, missing leases, and oversized bod
 
   assert.equal((await fetch(`${address}/healthz`)).status, 204);
   assert.equal((await fetch(`${address}/chat/completions`)).status, 405);
-  assert.equal((await fetch(`${address}/chat/completions?escape=true`, {
+  // pi-coding-agent >= 0.85 posts beta message routes with `?beta=true`; the
+  // query must be stripped (it never reaches the Host proxy URL) instead of
+  // rejecting the request outright.
+  assert.equal((await fetch(`${address}/v1/messages?beta=true`, {
     method: "POST",
     headers: { authorization: "Bearer pcl_opaque_lease" },
     body: "{}",
-  })).status, 400);
+  })).status, 200);
+  assert.equal(forwardedPaths.at(-1), "/v1/messages");
   assert.equal((await fetch(`${address}/chat/completions`, {
     method: "POST",
     body: "{}",
@@ -90,7 +96,7 @@ test("rejects arbitrary methods, query routes, missing leases, and oversized bod
     headers: { authorization: "Bearer pcl_opaque_lease" },
     body: "12345",
   })).status, 413);
-  assert.equal(calls, 0);
+  assert.equal(calls, 1);
 });
 
 test("bounds Host responses and hides upstream failures from the Pi runtime", async (t) => {

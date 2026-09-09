@@ -26,7 +26,7 @@
 | G09 Regression | PASS | E09：全量 Maven **1359 tests, 0 failures, 0 errors, 66 skipped**（显式 real-smoke）；core suite `test-open-source-core.sh` exit 0；无 failure.ignore | 66 skipped 均为需真实中间件/凭据的 smoke（按计划显式跳过） |
 | G10 Dependencies | PASS* | E10：npm 双扫描器 0 命中（frontend 3H+5M→0；pi 2H+1M→0，pi-coding-agent 0.82.1→0.85.1，111/111）；Maven/镜像扫描被本机 registry 故障阻断，记为 G10 open item + CI job 复核条件 | *PASS 附条件：CI 的 osv-scanner job 在正常网络执行后闭环；非「零漏洞」声明 |
 | G11 README | PASS | E11：中英双版 17 节结构；shell blocks bash -n 全过；相对链接有效；4 webp + 1 gif 来自当前候选栈、演示标识 example-org/hello-rd-bot，OCR/视觉复核通过，ASSET_PROVENANCE.md 记录来源 | build badge 留空（CI 于发布后首个 run 通过后再加，见 T12） |
-| G12 Real delivery | BLOCKED | 需要真实 provider key + 专用 GitHub 测试仓库 + 显式授权（对外创建 PR）。本地步骤已就绪：`scripts/docker/acceptance.sh` 的 Phase C 以 `RD_OSS_ACCEPTANCE_LIVE=1` 显式开启，缺凭据返回 BLOCKED 不伪造 PASS | 待维护者授权后执行 |
+| G12 Real delivery | PASS | E12：真实需求任务 `7503312963403649024` 走完四角色 + HOST_VERIFY + 双 MANAGER_DECIDE + 确定性审计 + PUBLICATION，任务 COMPLETED；真实 PR `wanghehe123/hello-rd-bot#1`（OPEN）创建并核验；PR 测试本地复跑通过（fail 0） | 专用私有测试仓库 `wanghehe123/hello-rd-bot`（维护者授权） |
 | G13 Restart | PASS | E13：acceptance Phase D——restart/up 后 migration ledger 行数不变、runtime.env 秘密不变、`/admin` 200；`down` 后卷保留 | — |
 
 ## Commands
@@ -46,8 +46,35 @@
 
 ## Real delivery identity
 
-BLOCKED — 见 G12。Phase C 所需的 exact requirement/stage/command/criteria/evidence/PR
-identity 将在授权执行后补记本节。
+维护者于 2026-09-09 授权后执行。候选提交 `a53c117c`（验收构建）+ 分支修复提交（见下）。
+
+| 项 | 值 |
+| --- | --- |
+| requirementId (taskId) | `7503312963403649024`（taskType REQUIREMENT，最终 COMPLETED） |
+| 测试仓库 | `wanghehe123/hello-rd-bot`（私有，main@`6c4c1fa4`，Node 基线服务 + node:test） |
+| 需求 | 新增 GET /healthz 返回固定 JSON 并补真实 node:test |
+| stageRunId / attempt | REQUIREMENT_REVIEWER `7503312965236559872` · SOLUTION_ARCHITECT `7503312965236559873` · CODING_AGENT `7503312965236559874` · QA_AGENT `7503312965236559875`（均 attempt 1，SUCCEEDED） |
+| 关键 commandId | HOST_VERIFY `7503314526264233984` · MANAGER_DECIDE×2 `7503314543729315840`/`7503315612249231360` · DETERMINISTIC_REVIEW `7503315613700460544` 前 · PUBLICATION `7503315614094725120` · COMPLETION `7503315664032108544`（全链 20 条命令 SUCCEEDED） |
+| HOST_VERIFY | run `7503314539073638400` SUCCEEDED（docs_only=false，真实构建回放） |
+| QA criteriaId | `AC-001` SUCCESS，evidenceArtifactIds 含 `qa-evidence/console/…`、`qa-evidence/network/…`、`qa-evidence/traces/healthz-browser.zip`、`qa-evidence/screenshots/healthz-desktop-1440x900.png` + `healthz-mobile-390x844.png`（23 件 QA 产物） |
+| publication | operation `sha256:2ea5a918…`，status COMMITTED，remote_head `19700af1`，PR `https://github.com/wanghehe123/hello-rd-bot/pull/1`（OPEN），work branch `requirement/7503312963403649024` |
+| completion binding | audit_run `7503315665424617472`，state_version 7，hash `sha256:1b2e88a470c97…` |
+| PR 核验 | diff 仅 `server.js`（+5 /healthz 路由）与 `test/healthz.test.js`（新文件，ephemeral port 真请求断言）；PR 分支本地 clone 后 `npm test` fail 0 |
+
+G12 过程中发现并修复的真实缺陷（全部带回归测试，已入分支）：
+
+1. **Pi 执行器凭据解析装配缺口**：`AgentRuntimeExecutorConfiguration` 把
+   `AuthEnvironmentResolver.system()` 硬编码给 Pi executor，管理台保存的供应商 key
+   对 Docker 自托管路径完全失效 → 改为优先 `StoredThenSystemAuthEnvironmentResolver`
+   （无凭据服务时回落 system）；新增 `PiExecutorCredentialResolverWiringTest` 3/3。
+2. **pi-coding-agent 0.85.1 副作用**：anthropic-messages 改走 `beta.messages`（URL 带
+   `?beta=true`），relay sidecar `providerPath` 拒绝一切 query → agent 全部 400。修复为
+   「剥 query 继续转发」（query 从不透传 Host/上游，path allowlist 语义不变）；sidecar
+   测试同步改写，Pi 桥 111/111，两张 Pi 镜像按规则重建。
+3. **容器内 git 认证缺口**：Docker 路径无宿主 gh/keychain，私有仓库 clone/PUSH 无法认证 →
+   `GIT_CONFIG_GLOBAL` + helper 脚本读容器 `GITHUB_PAT`（无明文入库）；
+   `docker-compose.yml` 增加 `GITHUB_PAT`/`GH_TOKEN` 传递。
+4. `acceptance.sh` 两处 heredoc/断言缺陷修复（GID 探测、迁移幂等断言）。
 
 ## Security and dependency triage
 
@@ -70,14 +97,15 @@ acceptance.sh Phase D（本 run）：ledger 计数与 token 前后一致，resta
 
 - 本机网络对 Docker Hub/ghcr.io/deps.dev 的 registry 路径故障：镜像基础层经 digest
   钉住与 OCI 布局命名上下文供给构建；G10 扫描移交 CI。该限制属验收环境，不属于产品。
-- Phase C（真实交付 + 真实 PR）待授权；无 mock 替代。
 - CI（T12，SHOULD）已创建 workflow 但尚未有 GitHub run；README 未展示 build badge。
 - macOS Docker Desktop arm64 是本次唯一实测平台；Linux 形态未经真机验收（README 已如实声明）。
+- G12 运行使用真实第三方服务（opencode.ai zen 通道 + GitHub）；其可用性不属于本项目 SLA。
 
 ## Release decision
 
-**有条件可开源（MUST 全过，附一项 CI 复核条件）**：G01–G09、G11、G13 PASS，
-G10 PASS 附 CI 复核条件，G12 BLOCKED 待授权。按计划规则：G12 未执行不影响
-「文档与部署路径」的开源判定（其不诚实风险已由 BLOCKED 语义与无 mock 原则控制），
-但在 Phase C 真实交付验收完成之前，README 的「First real task」一节所描述的
-端到端体验应视为**待验证声明**。建议顺序：先授权执行 Phase C，再公开发布。
+**可开源（MUST 全过；G10 附 CI 复核条件）**：G01–G09、G11–G13 全部 PASS。
+G12 真实交付已由维护者授权执行完毕（真实 PR `hello-rd-bot#1`，四角色 + HOST_VERIFY +
+审计 + 发布全链 SUCCEEDED，PR 测试本地复跑通过）。唯一开放项是 G10 的 Maven/镜像
+漏洞扫描在本机网络故障下无法执行，已交由 `.github/workflows/ci.yml` 的
+`dependencies` job 在正常网络复核（SHOULD 级 CI 首跑后自动闭环）；这不是
+「零漏洞」声明，而是记录在案的环境限制与复查条件。

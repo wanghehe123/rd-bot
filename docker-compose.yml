@@ -157,6 +157,13 @@ services:
       RUSTFS_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_ACCESS_KEY:?RUSTFS_SECRET_ACCESS_KEY is required}
       RD_KNOWLEDGE_STORE: postgres
       RD_AGENT_RUNTIME_MUTATION_TOKEN: ${RD_AGENT_RUNTIME_MUTATION_TOKEN:-}
+      # GitHub delivery credentials: PAT from runtime.env (see SECURITY.md).
+      GITHUB_PAT: ${GITHUB_PAT:-}
+      GH_TOKEN: ${GITHUB_PAT:-}
+      RD_GITHUB_CODE_PLATFORM_AUTH_MODE: ${RD_GITHUB_CODE_PLATFORM_AUTH_MODE:-PAT_LOCAL_SMOKE}
+      # Container git (clone/push) reads the PAT through this credential config.
+      GIT_CONFIG_GLOBAL: /config/git-credentials.conf
+      GIT_TERMINAL_PROMPT: "0"
       RD_EXECUTOR_PI_IMAGE: rd-bot/pi-agent:${RD_BOT_IMAGE_TAG:-oss-test}
       RD_EXECUTOR_PI_QA_IMAGE: rd-bot/pi-agent-qa:${RD_BOT_IMAGE_TAG:-oss-test}
       # Only the hardened relay sidecar joins this egress network; task containers
@@ -174,6 +181,8 @@ services:
       # task workspaces into Pi/QA agent containers.
       - ${RD_BOT_WORKSPACE_ROOT}:${RD_BOT_WORKSPACE_ROOT}
       - ./deploy/docker/application-docker.yaml:/config/application-docker.yaml:ro
+      - ./deploy/docker/git-credentials.conf:/config/git-credentials.conf:ro
+      - ./deploy/docker/git-credential-helper.sh:/config/git-credential-helper.sh:ro
     group_add:
       - "${DOCKER_GID:?DOCKER_GID is required}"
     networks:

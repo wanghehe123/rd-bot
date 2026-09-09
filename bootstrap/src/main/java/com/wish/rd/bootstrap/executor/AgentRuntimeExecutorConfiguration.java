@@ -2,6 +2,8 @@ package com.wish.rd.bootstrap.executor;
 
 import com.wish.rd.exec.repair.execution.RepairExecutorPort;
 import com.wish.rd.exec.repair.docker.AuthEnvironmentResolver;
+import com.wish.rd.bootstrap.executor.StoredThenSystemAuthEnvironmentResolver;
+import com.wish.rd.rag.project.agent.ModelProviderCredentialService;
 import com.wish.rd.exec.repair.docker.ContainerRunnerPort;
 import com.wish.rd.exec.repair.docker.RepairWorkspaceFactory;
 import com.wish.rd.exec.repair.docker.RepairWorkspaceRepositoryPort;
@@ -59,8 +61,17 @@ public class AgentRuntimeExecutorConfiguration {
             ObjectProvider<AgentExecutionEventSink> eventSinkProvider,
             ObjectProvider<AgentPrivateArtifactPublisher> privateArtifactPublisherProvider,
             ExecutionAllowlistPolicy executionAllowlistPolicy,
-            ObjectProvider<PiCredentialLeaseIssuer> credentialLeaseIssuerProvider
+            ObjectProvider<PiCredentialLeaseIssuer> credentialLeaseIssuerProvider,
+            ObjectProvider<ModelProviderCredentialService> providerCredentialServiceProvider
     ) {
+        // G12 缺口修复：Pi 执行器的凭据解析必须先查凭据库（管理台「模型供应商」
+        // 保存的 key），否则 Docker 自托管路径下凭据控制台对 Pi 完全失效。
+        AuthEnvironmentResolver authResolver = providerCredentialServiceProvider
+                .getIfAvailable() == null
+                        ? AuthEnvironmentResolver.system()
+                        : new StoredThenSystemAuthEnvironmentResolver(
+                                providerCredentialServiceProvider.getObject(),
+                                AuthEnvironmentResolver.system());
         return new DockerPiAgentExecutor(
                 workspaceFactory,
                 containerRunner,
@@ -72,7 +83,7 @@ public class AgentRuntimeExecutorConfiguration {
                 skillMaterializerProvider.getIfAvailable(PiSkillMaterializerPort::emptyOnly),
                 eventSinkProvider.getIfAvailable(AgentExecutionEventSink::noop),
                 privateArtifactPublisherProvider.getIfAvailable(AgentPrivateArtifactPublisher::noop),
-                AuthEnvironmentResolver.system(),
+                authResolver,
                 credentialLeaseIssuerProvider.getIfAvailable()
         );
     }
